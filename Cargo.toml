@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app", "xtask"]
+default-members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Imran"]
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
