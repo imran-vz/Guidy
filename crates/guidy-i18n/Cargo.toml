@@ -1,0 +1,11 @@
+[package]
+name = "guidy-i18n"
+description = "Guidy translations: i18next JSON locale files with interpolation and plurals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+serde_json = "1"
+parking_lot = "0.12"
