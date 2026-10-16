@@ -1,0 +1,6 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+[env]
+# transcribe-cpp's vendored CMake needs this with CMake >= 4.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
