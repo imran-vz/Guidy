@@ -104,7 +104,7 @@ impl Backend for FakeBackend {
         }
         let s = d.settings.as_mut().unwrap();
         let mut json = serde_json::to_value(&*s).unwrap();
-        json[key] = value;
+        crate::logic::settings_store::apply_setting_value(&mut json, key, value);
         *s = serde_json::from_value(json).map_err(|e| e.to_string())?;
         Ok(())
     }

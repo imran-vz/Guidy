@@ -3,9 +3,12 @@
 //! built-in llama.cpp models, Apple Intelligence availability, and the Linear
 //! personal API key.
 
+use crate::logic::meetings::{meetings_patch, MeetingsEvent};
 use crate::logic::models::format_model_size;
-use crate::meetings_backend::{LocalLlmModel, MeetingsBackend, SharedMeetingsBackend};
-use crate::state::AppState;
+use crate::meetings_backend::{
+    error_message, LocalLlmModel, MeetingsBackend, SharedMeetingsBackend,
+};
+use crate::state::{AppEvent, AppState};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -18,7 +21,6 @@ use gpui_kit::*;
 use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
 use guidy_core::settings::AppSettings;
 use std::collections::HashMap;
-use std::time::Duration;
 
 pub const LINEAR_API_KEY_URL: &str = "https://linear.app/settings/api";
 const APPLE_PROVIDER_ID: &str = crate::logic::flows::APPLE_PROVIDER_ID;
@@ -108,7 +110,9 @@ pub struct AiSettingsView {
     test_result: Option<Result<String, String>>,
     local: Vec<LocalLlmModel>,
     local_error: Option<String>,
-    polling: bool,
+    /// A local-model reload is running / another was asked for meanwhile.
+    refreshing: bool,
+    refresh_again: bool,
     linear_key: Entity<InputState>,
     has_linear_key: bool,
     linear_testing: bool,
@@ -134,6 +138,25 @@ impl AiSettingsView {
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.sync_model_input(false, window, cx);
                 cx.notify();
+            }),
+            // Built-in model downloads report progress and state changes as
+            // events (no polling).
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
+                AppEvent::Meetings(MeetingsEvent::LocalModelProgress { model_id, fraction }) => {
+                    match this.local.iter_mut().find(|m| &m.id == model_id) {
+                        Some(m) => {
+                            m.download_progress = Some(*fraction);
+                            cx.notify();
+                        }
+                        None => this.refresh(cx),
+                    }
+                }
+                AppEvent::Meetings(MeetingsEvent::LocalModelsChanged) => this.refresh(cx),
+                AppEvent::Meetings(MeetingsEvent::Ready) => {
+                    this.refresh(cx);
+                    this.load_linear_key_status(cx);
+                }
+                _ => {}
             }),
             cx.subscribe(&model_input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
@@ -161,7 +184,8 @@ impl AiSettingsView {
             test_result: None,
             local: Vec::new(),
             local_error: None,
-            polling: false,
+            refreshing: false,
+            refresh_again: false,
             linear_key,
             has_linear_key: false,
             linear_testing: false,
@@ -171,6 +195,7 @@ impl AiSettingsView {
         };
         this.sync_model_input(true, window, cx);
         this.refresh(cx);
+        this.load_linear_key_status(cx);
         this
     }
 
@@ -216,48 +241,65 @@ impl AiSettingsView {
         }
     }
 
+    /// Re-read the built-in models (one read at a time; events arriving
+    /// meanwhile coalesce into one more read).
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.refreshing {
+            self.refresh_again = true;
+            return;
+        }
+        self.refreshing = true;
         self.run(
             cx,
-            |b| (b.local_llm_models(), b.has_linear_api_key()),
-            |this, (local, has_key), cx| {
+            |b| b.local_llm_models(),
+            |this, local, cx| {
+                this.refreshing = false;
                 match local {
                     Ok(l) => {
                         this.local = l;
                         this.local_error = None;
                     }
-                    Err(e) => this.local_error = Some(e),
+                    Err(e) => this.local_error = Some(error_message(&e)),
                 }
-                this.has_linear_key = has_key;
-                this.maybe_poll(cx);
+                if std::mem::take(&mut this.refresh_again) {
+                    this.refresh(cx);
+                }
             },
         );
     }
 
-    /// While a download runs, re-read the local models every 500 ms.
-    fn maybe_poll(&mut self, cx: &mut Context<Self>) {
-        let downloading = self.local.iter().any(|m| m.download_progress.is_some());
-        if !downloading || self.polling {
-            return;
-        }
-        self.polling = true;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(500))
-                .await;
-            this.update(cx, |this, cx| {
-                this.polling = false;
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+    /// Whether a Linear key is stored (a Keychain read: on open and after
+    /// saving, never on a timer).
+    fn load_linear_key_status(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            |b| b.has_linear_api_key(),
+            |this, has, _| this.has_linear_key = has,
+        );
     }
 
+    fn linear_key_saved(&mut self, has: bool, cx: &mut Context<Self>) {
+        self.has_linear_key = has;
+        self.state.update(cx, |s, cx| {
+            s.emit_meetings(MeetingsEvent::LinearKeyChanged, cx)
+        });
+    }
+
+    /// Write only the fields that differ from the stored meetings settings.
     fn save_meetings(&mut self, m: MeetingSettings, cx: &mut Context<Self>) {
-        let value = serde_json::to_value(&m).unwrap_or_default();
-        self.state
-            .update(cx, |s, cx| s.update_setting("meetings", value, cx));
+        let Some(before) = self
+            .state
+            .read(cx)
+            .app_settings()
+            .map(|s| s.meetings.clone())
+        else {
+            return;
+        };
+        let patch = meetings_patch(&before, &m);
+        if patch.as_object().is_some_and(|p| !p.is_empty()) {
+            self.state
+                .update(cx, |s, cx| s.update_setting("meetings", patch, cx));
+        }
     }
 
     fn set_provider(&mut self, id: String, cx: &mut Context<Self>) {
@@ -305,7 +347,7 @@ impl AiSettingsView {
                     Ok(m) => {
                         this.models.insert(provider_id, m);
                     }
-                    Err(e) => this.test_result = Some(Err(e)),
+                    Err(e) => this.test_result = Some(Err(error_message(&e))),
                 }
             },
         );
@@ -320,7 +362,7 @@ impl AiSettingsView {
             move |b| b.llm_test_connection(&pid),
             |this, r, _| {
                 this.testing = false;
-                this.test_result = Some(r);
+                this.test_result = Some(r.map_err(|e| error_message(&e)));
             },
         );
     }
@@ -335,7 +377,7 @@ impl AiSettingsView {
             },
             |this, r, cx| {
                 if let Err(e) = r {
-                    this.local_error = Some(e);
+                    this.local_error = Some(error_message(&e));
                 }
                 this.refresh(cx);
             },
@@ -347,9 +389,9 @@ impl AiSettingsView {
         self.run(
             cx,
             move |b| b.set_linear_api_key(&key).map(|_| b.has_linear_api_key()),
-            |this, r, _| match r {
-                Ok(has) => this.has_linear_key = has,
-                Err(e) => this.linear_result = Some(Err(e)),
+            |this, r, cx| match r {
+                Ok(has) => this.linear_key_saved(has, cx),
+                Err(e) => this.linear_result = Some(Err(error_message(&e))),
             },
         );
     }
@@ -370,9 +412,9 @@ impl AiSettingsView {
         self.run(
             cx,
             |b| b.set_linear_api_key("").map(|_| b.has_linear_api_key()),
-            |this, r, _| match r {
-                Ok(has) => this.has_linear_key = has,
-                Err(e) => this.linear_result = Some(Err(e)),
+            |this, r, cx| match r {
+                Ok(has) => this.linear_key_saved(has, cx),
+                Err(e) => this.linear_result = Some(Err(error_message(&e))),
             },
         );
     }
@@ -385,7 +427,7 @@ impl AiSettingsView {
             |b| b.test_linear(),
             |this, r, _| {
                 this.linear_testing = false;
-                this.linear_result = Some(r);
+                this.linear_result = Some(r.map_err(|e| error_message(&e)));
             },
         );
     }

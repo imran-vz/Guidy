@@ -319,6 +319,65 @@ impl LinearClient {
     }
 }
 
+impl LinearClient {
+    /// Create an issue with a client-chosen UUID (`IssueCreateInput.id`), so
+    /// a retry after a timeout can't duplicate it. When the create fails,
+    /// look the id up: if the issue exists (an earlier attempt went through,
+    /// or Linear rejected the id as taken) it is returned with
+    /// `already_existed = true`.
+    pub async fn create_issue_with_id(
+        &self,
+        draft: &TicketDraft,
+        client_id: &str,
+    ) -> LinearResult<(CreatedIssue, bool)> {
+        let mut input = issue_create_input(draft).map_err(LinearError::GraphQl)?;
+        input["id"] = json!(client_id);
+        let q = "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }";
+        let created = async {
+            let data = self.graphql(q, json!({ "input": input })).await?;
+            let payload = pointer(&data, &["issueCreate"])?;
+            if payload.get("success").and_then(Value::as_bool) == Some(false) {
+                return Err(LinearError::GraphQl("the issue was not created".into()));
+            }
+            let issue = pointer(payload, &["issue"])?;
+            serde_json::from_value::<CreatedIssue>(issue.clone())
+                .map_err(|e| LinearError::Decode(e.to_string()))
+        }
+        .await;
+        match created {
+            Ok(issue) => Ok((issue, false)),
+            Err(e @ (LinearError::MissingApiKey | LinearError::Unauthorized)) => Err(e),
+            Err(e) => match self.issue(client_id).await {
+                Ok(Some(issue)) => {
+                    log::info!(
+                        "Linear: issue {} already existed for this action item ({e})",
+                        issue.identifier
+                    );
+                    Ok((issue, true))
+                }
+                Ok(None) | Err(_) => Err(e),
+            },
+        }
+    }
+
+    /// Look an issue up by id. `Ok(None)` when Linear says it doesn't exist.
+    pub async fn issue(&self, id: &str) -> LinearResult<Option<CreatedIssue>> {
+        let q = "query Issue($id: String!) { issue(id: $id) { id identifier url } }";
+        match self.graphql(q, json!({ "id": id })).await {
+            Ok(data) => match data.get("issue") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                    .map(Some)
+                    .map_err(|e| LinearError::Decode(e.to_string())),
+                _ => Ok(None),
+            },
+            Err(LinearError::GraphQl(m)) if m.to_ascii_lowercase().contains("not found") => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// Build `IssueCreateInput` from a draft. Empty optional fields are omitted.
 pub fn issue_create_input(draft: &TicketDraft) -> std::result::Result<Value, String> {
     let team_id = draft

@@ -12,19 +12,21 @@ pub mod settings;
 pub mod summary;
 pub mod tickets;
 
-use crate::logic::meetings::MeetingsEvent;
+use crate::logic::meetings::{MeetingsEvent, MeetingsInit};
 use crate::logic::settings_store::ToastSpec;
-use crate::meetings_backend::{MeetingsBackend, SharedMeetingsBackend};
+use crate::meetings_backend::{MeetingsBackend, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::kit::{icon, page, page_header, t};
+use crate::ui::kit::{icon, page, page_header, t, t_args};
 use detail::{DetailEvent, MeetingDetail};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable, StyledExt,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::managers::transcription::meeting::{resolve_meeting_model_id, MeetingModelMissing};
 use guidy_core::meetings::types::{CalendarEvent, MeetingId, RecorderState};
 use list::{MeetingList, MeetingListEvent};
 use people::PeopleView;
@@ -56,10 +58,117 @@ where
     .detach();
 }
 
-/// Error toast: translated title, backend error as the description.
+/// Error toast: translated title; known backend errors are localized and
+/// anything else is shown raw as the description.
 pub(crate) fn toast_error(key: &str, error: &str, cx: &mut App) {
-    let spec = ToastSpec::error(t(key), Some(error.to_string()));
+    let e = MeetingsError::parse(error);
+    if matches!(e, MeetingsError::ModelMissing { .. }) {
+        // The model list may be stale: the download banner reads it.
+        AppState::global(cx).update(cx, |s, cx| s.load_models(cx));
+    }
+    let spec = match e.localized() {
+        Some(message) => ToastSpec::error(message, None),
+        None => ToastSpec::error(t(key), Some(error.to_string())),
+    };
     AppState::global(cx).update(cx, |s, cx| s.toast(spec, cx));
+}
+
+/// The meeting transcription model when it isn't downloaded (from the
+/// loaded model list and settings; `None` until models load).
+pub(crate) fn meeting_model_missing(cx: &App) -> Option<MeetingModelMissing> {
+    let state = AppState::global(cx).read(cx);
+    if !state.models.initialized || state.models.models.is_empty() {
+        return None;
+    }
+    let configured = state
+        .app_settings()
+        .and_then(|s| s.meetings.meeting_model.clone());
+    resolve_meeting_model_id(&state.models.models, configured.as_deref()).err()
+}
+
+/// "Download meeting model" (or its progress) for a missing meeting model.
+/// `place` keeps element ids unique (`meeting-model-download-<place>`).
+pub(crate) fn render_model_download(
+    place: &str,
+    missing: &MeetingModelMissing,
+    cx: &mut App,
+) -> AnyElement {
+    let theme = cx.theme().clone();
+    let state = AppState::global(cx);
+    let st = state.read(cx);
+    let id = missing.model_id.clone();
+    let downloading = st.models.downloading.contains(&id);
+    let pct = st
+        .models
+        .progress
+        .get(&id)
+        .map(|p| p.percentage)
+        .unwrap_or(0.0);
+    let message = if missing.known {
+        t_args(
+            "meetings.errors.modelMissing",
+            &[("name", &missing.model_name)],
+        )
+    } else {
+        t_args(
+            "meetings.errors.modelUnknown",
+            &[("name", &missing.model_name)],
+        )
+    };
+    let action: Option<AnyElement> = if !missing.known {
+        None
+    } else if downloading {
+        Some(
+            h_flex()
+                .gap_2()
+                .w(px(200.))
+                .child(
+                    div().flex_1().child(
+                        Progress::new(SharedString::from(format!(
+                            "meeting-model-progress-{place}"
+                        )))
+                        .value(pct as f32),
+                    ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{pct:.0}%")),
+                )
+                .into_any_element(),
+        )
+    } else {
+        Some(
+            Button::new(SharedString::from(format!(
+                "meeting-model-download-{place}"
+            )))
+            .primary()
+            .small()
+            .icon(icon("download"))
+            .label(t("meetings.model.download"))
+            .on_click(move |_, _, cx| {
+                let id = id.clone();
+                AppState::global(cx).update(cx, |s, cx| s.download_meeting_model(&id, cx));
+            })
+            .into_any_element(),
+        )
+    };
+    h_flex()
+        .id(SharedString::from(format!("meeting-model-missing-{place}")))
+        .w_full()
+        .gap_3()
+        .px_3()
+        .py_2()
+        .justify_between()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.warning.opacity(0.4))
+        .bg(theme.warning.opacity(0.08))
+        .child(div().flex_1().min_w_0().text_sm().child(message))
+        .children(action)
+        .test_support()
+        .into_any_element()
 }
 
 /// Meeting settings from app settings.
@@ -118,12 +227,14 @@ impl MeetingsPage {
         let list = cx.new(|cx| MeetingList::new(window, cx));
         let subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| {
-                if let AppEvent::Meetings(MeetingsEvent::RecorderState(rs)) = ev {
+            cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| match ev {
+                AppEvent::Meetings(MeetingsEvent::RecorderState(rs)) => {
                     this.recorder = rs.clone();
                     this.load_upcoming(cx);
                     cx.notify();
                 }
+                AppEvent::Meetings(MeetingsEvent::Ready) => this.on_ready(cx),
+                _ => {}
             }),
             cx.subscribe_in(
                 &list,
@@ -169,6 +280,93 @@ impl MeetingsPage {
                 Err(e) => log::warn!("Failed to load upcoming events: {e}"),
             },
         );
+    }
+
+    /// The manager came up (startup or retry): reload everything.
+    fn on_ready(&mut self, cx: &mut Context<Self>) {
+        self.refresh_recorder(cx);
+        self.load_upcoming(cx);
+        self.list.update(cx, |l, cx| l.reload(cx));
+        self.people.update(cx, |p, cx| p.reload(cx));
+        self.settings.update(cx, |s, cx| s.reload_status(cx));
+        if let Some(d) = &self.detail {
+            d.update(cx, |d, cx| d.load(cx));
+        }
+        cx.notify();
+    }
+
+    /// Deep link: open a meeting, then seek and play at `t_ms`.
+    pub fn open_meeting_at(
+        &mut self,
+        id: MeetingId,
+        t_ms: Option<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_meeting(id, window, cx);
+        if let (Some(t_ms), Some(detail)) = (t_ms, &self.detail) {
+            detail.update(cx, |d, cx| d.seek_when_loaded(t_ms, cx));
+        }
+    }
+
+    fn render_init(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = cx.theme().clone();
+        match &self.state.read(cx).meetings_init {
+            MeetingsInit::Ready => None,
+            MeetingsInit::Starting => Some(
+                h_flex()
+                    .id("meetings-starting")
+                    .w_full()
+                    .gap_2()
+                    .px_3()
+                    .py_3()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(crate::ui::kit::spinner(
+                        "meetings-starting-spinner",
+                        icon("loader-circle").xsmall(),
+                    ))
+                    .child(t("meetings.init.starting"))
+                    .test_support()
+                    .into_any_element(),
+            ),
+            MeetingsInit::Failed(e) => Some(
+                v_flex()
+                    .id("meetings-init-failed")
+                    .w_full()
+                    .gap_2()
+                    .px_3()
+                    .py_3()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.danger.opacity(0.4))
+                    .bg(theme.danger.opacity(0.08))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(t("meetings.init.failed")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(e.clone()),
+                    )
+                    .child(
+                        Button::new("meetings-init-retry")
+                            .outline()
+                            .small()
+                            .icon(icon("rotate-ccw"))
+                            .label(t("meetings.init.retry"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.update(cx, |s, cx| s.retry_meetings_init(cx))
+                            })),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            ),
+        }
     }
 
     pub fn set_tab(&mut self, tab: MeetingsTab, cx: &mut Context<Self>) {
@@ -425,6 +623,17 @@ impl MeetingsPage {
 
 impl Render for MeetingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(init) = self.render_init(cx) {
+            return page()
+                .id("page-meetings")
+                .child(page_header(
+                    t("meetings.title"),
+                    Some(t("meetings.description")),
+                    cx,
+                ))
+                .child(init)
+                .test_support();
+        }
         let body: AnyElement = match self.tab {
             MeetingsTab::Meetings => match &self.detail {
                 Some(detail) => detail.clone().into_any_element(),
@@ -438,7 +647,6 @@ impl Render for MeetingsPage {
             MeetingsTab::People => self.people.clone().into_any_element(),
             MeetingsTab::Settings => self.settings.clone().into_any_element(),
         };
-        let _ = &self.state;
         page()
             .id("page-meetings")
             .child(page_header(

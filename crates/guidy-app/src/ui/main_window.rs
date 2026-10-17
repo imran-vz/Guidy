@@ -123,6 +123,10 @@ pub struct MainWindow {
     secure_banner: Entity<SecureInputBanner>,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    /// A `guidy://meetings/<id>` link to open once the Meetings page renders.
+    pending_meeting: Option<crate::logic::meetings::MeetingLink>,
+    /// Show the Meetings > Settings tab once the Meetings page renders.
+    pending_meetings_settings: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -192,6 +196,8 @@ impl MainWindow {
             secure_banner: cx.new(SecureInputBanner::new),
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            pending_meeting: None,
+            pending_meetings_settings: false,
             _subs: subs,
         };
         // Window-level shortcuts (debug toggle, close) need a focused node.
@@ -265,6 +271,30 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Deep link: show the Meetings section and open the meeting (seeking
+    /// to the link's time). Ignored where meeting notes aren't available.
+    pub fn open_meeting_link(
+        &mut self,
+        link: crate::logic::meetings::MeetingLink,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.visible_sections(cx).contains(&Section::Meetings.id()) {
+            log::info!("Ignoring a meeting link: meeting notes are unavailable");
+            return;
+        }
+        self.pending_meeting = Some(link);
+        self.select_section(Section::Meetings, cx);
+    }
+
+    /// Meetings > Settings (built-in LLM model downloads live there).
+    pub fn open_meetings_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.visible_sections(cx).contains(&Section::Meetings.id()) {
+            return;
+        }
+        self.pending_meetings_settings = true;
+        self.select_section(Section::Meetings, cx);
+    }
+
     pub fn start_preview(&mut self, step: OnboardingStep, cx: &mut Context<Self>) {
         self.preview = Some(step);
         cx.notify();
@@ -333,7 +363,25 @@ impl MainWindow {
         match self.section {
             Section::General => page!(general, GeneralPage),
             Section::History => page!(history, HistoryPage),
-            Section::Meetings => page!(meetings, MeetingsPage),
+            Section::Meetings => {
+                let page = self
+                    .pages
+                    .meetings
+                    .get_or_insert_with(|| cx.new(|cx| MeetingsPage::new(window, cx)))
+                    .clone();
+                if std::mem::take(&mut self.pending_meetings_settings) {
+                    page.update(cx, |p, cx| {
+                        p.close_meeting(cx);
+                        p.set_tab(crate::ui::pages::meetings::MeetingsTab::Settings, cx)
+                    });
+                }
+                if let Some(link) = self.pending_meeting.take() {
+                    page.update(cx, |p, cx| {
+                        p.open_meeting_at(link.meeting_id, link.t_ms, window, cx)
+                    });
+                }
+                page.into_any_element()
+            }
             Section::Models => page!(models, ModelsPage),
             Section::Advanced => page!(advanced, AdvancedPage),
             Section::PostProcessing => page!(post_processing, PostProcessingPage),

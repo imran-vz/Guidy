@@ -922,14 +922,18 @@ pub fn is_running(meeting_id: MeetingId) -> bool {
     jobs().lock().contains_key(&meeting_id)
 }
 
-/// Store a summarizer result: replace the summary and every action item
-/// without a Linear issue. Items linked to an issue are kept, and new items
-/// duplicating one of them are skipped. Returns the stored summary.
+/// Store a summarizer result: replace the summary and the regenerable
+/// action items. Kept (see [`MeetingsStore::replace_unlinked_action_items`]):
+/// items with a Linear issue or a create attempt, `Approved` items, manual
+/// items, items the user edited, and the ids in `keep` (the in-flight create
+/// guard). New items duplicating a kept one are skipped. Returns the stored
+/// summary.
 pub fn persist(
     store: &MeetingsStore,
     meeting_id: MeetingId,
     output: &SummarizeOutput,
     generated_by: &str,
+    keep: &[ActionItemId],
 ) -> Result<StoredSummary> {
     let stored = StoredSummary {
         meeting_id,
@@ -940,19 +944,8 @@ pub fn persist(
         generated_by: generated_by.to_string(),
         generated_at: now_ms(),
     };
-    let linked: Vec<ActionItem> = store
-        .action_items(meeting_id)?
-        .into_iter()
-        .filter(|i| i.linear_issue_id.is_some())
-        .collect();
-    let fresh: Vec<ActionItem> = output
-        .items
-        .iter()
-        .filter(|n| !linked.iter().any(|l| is_duplicate(l, n)))
-        .cloned()
-        .collect();
     store.put_summary(&stored)?;
-    store.replace_unlinked_action_items(meeting_id, &fresh)?;
+    store.replace_unlinked_action_items(meeting_id, &output.items, keep, is_duplicate)?;
     Ok(stored)
 }
 
@@ -1496,7 +1489,7 @@ mod tests {
         let mut inp = input(&f);
         inp.meeting_id = meeting_id;
         let out = summarize_meeting(&p, &inp, &ChatOptions::default(), &|_, _| {}).unwrap();
-        persist(&store, meeting_id, &out, "fake/model").unwrap();
+        persist(&store, meeting_id, &out, "fake/model", &[]).unwrap();
         let items = store.action_items(meeting_id).unwrap();
         assert_eq!(items.len(), 2);
 
@@ -1511,7 +1504,7 @@ mod tests {
 
         // Regenerating keeps the linked item, doesn't duplicate it, and
         // replaces the unlinked ones.
-        let stored = persist(&store, meeting_id, &out, "fake/other").unwrap();
+        let stored = persist(&store, meeting_id, &out, "fake/other", &[]).unwrap();
         assert_eq!(stored.generated_by, "fake/other");
         let after = store.action_items(meeting_id).unwrap();
         assert_eq!(after.len(), 2, "{after:#?}");

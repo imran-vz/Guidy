@@ -3,7 +3,9 @@
 //! [`BUILTIN_LLM_PROVIDER_ID`].
 //!
 //! - The helper is found next to the running executable (in the app bundle:
-//!   `Contents/MacOS/guidy-llm`), or at `$GUIDY_LLM_BIN`.
+//!   `Contents/MacOS/guidy-llm`). Debug and test builds also accept
+//!   `$GUIDY_LLM_BIN`; release builds ignore it, so the environment can't make
+//!   the app run (and send transcripts to) another binary.
 //! - It is spawned lazily on the first request, loads the model on demand,
 //!   and is shut down after [`IDLE_TIMEOUT`] without requests (freeing the
 //!   model and its Metal buffers).
@@ -36,7 +38,7 @@ use crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID;
 
 /// Shut the helper down after this long without a request.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// Env var that overrides the helper binary path.
+/// Env var that overrides the helper binary path (debug and test builds only).
 pub const BIN_ENV: &str = "GUIDY_LLM_BIN";
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -149,31 +151,50 @@ fn bin_name() -> &'static str {
     }
 }
 
-/// Where the helper is: `$GUIDY_LLM_BIN`, else next to the current executable
-/// (or one level up, for test binaries in `target/<profile>/deps`).
-pub fn find_binary() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os(BIN_ENV) {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Ok(p);
+/// Whether [`BIN_ENV`] is honoured in this build.
+const BIN_ENV_ALLOWED: bool = cfg!(any(test, debug_assertions));
+
+/// Where the helper may be, in order, for an executable at `exe`: next to it
+/// and, for test binaries in `target/<profile>/deps`, one level up
+/// (`search_parent`, tests only).
+fn binary_candidates(exe: &Path, search_parent: bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(dir) = exe.parent() {
+        out.push(dir.join(bin_name()));
+        if search_parent {
+            if let Some(up) = dir.parent() {
+                out.push(up.join(bin_name()));
+            }
         }
-        bail!("{BIN_ENV} points to a missing file: {}", p.display());
+    }
+    out
+}
+
+/// Where the helper is: `current_exe().parent()/guidy-llm`. Debug and test
+/// builds first honour `$GUIDY_LLM_BIN`; tests also look one level up.
+pub fn find_binary() -> Result<PathBuf> {
+    if BIN_ENV_ALLOWED {
+        if let Some(p) = std::env::var_os(BIN_ENV) {
+            let p = PathBuf::from(p);
+            if p.is_file() {
+                return Ok(p);
+            }
+            bail!("{BIN_ENV} points to a missing file: {}", p.display());
+        }
+    } else if std::env::var_os(BIN_ENV).is_some() {
+        log::warn!("Ignoring {BIN_ENV} in a release build");
     }
     let exe = std::env::current_exe().context("current executable path")?;
-    let mut dir = exe.parent();
-    for _ in 0..2 {
-        let Some(d) = dir else { break };
-        let candidate = d.join(bin_name());
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        dir = d.parent();
-    }
-    bail!(
-        "the built-in model runtime ({}) is missing next to {}",
-        bin_name(),
-        exe.display()
-    )
+    binary_candidates(&exe, cfg!(test))
+        .into_iter()
+        .find(|c| c.is_file())
+        .ok_or_else(|| {
+            anyhow!(
+                "the built-in model runtime ({}) is missing next to {}",
+                bin_name(),
+                exe.display()
+            )
+        })
 }
 
 // ----- supervisor ----------------------------------------------------------
@@ -737,6 +758,25 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("not downloaded"), "{err}");
+    }
+
+    #[test]
+    fn helper_is_looked_up_next_to_the_executable_only() {
+        let exe = Path::new("/Applications/Guidy.app/Contents/MacOS/guidy");
+        assert_eq!(
+            binary_candidates(exe, false),
+            vec![PathBuf::from("/Applications/Guidy.app/Contents/MacOS").join(bin_name())]
+        );
+        // Tests (target/debug/deps/<test>) also look one level up.
+        let test_exe = Path::new("/r/target/debug/deps/guidy_core-1234");
+        assert_eq!(
+            binary_candidates(test_exe, true),
+            vec![
+                PathBuf::from("/r/target/debug/deps").join(bin_name()),
+                PathBuf::from("/r/target/debug").join(bin_name()),
+            ]
+        );
+        const { assert!(BIN_ENV_ALLOWED) };
     }
 
     /// The helper binary built by `cargo build -p guidy-llm`.

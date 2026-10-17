@@ -13,6 +13,27 @@ pub struct SettingsStore {
     pub updating: HashSet<String>,
 }
 
+/// Settings whose value is an object patched field by field: the value
+/// passed to `update_setting` holds only the changed fields.
+pub const PATCHED_SETTINGS: &[&str] = &["meetings"];
+
+/// Write `value` under `key` of a settings JSON object. For
+/// [`PATCHED_SETTINGS`] an object value is merged (top-level fields
+/// replace, others stay); anything else replaces the value.
+pub fn apply_setting_value(settings: &mut Value, key: &str, value: Value) {
+    if PATCHED_SETTINGS.contains(&key) {
+        if let (Some(Value::Object(current)), Value::Object(patch)) =
+            (settings.get_mut(key), &value)
+        {
+            for (k, v) in patch {
+                current.insert(k.clone(), v.clone());
+            }
+            return;
+        }
+    }
+    settings[key] = value;
+}
+
 /// Rollback token for an optimistic update.
 #[derive(Clone, Debug)]
 pub struct Pending {
@@ -42,7 +63,7 @@ impl SettingsStore {
         let Ok(mut json) = serde_json::to_value(s) else {
             return false;
         };
-        json[key] = value;
+        apply_setting_value(&mut json, key, value);
         match serde_json::from_value::<AppSettings>(json) {
             Ok(updated) => {
                 self.settings = Some(updated);
@@ -281,5 +302,22 @@ mod tests {
             &json!({"event_type": "loading_completed"})
         )
         .is_none());
+    }
+
+    #[test]
+    fn meetings_values_merge_field_by_field() {
+        let mut st = store();
+        st.begin_update("meetings", json!({ "user_display_name": "Imran" }));
+        st.begin_update("meetings", json!({ "enabled": true }));
+        let m = &st.settings.as_ref().unwrap().meetings;
+        assert!(m.enabled);
+        assert_eq!(m.user_display_name, "Imran");
+        // Other keys still replace their value.
+        let mut v = json!({ "a": { "x": 1 } });
+        apply_setting_value(&mut v, "a", json!({ "y": 2 }));
+        assert_eq!(v, json!({ "a": { "y": 2 } }));
+        let mut v = json!({ "meetings": { "x": 1 } });
+        apply_setting_value(&mut v, "meetings", json!({ "y": 2 }));
+        assert_eq!(v, json!({ "meetings": { "x": 1, "y": 2 } }));
     }
 }

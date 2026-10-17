@@ -121,6 +121,23 @@ pub fn events_between(start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> 
     }
 }
 
+/// Every timed event overlapping `[start_ms, end_ms)`, with or without a
+/// meeting link, sorted by start. All-day events are skipped. Used to link a
+/// manual start to whatever is happening now (plan 1.3); prompts use
+/// [`events_between`], which requires a link.
+pub fn timed_events_between(start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
+    #[cfg(target_os = "macos")]
+    {
+        let raw = macos::raw_events_between(start_ms, end_ms)?;
+        Ok(timed_events(raw))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (start_ms, end_ms);
+        Err(unsupported())
+    }
+}
+
 /// One event as the Swift bridge reports it, before filtering.
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
@@ -148,6 +165,15 @@ pub(crate) struct RawAttendee {
 
 /// Keep timed events with a meeting link and convert them.
 pub(crate) fn meeting_events(raw: Vec<RawEvent>) -> Vec<CalendarEvent> {
+    convert_events(raw, true)
+}
+
+/// Keep every timed event (link or not) and convert it.
+pub(crate) fn timed_events(raw: Vec<RawEvent>) -> Vec<CalendarEvent> {
+    convert_events(raw, false)
+}
+
+fn convert_events(raw: Vec<RawEvent>, require_link: bool) -> Vec<CalendarEvent> {
     let mut events: Vec<CalendarEvent> = raw
         .into_iter()
         .filter(|e| !e.all_day)
@@ -155,14 +181,17 @@ pub(crate) fn meeting_events(raw: Vec<RawEvent>) -> Vec<CalendarEvent> {
             let meeting_url = [&e.url, &e.location, &e.notes]
                 .into_iter()
                 .flatten()
-                .find_map(|text| find_meeting_url(text))?;
+                .find_map(|text| find_meeting_url(text));
+            if require_link && meeting_url.is_none() {
+                return None;
+            }
             let id = event_id(&e)?;
             Some(CalendarEvent {
                 id,
                 title: e.title.trim().to_string(),
                 start_at: e.start_ms,
                 end_at: e.end_ms.max(e.start_ms),
-                meeting_url: Some(meeting_url),
+                meeting_url,
                 attendees: e.attendees.iter().filter_map(attendee).collect(),
             })
         })
@@ -196,7 +225,11 @@ fn attendee(a: &RawAttendee) -> Option<Attendee> {
     if name.is_none() && email.is_none() {
         return None;
     }
-    Some(Attendee { name, email })
+    Some(Attendee {
+        name,
+        email,
+        is_current_user: a.is_current_user,
+    })
 }
 
 /// `mailto:a%40b.com?x=y` -> `a@b.com`. Non-mailto URLs give `None`.

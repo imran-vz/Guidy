@@ -283,13 +283,25 @@ private final class MicCapture {
     private let sink: CaptureSink
     /// Serializes restarts and stop.
     private let controlQueue = DispatchQueue(label: "dev.guidy.meetings.mic.control")
+    /// Runs the silence timer.
+    private let tickQueue = DispatchQueue(label: "dev.guidy.meetings.mic.tick", qos: .userInitiated)
     private let stateLock = NSLock()
     private var resampler: MonoResampler?
     private var observer: NSObjectProtocol?
     private var stopped = false
+    /// Puts the mic on the session timeline (shared origin with the system
+    /// stream). Guarded by `alignLock`: the tap block and the silence timer
+    /// both use it. The lock is held only while converting/forwarding one
+    /// buffer (the forward is a non-blocking channel send on the Rust side),
+    /// never across a restart, so neither side waits for long. Lock order:
+    /// `alignLock`, then the sink's lock.
+    private let aligner: TimelineAligner
+    private let alignLock = NSLock()
+    private var silenceTimer: DispatchSourceTimer?
 
-    init(sink: CaptureSink) {
+    init(sink: CaptureSink, originNanos: UInt64) {
         self.sink = sink
+        self.aligner = TimelineAligner(startNanos: originNanos)
     }
 
     func start() throws {
@@ -313,6 +325,25 @@ private final class MicCapture {
             guard let self = self else { return }
             self.controlQueue.async { self.restart() }
         }
+        startSilenceTimer()
+    }
+
+    /// While the mic delivers nothing (a VPIO restart in progress, a restart
+    /// that failed), keep the track on the wall clock with silence.
+    private func startSilenceTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: tickQueue)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let sink = self.sink
+            self.alignLock.lock()
+            self.aligner.tick(nowNanos: nowNanos()) { samples, count in
+                sink.audio(GUIDY_MB_STREAM_MIC, samples, count)
+            }
+            self.alignLock.unlock()
+        }
+        timer.resume()
+        silenceTimer = timer
     }
 
     private func startVoiceProcessing() throws {
@@ -348,8 +379,8 @@ private final class MicCapture {
         self.resampler = resampler
         stateLock.unlock()
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.handle(buffer)
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
+            self?.handle(buffer, when)
         }
         engine.prepare()
         do {
@@ -360,7 +391,7 @@ private final class MicCapture {
         }
     }
 
-    private func handle(_ buffer: AVAudioPCMBuffer) {
+    private func handle(_ buffer: AVAudioPCMBuffer, _ when: AVAudioTime) {
         stateLock.lock()
         let resampler = self.resampler
         stateLock.unlock()
@@ -381,12 +412,22 @@ private final class MicCapture {
         } else {
             destination.update(from: source[0], count: frames)
         }
+        let capturedAt = captureNanos(
+            hostTime: when.isHostTimeValid ? when.hostTime : nil,
+            frames: frames, sampleRate: buffer.format.sampleRate)
+        let sink = self.sink
+        alignLock.lock()
+        defer { alignLock.unlock() }
         resampler.process(mono) { samples, count in
-            sink.audio(GUIDY_MB_STREAM_MIC, samples, count)
+            aligner.audio(samples, count, atNanos: capturedAt) { s, n in
+                sink.audio(GUIDY_MB_STREAM_MIC, s, n)
+            }
         }
     }
 
     /// The input or output device changed: rebuild the tap with the new format.
+    /// The time the restart takes becomes silence on the track (the aligner
+    /// pads up to the first new buffer's timestamp).
     private func restart() {
         if stopped { return }
         engine.stop()
@@ -404,11 +445,15 @@ private final class MicCapture {
             NotificationCenter.default.removeObserver(observer)
             self.observer = nil
         }
+        silenceTimer?.cancel()
+        silenceTimer = nil
         controlQueue.sync {
             stopped = true
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
         }
+        // Wait out a tick already running.
+        tickQueue.sync {}
         // Leave the shared input node in its normal mode for dictation.
         try? engine.inputNode.setVoiceProcessingEnabled(false)
     }
@@ -439,21 +484,49 @@ private func nowNanos() -> UInt64 {
     return AudioConvertHostTimeToNanos(AudioGetCurrentHostTime())
 }
 
-/// Keeps the system stream continuous and on the wall clock. A process tap
-/// delivers nothing while no process plays audio, so gaps are filled with
-/// silence; sample `n` of the stream is then (within `tolerance`) captured
-/// `n / 16 kHz` seconds after capture start, like the mic stream.
+/// Puts one capture stream on the session's wall-clock timeline, so that
+/// sample `n` of the stream was captured (within `tolerance`) `n / 16 kHz`
+/// seconds after `startNanos`, the moment `guidy_mb_capture_start` was called.
+/// The mic and the system stream each own one aligner, built from the same
+/// `startNanos`, so the two tracks share one time origin.
+///
+/// Rules, applied to every chunk of converted (16 kHz) audio:
+/// - The chunk's first sample belongs at `target = (t - start) * 16 kHz`.
+/// - `target` more than `tolerance` ahead of what was emitted: a gap (the
+///   stream started late, a process tap delivered nothing while no app played
+///   audio, the mic's VPIO unit restarted after a device or configuration
+///   change, ...). Silence is padded up to `target`, then the chunk follows.
+/// - `target` more than `tolerance` behind: the chunk overlaps audio (or
+///   padded silence) already emitted. The overlapping head is dropped and only
+///   the rest is emitted; a chunk that overlaps entirely is dropped.
+/// - Within `tolerance`: emitted as is. Timestamp jitter and resampler latency
+///   are not "corrected", which would click; drift is corrected in one step
+///   once it exceeds `tolerance`.
+/// - [`tick`] pads silence while a stream delivers nothing for a while, so a
+///   silent or dead stream keeps pace with the wall clock.
+///
+/// Pure: every time is passed in, nothing reads a clock, nothing blocks, so it
+/// is unit tested from Rust through the `guidy_mb_test_aligner_*` hooks.
+/// Not thread safe: each owner serializes its calls (see the call sites).
 private final class TimelineAligner {
     private let startNanos: UInt64
-    private var emitted: Int64 = 0
-    private var lastAudioNanos: UInt64
-    /// 100 ms: jitter and converter latency below this are left alone.
-    private let tolerance: Int64 = 1_600
+    private(set) var emitted: Int64 = 0
+    /// Wall-clock time just past the last real audio sample.
+    private var lastAudioEndNanos: UInt64
+    private let tolerance: Int64
     private let zeros = [Float](repeating: 0, count: 1_600)
 
-    init(startNanos: UInt64) {
+    /// Default tolerance: 50 ms.
+    static let defaultTolerance: Int64 = 800
+    /// `tick` pads only after this much time without audio...
+    static let tickIdleNanos: UInt64 = 300_000_000
+    /// ...and leaves this much room for audio still in flight.
+    static let tickLagNanos: UInt64 = 100_000_000
+
+    init(startNanos: UInt64, tolerance: Int64 = TimelineAligner.defaultTolerance) {
         self.startNanos = startNanos
-        self.lastAudioNanos = startNanos
+        self.lastAudioEndNanos = startNanos
+        self.tolerance = max(tolerance, 0)
     }
 
     private func position(atNanos t: UInt64) -> Int64 {
@@ -471,18 +544,22 @@ private final class TimelineAligner {
         }
     }
 
-    /// Audio whose first sample was captured at `nanos`.
+    /// 16 kHz audio whose first sample was captured at `nanos` (callers clamp
+    /// `nanos` to "now", so a bogus timestamp can't pad into the future).
     func audio(
         _ samples: UnsafePointer<Float>, _ count: Int, atNanos nanos: UInt64,
         _ emit: (UnsafePointer<Float>, Int) -> Void
     ) {
-        lastAudioNanos = max(lastAudioNanos, nanos)
+        guard count > 0 else { return }
+        let durationNanos = UInt64(Double(count) / outputSampleRate * 1e9)
+        lastAudioEndNanos = max(lastAudioEndNanos, nanos &+ durationNanos)
         let target = position(atNanos: nanos)
         var skip = 0
         if target > emitted + tolerance {
             padSilence(to: target, emit)
         } else if target < emitted - tolerance {
-            // Silence was padded past this point already: drop the overlap.
+            // Audio or silence was emitted past this point already: drop the
+            // overlapping head.
             skip = Int(min(Int64(count), emitted - target))
         }
         if skip < count {
@@ -491,12 +568,81 @@ private final class TimelineAligner {
         }
     }
 
-    /// Called periodically: fill a silence that has lasted a while.
-    func tick(_ emit: (UnsafePointer<Float>, Int) -> Void) {
-        let now = nowNanos()
-        guard now > lastAudioNanos + 300_000_000 else { return }
-        padSilence(to: position(atNanos: now - 100_000_000), emit)
+    /// Called periodically with the current time: fills a silence that has
+    /// lasted a while (no audio for `tickIdleNanos`), up to `tickLagNanos`
+    /// before now.
+    func tick(nowNanos now: UInt64, _ emit: (UnsafePointer<Float>, Int) -> Void) {
+        guard now > lastAudioEndNanos &+ TimelineAligner.tickIdleNanos else { return }
+        padSilence(to: position(atNanos: now - TimelineAligner.tickLagNanos), emit)
     }
+}
+
+/// Capture time of a buffer's first sample: its host time when valid, else an
+/// estimate from "now" minus the buffer's duration. Never later than now.
+private func captureNanos(hostTime: UInt64?, frames: Int, sampleRate: Double) -> UInt64 {
+    let now = nowNanos()
+    if let hostTime = hostTime {
+        return min(hostNanos(hostTime), now)
+    }
+    let duration = sampleRate > 0 ? UInt64(Double(frames) / sampleRate * 1e9) : 0
+    return now > duration ? now - duration : 0
+}
+
+// MARK: - Aligner test hooks (called only by the Rust unit tests)
+
+/// Collects what an aligner emits into a caller buffer for the test hooks.
+private func collect(
+    into out: UnsafeMutablePointer<Float>?, capacity: Int64,
+    _ body: ((UnsafePointer<Float>, Int) -> Void) -> Void
+) -> Int64 {
+    var written: Int64 = 0
+    body { samples, count in
+        if let out = out {
+            let room = max(0, capacity - written)
+            let n = Int(min(Int64(count), room))
+            if n > 0 { (out + Int(written)).update(from: samples, count: n) }
+        }
+        written += Int64(count)
+    }
+    return written
+}
+
+@_cdecl("guidy_mb_test_aligner_new")
+public func guidyMbTestAlignerNew(_ startNanos: UInt64, _ toleranceSamples: Int64)
+    -> UnsafeMutableRawPointer
+{
+    let aligner = TimelineAligner(startNanos: startNanos, tolerance: toleranceSamples)
+    return Unmanaged.passRetained(aligner).toOpaque()
+}
+
+@_cdecl("guidy_mb_test_aligner_audio")
+public func guidyMbTestAlignerAudio(
+    _ handle: UnsafeMutableRawPointer?, _ samples: UnsafePointer<Float>?, _ count: Int32,
+    _ atNanos: UInt64, _ out: UnsafeMutablePointer<Float>?, _ capacity: Int64
+) -> Int64 {
+    guard let handle = handle, let samples = samples, count > 0 else { return 0 }
+    let aligner = Unmanaged<TimelineAligner>.fromOpaque(handle).takeUnretainedValue()
+    return collect(into: out, capacity: capacity) { emit in
+        aligner.audio(samples, Int(count), atNanos: atNanos, emit)
+    }
+}
+
+@_cdecl("guidy_mb_test_aligner_tick")
+public func guidyMbTestAlignerTick(
+    _ handle: UnsafeMutableRawPointer?, _ nowNanos: UInt64,
+    _ out: UnsafeMutablePointer<Float>?, _ capacity: Int64
+) -> Int64 {
+    guard let handle = handle else { return 0 }
+    let aligner = Unmanaged<TimelineAligner>.fromOpaque(handle).takeUnretainedValue()
+    return collect(into: out, capacity: capacity) { emit in
+        aligner.tick(nowNanos: nowNanos, emit)
+    }
+}
+
+@_cdecl("guidy_mb_test_aligner_free")
+public func guidyMbTestAlignerFree(_ handle: UnsafeMutableRawPointer?) {
+    guard let handle = handle else { return }
+    Unmanaged<TimelineAligner>.fromOpaque(handle).release()
 }
 
 @available(macOS 14.2, *)
@@ -523,9 +669,12 @@ private final class SystemTapCapture {
 
     private(set) var framesReceived = 0
     private(set) var peak: Float = 0
+    /// The session's time origin (shared with the mic stream).
+    private let originNanos: UInt64
 
-    init(sink: CaptureSink?) {
+    init(sink: CaptureSink?, originNanos: UInt64) {
         self.sink = sink
+        self.originNanos = originNanos
     }
 
     func start() throws {
@@ -561,12 +710,16 @@ private final class SystemTapCapture {
 
     private func startSilenceTimer() {
         guard let sink = sink else { return }
-        let aligner = TimelineAligner(startNanos: nowNanos())
+        // The aligner lives on ioQueue: the IOProc block and this timer both
+        // run there, so its calls are serialized without a lock.
+        let aligner = TimelineAligner(startNanos: originNanos)
         ioQueue.sync { self.aligner = aligner }
         let timer = DispatchSource.makeTimerSource(queue: ioQueue)
         timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
         timer.setEventHandler {
-            aligner.tick { samples, count in sink.audio(GUIDY_MB_STREAM_SYSTEM, samples, count) }
+            aligner.tick(nowNanos: nowNanos()) { samples, count in
+                sink.audio(GUIDY_MB_STREAM_SYSTEM, samples, count)
+            }
         }
         timer.resume()
         silenceTimer = timer
@@ -742,8 +895,9 @@ private final class SystemTapCapture {
 
         guard let sink = sink, let aligner = aligner else { return }
         let time = inputTime.pointee
-        let capturedAt =
-            time.mFlags.contains(.hostTimeValid) ? hostNanos(time.mHostTime) : nowNanos()
+        let capturedAt = captureNanos(
+            hostTime: time.mFlags.contains(.hostTimeValid) ? time.mHostTime : nil,
+            frames: frames, sampleRate: resampler.inputFormat.sampleRate)
         let emit: (UnsafePointer<Float>, Int) -> Void = { samples, count in
             sink.audio(GUIDY_MB_STREAM_SYSTEM, samples, count)
         }
@@ -814,9 +968,15 @@ public func guidyMbCaptureStart(
     }
     let session = CaptureSession(
         sink: CaptureSink(audio: audioCallback, event: eventCallback, context: context))
+    // The one time origin of both tracks: sample n of either stream was
+    // captured n / 16 kHz seconds after this instant (see TimelineAligner).
+    // Taken before either stream starts, so the VPIO start-up time becomes
+    // leading silence on the mic track and the system stream does not start
+    // its clock late.
+    let originNanos = nowNanos()
 
     if wantMic != 0 {
-        let mic = MicCapture(sink: session.sink)
+        let mic = MicCapture(sink: session.sink, originNanos: originNanos)
         do {
             try mic.start()
         } catch {
@@ -834,7 +994,7 @@ public func guidyMbCaptureStart(
             setError(errorOut, "system audio capture needs macOS 14.2 or newer")
             return nil
         }
-        let system = SystemTapCapture(sink: session.sink)
+        let system = SystemTapCapture(sink: session.sink, originNanos: originNanos)
         do {
             try system.start()
         } catch {
@@ -859,8 +1019,15 @@ public func guidyMbCaptureStop(_ handle: UnsafeMutableRawPointer?) {
 
 // There is no public API to query or pre-request the "audio capture" TCC
 // permission. The private TCC functions are looked up at runtime (best effort,
-// the same approach as Apple's own sample apps' community ports); without them
-// a short-lived tap triggers the prompt.
+// the approach community ports of Apple's process-tap sample use); without
+// them a short-lived tap triggers the prompt.
+//
+// Private API rules here:
+// - They never run on the main thread: each call is made on a global queue.
+//   The preflight is waited for at most `tccPreflightTimeout`; the request
+//   (which shows a prompt and waits for the user) at most
+//   `tccRequestTimeout`, after which the preflight is reported instead.
+// - Any result we don't recognise is reported as UNKNOWN, never trusted.
 private typealias TCCPreflightFn = @convention(c) (CFString, CFDictionary?) -> Int32
 private typealias TCCRequestFn = @convention(c) (
     CFString, CFDictionary?, @escaping @convention(block) (Bool) -> Void
@@ -869,6 +1036,10 @@ private typealias TCCRequestFn = @convention(c) (
 private let tccHandle: UnsafeMutableRawPointer? = dlopen(
     "/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW)
 private let audioCaptureService = "kTCCServiceAudioCapture" as CFString
+private let tccPreflightTimeout: Double = 2
+private let tccRequestTimeout: Double = 60
+/// How long the fallback probe tap captures.
+private let probeCaptureSeconds: Double = 1.5
 
 private func tccPreflight() -> TCCPreflightFn? {
     guard let handle = tccHandle, let symbol = dlsym(handle, "TCCAccessPreflight") else {
@@ -884,21 +1055,49 @@ private func tccRequest() -> TCCRequestFn? {
     return unsafeBitCast(symbol, to: TCCRequestFn.self)
 }
 
+/// Runs `work` on a global queue and waits up to `timeout` seconds for it.
+/// `nil` on timeout (the work still finishes in the background; its result is
+/// dropped).
+private func offMainThread<T>(timeout: Double, _ work: @escaping () -> T) -> T? {
+    let box = Box<T?>(nil)
+    let semaphore = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+        box.value = work()
+        semaphore.signal()
+    }
+    if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+        return nil
+    }
+    return box.value
+}
+
+/// TCCAccessPreflight result -> GUIDY_MB_AUTH_*. 0 granted, 1 denied, 2 "not
+/// decided yet"; anything else is not something we know how to read.
+private func mapPreflight(_ raw: Int32?) -> Int32 {
+    switch raw {
+    case .some(0): return GUIDY_MB_AUTH_GRANTED
+    case .some(1): return GUIDY_MB_AUTH_DENIED
+    case .some(2): return GUIDY_MB_AUTH_NOT_DETERMINED
+    default: return GUIDY_MB_AUTH_UNKNOWN
+    }
+}
+
+private func preflightStatus() -> Int32 {
+    guard let preflight = tccPreflight() else { return GUIDY_MB_AUTH_UNKNOWN }
+    return mapPreflight(
+        offMainThread(timeout: tccPreflightTimeout) { preflight(audioCaptureService, nil) })
+}
+
 @_cdecl("guidy_mb_system_audio_status")
 public func guidyMbSystemAudioStatus() -> Int32 {
     guard #available(macOS 14.2, *) else { return GUIDY_MB_AUTH_UNAVAILABLE }
-    guard let preflight = tccPreflight() else { return GUIDY_MB_AUTH_UNKNOWN }
-    switch preflight(audioCaptureService, nil) {
-    case 0: return GUIDY_MB_AUTH_GRANTED
-    case 1: return GUIDY_MB_AUTH_DENIED
-    default: return GUIDY_MB_AUTH_NOT_DETERMINED
-    }
+    return preflightStatus()
 }
 
 @_cdecl("guidy_mb_request_system_audio_access")
 public func guidyMbRequestSystemAudioAccess() -> Int32 {
     guard #available(macOS 14.2, *) else { return GUIDY_MB_AUTH_UNAVAILABLE }
-    let current = guidyMbSystemAudioStatus()
+    let current = preflightStatus()
     if current == GUIDY_MB_AUTH_GRANTED || current == GUIDY_MB_AUTH_DENIED {
         return current
     }
@@ -908,36 +1107,62 @@ public func guidyMbRequestSystemAudioAccess() -> Int32 {
     }
 
     if let request = tccRequest() {
-        let semaphore = DispatchSemaphore(value: 0)
-        let granted = Box(false)
-        request(audioCaptureService, nil) { ok in
-            granted.value = ok
-            semaphore.signal()
+        if Thread.isMainThread {
+            // Waiting for the user here would freeze the UI: show the prompt
+            // and report what is known now. Callers should use a background
+            // thread to get the answer.
+            DispatchQueue.global(qos: .userInitiated).async {
+                request(audioCaptureService, nil) { _ in }
+            }
+            NSLog("[guidy meetings] system audio access requested from the main thread; not waiting")
+            return current
         }
-        if semaphore.wait(timeout: .now() + 300) == .success {
-            return granted.value ? GUIDY_MB_AUTH_GRANTED : GUIDY_MB_AUTH_DENIED
+        let answer: Bool?? = offMainThread(timeout: tccRequestTimeout) {
+            let semaphore = DispatchSemaphore(value: 0)
+            let granted = Box<Bool?>(nil)
+            request(audioCaptureService, nil) { ok in
+                granted.value = ok
+                semaphore.signal()
+            }
+            if semaphore.wait(timeout: .now() + tccRequestTimeout) == .timedOut {
+                return nil
+            }
+            return granted.value
         }
-        return guidyMbSystemAudioStatus()
+        switch answer {
+        case .some(.some(true)): return GUIDY_MB_AUTH_GRANTED
+        case .some(.some(false)): return GUIDY_MB_AUTH_DENIED
+        default: return preflightStatus()
+        }
     }
 
-    // Fallback probe: a short tap makes the system ask. Then wait (bounded) for
-    // the answer when the status can be read at all.
-    let probe = SystemTapCapture(sink: nil)
-    do {
-        try probe.start()
-    } catch {
-        NSLog("[guidy meetings] system audio probe failed: %@", "\(error)")
-        return guidyMbSystemAudioStatus()
+    // Fallback probe: a tap that runs for `probeCaptureSeconds` makes the
+    // system ask. The tap's own result is preferred over the preflight: a tap
+    // that can't start means capture won't work (DENIED), a tap that hears
+    // non-silent audio means it does (GRANTED). Only a silent tap (no app was
+    // playing, or the permission is missing and TCC fed zeros) falls back to
+    // the preflight. Off the main thread: it sleeps.
+    let probeOnce: () -> Int32 = {
+        let probe = SystemTapCapture(sink: nil, originNanos: nowNanos())
+        do {
+            try probe.start()
+        } catch {
+            NSLog("[guidy meetings] system audio probe failed: %@", "\(error)")
+            return GUIDY_MB_AUTH_DENIED
+        }
+        Thread.sleep(forTimeInterval: probeCaptureSeconds)
+        // stop() drains the IO queue, so the counters are safe to read after.
+        probe.stop()
+        if probe.framesReceived > 0 && probe.peak > 0 {
+            return GUIDY_MB_AUTH_GRANTED
+        }
+        return preflightStatus()
     }
-    Thread.sleep(forTimeInterval: 1.0)
-    var status = guidyMbSystemAudioStatus()
-    let deadline = Date().addingTimeInterval(120)
-    while status == GUIDY_MB_AUTH_NOT_DETERMINED && Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.25)
-        status = guidyMbSystemAudioStatus()
+    if Thread.isMainThread {
+        return offMainThread(timeout: probeCaptureSeconds + tccPreflightTimeout + 5, probeOnce)
+            ?? GUIDY_MB_AUTH_UNKNOWN
     }
-    probe.stop()
-    return status
+    return probeOnce()
 }
 
 // MARK: - Notifications (UNUserNotificationCenter)

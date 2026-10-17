@@ -1,8 +1,11 @@
 //! Idempotent ticket creation.
 //!
-//! Only `Approved` items without a `linear_issue_id` are created. The issue
-//! is persisted on the item right after each successful create, so a crash
-//! between items never duplicates. An in-flight guard stops a double click
+//! Only `Approved` items without a `linear_issue_id` are created. Before the
+//! create call, the item's client UUID is persisted ("creating"); it is sent
+//! as `IssueCreateInput.id`, so a retry after a timeout or crash reuses it and
+//! Linear can't create a second issue (the existing one is looked up and
+//! recorded as already existing). The issue is persisted on the item right
+//! after each successful create. An in-flight guard stops a double click
 //! (two overlapping calls) from creating the same item twice.
 
 use std::collections::HashSet;
@@ -17,6 +20,9 @@ use crate::meetings::types::{ActionItem, ActionItemId, TicketDraft, TicketState}
 /// The persistence creation needs (implemented by the meetings store).
 pub trait TicketStore {
     fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>>;
+    /// The item's client UUID for `IssueCreateInput.id`, generated and
+    /// persisted first if it has none (the recoverable "creating" state).
+    fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String>;
     /// Record the created issue on the item (and mark it `Created`).
     fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()>;
 }
@@ -24,12 +30,22 @@ pub trait TicketStore {
 /// Something that creates Linear issues (the real client, or a test fake).
 #[allow(async_fn_in_trait)]
 pub trait IssueCreator {
-    async fn create_issue(&self, draft: &TicketDraft) -> Result<CreatedIssue, String>;
+    /// Create the issue with id `client_id`. Returns the issue and whether it
+    /// already existed (an earlier attempt with the same id went through).
+    async fn create_issue(
+        &self,
+        draft: &TicketDraft,
+        client_id: &str,
+    ) -> Result<(CreatedIssue, bool), String>;
 }
 
 impl IssueCreator for LinearClient {
-    async fn create_issue(&self, draft: &TicketDraft) -> Result<CreatedIssue, String> {
-        LinearClient::create_issue(self, draft)
+    async fn create_issue(
+        &self,
+        draft: &TicketDraft,
+        client_id: &str,
+    ) -> Result<(CreatedIssue, bool), String> {
+        LinearClient::create_issue_with_id(self, draft, client_id)
             .await
             .map_err(|e| e.to_string())
     }
@@ -40,6 +56,11 @@ impl IssueCreator for LinearClient {
 pub struct InFlight(Arc<Mutex<HashSet<ActionItemId>>>);
 
 impl InFlight {
+    /// The ids currently being created.
+    pub fn ids(&self) -> Vec<ActionItemId> {
+        self.0.lock().iter().copied().collect()
+    }
+
     /// Claim `id`; `None` if another call holds it.
     pub fn claim(&self, id: ActionItemId) -> Option<InFlightGuard> {
         self.0.lock().insert(id).then(|| InFlightGuard {
@@ -105,9 +126,14 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                     } else if item.ticket_state != TicketState::Approved {
                         Err("Approve the ticket before creating it.".to_string())
                     } else {
-                        match creator.create_issue(&item.ticket).await {
+                        let created = match store.begin_create(id) {
+                            Err(e) => Err(format!("Could not save the action item: {e}")),
+                            Ok(client_id) => creator.create_issue(&item.ticket, &client_id).await,
+                        };
+                        match created {
                             Err(e) => Err(e),
-                            Ok(issue) => {
+                            Ok((issue, existed)) => {
+                                already_existed = existed;
                                 // Persist before anything else, so retries see it.
                                 let saved = store.set_linear_issue(id, &issue);
                                 if let Some(team) = item.ticket.team_id.clone() {
@@ -156,6 +182,10 @@ pub(crate) mod tests {
         fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>> {
             Ok(self.0.lock().get(&id).cloned())
         }
+        fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String> {
+            // MemStore keeps no client ids: derive a stable one per item.
+            Ok(format!("00000000-0000-4000-8000-{id:012}"))
+        }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             let mut items = self.0.lock();
             let it = items
@@ -197,13 +227,20 @@ pub(crate) mod tests {
     struct FakeCreator(AtomicUsize);
 
     impl IssueCreator for FakeCreator {
-        async fn create_issue(&self, _d: &TicketDraft) -> Result<CreatedIssue, String> {
+        async fn create_issue(
+            &self,
+            _d: &TicketDraft,
+            _client_id: &str,
+        ) -> Result<(CreatedIssue, bool), String> {
             let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(CreatedIssue {
-                id: format!("id-{n}"),
-                identifier: format!("ENG-{n}"),
-                url: format!("https://linear.app/x/issue/ENG-{n}"),
-            })
+            Ok((
+                CreatedIssue {
+                    id: format!("id-{n}"),
+                    identifier: format!("ENG-{n}"),
+                    url: format!("https://linear.app/x/issue/ENG-{n}"),
+                },
+                false,
+            ))
         }
     }
 

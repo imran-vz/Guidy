@@ -47,17 +47,43 @@ typedef void (*guidy_mb_event_cb)(void *ctx, int32_t stream, const char *message
 
 // Starts the requested streams. Returns an opaque handle, or NULL with
 // `*error_out` set (nothing is left running in that case).
+//
+// Timeline: both streams share one time origin, the moment this function is
+// called. Sample n of either stream (counted from its first callback) was
+// captured n / 16000 seconds after that origin, within ~50 ms. Gaps (late
+// start, VPIO restarts after a device or configuration change, a process tap
+// that is quiet while no app plays audio) are filled with silence, and
+// overlapping audio is dropped, so the two tracks can be laid side by side
+// without further alignment. Callbacks never block on anything but a short
+// internal lock.
 void *guidy_mb_capture_start(int32_t want_mic, int32_t want_system, guidy_mb_audio_cb audio_cb,
                              guidy_mb_event_cb event_cb, void *ctx, char **error_out);
 // Stops and frees the handle. After it returns no callback is running or will
 // run for this handle.
 void guidy_mb_capture_stop(void *handle);
 
-// System-audio (process tap) permission. Best effort: uses the TCC preflight
-// when available, else returns UNKNOWN.
+// System-audio (process tap) permission. Best effort: uses the private TCC
+// preflight when available (run off the main thread, at most ~2 s), else
+// returns UNKNOWN. Any unexpected result is UNKNOWN.
 int32_t guidy_mb_system_audio_status(void);
-// Triggers the TCC prompt (blocking). Returns the resulting status.
+// Triggers the TCC prompt and returns the resulting status. BLOCKS until the
+// user answers, for up to ~60 s (then the preflight status is returned). Call
+// it from a background thread: on the main thread it only shows the prompt
+// and returns the current status without waiting. Without the private TCC
+// request API it runs a ~1.5 s probe tap instead (DENIED if the tap can't
+// start, GRANTED if it hears audio, else the preflight status).
 int32_t guidy_mb_request_system_audio_access(void);
+
+// ----- Test hooks (unit tests of the timeline aligner) ----------------------
+// A standalone `TimelineAligner` (16 kHz). `audio`/`tick` copy what the aligner
+// emits (silence and audio) into `out` (up to `capacity` samples; `out` may be
+// NULL) and return the number of samples emitted.
+void *guidy_mb_test_aligner_new(uint64_t start_nanos, int64_t tolerance_samples);
+int64_t guidy_mb_test_aligner_audio(void *aligner, const float *samples, int32_t count,
+                                    uint64_t at_nanos, float *out, int64_t capacity);
+int64_t guidy_mb_test_aligner_tick(void *aligner, uint64_t now_nanos, float *out,
+                                   int64_t capacity);
+void guidy_mb_test_aligner_free(void *aligner);
 
 // ----- Notifications ---------------------------------------------------------
 typedef void (*guidy_mb_notification_cb)(const char *notification_id, const char *action_id);

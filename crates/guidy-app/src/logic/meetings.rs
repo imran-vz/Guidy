@@ -1,12 +1,24 @@
 //! Meeting-notes UI logic with no GPUI dependency: core event decoding,
-//! sidebar visibility, transcript grouping, labels and formatting.
+//! sidebar visibility, transcript grouping, labels and formatting, deep
+//! links, external-URL checks and settings patches.
 
+use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::MeetingSettings;
 use guidy_core::meetings::types::{
     events, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
     RecorderState, Segment, SpeakerId,
 };
 use serde_json::Value;
+
+/// `meetings://summary-progress` (core `meetings::summarize::events`).
+pub const SUMMARY_PROGRESS_EVENT: &str = guidy_core::meetings::summarize::events::SUMMARY_PROGRESS;
+/// `meetings://speaker-model-status`.
+pub const SPEAKER_MODEL_STATUS_EVENT: &str =
+    guidy_core::meetings::processing::SPEAKER_MODEL_STATUS_EVENT;
+/// Built-in LLM model downloads (`llm::local_models::events`).
+pub const LLM_DOWNLOAD_PROGRESS_EVENT: &str =
+    guidy_core::llm::local_models::events::DOWNLOAD_PROGRESS;
+pub const LLM_MODELS_CHANGED_EVENT: &str = guidy_core::llm::local_models::events::CHANGED;
 
 /// A meeting-notes core event, decoded for the UI.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +27,32 @@ pub enum MeetingsEvent {
     Progress(ProcessingProgress),
     MeetingChanged(MeetingId),
     PeopleChanged,
+    /// The meetings manager is registered (startup or retry finished).
+    Ready,
+    /// The meetings manager failed to start (the error text).
+    InitFailed(String),
+    /// LLM calls of a running summary: `done` of `total`.
+    SummaryProgress {
+        meeting_id: MeetingId,
+        done: usize,
+        total: usize,
+    },
+    SpeakerModelStatus(SpeakerModelStatus),
+    /// A built-in LLM model download advanced (0.0..=1.0).
+    LocalModelProgress {
+        model_id: String,
+        fraction: f32,
+    },
+    /// A built-in LLM model download started/finished/failed, or a model was
+    /// deleted.
+    LocalModelsChanged,
+    /// UI-only: the Linear API key was saved or removed.
+    LinearKeyChanged,
+}
+
+/// Whether [`decode_event`] handles events with this name.
+pub fn is_meetings_event(name: &str) -> bool {
+    name.starts_with("meetings://") || name.starts_with("llm-models://")
 }
 
 pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
@@ -27,8 +65,149 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
             .map(MeetingsEvent::Progress),
         events::MEETING_CHANGED => payload.as_i64().map(MeetingsEvent::MeetingChanged),
         events::PEOPLE_CHANGED => Some(MeetingsEvent::PeopleChanged),
+        guidy_core::MEETINGS_READY_EVENT => Some(MeetingsEvent::Ready),
+        guidy_core::MEETINGS_INIT_FAILED_EVENT => Some(MeetingsEvent::InitFailed(
+            payload
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| payload.to_string()),
+        )),
+        SUMMARY_PROGRESS_EVENT => {
+            let p: guidy_core::meetings::summarize::SummaryProgress =
+                serde_json::from_value(payload.clone()).ok()?;
+            Some(MeetingsEvent::SummaryProgress {
+                meeting_id: p.meeting_id,
+                done: p.done,
+                total: p.total,
+            })
+        }
+        SPEAKER_MODEL_STATUS_EVENT => serde_json::from_value(payload.clone())
+            .ok()
+            .map(MeetingsEvent::SpeakerModelStatus),
+        LLM_DOWNLOAD_PROGRESS_EVENT => {
+            let p: guidy_core::managers::model::DownloadProgress =
+                serde_json::from_value(payload.clone()).ok()?;
+            let fraction = if p.total > 0 {
+                (p.downloaded as f64 / p.total as f64).clamp(0.0, 1.0) as f32
+            } else {
+                (p.percentage / 100.0).clamp(0.0, 1.0) as f32
+            };
+            Some(MeetingsEvent::LocalModelProgress {
+                model_id: p.model_id,
+                fraction,
+            })
+        }
+        LLM_MODELS_CHANGED_EVENT => Some(MeetingsEvent::LocalModelsChanged),
         _ => None,
     }
+}
+
+/// Where meeting-notes startup is, as the UI tracks it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeetingsInit {
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+impl MeetingsInit {
+    pub fn from_core(s: guidy_core::MeetingsInitStatus) -> Self {
+        match s {
+            guidy_core::MeetingsInitStatus::Ready => Self::Ready,
+            guidy_core::MeetingsInitStatus::Failed(e) => Self::Failed(e),
+            // Unsupported systems hide the section; treat as ready.
+            guidy_core::MeetingsInitStatus::Unsupported => Self::Ready,
+            guidy_core::MeetingsInitStatus::Starting => Self::Starting,
+        }
+    }
+}
+
+/// Summary progress fraction (0..=1), `None` before the plan is known.
+pub fn summary_fraction(done: usize, total: usize) -> Option<f32> {
+    (total > 0).then(|| (done as f32 / total as f32).clamp(0.0, 1.0))
+}
+
+// -- deep links -----------------------------------------------------------------
+
+/// `guidy://meetings/<id>?t=<ms>`: open a meeting at a moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeetingLink {
+    pub meeting_id: MeetingId,
+    pub t_ms: Option<i64>,
+}
+
+fn parse_digits(s: &str) -> Option<i64> {
+    if s.is_empty() || s.len() > 18 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// Parse a `guidy://` URL strictly. Only `guidy://meetings/<id>` with an
+/// optional `?t=<ms>` is accepted: ids and times are plain decimal
+/// integers, and anything else (other paths, extra query parameters,
+/// fragments, signs, whitespace) is rejected. A link only ever navigates.
+pub fn parse_deep_link(url: &str) -> Option<MeetingLink> {
+    let rest = url.strip_prefix("guidy://meetings/")?;
+    let (path, query) = match rest.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (rest, None),
+    };
+    let meeting_id = parse_digits(path).filter(|id| *id > 0)?;
+    let t_ms = match query {
+        None => None,
+        Some(q) => Some(parse_digits(q.strip_prefix("t=")?)?),
+    };
+    Some(MeetingLink { meeting_id, t_ms })
+}
+
+// -- external URLs ----------------------------------------------------------------
+
+/// System Settings privacy panes for the meeting permissions.
+pub const PRIVACY_CALENDARS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars";
+pub const PRIVACY_MICROPHONE_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+pub const PRIVACY_AUDIO_CAPTURE_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+
+/// An `https://linear.app/...` URL (issue links come from Linear's API but
+/// are still checked before being opened).
+pub fn is_linear_url(url: &str) -> bool {
+    let Some(path) = url.strip_prefix("https://linear.app/") else {
+        return false;
+    };
+    !path.is_empty()
+        && !path.starts_with('/')
+        && url
+            .chars()
+            .all(|c| c.is_ascii_graphic() && c != '\\' && c != '@')
+}
+
+/// URLs the meetings UI may open: Linear pages and the privacy panes.
+pub fn is_allowed_external_url(url: &str) -> bool {
+    is_linear_url(url)
+        || [
+            PRIVACY_CALENDARS_URL,
+            PRIVACY_MICROPHONE_URL,
+            PRIVACY_AUDIO_CAPTURE_URL,
+        ]
+        .contains(&url)
+}
+
+// -- settings patches ---------------------------------------------------------------
+
+/// The top-level `MeetingSettings` fields that differ between `before` and
+/// `after`, as a JSON object (`update_setting("meetings", patch)` merges it
+/// into the stored object, so two views editing different fields never
+/// overwrite each other).
+pub fn meetings_patch(before: &MeetingSettings, after: &MeetingSettings) -> Value {
+    let (Ok(Value::Object(b)), Ok(Value::Object(a))) =
+        (serde_json::to_value(before), serde_json::to_value(after))
+    else {
+        return Value::Object(Default::default());
+    };
+    Value::Object(a.into_iter().filter(|(k, v)| b.get(k) != Some(v)).collect())
 }
 
 /// Insert the Meetings section right after History when supported.
@@ -107,8 +286,17 @@ pub fn needs_confirmation(s: &MeetingSpeaker) -> bool {
     !s.confirmed && s.person_id.is_some()
 }
 
+/// A speaker's cluster label for display: "Speaker N" is translated
+/// (`meetings.speaker.unnamed`), any other label is shown as is.
+pub fn cluster_label(speaker: &MeetingSpeaker) -> String {
+    match speaker.speaker_number() {
+        Some(n) => guidy_i18n::t_args("meetings.speaker.unnamed", &[("n", &n.to_string())]),
+        None => speaker.cluster_label.clone(),
+    }
+}
+
 /// The label for a speaker: the matched person, the user (mic track), or
-/// the cluster label ("Speaker 2").
+/// the (translated) cluster label ("Speaker 2").
 pub fn speaker_name(
     speaker: &MeetingSpeaker,
     people: &[Person],
@@ -128,7 +316,7 @@ pub fn speaker_name(
             .map(str::to_string)
             .unwrap_or_else(|| you.to_string());
     }
-    speaker.cluster_label.clone()
+    cluster_label(speaker)
 }
 
 /// Translation key of a meeting's status.
@@ -311,5 +499,168 @@ mod tests {
         }
         assert_eq!(non_empty("  "), None);
         assert_eq!(non_empty(" a "), Some("a".into()));
+    }
+
+    #[test]
+    fn deep_links_parse_strictly() {
+        let ok = |url: &str, id: i64, t: Option<i64>| {
+            assert_eq!(
+                parse_deep_link(url),
+                Some(MeetingLink {
+                    meeting_id: id,
+                    t_ms: t
+                }),
+                "{url}"
+            );
+        };
+        ok("guidy://meetings/42", 42, None);
+        ok("guidy://meetings/42?t=65000", 42, Some(65_000));
+        ok("guidy://meetings/7?t=0", 7, Some(0));
+        for bad in [
+            "",
+            "guidy://",
+            "guidy://meetings",
+            "guidy://meetings/",
+            "guidy://meetings/0",
+            "guidy://meetings/-3",
+            "guidy://meetings/+3",
+            "guidy://meetings/3.5",
+            "guidy://meetings/3/",
+            "guidy://meetings/3/delete",
+            "guidy://meetings/3?t=",
+            "guidy://meetings/3?t=-1",
+            "guidy://meetings/3?t=1e3",
+            "guidy://meetings/3?t=10&record=1",
+            "guidy://meetings/3?x=1",
+            "guidy://meetings/3#t=1",
+            "guidy://meetings/3?t=10#x",
+            "guidy://meetings/ 3",
+            "guidy://meetings/٣",
+            "guidy://meetings/99999999999999999999",
+            "guidy://record/3",
+            "guidy://settings",
+            "GUIDY://meetings/3",
+            "https://meetings/3",
+            "guidy:meetings/3",
+        ] {
+            assert_eq!(parse_deep_link(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_linear_and_privacy_urls_are_opened() {
+        assert!(is_linear_url("https://linear.app/acme/issue/ENG-1/fix-it"));
+        assert!(is_allowed_external_url("https://linear.app/settings/api"));
+        assert!(is_allowed_external_url(PRIVACY_MICROPHONE_URL));
+        assert!(is_allowed_external_url(PRIVACY_CALENDARS_URL));
+        assert!(is_allowed_external_url(PRIVACY_AUDIO_CAPTURE_URL));
+        for bad in [
+            "http://linear.app/acme",
+            "https://linear.app/",
+            "https://linear.app",
+            "https://linear.app.evil.com/x",
+            "https://linear.app@evil.com/x",
+            "https://evil.com/https://linear.app/x",
+            "https://linear.app//evil.com",
+            "https://linear.app/x\\@evil.com",
+            "https://linear.app/x y",
+            "https://LINEAR.app/x",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
+        ] {
+            assert!(!is_allowed_external_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn meetings_patch_holds_only_changed_fields() {
+        let before = MeetingSettings::default();
+        let mut after = before.clone();
+        assert_eq!(meetings_patch(&before, &after), serde_json::json!({}));
+        after.enabled = !before.enabled;
+        after.audio_retention_days = if before.audio_retention_days == Some(3) {
+            None
+        } else {
+            Some(3)
+        };
+        let patch = meetings_patch(&before, &after);
+        let keys: Vec<&String> = patch.as_object().unwrap().keys().collect();
+        assert_eq!(keys.len(), 2, "{patch}");
+        assert_eq!(patch["enabled"], after.enabled);
+        assert_eq!(
+            patch["audio_retention_days"],
+            serde_json::to_value(after.audio_retention_days).unwrap()
+        );
+    }
+
+    #[test]
+    fn decodes_ready_summary_speaker_and_llm_events() {
+        assert!(is_meetings_event("meetings://ready"));
+        assert!(is_meetings_event("llm-models://changed"));
+        assert!(!is_meetings_event("settings-changed"));
+        assert_eq!(
+            decode_event("meetings://ready", &Value::Null),
+            Some(MeetingsEvent::Ready)
+        );
+        assert_eq!(
+            decode_event(
+                "meetings://init-failed",
+                &serde_json::json!("keychain denied")
+            ),
+            Some(MeetingsEvent::InitFailed("keychain denied".into()))
+        );
+        assert_eq!(
+            decode_event(
+                SUMMARY_PROGRESS_EVENT,
+                &serde_json::json!({"meeting_id": 3, "done": 2, "total": 5})
+            ),
+            Some(MeetingsEvent::SummaryProgress {
+                meeting_id: 3,
+                done: 2,
+                total: 5
+            })
+        );
+        let st = SpeakerModelStatus::Downloading {
+            downloaded: 5,
+            total: 10,
+        };
+        assert_eq!(
+            decode_event(
+                SPEAKER_MODEL_STATUS_EVENT,
+                &serde_json::to_value(&st).unwrap()
+            ),
+            Some(MeetingsEvent::SpeakerModelStatus(st))
+        );
+        assert_eq!(
+            decode_event(
+                LLM_DOWNLOAD_PROGRESS_EVENT,
+                &serde_json::json!({"model_id": "m", "downloaded": 25, "total": 100, "percentage": 25.0})
+            ),
+            Some(MeetingsEvent::LocalModelProgress {
+                model_id: "m".into(),
+                fraction: 0.25
+            })
+        );
+        assert_eq!(
+            decode_event(
+                LLM_MODELS_CHANGED_EVENT,
+                &serde_json::json!({"model_id": "m", "state": "completed", "error": null})
+            ),
+            Some(MeetingsEvent::LocalModelsChanged)
+        );
+        assert_eq!(summary_fraction(0, 0), None);
+        assert_eq!(summary_fraction(1, 4), Some(0.25));
+    }
+
+    #[test]
+    fn unnamed_speakers_are_translated() {
+        guidy_i18n::set_language("en");
+        let mut s = speaker(None, false, false);
+        s.cluster_label = "Speaker 3".into();
+        assert_eq!(cluster_label(&s), "Speaker 3");
+        assert_eq!(speaker_name(&s, &[], None, "You"), "Speaker 3");
+        s.cluster_label = "Guest".into();
+        assert_eq!(cluster_label(&s), "Guest");
     }
 }

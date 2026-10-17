@@ -277,12 +277,22 @@ impl TrackWriter {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts
             .open(path)
             .with_context(|| format!("create {}", path.display()))?;
+        // Owner-only even when truncating a file that existed with a wider mode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(&crypto.aad)?;
         file.write_all(&crypto.key_check()?)?;
         file.sync_all()?;
@@ -623,15 +633,20 @@ pub struct RetentionOutcome {
 }
 
 /// Delete raw audio older than `retention_days` (`None` = keep forever) and
-/// clear the meetings' audio paths. Meetings that are recording or being
-/// processed are skipped. Unreferenced `.gopus` files older than the cutoff
-/// (left by a failed start) are removed too. Voiceprints are never touched:
-/// they live in the database, not here.
+/// clear the meetings' audio paths. Only fully processed meetings
+/// (`processing_stage = done`) lose their audio: recording, processing,
+/// queued/running in the processor (`is_busy`), failed or never-processed
+/// meetings keep it, since processing needs it. Paths are cleared with a
+/// status-guarded targeted update *before* the files are deleted, so a
+/// meeting that started processing meanwhile is left alone. Unreferenced
+/// `.gopus` files older than the cutoff (left by a failed start) are removed
+/// too. Voiceprints are never touched: they live in the database, not here.
 pub fn apply_retention(
     repo: &dyn MeetingRepo,
     audio_dir: &Path,
     retention_days: Option<u32>,
     now_ms: i64,
+    is_busy: &dyn Fn(MeetingId) -> bool,
 ) -> Result<RetentionOutcome> {
     let mut out = RetentionOutcome::default();
     let Some(days) = retention_days else {
@@ -645,21 +660,30 @@ pub fn apply_retention(
             meeting.status,
             MeetingStatus::Recording | MeetingStatus::Processing
         );
+        let processed = meeting.processing_stage.as_deref() == Some("done");
         let has_audio = meeting.mic_audio_path.is_some() || meeting.system_audio_path.is_some();
         let age_ref = meeting.ended_at.unwrap_or(meeting.started_at);
-        if in_use || !has_audio || age_ref >= cutoff {
+        if in_use || !processed || !has_audio || age_ref >= cutoff || is_busy(meeting.id) {
             continue;
         }
+        // Guarded by status in SQL: false when it started processing (or
+        // was deleted) since the list was read.
+        match repo.clear_audio_paths_if_processed(meeting.id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                log::warn!("retention: meeting {}: {e:#}", meeting.id);
+                continue;
+            }
+        }
+        out.meetings.push(meeting.id);
         match delete_track_files(audio_dir, meeting) {
             Ok(n) => {
                 out.files_deleted += n;
-                out.meetings.push(meeting.id);
-                let mut updated = meeting.clone();
-                updated.mic_audio_path = None;
-                updated.system_audio_path = None;
-                repo.update_meeting(&updated)?;
                 log::info!("retention: deleted audio of meeting {}", meeting.id);
             }
+            // The paths are already cleared; leftovers become orphans that
+            // the sweep below removes on a later run.
             Err(e) => log::warn!("retention: meeting {}: {e:#}", meeting.id),
         }
     }
@@ -967,10 +991,15 @@ mod tests {
             ended_at: Some(ended_at),
             mic_audio_path: Some(mic),
             system_audio_path: Some(sys),
+            // Processed meetings went through the whole pipeline.
+            processing_stage: (status == MeetingStatus::Processed).then(|| "done".into()),
             status,
             error: None,
-            processing_stage: None,
         }
+    }
+
+    fn never_busy(_: MeetingId) -> bool {
+        false
     }
 
     #[test]
@@ -1009,22 +1038,26 @@ mod tests {
 
         // Forever: nothing happens.
         assert_eq!(
-            apply_retention(&repo, audio, None, now)
+            apply_retention(&repo, audio, None, now, &never_busy)
                 .unwrap()
                 .files_deleted,
             0
         );
         assert!(audio.join("1-mic.gopus").exists());
 
-        let outcome = apply_retention(&repo, audio, Some(3), now).unwrap();
-        assert_eq!(outcome.files_deleted, 4);
-        assert_eq!(outcome.meetings, vec![old, failed]);
+        let outcome = apply_retention(&repo, audio, Some(3), now, &never_busy).unwrap();
+        assert_eq!(outcome.files_deleted, 2);
+        assert_eq!(outcome.meetings, vec![old]);
         let get = |id| repo.get_meeting(id).unwrap().unwrap();
         assert_eq!(get(old).mic_audio_path, None);
         assert_eq!(get(old).system_audio_path, None);
+        // Only the paths changed (targeted update).
+        assert_eq!(get(old).title, "m1");
         assert!(!audio.join("1-mic.gopus").exists());
         assert!(!audio.join("1-system.gopus").exists());
-        assert_eq!(get(failed).mic_audio_path, None);
+        // Failed (never fully processed) keeps its audio for a retry.
+        assert!(get(failed).mic_audio_path.is_some());
+        assert!(audio.join("4-mic.gopus").exists());
         assert!(get(fresh).mic_audio_path.is_some());
         assert!(audio.join("2-mic.gopus").exists());
         assert!(get(busy).mic_audio_path.is_some());
@@ -1034,9 +1067,98 @@ mod tests {
 
         // Idempotent.
         assert_eq!(
-            apply_retention(&repo, audio, Some(3), now).unwrap(),
+            apply_retention(&repo, audio, Some(3), now, &never_busy).unwrap(),
             Default::default()
         );
+    }
+
+    #[test]
+    fn retention_skips_unprocessed_and_busy_meetings() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path();
+        let now = 100 * DAY_MS;
+        let repo = MemRepo::default();
+        // Recorded (never processed), old: its audio is still needed.
+        let recorded = repo
+            .insert_meeting(&meeting(
+                1,
+                now - 9 * DAY_MS,
+                MeetingStatus::Recorded,
+                audio,
+            ))
+            .unwrap();
+        // Processed but mid-way through a re-run (stage not done).
+        let mut partial = meeting(2, now - 9 * DAY_MS, MeetingStatus::Processed, audio);
+        partial.processing_stage = Some("vad".into());
+        let partial = repo.insert_meeting(&partial).unwrap();
+        // Fully processed, but queued in the processor for a re-run.
+        let queued = repo
+            .insert_meeting(&meeting(
+                3,
+                now - 9 * DAY_MS,
+                MeetingStatus::Processed,
+                audio,
+            ))
+            .unwrap();
+        let out = apply_retention(&repo, audio, Some(3), now, &|id| id == queued).unwrap();
+        assert_eq!(out, RetentionOutcome::default());
+        for id in [recorded, partial, queued] {
+            assert!(repo
+                .get_meeting(id)
+                .unwrap()
+                .unwrap()
+                .mic_audio_path
+                .is_some());
+        }
+        assert!(audio.join("3-mic.gopus").exists());
+        // Once the processor is done with it, it goes.
+        let out = apply_retention(&repo, audio, Some(3), now, &never_busy).unwrap();
+        assert_eq!(out.meetings, vec![queued]);
+    }
+
+    #[test]
+    fn retention_clear_is_guarded_by_status() {
+        // The row started processing after the list was read: the guarded
+        // update refuses and the files stay.
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path();
+        let now = 100 * DAY_MS;
+        let repo = MemRepo::default();
+        let id = repo
+            .insert_meeting(&meeting(
+                1,
+                now - 9 * DAY_MS,
+                MeetingStatus::Processed,
+                audio,
+            ))
+            .unwrap();
+        let flip = |_: MeetingId| {
+            repo.rows.lock()[0].status = MeetingStatus::Processing;
+            false
+        };
+        let out = apply_retention(&repo, audio, Some(3), now, &flip).unwrap();
+        assert!(out.meetings.is_empty());
+        assert!(audio.join("1-mic.gopus").exists());
+        assert!(repo
+            .get_meeting(id)
+            .unwrap()
+            .unwrap()
+            .mic_audio_path
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn track_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("1-mic.gopus");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let w = TrackWriter::create(&path, &[1u8; 32]).unwrap();
+        w.finish().unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
@@ -1049,7 +1171,7 @@ mod tests {
         let now = system_time_ms(std::time::SystemTime::now());
         // Fresh orphan (e.g. a recording being started): kept.
         assert_eq!(
-            apply_retention(&repo, audio, Some(3), now)
+            apply_retention(&repo, audio, Some(3), now, &never_busy)
                 .unwrap()
                 .files_deleted,
             0
@@ -1057,7 +1179,7 @@ mod tests {
         assert!(audio.join("99-mic.gopus").exists());
         // Seen from 4 days in the future it is old: removed. Other files stay.
         assert_eq!(
-            apply_retention(&repo, audio, Some(3), now + 4 * DAY_MS)
+            apply_retention(&repo, audio, Some(3), now + 4 * DAY_MS, &never_busy)
                 .unwrap()
                 .files_deleted,
             1

@@ -6,9 +6,14 @@
 //! [`SERVICE`]. Use the key-name helpers ([`provider_api_key`],
 //! [`LINEAR_API_KEY`], [`MEETINGS_DATA_KEY`]) rather than raw strings.
 //!
-//! Unit tests (`cfg(test)` or the `test-support` feature) and any process run
-//! with `GUIDY_SECRETS_BACKEND=memory` use an in-memory backend, so they never
-//! touch the real Keychain. [`set_backend`] swaps the backend explicitly.
+//! Unit tests (`cfg(test)` or the `test-support` feature) use an in-memory
+//! backend, so they never touch the real Keychain. Debug builds also honour
+//! `GUIDY_SECRETS_BACKEND=memory`; release builds ignore it, so an environment
+//! variable can't silently divert keys away from the Keychain (and make the
+//! key migration drop them). [`set_backend`] swaps the backend explicitly.
+//! [`is_persistent`] tells callers whether writes outlive the process, so
+//! destructive migrations (delete the plain-text copy after storing it) can be
+//! skipped when they don't.
 //!
 //! Keychain reads are cached in-process (including misses), because callers
 //! such as the settings UI read keys on every refresh.
@@ -31,6 +36,7 @@ pub const LINEAR_API_KEY: &str = "linear_api_key";
 pub const MEETINGS_DATA_KEY: &str = "meetings_data_key";
 
 /// Env var that selects the backend: `memory` forces the in-memory one.
+/// Honoured only in debug / test / `test-support` builds.
 pub const BACKEND_ENV: &str = "GUIDY_SECRETS_BACKEND";
 
 /// Key of an LLM provider's API key (`post_process_providers` id).
@@ -44,6 +50,10 @@ pub trait SecretsBackend: Send + Sync {
     fn set(&self, key: &str, value: &str) -> Result<()>;
     /// Deleting a missing key is not an error.
     fn delete(&self, key: &str) -> Result<()>;
+    /// True when stored secrets outlive the process (the OS credential store).
+    fn is_persistent(&self) -> bool {
+        true
+    }
 }
 
 /// The OS credential store through `keyring` (Keychain on macOS).
@@ -113,6 +123,10 @@ impl SecretsBackend for MemoryBackend {
         self.map.lock().remove(key);
         Ok(())
     }
+
+    fn is_persistent(&self) -> bool {
+        false
+    }
 }
 
 /// Wraps a slow backend (the Keychain) with an in-process read cache. Only
@@ -145,11 +159,29 @@ impl<B: SecretsBackend> SecretsBackend for Cached<B> {
         self.cache.lock().insert(key.to_string(), None);
         Ok(())
     }
+
+    fn is_persistent(&self) -> bool {
+        self.inner.is_persistent()
+    }
+}
+
+/// Whether `GUIDY_SECRETS_BACKEND` is honoured at all in this build.
+const ENV_OVERRIDE_ALLOWED: bool = cfg!(any(test, debug_assertions, feature = "test-support"));
+
+fn env_requests_memory(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.eq_ignore_ascii_case("memory"))
 }
 
 fn use_memory_by_default() -> bool {
-    cfg!(any(test, feature = "test-support"))
-        || std::env::var(BACKEND_ENV).is_ok_and(|v| v.eq_ignore_ascii_case("memory"))
+    if cfg!(any(test, feature = "test-support")) {
+        return true;
+    }
+    let requested = env_requests_memory(std::env::var(BACKEND_ENV).ok().as_deref());
+    if requested && !ENV_OVERRIDE_ALLOWED {
+        log::warn!("secrets: ignoring {BACKEND_ENV}=memory in a release build");
+        return false;
+    }
+    requested
 }
 
 fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
@@ -177,6 +209,14 @@ fn backend() -> Arc<dyn SecretsBackend> {
 pub fn set_backend(backend: Arc<dyn SecretsBackend>) {
     *slot().write() = backend;
     *data_key_cache().lock() = None;
+}
+
+/// True when the current backend keeps secrets beyond this process (the OS
+/// credential store). False for the in-memory backend (tests, or
+/// `GUIDY_SECRETS_BACKEND=memory` in a debug build): callers should then skip
+/// anything destructive, such as removing a plain-text key after "moving" it.
+pub fn is_persistent() -> bool {
+    backend().is_persistent()
 }
 
 /// Read a secret. `Ok(None)` when it doesn't exist.
@@ -238,6 +278,29 @@ mod tests {
     #[test]
     fn tests_use_the_memory_backend() {
         assert!(use_memory_by_default());
+    }
+
+    #[test]
+    fn env_override_is_debug_only_and_case_insensitive() {
+        // Test builds are debug-ish (cfg(test)), so the override is allowed.
+        const { assert!(ENV_OVERRIDE_ALLOWED) };
+        assert!(env_requests_memory(Some("memory")));
+        assert!(env_requests_memory(Some("MEMORY")));
+        assert!(!env_requests_memory(Some("keychain")));
+        assert!(!env_requests_memory(None));
+    }
+
+    #[test]
+    fn only_the_os_store_is_persistent() {
+        assert!(!MemoryBackend::new().is_persistent());
+        assert!(KeychainBackend::new(SERVICE).is_persistent());
+        let cached = Cached {
+            inner: MemoryBackend::new(),
+            cache: Mutex::new(HashMap::new()),
+        };
+        assert!(!cached.is_persistent());
+        // The test process runs on the memory backend.
+        assert!(!is_persistent());
     }
 
     #[test]

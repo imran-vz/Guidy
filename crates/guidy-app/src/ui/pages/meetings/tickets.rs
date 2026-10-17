@@ -10,8 +10,9 @@
 //! shows per-item results. Created items are read-only and link to their
 //! issue. Nothing is created without an approval.
 
-use crate::meetings_backend::{MeetingsBackend, SharedMeetingsBackend};
-use crate::state::AppState;
+use crate::logic::meetings::{is_linear_url, MeetingsEvent};
+use crate::meetings_backend::{error_message, MeetingsBackend, SharedMeetingsBackend};
+use crate::state::{AppEvent, AppState};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption};
 use crate::ui::pages::meetings::ai_settings::error_box;
 use gpui_kit::base::TestSupportExt;
@@ -109,13 +110,29 @@ pub struct TicketsView {
     creating: bool,
     error: Option<String>,
     on_open_settings: Option<Hook>,
+    _subs: Vec<Subscription>,
 }
 
 impl EventEmitter<TicketsEvent> for TicketsView {}
 
 impl TicketsView {
     pub fn new(meeting_id: MeetingId, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let backend = AppState::global(cx).read(cx).meetings.clone();
+        let state = AppState::global(cx);
+        let backend = state.read(cx).meetings.clone();
+        let subs = vec![cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
+            AppEvent::Meetings(MeetingsEvent::MeetingChanged(id)) if *id == this.meeting_id => {
+                this.reload(cx)
+            }
+            AppEvent::Meetings(MeetingsEvent::LinearKeyChanged | MeetingsEvent::Ready) => {
+                // A new key may see other teams/users.
+                this.teams.clear();
+                this.users.clear();
+                this.projects.clear();
+                this.labels.clear();
+                this.reload(cx)
+            }
+            _ => {}
+        })];
         let edit_title = cx.new(|cx| InputState::new(window, cx));
         let edit_description = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 12));
         let mut this = Self {
@@ -137,6 +154,7 @@ impl TicketsView {
             creating: false,
             error: None,
             on_open_settings: None,
+            _subs: subs,
         };
         this.reload(cx);
         this
@@ -165,33 +183,37 @@ impl TicketsView {
         .detach();
     }
 
+    /// Reload the key state and items. Teams and users are fetched from
+    /// Linear only when not loaded yet (or after the key changed).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let id = self.meeting_id;
+        let need_lists = self.teams.is_empty();
         self.run(
             cx,
             move |b| {
                 let has_key = b.has_linear_api_key();
                 let items = b.action_items(id);
-                let (teams, users) = if has_key {
-                    (b.linear_teams(), b.linear_users())
-                } else {
-                    (Ok(Vec::new()), Ok(Vec::new()))
-                };
-                (has_key, items, teams, users)
+                let lists = (has_key && need_lists).then(|| (b.linear_teams(), b.linear_users()));
+                (has_key, items, lists)
             },
-            |this, (has_key, items, teams, users), cx| {
+            move |this, (has_key, items, lists), cx| {
+                if this.meeting_id != id {
+                    return;
+                }
                 this.loaded = true;
                 this.has_key = has_key;
+                if let Some((teams, users)) = lists {
+                    match (teams, users) {
+                        (Ok(t), Ok(u)) => {
+                            this.teams = t;
+                            this.users = u;
+                        }
+                        (Err(e), _) | (_, Err(e)) => this.error = Some(error_message(&e)),
+                    }
+                }
                 match items {
                     Ok(items) => this.set_items(items, cx),
-                    Err(e) => this.error = Some(e),
-                }
-                match (teams, users) {
-                    (Ok(t), Ok(u)) => {
-                        this.teams = t;
-                        this.users = u;
-                    }
-                    (Err(e), _) | (_, Err(e)) => this.error = Some(e),
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
             },
         );
@@ -246,7 +268,7 @@ impl TicketsView {
                 this.drafting = false;
                 match r {
                     Ok(items) => this.set_items(items, cx),
-                    Err(e) => this.error = Some(e),
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
             },
         );
@@ -265,7 +287,7 @@ impl TicketsView {
             move |b| b.update_action_item(&item),
             |this, r, _| {
                 if let Err(e) = r {
-                    this.error = Some(e);
+                    this.error = Some(error_message(&e));
                 }
             },
         );
@@ -327,7 +349,7 @@ impl TicketsView {
                             this.results.insert(r.action_item_id, r);
                         }
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
                 if let Ok(items) = items {
                     this.set_items(items, cx);
@@ -380,13 +402,18 @@ impl TicketsView {
         self.save_edit(cx);
     }
 
+    /// Open a created issue: only `https://linear.app/...` links.
     fn open_issue(&mut self, url: String, cx: &mut Context<Self>) {
+        if !is_linear_url(&url) {
+            log::warn!("Not opening a ticket link that isn't a Linear URL");
+            return;
+        }
         self.run(
             cx,
             move |b| b.open_url(&url),
             |this, r, _| {
                 if let Err(e) = r {
-                    this.error = Some(e);
+                    this.error = Some(error_message(&e));
                 }
             },
         );
@@ -450,7 +477,7 @@ impl TicketsView {
             .linear_issue_identifier
             .clone()
             .unwrap_or_else(|| guidy_i18n::t("meetingsAi.tickets.issue"));
-        let url = item.linear_issue_url.clone();
+        let url = item.linear_issue_url.clone().filter(|u| is_linear_url(u));
         let already = self.results.get(&id).is_some_and(|r| r.already_existed);
         h_flex()
             .id(SharedString::from(format!("ticket-{id}")))

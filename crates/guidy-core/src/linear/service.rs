@@ -11,15 +11,18 @@ use super::client::{LinearClient, LinearError, Viewer, DEFAULT_ENDPOINT};
 use super::create::{self, CreateOutcome, InFlight, TicketStore};
 use super::draft::{draft_ticket, DraftContext};
 use super::{Label, Project, Team, User};
-use crate::meetings::types::{ActionItem, ActionItemId, Meeting, MeetingId, Person, TicketState};
+use crate::meetings::types::{
+    ActionItem, ActionItemId, Meeting, MeetingId, Person, TicketDraft, TicketState,
+};
 
 /// The meetings data drafting reads and writes (implemented by the store).
 pub trait MeetingData: TicketStore {
     fn meeting(&self, id: MeetingId) -> Result<Option<Meeting>>;
     fn meeting_action_items(&self, meeting_id: MeetingId) -> Result<Vec<ActionItem>>;
     fn people(&self) -> Result<Vec<Person>>;
-    /// Save an action item's editable fields (here: its ticket draft).
-    fn save_action_item(&self, item: &ActionItem) -> Result<()>;
+    /// Save a generated ticket draft. Must not touch an item whose issue
+    /// exists, nor a draft the user filled in meanwhile (both: `Ok`, no-op).
+    fn save_ticket_draft(&self, id: ActionItemId, draft: &TicketDraft) -> Result<()>;
 }
 
 /// Remembered defaults read from `settings.meetings`.
@@ -175,7 +178,7 @@ impl LinearService {
         meeting_id: MeetingId,
         defaults: &LinearDefaults,
     ) -> Result<Vec<ActionItem>> {
-        let mut items = store.meeting_action_items(meeting_id)?;
+        let items = store.meeting_action_items(meeting_id)?;
         if !items.iter().any(needs_draft) {
             return Ok(items);
         }
@@ -218,11 +221,16 @@ impl LinearService {
             default_team_id: defaults.team_id.as_deref(),
             default_project_id: defaults.project_id.as_deref(),
         };
-        for item in items.iter_mut().filter(|i| needs_draft(i)) {
-            item.ticket = draft_ticket(item, &ctx);
-            store.save_action_item(item)?;
+        for item in items.iter().filter(|i| needs_draft(i)) {
+            store.save_ticket_draft(item.id, &draft_ticket(item, &ctx))?;
         }
-        Ok(items)
+        // Re-read: what was actually saved (a concurrent create or edit wins).
+        store.meeting_action_items(meeting_id)
+    }
+
+    /// Action items whose issue is being created right now.
+    pub fn in_flight_ids(&self) -> Vec<ActionItemId> {
+        self.in_flight.ids()
     }
 
     /// Create issues for approved items without one. See [`create`].
@@ -239,6 +247,10 @@ impl LinearService {
 impl TicketStore for crate::meetings::store::MeetingsStore {
     fn action_item(&self, id: ActionItemId) -> Result<Option<ActionItem>> {
         self.get_action_item(id)
+    }
+
+    fn begin_create(&self, id: ActionItemId) -> Result<String> {
+        self.ensure_linear_client_id(id)
     }
 
     fn set_linear_issue(&self, id: ActionItemId, issue: &super::CreatedIssue) -> Result<()> {
@@ -265,15 +277,19 @@ impl MeetingData for crate::meetings::store::MeetingsStore {
         self.list_people()
     }
 
-    fn save_action_item(&self, item: &ActionItem) -> Result<()> {
-        // Re-read so a concurrent create's issue link is never overwritten.
-        match self.get_action_item(item.id)? {
-            Some(current) if current.linear_issue_id.is_none() => {
-                self.update_action_item(&ActionItem {
-                    ticket: item.ticket.clone(),
-                    ..current
-                })
-            }
+    fn save_ticket_draft(&self, id: ActionItemId, draft: &TicketDraft) -> Result<()> {
+        // Re-read: skip items that got an issue or a user-written draft
+        // meanwhile. The store refuses Created items on its own as well.
+        match self.get_action_item(id)? {
+            Some(current) if needs_draft(&current) => match self.update_ticket_draft(id, draft) {
+                Err(e)
+                    if e.downcast_ref::<crate::meetings::store::TicketEditError>()
+                        .is_some() =>
+                {
+                    Ok(())
+                }
+                r => r,
+            },
             _ => Ok(()),
         }
     }

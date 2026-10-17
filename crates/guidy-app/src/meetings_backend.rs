@@ -13,9 +13,11 @@
 //! body in `CoreMeetingsBackend`, `NoMeetings` and the fake; a default body on
 //! the trait (returning [`unavailable`]) keeps the others compiling.
 
+use crate::logic::meetings::MeetingsInit;
 use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult,
 };
+use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::types::*;
 use guidy_core::AppHandle;
 use std::sync::Arc;
@@ -24,6 +26,116 @@ pub type MeetingsResult<T> = Result<T, String>;
 
 pub fn unavailable() -> String {
     "Meeting notes are not available on this system".to_string()
+}
+
+/// Separator of a structured error string (never in normal error text).
+const TAG: char = '\u{1f}';
+
+/// The errors the UI treats specially. Backend methods keep returning
+/// `String`; structured errors travel as a tagged string
+/// ([`MeetingsError::encode`]) that [`MeetingsError::parse`] reads back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeetingsError {
+    /// Meeting notes are not available (unsupported, or not started).
+    Unavailable,
+    /// The meeting transcription model is not downloaded (`known`) or not
+    /// installed at all.
+    ModelMissing {
+        model_id: String,
+        name: String,
+        known: bool,
+    },
+    NoLinearKey,
+    LinearUnauthorized,
+    Other(String),
+}
+
+impl MeetingsError {
+    pub fn from_anyhow(e: &anyhow::Error) -> Self {
+        use guidy_core::linear::LinearError;
+        use guidy_core::managers::transcription::meeting::MeetingModelMissing;
+        for cause in e.chain() {
+            if let Some(m) = cause.downcast_ref::<MeetingModelMissing>() {
+                return Self::ModelMissing {
+                    model_id: m.model_id.clone(),
+                    name: m.model_name.clone(),
+                    known: m.known,
+                };
+            }
+            match cause.downcast_ref::<LinearError>() {
+                Some(LinearError::MissingApiKey) => return Self::NoLinearKey,
+                Some(LinearError::Unauthorized) => return Self::LinearUnauthorized,
+                _ => {}
+            }
+        }
+        Self::Other(format!("{e:#}"))
+    }
+
+    /// The string form a `MeetingsResult` carries.
+    pub fn encode(&self) -> String {
+        match self {
+            Self::Unavailable => unavailable(),
+            Self::ModelMissing {
+                model_id,
+                name,
+                known,
+            } => format!("{TAG}model-missing{TAG}{model_id}{TAG}{name}{TAG}{known}"),
+            Self::NoLinearKey => format!("{TAG}no-linear-key"),
+            Self::LinearUnauthorized => format!("{TAG}linear-unauthorized"),
+            Self::Other(s) => s.clone(),
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        if s == unavailable() {
+            return Self::Unavailable;
+        }
+        let Some(rest) = s.strip_prefix(TAG) else {
+            return Self::Other(s.to_string());
+        };
+        let parts: Vec<&str> = rest.split(TAG).collect();
+        match parts.as_slice() {
+            ["model-missing", id, name, known] => Self::ModelMissing {
+                model_id: id.to_string(),
+                name: name.to_string(),
+                known: *known == "true",
+            },
+            ["no-linear-key"] => Self::NoLinearKey,
+            ["linear-unauthorized"] => Self::LinearUnauthorized,
+            _ => Self::Other(s.to_string()),
+        }
+    }
+
+    /// The localized message; `None` for [`Self::Other`] (show the raw text
+    /// as detail under a localized title instead).
+    pub fn localized(&self) -> Option<String> {
+        use guidy_i18n::{t, t_args};
+        Some(match self {
+            Self::Unavailable => t("meetings.errors.unavailable"),
+            Self::ModelMissing {
+                name, known: true, ..
+            } => t_args("meetings.errors.modelMissing", &[("name", name)]),
+            Self::ModelMissing { name, .. } => {
+                t_args("meetings.errors.modelUnknown", &[("name", name)])
+            }
+            Self::NoLinearKey => t("meetings.errors.noLinearKey"),
+            Self::LinearUnauthorized => t("meetings.errors.linearUnauthorized"),
+            Self::Other(_) => return None,
+        })
+    }
+
+    /// Text for an inline error box: localized when known, else raw.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Other(s) => s.clone(),
+            e => e.localized().unwrap_or_default(),
+        }
+    }
+}
+
+/// [`MeetingsError::message`] of a backend error string.
+pub fn error_message(e: &str) -> String {
+    MeetingsError::parse(e).message()
 }
 
 pub trait MeetingsBackend: Send + Sync + 'static {
@@ -75,6 +187,24 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId>;
     fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()>;
 
+    /// The speaker-embedding model (downloads on first use).
+    fn speaker_model_status(&self) -> SpeakerModelStatus {
+        SpeakerModelStatus::Missing
+    }
+    /// Start downloading the speaker model; progress arrives as
+    /// `meetings://speaker-model-status`.
+    fn download_speaker_model(&self) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+
+    // -- startup ------------------------------------------------------------
+    /// Where the meetings manager's startup is.
+    fn init_status(&self) -> MeetingsInit {
+        MeetingsInit::Ready
+    }
+    /// Start the manager again after a failed start.
+    fn retry_init(&self) {}
+
     // -- AI + Linear (G2) ---------------------------------------------------
     // Default bodies keep `NoMeetings` (and any other impl) compiling.
 
@@ -105,6 +235,13 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     }
     fn delete_action_item(&self, _id: ActionItemId) -> MeetingsResult<()> {
         Err(unavailable())
+    }
+    /// Stop a running summary. False when none was running.
+    fn cancel_summarize(&self, _id: MeetingId) -> bool {
+        false
+    }
+    fn is_summarizing(&self, _id: MeetingId) -> bool {
+        false
     }
 
     // Linear.
@@ -160,7 +297,9 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn delete_local_llm_model(&self, _id: &str) -> MeetingsResult<()> {
         Err(unavailable())
     }
-    /// Open a URL in the default browser (Linear issue links, API key page).
+    /// Open a URL in the default browser: only Linear pages and the
+    /// System Settings privacy panes
+    /// ([`crate::logic::meetings::is_allowed_external_url`]).
     fn open_url(&self, _url: &str) -> MeetingsResult<()> {
         Err(unavailable())
     }
@@ -210,7 +349,7 @@ impl CoreMeetingsBackend {
 }
 
 fn err(e: anyhow::Error) -> String {
-    format!("{e:#}")
+    MeetingsError::from_anyhow(&e).encode()
 }
 
 impl MeetingsBackend for CoreMeetingsBackend {
@@ -318,10 +457,30 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()> {
         self.m()?.confirm_speaker(speaker_id).map_err(err)
     }
+    fn speaker_model_status(&self) -> SpeakerModelStatus {
+        guidy_core::meetings::processing::speaker_model_status(&self.app)
+    }
+    fn download_speaker_model(&self) -> MeetingsResult<()> {
+        guidy_core::meetings::processing::start_speaker_model_download(&self.app);
+        Ok(())
+    }
+
+    fn init_status(&self) -> MeetingsInit {
+        MeetingsInit::from_core(guidy_core::meetings_init_status(&self.app))
+    }
+    fn retry_init(&self) {
+        guidy_core::retry_init_meetings(&self.app)
+    }
 
     // -- AI + Linear (G2) ---------------------------------------------------
     fn summary(&self, id: MeetingId) -> MeetingsResult<Option<StoredSummary>> {
         self.m()?.summary(id).map_err(err)
+    }
+    fn cancel_summarize(&self, id: MeetingId) -> bool {
+        self.manager().is_some_and(|m| m.cancel_summarize(id))
+    }
+    fn is_summarizing(&self, id: MeetingId) -> bool {
+        self.manager().is_some_and(|m| m.is_summarizing(id))
     }
     fn summarize(
         &self,
@@ -393,6 +552,10 @@ impl MeetingsBackend for CoreMeetingsBackend {
         g2_core::delete_local(&self.app, id)
     }
     fn open_url(&self, url: &str) -> MeetingsResult<()> {
+        if !crate::logic::meetings::is_allowed_external_url(url) {
+            log::warn!("Refusing to open a non-Linear URL from meeting notes");
+            return Err(format!("Refusing to open {url}"));
+        }
         self.app.opener().open_url(url, None)
     }
 }
@@ -404,7 +567,7 @@ mod g2_core {
     use guidy_core::AppHandle;
 
     fn err(e: anyhow::Error) -> String {
-        format!("{e:#}")
+        super::err(e)
     }
 
     pub fn test_connection(app: &AppHandle, provider_id: &str) -> MeetingsResult<String> {
@@ -469,6 +632,9 @@ pub struct NoMeetings;
 impl MeetingsBackend for NoMeetings {
     fn is_supported(&self) -> bool {
         false
+    }
+    fn download_speaker_model(&self) -> MeetingsResult<()> {
+        Err(unavailable())
     }
     fn request_permissions(&self) -> MeetingsResult<PermissionReport> {
         Err(unavailable())
@@ -543,6 +709,63 @@ impl MeetingsBackend for NoMeetings {
     // -- AI + Linear (G2) ---------------------------------------------------
 }
 
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+    use guidy_core::managers::transcription::meeting::MeetingModelMissing;
+
+    #[test]
+    fn typed_errors_survive_the_string_round_trip() {
+        let missing = anyhow::Error::new(MeetingModelMissing {
+            model_id: "org/parakeet/q8.gguf".into(),
+            model_name: "Parakeet".into(),
+            known: true,
+        })
+        .context("process meeting 4");
+        let e = MeetingsError::from_anyhow(&missing);
+        assert_eq!(
+            e,
+            MeetingsError::ModelMissing {
+                model_id: "org/parakeet/q8.gguf".into(),
+                name: "Parakeet".into(),
+                known: true,
+            }
+        );
+        assert_eq!(MeetingsError::parse(&e.encode()), e);
+        let linear = anyhow::Error::new(guidy_core::linear::LinearError::MissingApiKey);
+        assert_eq!(
+            MeetingsError::parse(&err(linear)),
+            MeetingsError::NoLinearKey
+        );
+        assert_eq!(
+            MeetingsError::parse(&unavailable()),
+            MeetingsError::Unavailable
+        );
+        assert_eq!(
+            MeetingsError::parse("disk full"),
+            MeetingsError::Other("disk full".into())
+        );
+    }
+
+    #[test]
+    fn known_errors_are_localized_and_others_kept_raw() {
+        guidy_i18n::set_language("en");
+        let e = MeetingsError::ModelMissing {
+            model_id: "x".into(),
+            name: "Parakeet".into(),
+            known: true,
+        };
+        assert!(error_message(&e.encode()).contains("Parakeet"));
+        assert!(!error_message(&e.encode()).contains('\u{1f}'));
+        assert_eq!(
+            error_message(&MeetingsError::NoLinearKey.encode()),
+            guidy_i18n::t("meetings.errors.noLinearKey")
+        );
+        assert_eq!(error_message("boom"), "boom");
+        assert_eq!(MeetingsError::Other("boom".into()).localized(), None);
+    }
+}
+
 /// Recording fake for UI tests (same style as `testing::FakeBackend`).
 #[cfg(test)]
 pub mod fake {
@@ -564,6 +787,10 @@ pub mod fake {
         pub attendees: Vec<NameSuggestion>,
         pub progress: HashMap<MeetingId, ProcessingProgress>,
         pub next_id: i64,
+        pub speaker_model: SpeakerModelStatus,
+        pub init: MeetingsInit,
+        /// `process_meeting` fails with this (encoded) error.
+        pub fail_process: Option<String>,
         /// G2: summaries, action items, Linear, LLM.
         pub ai: FakeAiData,
     }
@@ -582,6 +809,9 @@ pub mod fake {
                 attendees: Vec::new(),
                 progress: HashMap::new(),
                 next_id: 1000,
+                speaker_model: SpeakerModelStatus::Ready,
+                init: MeetingsInit::Ready,
+                fail_process: None,
                 ai: FakeAiData::default(),
             }
         }
@@ -773,6 +1003,9 @@ pub mod fake {
         }
         fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
             self.rec(format!("process_meeting {id}"));
+            if let Some(e) = self.data.lock().fail_process.clone() {
+                return Err(e);
+            }
             if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
                 m.status = MeetingStatus::Processing;
             }
@@ -836,6 +1069,26 @@ pub mod fake {
         fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()> {
             self.rec(format!("confirm_speaker {speaker_id}"));
             self.speaker_mut(speaker_id, |s| s.confirmed = true)
+        }
+        fn speaker_model_status(&self) -> SpeakerModelStatus {
+            self.data.lock().speaker_model.clone()
+        }
+        fn download_speaker_model(&self) -> MeetingsResult<()> {
+            self.rec("download_speaker_model");
+            Ok(())
+        }
+        fn init_status(&self) -> MeetingsInit {
+            self.data.lock().init.clone()
+        }
+        fn retry_init(&self) {
+            self.rec("retry_init");
+        }
+        fn cancel_summarize(&self, id: MeetingId) -> bool {
+            self.rec(format!("cancel_summarize {id}"));
+            true
+        }
+        fn is_summarizing(&self, id: MeetingId) -> bool {
+            self.data.lock().ai.summarizing.contains(&id)
         }
 
         // -- AI + Linear (G2) -----------------------------------------------
@@ -1043,6 +1296,8 @@ pub mod fake {
         pub items: Vec<ActionItem>,
         pub linear_key: Option<String>,
         pub fail_summarize: Option<String>,
+        /// Meetings `is_summarizing` reports as running.
+        pub summarizing: Vec<MeetingId>,
         pub llm_models: Vec<String>,
         pub local_models: Vec<LocalLlmModel>,
     }

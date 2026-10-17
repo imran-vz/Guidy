@@ -24,8 +24,9 @@ use rusqlite_migration::{Migrations, M};
 
 use crate::meetings::types::*;
 
-static MIGRATIONS: &[M] = &[M::up(
-    "CREATE TABLE people (
+static MIGRATIONS: &[M] = &[
+    M::up(
+        "CREATE TABLE people (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         display_name TEXT NOT NULL,
         email TEXT,
@@ -112,7 +113,19 @@ static MIGRATIONS: &[M] = &[M::up(
     );
     CREATE INDEX action_items_meeting ON action_items(meeting_id);
     CREATE INDEX action_items_owner ON action_items(owner_person_id);",
-)];
+    ),
+    // 2: action-item provenance and idempotent Linear creation.
+    // - `manual`: added by the user (never replaced by a regenerated summary);
+    // - `user_edited`: the user changed it (also kept on regenerate);
+    // - `linear_client_id`: the UUID sent as `IssueCreateInput.id`, written
+    //   before the create call so a retry (or a crash) can't duplicate.
+    M::up(
+        "ALTER TABLE action_items ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE action_items ADD COLUMN user_edited INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE action_items ADD COLUMN linear_client_id TEXT;
+    UPDATE action_items SET manual = 1 WHERE trim(source_quote) = '';",
+    ),
+];
 
 /// File name of the database inside the app data dir.
 pub const MEETINGS_DB_FILE: &str = "meetings.db";
@@ -279,12 +292,19 @@ fn map_action_item(row: &Row<'_>) -> rusqlite::Result<ActionItem> {
     })
 }
 
-fn insert_action_item_tx(conn: &Connection, item: &ActionItem) -> Result<ActionItemId> {
+/// Insert an action item. Items without a source quote are always manual
+/// (the summarizer drops quote-less items).
+fn insert_action_item_tx(
+    conn: &Connection,
+    item: &ActionItem,
+    manual: bool,
+) -> Result<ActionItemId> {
+    let manual = manual || item.source_quote.trim().is_empty();
     conn.execute(
         "INSERT INTO action_items (meeting_id, text, owner_person_id, owner_name, owner_is_user,
             due, source_quote, source_t_ms, ticket, ticket_state, linear_issue_id,
-            linear_issue_identifier, linear_issue_url)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            linear_issue_identifier, linear_issue_url, manual)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             item.meeting_id,
             item.text,
@@ -299,10 +319,68 @@ fn insert_action_item_tx(conn: &Connection, item: &ActionItem) -> Result<ActionI
             item.linear_issue_id,
             item.linear_issue_identifier,
             item.linear_issue_url,
+            manual,
         ],
     )?;
     Ok(conn.last_insert_rowid())
 }
+
+/// A random RFC 4122 version-4 UUID (lowercase, hyphenated).
+pub fn new_uuid_v4() -> String {
+    let mut b: [u8; 16] = rand::random();
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// Create `path` (if missing) and restrict it to the owner (0600) on unix.
+pub(crate) fn restrict_file(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("create {}", path.display()))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Why an action-item ticket change was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TicketEditError {
+    /// The Linear issue exists: its draft and state are frozen.
+    AlreadyCreated,
+    /// `Created` is only set by recording the issue ([`MeetingsStore::set_linear_issue`]).
+    CannotSetCreated,
+}
+
+impl std::fmt::Display for TicketEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyCreated => f.write_str("the Linear issue for this item already exists"),
+            Self::CannotSetCreated => {
+                f.write_str("an item becomes Created only when its issue is recorded")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TicketEditError {}
 
 /// The encrypted meetings database. Cheap to share as `Arc<MeetingsStore>`;
 /// every call takes the connection lock for its duration.
@@ -317,6 +395,9 @@ impl MeetingsStore {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
+        // Owner-only before SQLite opens it; its -journal/-wal files copy the
+        // database file's mode.
+        restrict_file(path)?;
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         Self::init(conn, key)
     }
@@ -380,7 +461,8 @@ impl MeetingsStore {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Overwrite every column of the meeting row `m.id`.
+    /// Overwrite every column of the meeting row `m.id`. Avoid outside tests:
+    /// a stale copy undoes concurrent changes. Use the targeted setters.
     pub fn update_meeting(&self, m: &Meeting) -> Result<()> {
         let n = self.conn.lock().execute(
             "UPDATE meetings SET title = ?2, calendar_event_id = ?3, calendar_event = ?4,
@@ -523,6 +605,34 @@ impl MeetingsStore {
             params![id, mic, system],
         )?;
         expect_one(n, "meeting", id)
+    }
+
+    /// End a recording: `ended_at`, status `Recorded` and `error`, only while
+    /// the row is still `Recording` (title and paths are untouched). Returns
+    /// false when it wasn't recording.
+    pub fn finish_recording(
+        &self,
+        id: MeetingId,
+        ended_at: i64,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE meetings SET ended_at = ?2, status = 'recorded', error = ?3
+             WHERE id = ?1 AND status = 'recording'",
+            params![id, ended_at, error],
+        )? > 0)
+    }
+
+    /// Audio retention: clear both track paths only when the meeting is fully
+    /// processed and neither recording nor processing. Returns false (and
+    /// changes nothing) otherwise.
+    pub fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE meetings SET mic_audio_path = NULL, system_audio_path = NULL
+             WHERE id = ?1 AND status NOT IN ('recording', 'processing')
+               AND processing_stage = 'done'",
+            [id],
+        )? > 0)
     }
 
     /// Link (or unlink) a calendar event, storing its snapshot.
@@ -761,13 +871,38 @@ impl MeetingsStore {
     }
 
     /// Delete a person and their voiceprints; speaker links and action-item
-    /// owners pointing at them are cleared. Returns false if they didn't exist.
+    /// owners pointing at them are cleared, and so are the cluster centroids
+    /// (`meeting_speakers.embedding`) of the speakers linked to them, which
+    /// are their voice too. Returns false if they didn't exist.
+    ///
+    /// Per-segment voiceprints live in the encrypted embeddings sidecars;
+    /// call [`Self::person_segments`] first to find the ones to drop.
     pub fn delete_person(&self, id: PersonId) -> Result<bool> {
-        Ok(self
-            .conn
-            .lock()
-            .execute("DELETE FROM people WHERE id = ?1", [id])?
-            > 0)
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE meeting_speakers SET embedding = NULL WHERE person_id = ?1",
+                [id],
+            )?;
+            Ok(tx.execute("DELETE FROM people WHERE id = ?1", [id])? > 0)
+        })
+    }
+
+    /// Segments attributed to `person_id` (through their meeting speakers),
+    /// grouped by meeting: `meeting id -> segment ids`.
+    pub fn person_segments(&self, person_id: PersonId) -> Result<HashMap<MeetingId, Vec<i64>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT g.meeting_id, g.id FROM meeting_segments g
+             JOIN meeting_speakers s ON s.id = g.speaker_id
+             WHERE s.person_id = ?1 ORDER BY g.meeting_id, g.id",
+        )?;
+        let mut out: HashMap<MeetingId, Vec<i64>> = HashMap::new();
+        let rows = stmt.query_map([person_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        for row in rows {
+            let (m, seg): (MeetingId, i64) = row?;
+            out.entry(m).or_default().push(seg);
+        }
+        Ok(out)
     }
 
     /// Move voiceprints, speaker links and action-item owners from `from` to
@@ -935,37 +1070,160 @@ impl MeetingsStore {
     }
 
     /// Insert an action item (its `id` is ignored). Returns the stored item.
+    /// An item without a source quote is stored as manual.
     pub fn insert_action_item(&self, item: &ActionItem) -> Result<ActionItem> {
-        let id = insert_action_item_tx(&self.conn.lock(), item)?;
+        let id = insert_action_item_tx(&self.conn.lock(), item, false)?;
         self.get_action_item(id)?
             .ok_or_else(|| anyhow!("action item {id} vanished after insert"))
     }
 
-    /// Overwrite every field of action item `item.id` (except `meeting_id`).
+    /// Insert an item the user added by hand. Manual items are never replaced
+    /// by a regenerated summary.
+    pub fn insert_manual_action_item(&self, item: &ActionItem) -> Result<ActionItem> {
+        let id = insert_action_item_tx(&self.conn.lock(), item, true)?;
+        self.get_action_item(id)?
+            .ok_or_else(|| anyhow!("action item {id} vanished after insert"))
+    }
+
+    /// Save the user-editable item fields of `item.id`: text, owner (person,
+    /// name, is-user), due date, source quote and its timestamp. The ticket
+    /// draft, ticket state and Linear link are never touched here (see
+    /// [`Self::update_ticket_draft`], [`Self::set_ticket_state`],
+    /// [`Self::set_linear_issue`]), so a stale copy can't unlink an issue.
+    /// Marks the item user-edited when something changed.
     pub fn update_action_item(&self, item: &ActionItem) -> Result<()> {
+        self.with_tx(|tx| {
+            let current = tx
+                .query_row(
+                    &format!("SELECT {ACTION_COLS} FROM action_items WHERE id = ?1"),
+                    [item.id],
+                    map_action_item,
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("action item {} not found", item.id))?;
+            let changed = current.text != item.text
+                || current.owner_person_id != item.owner_person_id
+                || current.owner_name != item.owner_name
+                || current.owner_is_user != item.owner_is_user
+                || current.due != item.due
+                || current.source_quote != item.source_quote
+                || current.source_t_ms != item.source_t_ms;
+            if !changed {
+                return Ok(());
+            }
+            tx.execute(
+                "UPDATE action_items SET text = ?2, owner_person_id = ?3, owner_name = ?4,
+                    owner_is_user = ?5, due = ?6, source_quote = ?7, source_t_ms = ?8,
+                    user_edited = 1
+                 WHERE id = ?1",
+                params![
+                    item.id,
+                    item.text,
+                    item.owner_person_id,
+                    item.owner_name,
+                    item.owner_is_user,
+                    item.due,
+                    item.source_quote,
+                    item.source_t_ms,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Replace the ticket draft. Refused ([`TicketEditError::AlreadyCreated`])
+    /// once the item has a Linear issue.
+    pub fn update_ticket_draft(&self, id: ActionItemId, draft: &TicketDraft) -> Result<()> {
+        let json = to_json(draft)?;
+        self.with_tx(|tx| {
+            ensure_not_created(tx, id)?;
+            tx.execute(
+                "UPDATE action_items SET ticket = ?2 WHERE id = ?1",
+                params![id, json],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Set the ticket state (draft / approved / discarded). Refused for an
+    /// item whose issue exists, and for `Created` itself (only
+    /// [`Self::set_linear_issue`] sets that).
+    pub fn set_ticket_state(&self, id: ActionItemId, state: TicketState) -> Result<()> {
+        if state == TicketState::Created {
+            return Err(TicketEditError::CannotSetCreated.into());
+        }
+        self.with_tx(|tx| {
+            ensure_not_created(tx, id)?;
+            tx.execute(
+                "UPDATE action_items SET ticket_state = ?2 WHERE id = ?1",
+                params![id, state.as_str()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Mark an item as changed by the user (kept when the summary is
+    /// regenerated).
+    pub fn mark_action_item_user_edited(&self, id: ActionItemId) -> Result<()> {
         let n = self.conn.lock().execute(
-            "UPDATE action_items SET text = ?2, owner_person_id = ?3, owner_name = ?4,
-                owner_is_user = ?5, due = ?6, source_quote = ?7, source_t_ms = ?8, ticket = ?9,
-                ticket_state = ?10, linear_issue_id = ?11, linear_issue_identifier = ?12,
-                linear_issue_url = ?13
-             WHERE id = ?1",
-            params![
-                item.id,
-                item.text,
-                item.owner_person_id,
-                item.owner_name,
-                item.owner_is_user,
-                item.due,
-                item.source_quote,
-                item.source_t_ms,
-                to_json(&item.ticket)?,
-                item.ticket_state.as_str(),
-                item.linear_issue_id,
-                item.linear_issue_identifier,
-                item.linear_issue_url,
-            ],
+            "UPDATE action_items SET user_edited = 1 WHERE id = ?1",
+            [id],
         )?;
-        expect_one(n, "action item", item.id)
+        expect_one(n, "action item", id)
+    }
+
+    /// The item's provenance flags: `(manual, user_edited)`.
+    pub fn action_item_flags(&self, id: ActionItemId) -> Result<Option<(bool, bool)>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT manual, user_edited FROM action_items WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// The UUID this item's Linear issue is (or will be) created with,
+    /// generating and persisting one first if needed. Persisting it before
+    /// the create call is the "creating" state: a crash or timeout after it
+    /// leaves an id that a retry reuses, so Linear rejects the duplicate.
+    pub fn ensure_linear_client_id(&self, id: ActionItemId) -> Result<String> {
+        self.with_tx(|tx| {
+            let current: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT linear_client_id FROM action_items WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match current {
+                None => bail!("action item {id} not found"),
+                Some(Some(existing)) if !existing.is_empty() => Ok(existing),
+                Some(_) => {
+                    let fresh = new_uuid_v4();
+                    tx.execute(
+                        "UPDATE action_items SET linear_client_id = ?2 WHERE id = ?1",
+                        params![id, fresh],
+                    )?;
+                    Ok(fresh)
+                }
+            }
+        })
+    }
+
+    pub fn linear_client_id(&self, id: ActionItemId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT linear_client_id FROM action_items WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     pub fn delete_action_item(&self, id: ActionItemId) -> Result<bool> {
@@ -976,23 +1234,48 @@ impl MeetingsStore {
             > 0)
     }
 
-    /// Replace the meeting's action items that have no Linear issue yet with
-    /// `items` (their `id`/`meeting_id` are ignored), in one transaction.
-    /// Items already linked to an issue are kept. Returns all items.
+    /// Replace the meeting's regenerable action items with `items` (their
+    /// `id`/`meeting_id` are ignored), in one transaction. Returns all items.
+    ///
+    /// Kept (never deleted here): items with a Linear issue, items whose
+    /// creation was attempted (`linear_client_id` set), `Approved` items,
+    /// manual items, items the user edited, and the ids in `keep` (e.g. the
+    /// in-flight create guard). New items that `is_duplicate` of a kept item
+    /// are skipped.
     pub fn replace_unlinked_action_items(
         &self,
         meeting_id: MeetingId,
         items: &[ActionItem],
+        keep: &[ActionItemId],
+        is_duplicate: impl Fn(&ActionItem, &ActionItem) -> bool,
     ) -> Result<Vec<ActionItem>> {
         self.with_tx(|tx| {
-            tx.execute(
-                "DELETE FROM action_items WHERE meeting_id = ?1 AND linear_issue_id IS NULL",
-                [meeting_id],
-            )?;
+            let kept: Vec<ActionItem> = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {ACTION_COLS}, {PRESERVED} FROM action_items
+                     WHERE meeting_id = ?1 ORDER BY id"
+                ))?;
+                let rows = stmt.query_map([meeting_id], |r| {
+                    Ok((map_action_item(r)?, r.get::<_, bool>(ACTION_COL_COUNT)?))
+                })?;
+                let mut kept = Vec::new();
+                for row in rows {
+                    let (item, preserved) = row?;
+                    if preserved || keep.contains(&item.id) {
+                        kept.push(item);
+                    } else {
+                        tx.execute("DELETE FROM action_items WHERE id = ?1", [item.id])?;
+                    }
+                }
+                kept
+            };
             for item in items {
+                if kept.iter().any(|k| is_duplicate(k, item)) {
+                    continue;
+                }
                 let mut item = item.clone();
                 item.meeting_id = meeting_id;
-                insert_action_item_tx(tx, &item)?;
+                insert_action_item_tx(tx, &item, false)?;
             }
             Ok(())
         })?;
@@ -1014,6 +1297,28 @@ impl MeetingsStore {
             params![id, issue_id, identifier, url, TicketState::Created.as_str()],
         )?;
         expect_one(n, "action item", id)
+    }
+}
+
+/// SQL truth value: the item must survive a regenerated summary.
+const PRESERVED: &str = "(linear_issue_id IS NOT NULL OR linear_client_id IS NOT NULL \
+     OR ticket_state IN ('approved', 'created') OR manual != 0 OR user_edited != 0)";
+const ACTION_COL_COUNT: usize = 14;
+
+fn ensure_not_created(tx: &Transaction<'_>, id: ActionItemId) -> Result<()> {
+    let row: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT ticket_state, linear_issue_id FROM action_items WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => bail!("action item {id} not found"),
+        Some((state, issue)) if state == TicketState::Created.as_str() || issue.is_some() => {
+            Err(TicketEditError::AlreadyCreated.into())
+        }
+        Some(_) => Ok(()),
     }
 }
 
@@ -1131,6 +1436,7 @@ mod tests {
             attendees: vec![Attendee {
                 name: Some("Ann".into()),
                 email: Some("ann@example.com".into()),
+                is_current_user: false,
             }],
         });
         m.calendar_event_id = Some("evt-1".into());
@@ -1473,13 +1779,21 @@ mod tests {
         assert_eq!(a.text, "first");
         assert_eq!(a.ticket.label_ids, vec!["l1".to_string()]);
         assert_eq!(a.ticket_state, TicketState::Draft);
+        assert_eq!(s.action_item_flags(a.id).unwrap(), Some((false, false)));
 
         let mut edited = a.clone();
         edited.text = "edited".into();
-        edited.ticket.team_id = Some("team".into());
-        edited.ticket_state = TicketState::Approved;
         s.update_action_item(&edited).unwrap();
-        assert_eq!(s.get_action_item(a.id).unwrap(), Some(edited.clone()));
+        let mut ticket = a.ticket.clone();
+        ticket.team_id = Some("team".into());
+        s.update_ticket_draft(a.id, &ticket).unwrap();
+        s.set_ticket_state(a.id, TicketState::Approved).unwrap();
+        let got = s.get_action_item(a.id).unwrap().unwrap();
+        assert_eq!(got.text, "edited");
+        assert_eq!(got.ticket, ticket);
+        assert_eq!(got.ticket_state, TicketState::Approved);
+        assert_eq!(s.action_item_flags(a.id).unwrap(), Some((false, true)));
+        assert!(s.set_ticket_state(a.id, TicketState::Created).is_err());
 
         s.set_linear_issue(a.id, "uuid-1", "ENG-1", "https://linear.app/x/ENG-1")
             .unwrap();
@@ -1489,7 +1803,12 @@ mod tests {
 
         let b = s.insert_action_item(&item(m, "second")).unwrap();
         let all = s
-            .replace_unlinked_action_items(m, &[item(999, "new1"), item(999, "new2")])
+            .replace_unlinked_action_items(
+                m,
+                &[item(999, "new1"), item(999, "new2")],
+                &[],
+                |_, _| false,
+            )
             .unwrap();
         let texts: Vec<_> = all.iter().map(|i| i.text.as_str()).collect();
         assert_eq!(texts, vec!["edited", "new1", "new2"]);
@@ -1499,6 +1818,194 @@ mod tests {
         assert!(s.delete_action_item(a.id).unwrap());
         assert_eq!(s.action_items(m).unwrap().len(), 2);
         assert!(s.set_linear_issue(a.id, "x", "y", "z").is_err());
+    }
+
+    #[test]
+    fn stale_item_save_never_touches_ticket_or_linear_link() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_action_item(&item(m, "do it")).unwrap();
+        // The UI holds this copy while the ticket gets created.
+        let stale = a.clone();
+        s.set_ticket_state(a.id, TicketState::Approved).unwrap();
+        s.set_linear_issue(a.id, "iss", "ENG-1", "u").unwrap();
+
+        let mut edit = stale.clone();
+        edit.text = "do it well".into();
+        edit.ticket = TicketDraft::default();
+        edit.ticket_state = TicketState::Draft;
+        s.update_action_item(&edit).unwrap();
+        let got = s.get_action_item(a.id).unwrap().unwrap();
+        assert_eq!(got.text, "do it well");
+        assert_eq!(got.ticket_state, TicketState::Created);
+        assert_eq!(got.linear_issue_id.as_deref(), Some("iss"));
+        assert_eq!(got.linear_issue_identifier.as_deref(), Some("ENG-1"));
+        assert_eq!(got.ticket, a.ticket);
+
+        // The ticket of a Created item is frozen.
+        let e = s
+            .update_ticket_draft(a.id, &TicketDraft::default())
+            .unwrap_err();
+        assert_eq!(
+            e.downcast_ref::<TicketEditError>(),
+            Some(&TicketEditError::AlreadyCreated)
+        );
+        assert!(s.set_ticket_state(a.id, TicketState::Draft).is_err());
+        assert!(s.set_ticket_state(a.id, TicketState::Discarded).is_err());
+        assert!(s
+            .update_ticket_draft(4242, &TicketDraft::default())
+            .is_err());
+    }
+
+    #[test]
+    fn regenerating_keeps_approved_manual_edited_creating_and_guarded_items() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let approved = s.insert_action_item(&item(m, "approved")).unwrap();
+        s.set_ticket_state(approved.id, TicketState::Approved)
+            .unwrap();
+        let mut manual = item(m, "manual");
+        manual.source_quote = String::new();
+        let manual = s.insert_manual_action_item(&manual).unwrap();
+        let mut quoteless = item(m, "quoteless");
+        quoteless.source_quote = "  ".into();
+        let quoteless = s.insert_action_item(&quoteless).unwrap();
+        let edited = s.insert_action_item(&item(m, "edited")).unwrap();
+        let mut e = edited.clone();
+        e.owner_name = Some("Dana".into());
+        s.update_action_item(&e).unwrap();
+        let creating = s.insert_action_item(&item(m, "creating")).unwrap();
+        s.ensure_linear_client_id(creating.id).unwrap();
+        let guarded = s.insert_action_item(&item(m, "guarded")).unwrap();
+        let plain = s.insert_action_item(&item(m, "plain")).unwrap();
+        // Saving an unchanged copy is not an edit.
+        s.update_action_item(&plain).unwrap();
+        assert_eq!(s.action_item_flags(plain.id).unwrap(), Some((false, false)));
+        assert_eq!(s.action_item_flags(manual.id).unwrap(), Some((true, false)));
+        assert_eq!(
+            s.action_item_flags(quoteless.id).unwrap(),
+            Some((true, false))
+        );
+
+        let all = s
+            .replace_unlinked_action_items(
+                m,
+                &[item(0, "approved"), item(0, "fresh")],
+                &[guarded.id],
+                |a, b| a.text == b.text,
+            )
+            .unwrap();
+        let texts: Vec<_> = all.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "approved",
+                "manual",
+                "quoteless",
+                "edited",
+                "creating",
+                "guarded",
+                "fresh"
+            ]
+        );
+        assert_eq!(s.get_action_item(plain.id).unwrap(), None);
+    }
+
+    #[test]
+    fn linear_client_id_is_a_stable_v4_uuid() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_action_item(&item(m, "x")).unwrap();
+        assert_eq!(s.linear_client_id(a.id).unwrap(), None);
+        let id = s.ensure_linear_client_id(a.id).unwrap();
+        assert_eq!(s.ensure_linear_client_id(a.id).unwrap(), id);
+        assert_eq!(s.linear_client_id(a.id).unwrap().as_deref(), Some(&*id));
+        assert_eq!(id.len(), 36);
+        let parts: Vec<_> = id.split('-').map(str::len).collect();
+        assert_eq!(parts, vec![8, 4, 4, 4, 12]);
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        assert_ne!(new_uuid_v4(), new_uuid_v4());
+        assert!(s.ensure_linear_client_id(999).is_err());
+    }
+
+    #[test]
+    fn targeted_meeting_updates_are_guarded_by_status() {
+        let s = store();
+        let mut rec = meeting("r", 0);
+        rec.status = MeetingStatus::Recording;
+        rec.ended_at = None;
+        let id = s.insert_meeting(&rec).unwrap();
+        s.set_meeting_title(id, "Renamed").unwrap();
+        assert!(s.finish_recording(id, 500, Some("mic track: x")).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.title, "Renamed");
+        assert_eq!(got.status, MeetingStatus::Recorded);
+        assert_eq!(got.ended_at, Some(500));
+        assert_eq!(got.error.as_deref(), Some("mic track: x"));
+        // Not recording any more: a second finish changes nothing.
+        assert!(!s.finish_recording(id, 900, None).unwrap());
+        assert_eq!(s.get_meeting(id).unwrap().unwrap().ended_at, Some(500));
+
+        // Retention clear: only once fully processed and idle.
+        assert!(!s.clear_audio_paths_if_processed(id).unwrap());
+        s.set_processing_stage(id, Some(ProcessingStage::Done))
+            .unwrap();
+        s.set_meeting_status(id, MeetingStatus::Processing, None)
+            .unwrap();
+        assert!(!s.clear_audio_paths_if_processed(id).unwrap());
+        s.set_meeting_status(id, MeetingStatus::Processed, None)
+            .unwrap();
+        assert!(s.clear_audio_paths_if_processed(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!((got.mic_audio_path, got.system_audio_path), (None, None));
+        assert_eq!(got.title, "Renamed");
+    }
+
+    #[test]
+    fn deleting_a_person_clears_their_speaker_centroids() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let ann = s.insert_person("Ann", None).unwrap();
+        let (sp, segs) = s
+            .replace_transcript(
+                m,
+                &[
+                    speaker(0, "Speaker 1", Some(ann.id)),
+                    speaker(1, "Speaker 2", None),
+                ],
+                &[
+                    segment(0, Some(0), Track::System),
+                    segment(2000, Some(1), Track::System),
+                    segment(4000, Some(0), Track::System),
+                ],
+            )
+            .unwrap();
+        s.set_speaker_embedding(sp[0].id, Some(&[1.0])).unwrap();
+        s.set_speaker_embedding(sp[1].id, Some(&[2.0])).unwrap();
+        let mine = s.person_segments(ann.id).unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[&m], vec![segs[0].id, segs[2].id]);
+
+        s.delete_person(ann.id).unwrap();
+        assert_eq!(s.speaker_embedding(sp[0].id).unwrap(), None);
+        assert_eq!(s.speaker_embedding(sp[1].id).unwrap(), Some(vec![2.0]));
+        assert!(s.person_segments(ann.id).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        // Even a pre-existing world-readable file is tightened.
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        s.insert_meeting(&meeting("x", 0)).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     // ----- Risk 5.4: SQLCipher build with plain + keyed databases ----------

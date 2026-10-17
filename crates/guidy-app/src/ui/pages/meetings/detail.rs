@@ -2,10 +2,11 @@
 //! with their name pickers, and the transcript grouped by speaker with
 //! click-to-play segments.
 
-use super::{meeting_settings, run, toast_error};
+use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    can_process, duration_minutes, format_meeting_date, format_offset, group_by_speaker,
-    needs_confirmation, non_empty, speaker_name, status_key, MeetingsEvent, SpeakerBlock,
+    can_process, cluster_label, duration_minutes, format_meeting_date, format_offset,
+    group_by_speaker, needs_confirmation, non_empty, speaker_name, status_key, MeetingsEvent,
+    SpeakerBlock,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -50,6 +51,9 @@ pub struct MeetingDetail {
     email_input: Entity<InputState>,
     assigning: bool,
     processing_busy: bool,
+    cancelling: bool,
+    /// Deep link: seek and play here once the transcript has loaded.
+    pending_seek: Option<i64>,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -98,6 +102,8 @@ impl MeetingDetail {
             email_input,
             assigning: false,
             processing_busy: false,
+            cancelling: false,
+            pending_seek: None,
             ticking: false,
             _subs: subs,
         };
@@ -108,7 +114,7 @@ impl MeetingDetail {
     fn on_event(&mut self, ev: &MeetingsEvent, cx: &mut Context<Self>) {
         match ev {
             MeetingsEvent::MeetingChanged(id) if *id == self.meeting_id => self.load(cx),
-            MeetingsEvent::PeopleChanged => self.load(cx),
+            MeetingsEvent::PeopleChanged | MeetingsEvent::Ready => self.load(cx),
             MeetingsEvent::Progress(p) if p.meeting_id == self.meeting_id => {
                 let done = p.fraction >= 1.0;
                 self.progress = Some(p.clone());
@@ -149,9 +155,40 @@ impl MeetingDetail {
                         if progress.is_some() {
                             this.progress = progress;
                         }
+                        if !this.segments.is_empty() {
+                            if let Some(t_ms) = this.pending_seek.take() {
+                                this.seek_to(t_ms, cx);
+                            }
+                        }
                     }
                     Err(e) => toast_error("meetings.detail.loadError", &e, cx),
                 }
+            },
+        );
+    }
+
+    /// Seek and play at `t_ms` now, or once the transcript has loaded.
+    pub fn seek_when_loaded(&mut self, t_ms: i64, cx: &mut Context<Self>) {
+        if self.loading || self.segments.is_empty() {
+            self.pending_seek = Some(t_ms);
+        } else {
+            self.seek_to(t_ms, cx);
+        }
+    }
+
+    fn cancel_processing(&mut self, cx: &mut Context<Self>) {
+        let id = self.meeting_id;
+        self.cancelling = true;
+        cx.notify();
+        run(
+            cx,
+            move |b| b.cancel_processing(id),
+            |this: &mut Self, r, cx| {
+                this.cancelling = false;
+                if let Err(e) = r {
+                    toast_error("meetings.list.cancelError", &e, cx);
+                }
+                this.load(cx);
             },
         );
     }
@@ -446,6 +483,9 @@ impl MeetingDetail {
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
         let show_process = can_process(m) && m.status != MeetingStatus::Processed;
+        let model_banner = meeting_model_missing(cx)
+            .filter(|_| matches!(m.status, MeetingStatus::Recorded | MeetingStatus::Failed))
+            .map(|missing| render_model_download("detail", &missing, cx));
         v_flex()
             .gap_2()
             .items_start()
@@ -506,8 +546,21 @@ impl MeetingDetail {
                                 .disabled(self.processing_busy)
                                 .on_click(cx.listener(|this, _, _, cx| this.process(cx))),
                         )
+                    })
+                    .when(processing, |d| {
+                        d.child(
+                            Button::new("meeting-detail-cancel")
+                                .outline()
+                                .small()
+                                .icon(icon("circle-x"))
+                                .label(t("meetings.list.cancelProcessing"))
+                                .loading(self.cancelling)
+                                .disabled(self.cancelling)
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_processing(cx))),
+                        )
                     }),
             )
+            .children(model_banner)
             .when(processing, |d| {
                 let stage = self
                     .progress
@@ -654,7 +707,7 @@ impl MeetingDetail {
                                     div()
                                         .text_xs()
                                         .text_color(theme.muted_foreground)
-                                        .child(s.cluster_label.clone()),
+                                        .child(cluster_label(s)),
                                 )
                             })
                             .when(uncertain, |d| {

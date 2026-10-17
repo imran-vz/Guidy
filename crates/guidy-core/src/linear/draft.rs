@@ -198,8 +198,10 @@ fn owner_email(item: &ActionItem, owner_name: Option<&str>, ctx: &DraftContext) 
         .into_iter()
         .chain(person.map(|p| p.display_name.trim()))
         .collect();
+    // The current user's attendee entry never matches someone else's name.
     ctx.attendees
         .iter()
+        .filter(|a| !a.is_current_user)
         .find(|a| {
             a.name
                 .as_deref()
@@ -405,6 +407,7 @@ mod tests {
         let attendees = [Attendee {
             name: Some("Fox Mulder".into()),
             email: Some("FOX@fbi.gov".into()),
+            is_current_user: false,
         }];
         let ctx = DraftContext {
             people: &people,
@@ -416,6 +419,28 @@ mod tests {
         let mut it = item();
         it.owner_person_id = Some(3);
         assert_eq!(pick_assignee(&it, &ctx).as_deref(), Some("u-fox"));
+    }
+
+    #[test]
+    fn current_user_attendee_is_not_used_for_owner_matching() {
+        // The owner "Fox Mulder" happens to share the name of the Mac's user
+        // in the calendar; that entry's email must not be used.
+        let users = [user("u-me2", "me@x.com")];
+        let attendees = [Attendee {
+            name: Some("Fox Mulder".into()),
+            email: Some("me@x.com".into()),
+            is_current_user: true,
+        }];
+        let ctx = DraftContext {
+            attendees: &attendees,
+            linear_users: &users,
+            viewer_id: Some("u-me"),
+            ..Default::default()
+        };
+        let mut it = item();
+        it.owner_is_user = false;
+        it.owner_name = Some("Fox Mulder".into());
+        assert_eq!(pick_assignee(&it, &ctx), None);
     }
 
     #[test]

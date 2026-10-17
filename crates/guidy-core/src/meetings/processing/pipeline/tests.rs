@@ -147,14 +147,17 @@ fn fixture() -> Fixture {
                     Attendee {
                         name: Some("Alice".into()),
                         email: Some("alice@example.com".into()),
+                        is_current_user: false,
                     },
                     Attendee {
                         name: Some("Me Myself".into()),
                         email: Some("me@example.com".into()),
+                        is_current_user: false,
                     },
                     Attendee {
                         name: Some("Bob".into()),
                         email: Some("bob@example.com".into()),
+                        is_current_user: false,
                     },
                 ],
             }),
@@ -276,10 +279,9 @@ fn processes_a_meeting_end_to_end() {
     }
     // Centroids on the cluster speakers; per-segment voiceprints sidecar.
     assert!(f.store.speaker_embedding(speakers[1].id).unwrap().is_some());
-    let prints: Vec<SegmentEmbedding> =
-        sidecar::read(&sidecar::embeddings_path(f.dir.path(), f.id), &KEY)
-            .unwrap()
-            .unwrap();
+    let prints: Vec<SegmentEmbedding> = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
+        .unwrap()
+        .unwrap();
     assert_eq!(prints.len(), 6);
 
     // Progress is monotone and ends at 1.0.
@@ -300,7 +302,7 @@ fn cancel_then_resume_skips_finished_work() {
     assert_eq!(r.transcribe_calls, 3);
     // VAD done, transcription part-way (checkpointed).
     assert_eq!(stage(&f), Some(ProcessingStage::Vad));
-    let cache: ProcessingCache = sidecar::read(&sidecar::cache_path(f.dir.path(), f.id), &KEY)
+    let cache: ProcessingCache = sidecar::read_cache(f.dir.path(), f.id, &KEY)
         .unwrap()
         .unwrap();
     assert_eq!(cache.transcripts.iter().filter(|t| t.is_some()).count(), 3);
@@ -526,6 +528,60 @@ fn suggestions_list_unassigned_attendees_then_people_by_voice() {
     assert!(got
         .iter()
         .any(|s| s.display_name == "Bob" && s.source == SuggestionSource::KnownPerson));
+}
+
+#[test]
+fn the_current_user_attendee_is_never_suggested() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    // EventKit flags "Me Myself" as the Mac's user; no email in settings.
+    let mut m = f.store.get_meeting(f.id).unwrap().unwrap();
+    let mut event = m.calendar_event.take().unwrap();
+    event.attendees[1].is_current_user = true;
+    f.store.set_calendar_event(f.id, Some(&event)).unwrap();
+    let speakers = f.store.speakers(f.id).unwrap();
+    let got = naming::suggestions(&f.store, speakers[1].id, None).unwrap();
+    let names: Vec<&str> = got.iter().map(|s| s.display_name.as_str()).collect();
+    assert!(!names.contains(&"Me Myself"), "{names:?}");
+    assert!(names.contains(&"Alice") && names.contains(&"Bob"));
+}
+
+#[test]
+fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
+    let f = fixture();
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let store = &f.store;
+    let (id, dir) = (f.id, f.dir.path());
+    let result = Pipeline {
+        meeting_id: id,
+        store,
+        meetings_dir: dir,
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| {
+            // The user deletes the meeting (and its sidecars) while it runs.
+            if p.stage == ProcessingStage::Transcribe && store.delete_meeting(id).unwrap() {
+                sidecar::delete_sidecars(dir, id).unwrap();
+            }
+        }),
+    }
+    .run();
+    assert!(result.is_err());
+    assert!(!sidecar::cache_path(dir, id).exists());
+    assert!(!sidecar::embeddings_path(dir, id).exists());
 }
 
 #[test]

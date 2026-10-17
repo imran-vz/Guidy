@@ -247,15 +247,18 @@ fn attendees_get_names_and_mailto_emails() {
         vec![
             Attendee {
                 name: Some("Alice Smith".into()),
-                email: Some("alice@example.com".into())
+                email: Some("alice@example.com".into()),
+                is_current_user: false,
             },
             Attendee {
                 name: None,
-                email: Some("bob@example.com".into())
+                email: Some("bob@example.com".into()),
+                is_current_user: true,
             },
             Attendee {
                 name: Some("Conference Room".into()),
-                email: None
+                email: None,
+                is_current_user: false,
             },
         ]
     );
@@ -506,4 +509,33 @@ fn hw_captures_two_seconds() {
         .iter()
         .chain(sys.rates.iter())
         .all(|r| *r == CAPTURE_SAMPLE_RATE));
+}
+
+#[test]
+fn timed_events_keep_linkless_events_but_meeting_events_drop_them() {
+    let linked = RawEvent {
+        url: Some("https://meet.google.com/aaa-bbbb-ccc".into()),
+        start_ms: 2_000,
+        ..raw("linked")
+    };
+    let in_person = RawEvent {
+        title: "1:1 in the office".into(),
+        start_ms: 1_000,
+        ..raw("office")
+    };
+    let all_day = RawEvent {
+        all_day: true,
+        ..raw("holiday")
+    };
+    let raws = vec![linked, in_person, all_day];
+
+    let prompts = meeting_events(raws.clone());
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].meeting_url.is_some());
+
+    let timed = timed_events(raws);
+    assert_eq!(timed.len(), 2, "{timed:?}");
+    assert_eq!(timed[0].title, "1:1 in the office");
+    assert_eq!(timed[0].meeting_url, None);
+    assert!(timed[1].meeting_url.is_some());
 }

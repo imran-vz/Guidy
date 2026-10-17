@@ -36,7 +36,8 @@ fn same_text(a: &str, b: &str) -> bool {
 }
 
 /// Picker suggestions for `speaker_id`: the linked event's attendees who
-/// aren't assigned to another speaker of this meeting (and aren't the user),
+/// aren't assigned to another speaker of this meeting (and aren't the user,
+/// by `Attendee::is_current_user` or the settings email),
 /// then every other known person, ranked by voice similarity (people without
 /// voiceprints last, by name).
 pub fn suggestions(
@@ -76,6 +77,10 @@ pub fn suggestions(
         .map(|e| e.attendees)
         .unwrap_or_default();
     for a in attendees {
+        // The Mac's user is the mic track, never one of the other speakers.
+        if a.is_current_user {
+            continue;
+        }
         let email = a.email.as_deref().map(str::trim).filter(|e| !e.is_empty());
         let name = a.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         if email.is_some_and(|e| user_email.is_some_and(|u| same_text(e, u))) {
@@ -155,17 +160,17 @@ pub fn speaker_prints(
         .filter(|s| s.speaker_id == Some(speaker.id))
         .map(|s| s.id)
         .collect();
-    let path = sidecar::embeddings_path(meetings_dir, speaker.meeting_id);
-    let stored: Vec<SegmentEmbedding> = match sidecar::read(&path, key) {
-        Ok(v) => v.unwrap_or_default(),
-        Err(e) => {
-            log::warn!(
-                "meeting {}: segment voiceprints unreadable: {e:#}",
-                speaker.meeting_id
-            );
-            Vec::new()
-        }
-    };
+    let stored: Vec<SegmentEmbedding> =
+        match sidecar::read_embeddings(meetings_dir, speaker.meeting_id, key) {
+            Ok(v) => v.unwrap_or_default(),
+            Err(e) => {
+                log::warn!(
+                    "meeting {}: segment voiceprints unreadable: {e:#}",
+                    speaker.meeting_id
+                );
+                Vec::new()
+            }
+        };
     let mut mine: Vec<SegmentEmbedding> = stored
         .into_iter()
         .filter(|e| segment_ids.contains(&e.segment_id) && !e.embedding.is_empty())

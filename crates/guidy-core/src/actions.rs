@@ -9,6 +9,7 @@ use crate::managers::model::ModelManager;
 use crate::managers::transcription::policy::{live_decode, LiveDecode, ModelTraits};
 use crate::managers::transcription::StreamWorkKind;
 use crate::managers::transcription::TranscriptionManager;
+use crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID;
 use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{set_tray_state, TrayIconState};
@@ -118,10 +119,164 @@ fn should_use_streaming_overlay(style: OverlayStyle, is_streaming: bool) -> bool
     style == OverlayStyle::Live && is_streaming
 }
 
-async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
+/// The JSON schema of a structured post-processing reply.
+fn transcription_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            (TRANSCRIPTION_FIELD): {
+                "type": "string",
+                "description": "The cleaned and processed transcription text"
+            }
+        },
+        "required": [TRANSCRIPTION_FIELD],
+        "additionalProperties": false
+    })
+}
+
+/// The selected post-processing prompt, or `None` (logged) when there is no
+/// usable one.
+fn selected_post_process_prompt(settings: &AppSettings) -> Option<String> {
+    let selected_prompt_id = match &settings.post_process_selected_prompt_id {
+        Some(id) => id.clone(),
+        None => {
+            debug!("Post-processing skipped because no prompt is selected");
+            return None;
+        }
+    };
+    let prompt = match settings
+        .post_process_prompts
+        .iter()
+        .find(|prompt| prompt.id == selected_prompt_id)
+    {
+        Some(prompt) => prompt.prompt.clone(),
+        None => {
+            debug!(
+                "Post-processing skipped because prompt '{}' was not found",
+                selected_prompt_id
+            );
+            return None;
+        }
+    };
+    if prompt.trim().is_empty() {
+        debug!("Post-processing skipped because the selected prompt is empty");
+        return None;
+    }
+    Some(prompt)
+}
+
+/// Messages for a provider-layer request: the prompt as the system message
+/// and the transcription as the user message (like structured output), or,
+/// for a prompt that is nothing but `${output}`, the substituted prompt alone.
+fn provider_layer_messages(prompt: &str, transcription: &str) -> Vec<crate::llm::ChatMessage> {
+    use crate::llm::ChatMessage;
+    let system = build_system_prompt(prompt);
+    if system.is_empty() {
+        return vec![ChatMessage::user(
+            prompt.replace("${output}", transcription),
+        )];
+    }
+    vec![
+        ChatMessage::system(system),
+        ChatMessage::user(transcription),
+    ]
+}
+
+/// Sets the cancel flag when dropped: dropping the post-processing future
+/// (the user cancelled, see `complete_unless_cancelled`) stops the request.
+struct CancelOnDrop(crate::llm::CancelFlag);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Post-processing through the provider layer
+/// (`crate::llm::provider_for_feature(.., Feature::PostProcess, ..)`). Used
+/// for providers that only exist there: the built-in llama.cpp runtime. The
+/// HTTP providers and Apple Intelligence keep their direct paths below, whose
+/// request shapes (structured-output schema name, legacy prompt mode, Apple's
+/// token limit) existing setups depend on.
+async fn post_process_with_provider_layer(
+    app: &AppHandle,
+    settings: &AppSettings,
+    prompt: &str,
+    transcription: &str,
+) -> Option<String> {
+    use crate::llm::{ChatOptions, Feature};
+
+    let provider_id = settings.post_process_provider_id.clone();
+    debug!("Starting LLM post-processing with provider '{provider_id}' (provider layer)");
+    let messages = provider_layer_messages(prompt, transcription);
+    let cancel: crate::llm::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    let opts = ChatOptions {
+        cancel: Some(cancel),
+        ..Default::default()
+    };
+    let app = app.clone();
+    let settings = settings.clone();
+    let result = crate::host::async_runtime::spawn_blocking(move || {
+        let provider =
+            crate::llm::provider_for_feature(&app, &settings, Feature::PostProcess, None)?;
+        match provider.chat_json(&messages, &transcription_schema(), &opts) {
+            Ok(json) => {
+                if let Some(text) = json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str()) {
+                    return Ok(text.to_string());
+                }
+                warn!(
+                    "{}: structured reply missing 'transcription'",
+                    provider.name()
+                );
+            }
+            Err(e) if crate::llm::is_cancelled_error(&e) => return Err(e),
+            Err(e) => warn!(
+                "{}: structured post-processing failed ({e}); retrying as plain chat",
+                provider.name()
+            ),
+        }
+        provider.chat(&messages, &opts)
+    })
+    .await;
+    match result {
+        Ok(Ok(text)) => {
+            let text = strip_invisible_chars(strip_think_block(&text));
+            if text.trim().is_empty() {
+                error!("LLM post-processing with '{provider_id}' returned an empty reply");
+                return None;
+            }
+            debug!(
+                "LLM post-processing succeeded for provider '{provider_id}'. Output length: {} chars",
+                text.len()
+            );
+            Some(text)
+        }
+        Ok(Err(e)) => {
+            error!(
+                "LLM post-processing failed for provider '{provider_id}': {e}. Falling back to original transcription."
+            );
+            None
+        }
+        Err(e) => {
+            error!("LLM post-processing task failed: {e}");
+            None
+        }
+    }
+}
+
+async fn post_process_transcription(
+    app: &AppHandle,
+    settings: &AppSettings,
+    transcription: &str,
+) -> Option<String> {
     if is_blank_transcription(transcription) {
         debug!("Post-processing skipped because the transcription is empty");
         return None;
+    }
+
+    if settings.post_process_provider_id == BUILTIN_LLM_PROVIDER_ID {
+        let prompt = selected_post_process_prompt(settings)?;
+        return post_process_with_provider_layer(app, settings, &prompt, transcription).await;
     }
 
     let provider = match settings.active_post_process_provider().cloned() {
@@ -146,31 +301,12 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         return None;
     }
 
-    let selected_prompt_id = match &settings.post_process_selected_prompt_id {
-        Some(id) => id.clone(),
-        None => {
-            debug!("Post-processing skipped because no prompt is selected");
-            return None;
-        }
-    };
+    let prompt = selected_post_process_prompt(settings)?;
 
-    let prompt = match settings
-        .post_process_prompts
-        .iter()
-        .find(|prompt| prompt.id == selected_prompt_id)
-    {
-        Some(prompt) => prompt.prompt.clone(),
-        None => {
-            debug!(
-                "Post-processing skipped because prompt '{}' was not found",
-                selected_prompt_id
-            );
-            return None;
-        }
-    };
-
-    if prompt.trim().is_empty() {
-        debug!("Post-processing skipped because the selected prompt is empty");
+    // Cloudflare's URLs ship with `{account_id}` / `{gateway_id}`: say what to
+    // fill in instead of sending a request that can only fail.
+    if let Err(e) = crate::llm_client::reject_url_placeholders(&provider) {
+        error!("Post-processing skipped: {e}");
         return None;
     }
 
@@ -237,17 +373,7 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         }
 
         // Define JSON schema for transcription output
-        let json_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                (TRANSCRIPTION_FIELD): {
-                    "type": "string",
-                    "description": "The cleaned and processed transcription text"
-                }
-            },
-            "required": [TRANSCRIPTION_FIELD],
-            "additionalProperties": false
-        });
+        let json_schema = transcription_schema();
 
         match crate::llm_client::send_chat_completion_with_schema(
             &provider,
@@ -356,7 +482,8 @@ pub(crate) async fn process_transcription_output(
     let mut post_process_prompt: Option<String> = None;
 
     if post_process {
-        if let Some(processed_text) = post_process_transcription(&settings, &final_text).await {
+        if let Some(processed_text) = post_process_transcription(app, &settings, &final_text).await
+        {
             post_processed_text = Some(processed_text.clone());
             final_text = processed_text;
 
@@ -868,9 +995,11 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
 #[cfg(test)]
 mod tests {
     use super::{
-        complete_unless_cancelled, is_blank_transcription, should_use_streaming_overlay,
-        strip_think_block,
+        complete_unless_cancelled, is_blank_transcription, provider_layer_messages,
+        selected_post_process_prompt, should_use_streaming_overlay, strip_think_block,
+        transcription_schema, TRANSCRIPTION_FIELD,
     };
+    use crate::llm::Role;
     use crate::settings::OverlayStyle;
     use std::future;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -943,6 +1072,44 @@ mod tests {
             strip_think_block("<think>never closed"),
             "<think>never closed"
         );
+    }
+
+    #[test]
+    fn provider_layer_messages_split_prompt_and_transcription() {
+        let msgs = provider_layer_messages("Fix grammar:\n${output}", "hello wrld");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[0].content, "Fix grammar:");
+        assert_eq!(msgs[1].role, Role::User);
+        assert_eq!(msgs[1].content, "hello wrld");
+        // A prompt that is only the placeholder: the text alone, as the user.
+        let msgs = provider_layer_messages("${output}", "hi");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "hi");
+    }
+
+    #[test]
+    fn transcription_schema_requires_the_field() {
+        let schema = transcription_schema();
+        assert_eq!(schema["required"][0], TRANSCRIPTION_FIELD);
+        assert!(crate::llm::validate_json(
+            &serde_json::json!({ (TRANSCRIPTION_FIELD): "x" }),
+            &schema
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn selected_prompt_requires_a_non_empty_selected_prompt() {
+        let mut s = crate::settings::get_default_settings();
+        s.post_process_selected_prompt_id = None;
+        assert_eq!(selected_post_process_prompt(&s), None);
+        s.post_process_selected_prompt_id = Some("missing".into());
+        assert_eq!(selected_post_process_prompt(&s), None);
+        if let Some(first) = s.post_process_prompts.first().cloned() {
+            s.post_process_selected_prompt_id = Some(first.id.clone());
+            assert_eq!(selected_post_process_prompt(&s), Some(first.prompt));
+        }
     }
 
     #[test]
