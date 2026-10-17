@@ -52,6 +52,28 @@ cargo packager --release -p guidy-app --formats deb,appimage
 
 Output goes to `target/packages/`. The packages are unsigned. On macOS the app gets an ad-hoc signature, so Gatekeeper asks for confirmation on first launch.
 
+For local macOS development, use `scripts/package-macos.sh [--install]` instead. Ad-hoc signatures change on every rebuild, which silently invalidates the Microphone and Accessibility grants. The script re-signs the app with a stable self-signed identity (`Guidy Local Dev` by default; override with `GUIDY_SIGN_IDENTITY`) when one is in your keychain, so grants persist across rebuilds. To create the identity once:
+
+```sh
+cat > /tmp/guidy-cert.cnf <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = Guidy Local Dev
+[ext]
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+EOF
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/guidy.key -out /tmp/guidy.pem -days 3650 -config /tmp/guidy-cert.cnf
+openssl pkcs12 -export -inkey /tmp/guidy.key -in /tmp/guidy.pem -name "Guidy Local Dev" -out /tmp/guidy.p12 \
+  -passout pass:guidy -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+security import /tmp/guidy.p12 -k ~/Library/Keychains/login.keychain-db -P guidy -T /usr/bin/codesign
+rm /tmp/guidy.key /tmp/guidy.pem /tmp/guidy.p12 /tmp/guidy-cert.cnf
+```
+
 These variables are read at build time:
 
 | Variable | Effect |
