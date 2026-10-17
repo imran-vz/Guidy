@@ -15,6 +15,8 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::Arc;
 
+pub use crate::meetings_backend::fake::*;
+
 #[derive(Default)]
 pub struct FakeData {
     pub settings: Option<AppSettings>,

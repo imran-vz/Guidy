@@ -293,6 +293,15 @@ impl Backend for CoreBackend {
             "extra_recording_buffer_ms" => {
                 s::change_extra_recording_buffer_setting(app, u(&value)?)
             }
+            // The whole nested `MeetingSettings` object at once.
+            "meetings" => {
+                let meetings: guidy_core::meetings::settings::MeetingSettings =
+                    from_json(key, value)?;
+                let mut settings = guidy_core::settings::get_settings(&app);
+                settings.meetings = meetings;
+                guidy_core::settings::write_settings(&app, settings);
+                Ok(())
+            }
             other => {
                 log::warn!("No handler for setting: {other}");
                 Ok(())

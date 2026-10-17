@@ -5,6 +5,7 @@ pub mod flows;
 pub mod history;
 pub mod keyboard;
 pub mod languages;
+pub mod meetings;
 pub mod migration;
 pub mod models;
 pub mod models_store;

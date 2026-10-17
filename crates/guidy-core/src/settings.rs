@@ -1,6 +1,6 @@
 use crate::host::AppHandle;
 use crate::utils;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
@@ -8,6 +8,9 @@ use std::fmt;
 
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
+pub const VERCEL_AI_GATEWAY_PROVIDER_ID: &str = "vercel_ai_gateway";
+pub const CLOUDFLARE_WORKERS_AI_PROVIDER_ID: &str = "cloudflare_workers_ai";
+pub const CLOUDFLARE_AI_GATEWAY_PROVIDER_ID: &str = "cloudflare_ai_gateway";
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -352,6 +355,13 @@ impl fmt::Debug for SecretMap {
     }
 }
 
+impl SecretMap {
+    /// True when no entry holds a non-empty value.
+    pub fn has_no_values(&self) -> bool {
+        self.0.values().all(|v| v.is_empty())
+    }
+}
+
 impl std::ops::Deref for SecretMap {
     type Target = HashMap<String, String>;
     fn deref(&self) -> &Self::Target {
@@ -461,7 +471,17 @@ pub struct AppSettings {
     pub post_process_provider_id: String,
     #[serde(default = "default_post_process_providers")]
     pub post_process_providers: Vec<PostProcessProvider>,
-    #[serde(default = "default_post_process_api_keys")]
+    /// Legacy plain-text provider API keys. Keys now live in the Keychain
+    /// ([`crate::secrets`]); read them with [`provider_api_key`] and write them
+    /// with [`set_provider_api_key`]. This field only exists so old stores
+    /// deserialize: `apply_settings_migrations` moves every non-empty value
+    /// into the Keychain and clears it here. It is never serialized unless a
+    /// value could not be migrated (Keychain unavailable), so a migration
+    /// failure can't lose a key and a new key never lands in the JSON.
+    #[serde(
+        default = "default_post_process_api_keys",
+        skip_serializing_if = "SecretMap::has_no_values"
+    )]
     pub post_process_api_keys: SecretMap,
     #[serde(default = "default_post_process_models")]
     pub post_process_models: HashMap<String, String>,
@@ -754,6 +774,40 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         });
     }
 
+    // Bring-your-own-key gateways (plan task 4). All OpenAI-compatible.
+    providers.push(PostProcessProvider {
+        id: VERCEL_AI_GATEWAY_PROVIDER_ID.to_string(),
+        label: "Vercel AI Gateway".to_string(),
+        base_url: "https://ai-gateway.vercel.sh/v1".to_string(),
+        allow_base_url_edit: false,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: true,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+    // The account id is part of the URL, so the base URL is editable: the
+    // user replaces `{account_id}` (see `crate::llm::validate_base_url`).
+    providers.push(PostProcessProvider {
+        id: CLOUDFLARE_WORKERS_AI_PROVIDER_ID.to_string(),
+        label: "Cloudflare Workers AI".to_string(),
+        base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1".to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+    // Cloudflare AI Gateway's unified OpenAI-compatible endpoint; models are
+    // named `<provider>/<model>` (e.g. `openai/gpt-4o-mini`).
+    providers.push(PostProcessProvider {
+        id: CLOUDFLARE_AI_GATEWAY_PROVIDER_ID.to_string(),
+        label: "Cloudflare AI Gateway".to_string(),
+        base_url: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat"
+            .to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+
     // AWS Bedrock via Mantle (OpenAI-compatible endpoint)
     providers.push(PostProcessProvider {
         id: "bedrock_mantle".to_string(),
@@ -780,11 +834,71 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
 }
 
 fn default_post_process_api_keys() -> SecretMap {
-    let mut map = HashMap::new();
-    for provider in default_post_process_providers() {
-        map.insert(provider.id, String::new());
+    SecretMap(HashMap::new())
+}
+
+/// The API key for a post-processing / LLM provider, from the Keychain. Falls
+/// back to a legacy plain-text value still in `settings` (only present when
+/// the Keychain migration failed). Empty when there is none.
+pub fn provider_api_key(settings: &AppSettings, provider_id: &str) -> String {
+    match crate::secrets::get(&crate::secrets::provider_api_key(provider_id)) {
+        Ok(Some(key)) if !key.is_empty() => return key,
+        Ok(_) => {}
+        Err(e) => warn!("Failed to read the API key for provider '{provider_id}': {e}"),
     }
-    SecretMap(map)
+    settings
+        .post_process_api_keys
+        .get(provider_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Store (or, when empty, delete) a provider's API key in the Keychain, and
+/// drop any legacy plain-text copy from `settings` (persist `settings`
+/// afterwards if the caller holds a loaded copy).
+pub fn set_provider_api_key(
+    settings: &mut AppSettings,
+    provider_id: &str,
+    api_key: &str,
+) -> anyhow::Result<()> {
+    crate::secrets::set(&crate::secrets::provider_api_key(provider_id), api_key)?;
+    settings.post_process_api_keys.remove(provider_id);
+    Ok(())
+}
+
+/// D14: move legacy plain-text provider keys into the Keychain. Values that
+/// were migrated are removed from `settings`; values that could not be (the
+/// Keychain is unavailable) stay, so they are kept in the JSON and retried on
+/// the next load. Returns true when `settings` changed.
+fn migrate_api_keys_to_secrets(settings: &mut AppSettings) -> bool {
+    let mut migrated = false;
+    settings.post_process_api_keys.retain(|provider_id, value| {
+        if value.is_empty() {
+            // Placeholder written by older versions; never serialized now.
+            return false;
+        }
+        let key = crate::secrets::provider_api_key(provider_id);
+        // A key already in the Keychain wins over the stale JSON copy.
+        let result = match crate::secrets::get(&key) {
+            Ok(Some(existing)) if !existing.is_empty() => Ok(()),
+            Ok(_) => crate::secrets::set(&key, value),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(()) => {
+                info!("Moved the API key for provider '{provider_id}' to the Keychain");
+                migrated = true;
+                false
+            }
+            Err(e) => {
+                warn!(
+                    "Could not move the API key for provider '{provider_id}' to the Keychain: {e}"
+                );
+                true
+            }
+        }
+    });
+    migrated
 }
 
 fn default_model_for_provider(provider_id: &str) -> String {
@@ -872,17 +986,16 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                 }
             }
             None => {
-                // Provider doesn't exist, add it
-                settings.post_process_providers.push(provider.clone());
+                // Provider doesn't exist (new in this release): add it, keeping
+                // Custom last.
+                let at = settings
+                    .post_process_providers
+                    .iter()
+                    .position(|p| p.id == "custom")
+                    .unwrap_or(settings.post_process_providers.len());
+                settings.post_process_providers.insert(at, provider.clone());
                 changed = true;
             }
-        }
-
-        if !settings.post_process_api_keys.contains_key(&provider.id) {
-            settings
-                .post_process_api_keys
-                .insert(provider.id.clone(), String::new());
-            changed = true;
         }
 
         let default_model = default_model_for_provider(&provider.id);
@@ -1157,6 +1270,11 @@ fn apply_settings_migrations(
 ) -> bool {
     let mut updated = false;
 
+    // D14: provider API keys move from the JSON store to the Keychain.
+    if migrate_api_keys_to_secrets(settings) {
+        updated = true;
+    }
+
     // One-time onboarding migration: users with an explicit selected model have
     // already made it through model selection. Users who merely have compatible
     // files on disk should still see onboarding.
@@ -1311,6 +1429,43 @@ pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byok_providers_are_added_to_existing_stores_before_custom() {
+        let mut settings = get_default_settings();
+        let byok = [
+            VERCEL_AI_GATEWAY_PROVIDER_ID,
+            CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
+            CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
+        ];
+        // An older store: no BYOK gateways, a user-edited Cloudflare URL kept.
+        settings
+            .post_process_providers
+            .retain(|p| !byok.contains(&p.id.as_str()));
+        for id in byok {
+            settings.post_process_models.remove(id);
+        }
+        assert!(ensure_post_process_defaults(&mut settings));
+        for id in byok {
+            assert!(settings.post_process_provider(id).is_some(), "{id} missing");
+            assert!(settings.post_process_models.contains_key(id));
+        }
+        assert_eq!(settings.post_process_providers.last().unwrap().id, "custom");
+
+        let cf = settings
+            .post_process_provider_mut(CLOUDFLARE_WORKERS_AI_PROVIDER_ID)
+            .unwrap();
+        assert!(cf.allow_base_url_edit);
+        cf.base_url = "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1".into();
+        assert!(!ensure_post_process_defaults(&mut settings));
+        assert!(settings
+            .post_process_provider(CLOUDFLARE_WORKERS_AI_PROVIDER_ID)
+            .unwrap()
+            .base_url
+            .contains("/accounts/abc/"));
+        let openrouter = settings.post_process_provider("openrouter").unwrap();
+        assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
+    }
 
     #[test]
     fn stored_binding_returns_the_requested_binding() {
@@ -1837,6 +1992,87 @@ mod tests {
     }
 
     #[test]
+    fn legacy_api_keys_migrate_to_secrets_and_leave_the_json() {
+        let provider = "migration-test-provider";
+        let raw = serde_json::json!({
+            "post_process_api_keys": { provider: "sk-legacy-123", "migration-test-empty": "" },
+            "onboarding_completed": true,
+            "whats_new_last_seen_version": "1.0.0",
+            "chinese_script": "as_transcribed",
+            "overlay_style": "live",
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(settings.post_process_api_keys[provider], "sk-legacy-123");
+
+        assert!(apply_settings_migrations(&mut settings, &raw));
+
+        assert_eq!(
+            crate::secrets::get(&crate::secrets::provider_api_key(provider))
+                .unwrap()
+                .as_deref(),
+            Some("sk-legacy-123")
+        );
+        assert!(settings.post_process_api_keys.is_empty());
+        assert_eq!(provider_api_key(&settings, provider), "sk-legacy-123");
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("sk-legacy-123"));
+        assert!(!json.contains("post_process_api_keys"));
+
+        // Idempotent: a second pass has nothing to move.
+        assert!(!migrate_api_keys_to_secrets(&mut settings));
+    }
+
+    #[test]
+    fn keychain_value_wins_over_a_stale_legacy_copy() {
+        let provider = "migration-test-stale";
+        let key = crate::secrets::provider_api_key(provider);
+        crate::secrets::set(&key, "sk-new").unwrap();
+        let mut settings = get_default_settings();
+        settings
+            .post_process_api_keys
+            .insert(provider.to_string(), "sk-old".to_string());
+
+        assert!(migrate_api_keys_to_secrets(&mut settings));
+
+        assert_eq!(
+            crate::secrets::get(&key).unwrap().as_deref(),
+            Some("sk-new")
+        );
+        assert!(settings.post_process_api_keys.is_empty());
+    }
+
+    #[test]
+    fn set_provider_api_key_writes_secrets_not_settings() {
+        let provider = "set-key-test-provider";
+        let mut settings = get_default_settings();
+        set_provider_api_key(&mut settings, provider, "sk-set-1").unwrap();
+        assert_eq!(provider_api_key(&settings, provider), "sk-set-1");
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("sk-set-1"));
+
+        set_provider_api_key(&mut settings, provider, "").unwrap();
+        assert_eq!(provider_api_key(&settings, provider), "");
+    }
+
+    #[test]
+    fn unmigrated_legacy_keys_stay_serialized() {
+        // Simulates a Keychain failure: the value is still in the map, so it
+        // must be written back rather than silently dropped.
+        let mut settings = get_default_settings();
+        settings
+            .post_process_api_keys
+            .insert("x".to_string(), "sk-keep".to_string());
+        assert!(serde_json::to_string(&settings)
+            .unwrap()
+            .contains("sk-keep"));
+        assert!(!serde_json::to_string(&get_default_settings())
+            .unwrap()
+            .contains("post_process_api_keys"));
+    }
+
+    #[test]
     fn secret_map_debug_redacts_values() {
         let map = SecretMap(HashMap::from([("key".into(), "secret".into())]));
         let out = format!("{:?}", map);
@@ -1890,6 +2126,28 @@ mod store_compat_tests {
             serde_json::from_slice(&std::fs::read(&dest).unwrap()).unwrap();
         assert_eq!(written["settings"]["shortcut_activation"], "push_to_talk");
         assert_eq!(written["settings"]["overlay_style"], "none");
+    }
+
+    #[test]
+    fn stored_api_keys_move_to_secrets_on_load() {
+        let t = TestApp::new();
+        let provider = "store-migration-provider";
+        let mut stored = serde_json::to_value(get_default_settings()).unwrap();
+        stored["post_process_api_keys"] = serde_json::json!({ provider: "sk-store-999" });
+        let dest = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(
+            &dest,
+            serde_json::to_vec(&serde_json::json!({ "settings": stored })).unwrap(),
+        )
+        .unwrap();
+
+        let s = get_settings(&t.app);
+
+        assert_eq!(provider_api_key(&s, provider), "sk-store-999");
+        let on_disk = std::fs::read_to_string(&dest).unwrap();
+        assert!(!on_disk.contains("sk-store-999"), "key left in the JSON");
+        assert!(!on_disk.contains("post_process_api_keys"));
     }
 
     #[test]

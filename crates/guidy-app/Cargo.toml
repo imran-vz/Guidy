@@ -53,10 +53,12 @@ description = "Offline speech-to-text"
 category = "Productivity"
 copyright = "Copyright (c) 2026 Imran. Portions (c) 2025 CJ Pais (Handy)."
 license-file = "../../LICENSE"
-before-packaging-command = "cargo build --release -p guidy-app"
+# guidy-llm is the built-in llama.cpp helper; it ships next to `guidy`
+# (Contents/MacOS on macOS), where guidy_core::llm::builtin looks for it.
+before-packaging-command = "cargo build --release -p guidy-app -p guidy-llm"
 out-dir = "../../target/packages"
 binaries-dir = "../../target/release"
-binaries = [{ path = "guidy", main = true }]
+binaries = [{ path = "guidy", main = true }, { path = "guidy-llm", main = false }]
 icons = ["../../assets/icons/app/guidy.png", "../../assets/icons/app/guidy.icns", "../../assets/icons/app/guidy.ico"]
 resources = [
   { src = "../../assets/resources", target = "resources" },

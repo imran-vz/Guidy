@@ -1,0 +1,596 @@
+//! Pipeline tests over synthetic audio with fake engines.
+//!
+//! The synthetic "voice" of speaker k is a constant signal of amplitude
+//! `0.1 * (k + 1)`: the fake VAD hears anything above 0.01, the fake
+//! transcriber says "hello from speaker k", and the fake embedder returns a
+//! vector pointing along axis k.
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+
+use super::*;
+use crate::audio_toolkit::vad::{VadFrame, VoiceActivityDetector};
+use crate::meetings::manager::{PersonRef, SuggestionSource};
+use crate::meetings::processing::naming;
+use crate::meetings::processing::{PcmSource, SAMPLE_RATE};
+
+const KEY: [u8; 32] = [42u8; 32];
+const USER: usize = 8;
+
+struct FakeVad;
+
+impl VoiceActivityDetector for FakeVad {
+    fn push_frame<'a>(&'a mut self, frame: &'a [f32]) -> Result<VadFrame<'a>> {
+        Ok(if frame.iter().any(|s| s.abs() > 0.01) {
+            VadFrame::Speech(frame)
+        } else {
+            VadFrame::Noise
+        })
+    }
+    fn frame_samples(&self) -> usize {
+        512
+    }
+}
+
+impl SpeechScorer for FakeVad {
+    fn score(&mut self, frames: &[f32]) -> Result<Vec<f32>> {
+        Ok(frames
+            .chunks(512)
+            .map(|f| {
+                let loud = f.iter().filter(|s| s.abs() > 0.01).count();
+                if loud * 2 >= f.len() {
+                    0.95
+                } else {
+                    0.05
+                }
+            })
+            .collect())
+    }
+}
+
+fn speaker_of(pcm: &[f32]) -> usize {
+    let max = pcm.iter().fold(0f32, |m, s| m.max(s.abs()));
+    ((max / 0.1).round() as usize).saturating_sub(1)
+}
+
+/// Counts calls; optionally raises the cancel flag after `cancel_after`.
+struct FakeTranscriber<'c> {
+    calls: Rc<Cell<usize>>,
+    cancel_after: Option<(usize, &'c AtomicBool)>,
+}
+
+impl SegmentTranscriber for FakeTranscriber<'_> {
+    fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+        self.calls.set(self.calls.get() + 1);
+        if let Some((n, flag)) = self.cancel_after {
+            if self.calls.get() >= n {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+        let k = speaker_of(&pcm);
+        let text = format!("hello from speaker {k} today");
+        let words = text
+            .split(' ')
+            .enumerate()
+            .map(|(i, w)| Word {
+                t0_ms: 200 + i as i64 * 300,
+                t1_ms: 450 + i as i64 * 300,
+                text: w.to_string(),
+            })
+            .collect();
+        Ok((text, words))
+    }
+}
+
+struct FakeEmbedder {
+    calls: Rc<Cell<usize>>,
+}
+
+impl Embedder for FakeEmbedder {
+    fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
+        self.calls.set(self.calls.get() + 1);
+        let mut v = vec![0f32; 16];
+        v[speaker_of(pcm)] = 1.0;
+        v[(pcm.len() / 1000) % 16] += 0.15;
+        Ok(Some(v))
+    }
+}
+
+/// `(speaker, t0_ms, t1_ms)` turns rendered into a track of `total_ms`.
+fn render(total_ms: i64, turns: &[(usize, i64, i64)]) -> Vec<f32> {
+    let at = |ms: i64| ms as usize * SAMPLE_RATE / 1000;
+    let mut pcm = vec![0f32; at(total_ms)];
+    for &(k, t0, t1) in turns {
+        pcm[at(t0)..at(t1)].fill(0.1 * (k + 1) as f32);
+    }
+    pcm
+}
+
+/// Remote speakers 0, 1, 2 take turns twice; the user speaks at the end; the
+/// mic also picks up an echo of speaker 1's first turn.
+fn system_turns() -> Vec<(usize, i64, i64)> {
+    vec![
+        (0, 1000, 4000),
+        (1, 5000, 8000),
+        (2, 9000, 12000),
+        (0, 13000, 16000),
+        (1, 17000, 20000),
+        (2, 21000, 24000),
+    ]
+}
+
+fn mic_turns() -> Vec<(usize, i64, i64)> {
+    vec![(1, 5000, 8000), (USER, 26000, 29000)]
+}
+
+struct Fixture {
+    store: MeetingsStore,
+    dir: tempfile::TempDir,
+    id: MeetingId,
+}
+
+fn fixture() -> Fixture {
+    let store = MeetingsStore::open_in_memory(&KEY).unwrap();
+    let id = store
+        .insert_meeting(&Meeting {
+            id: 0,
+            title: "Weekly sync".into(),
+            calendar_event_id: Some("evt".into()),
+            calendar_event: Some(CalendarEvent {
+                id: "evt".into(),
+                title: "Weekly sync".into(),
+                start_at: 0,
+                end_at: 1,
+                meeting_url: None,
+                attendees: vec![
+                    Attendee {
+                        name: Some("Alice".into()),
+                        email: Some("alice@example.com".into()),
+                    },
+                    Attendee {
+                        name: Some("Me Myself".into()),
+                        email: Some("me@example.com".into()),
+                    },
+                    Attendee {
+                        name: Some("Bob".into()),
+                        email: Some("bob@example.com".into()),
+                    },
+                ],
+            }),
+            started_at: 0,
+            ended_at: Some(30_000),
+            mic_audio_path: Some("1-mic.gopus".into()),
+            system_audio_path: Some("1-system.gopus".into()),
+            status: MeetingStatus::Recorded,
+            error: None,
+            processing_stage: None,
+        })
+        .unwrap();
+    Fixture {
+        store,
+        dir: tempfile::tempdir().unwrap(),
+        id,
+    }
+}
+
+struct Run {
+    transcribe_calls: usize,
+    embed_calls: usize,
+    result: Result<()>,
+    progress: Vec<ProcessingProgress>,
+}
+
+fn run(f: &Fixture, cancel_after: Option<usize>) -> Run {
+    let cancel = AtomicBool::new(false);
+    let t_calls = Rc::new(Cell::new(0));
+    let e_calls = Rc::new(Cell::new(0));
+    let mut transcriber = FakeTranscriber {
+        calls: t_calls.clone(),
+        cancel_after: cancel_after.map(|n| (n, &cancel)),
+    };
+    let mut embedder = FakeEmbedder {
+        calls: e_calls.clone(),
+    };
+    let progress = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = progress.clone();
+    let result = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig {
+            user_label: "Imran".into(),
+            ..PipelineConfig::default()
+        },
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
+    }
+    .run();
+    let progress = progress.borrow().clone();
+    Run {
+        transcribe_calls: t_calls.get(),
+        embed_calls: e_calls.get(),
+        result,
+        progress,
+    }
+}
+
+fn stage(f: &Fixture) -> Option<ProcessingStage> {
+    f.store
+        .get_meeting(f.id)
+        .unwrap()
+        .unwrap()
+        .processing_stage
+        .as_deref()
+        .and_then(ProcessingStage::parse)
+}
+
+#[test]
+fn processes_a_meeting_end_to_end() {
+    let f = fixture();
+    let r = run(&f, None);
+    r.result.unwrap();
+    // 6 system turns + 2 mic segments transcribed; 6 system voiceprints.
+    assert_eq!(r.transcribe_calls, 8);
+    assert_eq!(r.embed_calls, 6);
+    assert_eq!(stage(&f), Some(ProcessingStage::Done));
+    assert!(!sidecar::cache_path(f.dir.path(), f.id).exists());
+
+    let speakers = f.store.speakers(f.id).unwrap();
+    let labels: Vec<&str> = speakers.iter().map(|s| s.cluster_label.as_str()).collect();
+    assert_eq!(labels, vec!["Imran", "Speaker 1", "Speaker 2", "Speaker 3"]);
+    assert!(speakers[0].is_user && speakers[0].confirmed);
+    assert!(speakers[1..]
+        .iter()
+        .all(|s| s.person_id.is_none() && !s.confirmed));
+
+    let segments = f.store.segments(f.id).unwrap();
+    // The mic echo of speaker 1 is gone: 6 system + 1 user segment.
+    assert_eq!(segments.len(), 7);
+    assert_eq!(segments.iter().filter(|s| s.track == Track::Mic).count(), 1);
+    let user_seg = segments.iter().find(|s| s.track == Track::Mic).unwrap();
+    assert_eq!(user_seg.speaker_id, Some(speakers[0].id));
+    assert!(user_seg.t0_ms >= 25_000);
+    // Turns of the same remote speaker share a speaker id.
+    let sys: Vec<&Segment> = segments
+        .iter()
+        .filter(|s| s.track == Track::System)
+        .collect();
+    assert_eq!(sys[0].speaker_id, sys[3].speaker_id);
+    assert_eq!(sys[1].speaker_id, sys[4].speaker_id);
+    assert_ne!(sys[0].speaker_id, sys[1].speaker_id);
+    assert_ne!(sys[1].speaker_id, sys[2].speaker_id);
+    // Words are in meeting time, inside their segment.
+    for s in &segments {
+        assert!(!s.words.is_empty());
+        assert!(s
+            .words
+            .iter()
+            .all(|w| w.t0_ms >= s.t0_ms && w.t1_ms <= s.t1_ms));
+    }
+    // Centroids on the cluster speakers; per-segment voiceprints sidecar.
+    assert!(f.store.speaker_embedding(speakers[1].id).unwrap().is_some());
+    let prints: Vec<SegmentEmbedding> =
+        sidecar::read(&sidecar::embeddings_path(f.dir.path(), f.id), &KEY)
+            .unwrap()
+            .unwrap();
+    assert_eq!(prints.len(), 6);
+
+    // Progress is monotone and ends at 1.0.
+    let fractions: Vec<f32> = r.progress.iter().map(|p| p.fraction).collect();
+    assert!(
+        fractions.windows(2).all(|w| w[0] <= w[1] + 1e-6),
+        "{fractions:?}"
+    );
+    assert_eq!(r.progress.last().unwrap().stage, ProcessingStage::Done);
+    assert_eq!(*fractions.last().unwrap(), 1.0);
+}
+
+#[test]
+fn cancel_then_resume_skips_finished_work() {
+    let f = fixture();
+    let r = run(&f, Some(3));
+    assert!(super::super::is_cancelled(&r.result.unwrap_err()));
+    assert_eq!(r.transcribe_calls, 3);
+    // VAD done, transcription part-way (checkpointed).
+    assert_eq!(stage(&f), Some(ProcessingStage::Vad));
+    let cache: ProcessingCache = sidecar::read(&sidecar::cache_path(f.dir.path(), f.id), &KEY)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cache.transcripts.iter().filter(|t| t.is_some()).count(), 3);
+
+    let r = run(&f, None);
+    r.result.unwrap();
+    assert_eq!(r.transcribe_calls, 5, "only the remaining segments");
+    assert_eq!(stage(&f), Some(ProcessingStage::Done));
+    assert_eq!(f.store.segments(f.id).unwrap().len(), 7);
+}
+
+#[test]
+fn a_lost_checkpoint_restarts_from_the_beginning() {
+    let f = fixture();
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Voiceprints))
+        .unwrap();
+    let r = run(&f, None);
+    r.result.unwrap();
+    assert_eq!(r.transcribe_calls, 8);
+}
+
+#[test]
+fn resume_point_logic() {
+    use ProcessingStage::*;
+    let full = {
+        let mut c = ProcessingCache::new();
+        c.mic_ms = Some(1000);
+        c.units = vec![Unit {
+            track: Track::System,
+            span: vad::Span::new(0, 1000),
+        }];
+        c.transcripts = vec![Some(UnitTranscript {
+            text: "hi".into(),
+            words: vec![],
+        })];
+        c.embeddings = vec![Some(None)];
+        c.clustering = Some(Clustering::default());
+        c
+    };
+    assert_eq!(resume_point(None, Some(full.clone())).1, Decode);
+    assert_eq!(resume_point(Some(Done), Some(full.clone())).1, Decode);
+    assert_eq!(resume_point(Some(Decode), Some(full.clone())).1, Vad);
+    assert_eq!(resume_point(Some(Vad), Some(full.clone())).1, Transcribe);
+    assert_eq!(
+        resume_point(Some(Transcribe), Some(full.clone())).1,
+        Voiceprints
+    );
+    assert_eq!(
+        resume_point(Some(Voiceprints), Some(full.clone())).1,
+        Cluster
+    );
+    assert_eq!(resume_point(Some(Cluster), Some(full.clone())).1, Merge);
+    assert_eq!(resume_point(Some(Merge), None).1, Done);
+    // Missing, stale or inconsistent checkpoints start over.
+    assert_eq!(resume_point(Some(Cluster), None).1, Decode);
+    let mut stale = full.clone();
+    stale.version = 0;
+    assert_eq!(resume_point(Some(Cluster), Some(stale)).1, Decode);
+    let mut partial = full.clone();
+    partial.transcripts = vec![None];
+    assert_eq!(resume_point(Some(Vad), Some(partial.clone())).1, Transcribe);
+    assert_eq!(resume_point(Some(Transcribe), Some(partial)).1, Decode);
+    let mut unclustered = full;
+    unclustered.clustering = None;
+    assert_eq!(resume_point(Some(Cluster), Some(unclustered)).1, Decode);
+    assert_eq!(next_stage(Merge), Done);
+    assert_eq!(next_stage(Done), Done);
+}
+
+#[test]
+fn known_voices_are_matched_in_the_next_meeting() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speakers = f.store.speakers(f.id).unwrap();
+    let speaker1 = speakers[1].clone();
+
+    // Name Speaker 1 (remote speaker 0) as Alice.
+    let alice = naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        speaker1.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: Some("alice@example.com".into()),
+        },
+    )
+    .unwrap();
+    let named = f.store.get_speaker(speaker1.id).unwrap().unwrap();
+    assert_eq!(named.person_id, Some(alice));
+    assert!(named.confirmed);
+    // Her two turns' voiceprints were stored.
+    assert_eq!(f.store.voiceprints_for_person(alice).unwrap().len(), 2);
+    // Naming again doesn't duplicate them.
+    naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        speaker1.id,
+        PersonRef::Existing(alice),
+    )
+    .unwrap();
+    assert_eq!(f.store.voiceprints_for_person(alice).unwrap().len(), 2);
+
+    // Reprocessing (like the next meeting with her) recognizes her.
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Done))
+        .unwrap();
+    run(&f, None).result.unwrap();
+    let speakers = f.store.speakers(f.id).unwrap();
+    let s1 = speakers
+        .iter()
+        .find(|s| s.cluster_label == "Speaker 1")
+        .unwrap();
+    assert_eq!(s1.person_id, Some(alice));
+    assert!(s1.confirmed);
+    assert!(s1.match_confidence.unwrap() >= 0.65);
+    assert!(speakers
+        .iter()
+        .filter(|s| s.cluster_label != "Speaker 1")
+        .all(|s| s.person_id.is_none()));
+}
+
+#[test]
+fn reassigning_moves_the_voiceprints() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let s = f.store.speakers(f.id).unwrap()[2].clone();
+    let wrong = naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        s.id,
+        PersonRef::New {
+            display_name: "Carol".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(f.store.voiceprints_for_person(wrong).unwrap().len(), 2);
+    let right = naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        s.id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: Some("bob@example.com".into()),
+        },
+    )
+    .unwrap();
+    assert_ne!(wrong, right);
+    assert_eq!(f.store.voiceprints_for_person(wrong).unwrap().len(), 0);
+    assert_eq!(f.store.voiceprints_for_person(right).unwrap().len(), 2);
+    assert!(naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        s.id,
+        PersonRef::New {
+            display_name: "  ".into(),
+            email: None
+        }
+    )
+    .is_err());
+}
+
+#[test]
+fn confirm_stores_voiceprints_and_needs_a_person() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let mut s = f.store.speakers(f.id).unwrap()[1].clone();
+    assert!(naming::confirm(&f.store, f.dir.path(), &KEY, s.id).is_err());
+    let p = f.store.insert_person("Alice", None).unwrap();
+    s.person_id = Some(p.id);
+    s.confirmed = false;
+    f.store.update_speaker(&s).unwrap();
+    naming::confirm(&f.store, f.dir.path(), &KEY, s.id).unwrap();
+    assert!(f.store.get_speaker(s.id).unwrap().unwrap().confirmed);
+    assert_eq!(f.store.voiceprints_for_person(p.id).unwrap().len(), 2);
+}
+
+#[test]
+fn suggestions_list_unassigned_attendees_then_people_by_voice() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speakers = f.store.speakers(f.id).unwrap();
+    // Bob is already given to Speaker 2; Zed and Yann are known people, Yann
+    // sounding like Speaker 1.
+    naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        speakers[2].id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: Some("bob@example.com".into()),
+        },
+    )
+    .unwrap();
+    let zed = f.store.insert_person("Zed", None).unwrap();
+    let yann = f.store.insert_person("Yann", None).unwrap();
+    let centroid = f.store.speaker_embedding(speakers[1].id).unwrap().unwrap();
+    f.store.add_voiceprint(yann.id, &centroid, None).unwrap();
+
+    let got = naming::suggestions(&f.store, speakers[1].id, Some("ME@example.com")).unwrap();
+    let names: Vec<&str> = got.iter().map(|s| s.display_name.as_str()).collect();
+    // Alice (attendee, not assigned); not me, not Bob. Then Yann (voice
+    // match) before Bob and Zed (no similarity to this speaker / no prints).
+    assert_eq!(names[0], "Alice");
+    assert_eq!(got[0].source, SuggestionSource::Attendee);
+    assert_eq!(got[0].person_id, None);
+    assert!(!names.contains(&"Me Myself"));
+    assert_eq!(names[1], "Yann");
+    assert_eq!(got[1].source, SuggestionSource::KnownPerson);
+    assert!(got[1].similarity.unwrap() > 0.99);
+    let zed_pos = got
+        .iter()
+        .position(|s| s.person_id == Some(zed.id))
+        .unwrap();
+    assert!(zed_pos > 1);
+    assert!(got
+        .iter()
+        .any(|s| s.display_name == "Bob" && s.source == SuggestionSource::KnownPerson));
+}
+
+#[test]
+fn mic_only_meeting_has_just_the_user() {
+    let f = fixture();
+    let cancel = AtomicBool::new(false);
+    let calls = Rc::new(Cell::new(0));
+    let mut t = FakeTranscriber {
+        calls: calls.clone(),
+        cancel_after: None,
+    };
+    let mut e = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: Some(Box::new(PcmSource::new(render(
+            10_000,
+            &[(USER, 1000, 4000)],
+        )))),
+        system: None,
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut t,
+        embedder: &mut e,
+        cancel: &cancel,
+        on_progress: Box::new(|_| {}),
+    }
+    .run()
+    .unwrap();
+    let speakers = f.store.speakers(f.id).unwrap();
+    assert_eq!(speakers.len(), 1);
+    assert_eq!(speakers[0].cluster_label, "me");
+    assert_eq!(e.calls.get(), 0, "no speaker model needed");
+}
+
+#[test]
+fn no_audio_is_an_error() {
+    let f = fixture();
+    let cancel = AtomicBool::new(false);
+    let mut t = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+    };
+    let mut e = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let err = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: None,
+        system: None,
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut t,
+        embedder: &mut e,
+        cancel: &cancel,
+        on_progress: Box::new(|_| {}),
+    }
+    .run()
+    .unwrap_err();
+    assert!(err.to_string().contains("no recorded audio"));
+}

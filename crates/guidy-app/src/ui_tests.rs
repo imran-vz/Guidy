@@ -1087,7 +1087,7 @@ mod banners_and_events {
         let backend = FakeBackend::new();
         backend.data.lock().accessibility = false;
         setup(cx, backend.clone());
-        let (w, _) = open(cx, |window, cx| AccessibilityBanner::new(window, cx));
+        let (w, _) = open(cx, AccessibilityBanner::new);
         cx.run_until_parked();
         let mac = OsType::current() == OsType::MacOs;
         assert_eq!(exists(cx, w, "accessibility-banner"), mac);
@@ -1470,5 +1470,370 @@ mod gap_regressions {
             s.audio_devices.iter().map(|d| d.name.clone()).collect()
         });
         assert_eq!(names, vec!["Default".to_string()]);
+    }
+}
+
+/// Like [`setup`], with a meetings fake installed next to the backend.
+pub fn setup_meetings(
+    cx: &mut TestAppContext,
+    backend: Arc<FakeBackend>,
+    meetings: Arc<crate::testing::FakeMeetingsBackend>,
+) -> Entity<AppState> {
+    let state = cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::init(cx);
+        crate::ui::init(cx);
+        guidy_i18n::set_language("en");
+        let state = AppState::install_with_meetings(backend, meetings, cx);
+        crate::ui::overlay::OverlayState::install(cx);
+        state
+    });
+    cx.run_until_parked();
+    state
+}
+
+mod meetings_page {
+    use super::*;
+    use crate::testing::{
+        meeting_fixture, person_fixture, segment_fixture, speaker_fixture, FakeMeetingsBackend,
+    };
+    use crate::ui::main_window::MainWindow;
+    use crate::ui::pages::meetings::MeetingsPage;
+    use guidy_core::meetings::types::{
+        events, CalendarEvent, MeetingStatus, ProcessingProgress, ProcessingStage,
+    };
+
+    fn has_dialog(cx: &mut TestAppContext, w: AnyWindowHandle) -> bool {
+        cx.update_window(w, |_, window, cx| {
+            gpui_kit::component::WindowExt::has_active_dialog(window, cx)
+        })
+        .unwrap()
+    }
+
+    fn press_enter(cx: &mut TestAppContext, w: AnyWindowHandle) {
+        cx.update_window(w, |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// Meetings 1 (processed, two speakers) and 2 (recorded); people Ada, Bob.
+    fn fixture() -> (Arc<FakeBackend>, Arc<FakeMeetingsBackend>) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let m = FakeMeetingsBackend::new();
+        {
+            let mut d = m.data.lock();
+            d.meetings = vec![
+                meeting_fixture(1, "Weekly sync", MeetingStatus::Processed),
+                meeting_fixture(2, "Design review", MeetingStatus::Recorded),
+            ];
+            d.people = vec![
+                person_fixture(7, "Ada", Some("ada@example.com")),
+                person_fixture(8, "Bob", None),
+            ];
+            d.speakers.insert(
+                1,
+                vec![
+                    speaker_fixture(5, 1, "Speaker 1", None, false),
+                    speaker_fixture(6, 1, "Speaker 2", Some(7), false),
+                ],
+            );
+            d.segments.insert(
+                1,
+                vec![
+                    segment_fixture(1, 1, 5, 0, "Hello everyone"),
+                    segment_fixture(2, 1, 5, 2_000, "Let's start"),
+                    segment_fixture(3, 1, 6, 4_000, "Sounds good"),
+                ],
+            );
+        }
+        (backend, m)
+    }
+
+    #[gpui_kit::test]
+    fn page_renders_list_and_records(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        for id in [
+            "page-meetings",
+            "meeting-recorder",
+            "meeting-1",
+            "meeting-2",
+        ] {
+            assert!(exists(cx, w, id), "{id}");
+        }
+        // Recorded meetings can be processed.
+        with_window(cx, w, |window, cx| window.click("meeting-process-2", cx));
+        assert!(meetings.called("process_meeting 2"));
+
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-record-toggle", cx)
+        });
+        assert!(
+            meetings.called("start_recording none"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(exists(cx, w, "meeting-recording-title"));
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-record-toggle", cx)
+        });
+        assert!(meetings.called("stop_recording"));
+        assert!(!exists(cx, w, "meeting-recording-title"));
+    }
+
+    #[gpui_kit::test]
+    fn upcoming_event_starts_linked_recording(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().upcoming = vec![CalendarEvent {
+            id: "ev-1".into(),
+            title: "Standup".into(),
+            start_at: 1_700_000_000_000,
+            end_at: 1_700_000_900_000,
+            meeting_url: Some("https://meet.google.com/abc".into()),
+            attendees: vec![],
+        }];
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "upcoming-0"));
+        with_window(cx, w, |window, cx| window.click("upcoming-start-0", cx));
+        assert!(meetings.called("start_recording ev-1"));
+        // While recording, the upcoming list is hidden.
+        assert!(!exists(cx, w, "upcoming-0"));
+    }
+
+    #[gpui_kit::test]
+    fn progress_events_update_the_list(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        assert!(!exists(cx, w, "meeting-cancel-2"));
+        let p = ProcessingProgress {
+            meeting_id: 2,
+            stage: ProcessingStage::Transcribe,
+            fraction: 0.4,
+            message: None,
+        };
+        dispatch(
+            cx,
+            &state,
+            events::PROCESSING_PROGRESS,
+            serde_json::to_value(&p).unwrap(),
+        );
+        // The meeting shows as processing (cancel action, no process action).
+        assert!(exists(cx, w, "meeting-cancel-2"));
+        assert!(!exists(cx, w, "meeting-process-2"));
+        // A changed meeting reloads the list.
+        meetings.data.lock().meetings.pop();
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(2));
+        let n = page.read_with(cx, |p, cx| p.list().read(cx).meeting_count());
+        assert_eq!(n, 1);
+    }
+
+    #[gpui_kit::test]
+    fn renames_and_deletes_meetings(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-rename-1", cx));
+        let list = page.read_with(cx, |p, _| p.list().clone());
+        cx.update_window(w, |_, window, cx| {
+            list.update(cx, |l, cx| l.type_rename("Planning", window, cx))
+        })
+        .unwrap();
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-rename-save-1", cx)
+        });
+        assert!(meetings.called("rename_meeting 1 Planning"));
+
+        with_window(cx, w, |window, cx| window.click("meeting-delete-2", cx));
+        assert!(has_dialog(cx, w));
+        assert!(!meetings.called("delete_meeting"));
+        press_enter(cx, w);
+        assert!(
+            meetings.called("delete_meeting 2"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(!exists(cx, w, "meeting-2"));
+    }
+
+    #[gpui_kit::test]
+    fn speakers_can_be_named_and_confirmed(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        for id in [
+            "meeting-detail",
+            "segment-1",
+            "segment-3",
+            "block-0",
+            "block-1",
+            "speaker-5",
+            "speaker-uncertain-6",
+        ] {
+            assert!(exists(cx, w, id), "{id}");
+        }
+        // Two segments by Speaker 1 form one block.
+        assert!(!exists(cx, w, "block-2"));
+
+        // Uncertain match: confirm.
+        with_window(cx, w, |window, cx| window.click("speaker-confirm-6", cx));
+        assert!(meetings.called("confirm_speaker 6"));
+        assert!(!exists(cx, w, "speaker-uncertain-6"));
+
+        // Speaker 1 -> a new person with an email.
+        with_window(cx, w, |window, cx| window.click("speaker-name-5", cx));
+        assert!(meetings.called("speaker_suggestions 5"));
+        assert!(exists(cx, w, "speaker-picker-5"));
+        assert!(exists(cx, w, "speaker-suggestion-0"));
+        let detail = page.read_with(cx, |p, _| p.detail().cloned().unwrap());
+        cx.update_window(w, |_, window, cx| {
+            detail.update(cx, |d, cx| {
+                d.type_new_person("Grace", "grace@example.com", window, cx)
+            })
+        })
+        .unwrap();
+        with_window(cx, w, |window, cx| window.click("speaker-new-save", cx));
+        assert!(
+            meetings.called("assign_speaker 5 new Grace grace@example.com"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(!exists(cx, w, "speaker-picker-5"));
+        let named = detail.read_with(cx, |d, _| {
+            d.speakers()
+                .iter()
+                .find(|s| s.id == 5)
+                .and_then(|s| s.person_id)
+        });
+        assert!(named.is_some());
+
+        // Rename again from a suggestion (Ada, a known person).
+        with_window(cx, w, |window, cx| window.click("block-0-speaker", cx));
+        assert!(exists(cx, w, "speaker-picker-5"));
+        with_window(cx, w, |window, cx| window.click("speaker-suggestion-0", cx));
+        assert!(meetings.called("assign_speaker 5 existing 7"));
+
+        // Segment playback decodes that stretch of the track.
+        with_window(cx, w, |window, cx| window.click("segment-3", cx));
+        assert!(meetings.called("segment_audio 1 system 4000 6000"));
+
+        with_window(cx, w, |window, cx| window.click("meeting-back", cx));
+        assert!(!exists(cx, w, "meeting-detail"));
+        assert!(exists(cx, w, "meeting-1"));
+    }
+
+    #[gpui_kit::test]
+    fn people_can_be_edited_and_deleted(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        assert!(exists(cx, w, "person-7"));
+        assert!(exists(cx, w, "person-8"));
+
+        with_window(cx, w, |window, cx| window.click("person-edit-8", cx));
+        let people = page.read_with(cx, |p, _| p.people().clone());
+        cx.update_window(w, |_, window, cx| {
+            people.update(cx, |p, cx| {
+                p.type_edit("Robert", "bob@example.com", window, cx)
+            })
+        })
+        .unwrap();
+        with_window(cx, w, |window, cx| window.click("person-save-8", cx));
+        assert!(meetings.called("rename_person 8 Robert bob@example.com"));
+
+        with_window(cx, w, |window, cx| window.click("person-merge-8", cx));
+        assert!(exists(cx, w, "person-merge-panel-8"));
+
+        with_window(cx, w, |window, cx| window.click("person-delete-7", cx));
+        assert!(has_dialog(cx, w));
+        assert!(!meetings.called("delete_person"));
+        press_enter(cx, w);
+        assert!(meetings.called("delete_person 7"), "{:?}", meetings.calls());
+        assert!(!exists(cx, w, "person-7"));
+        assert_eq!(people.read_with(cx, |p, _| p.people_count()), 1);
+    }
+
+    #[gpui_kit::test]
+    fn merging_moves_into_the_target(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (_w, page) = open(cx, MeetingsPage::new);
+        let people = page.read_with(cx, |p, _| p.people().clone());
+        people.update(cx, |p, cx| p.merge(8, 7, cx));
+        cx.run_until_parked();
+        assert!(meetings.called("merge_people 8 7"));
+        assert_eq!(people.read_with(cx, |p, _| p.people_count()), 1);
+    }
+
+    #[gpui_kit::test]
+    fn enabling_requests_permissions_and_saves_settings(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.with_settings(|s| s.meetings.enabled = false);
+        meetings.data.lock().permissions.calendar_granted = true;
+        setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-tab-settings", cx)
+        });
+        assert!(exists(cx, w, "meetings-settings"));
+        assert!(!exists(cx, w, "meetings-permissions"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-enabled-toggle", cx)
+        });
+        assert!(backend.called("update_setting meetings"));
+        assert!(backend.settings().meetings.enabled);
+        assert!(meetings.called("request_permissions"));
+        assert!(exists(cx, w, "meetings-permissions"));
+
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-calendar-notifications-toggle", cx)
+        });
+        assert!(!backend.settings().meetings.calendar_notifications);
+
+        assert!(!exists(cx, w, "meetings-match-threshold"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-advanced-toggle", cx)
+        });
+        assert!(exists(cx, w, "meetings-match-threshold"));
+        assert!(exists(cx, w, "meetings-suggest-threshold"));
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_shows_meetings_after_history_when_supported(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings);
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "nav-meetings"));
+        with_window(cx, w, |window, cx| window.click("nav-meetings", cx));
+        assert_eq!(
+            main.read_with(cx, |m, _| m.section),
+            crate::ui::main_window::Section::Meetings
+        );
+        assert!(exists(cx, w, "page-meetings"));
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_hides_meetings_when_unsupported(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().supported = false;
+        setup_meetings(cx, backend, meetings);
+        let (w, _) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "nav-history"));
+        assert!(!exists(cx, w, "nav-meetings"));
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_hides_meetings_without_a_meetings_backend(cx: &mut TestAppContext) {
+        setup(cx, FakeBackend::new());
+        let (w, _) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "nav-meetings"));
     }
 }

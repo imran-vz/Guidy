@@ -7,10 +7,30 @@ use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct ChatMessage {
     role: String,
     content: String,
+}
+
+/// A multi-message chat request for [`send_chat`] (the general entry point
+/// used by `crate::llm`). Dictation post-processing keeps using
+/// [`send_chat_completion`] / [`send_chat_completion_with_schema`].
+#[derive(Debug, Clone, Default)]
+pub struct ChatParams {
+    /// `(role, content)` pairs: "system", "user" or "assistant". For the
+    /// Anthropic format, system messages are sent as the top-level `system`.
+    pub messages: Vec<(String, String)>,
+    /// `(name, schema)`: request strict JSON-schema structured output. Only
+    /// sent to OpenAI-format endpoints.
+    pub json_schema: Option<(String, Value)>,
+    /// Output budget. Required by Anthropic (default 4096); OpenAI-format
+    /// endpoints get `max_tokens` only when set.
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature, sent only when set.
+    pub temperature: Option<f32>,
+    /// Ask the endpoint to skip reasoning (see `reasoning_disable_params`).
+    pub disable_reasoning: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +136,10 @@ struct ChatCompletionRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     #[serde(flatten)]
     reasoning: ReasoningParams,
 }
@@ -144,6 +168,10 @@ const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 struct AnthropicMessagesRequest {
     model: String,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     messages: Vec<ChatMessage>,
 }
 
@@ -344,7 +372,19 @@ pub async fn send_chat_completion(
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
     if provider.api_format == PostProcessApiFormat::Anthropic {
-        return send_anthropic_message(provider, api_key, model, prompt).await;
+        return send_anthropic_message(
+            provider,
+            api_key,
+            model,
+            None,
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+            ANTHROPIC_MAX_TOKENS,
+            None,
+        )
+        .await;
     }
 
     send_chat_completion_with_schema(
@@ -378,16 +418,6 @@ pub async fn send_chat_completion_with_schema(
     json_schema: Option<Value>,
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
-    let base_url = provider.base_url.trim_end_matches('/');
-    let url = format!("{}/chat/completions", base_url);
-
-    debug!(
-        "Sending chat completion request to: {}",
-        sanitized_url_for_log(&url)
-    );
-
-    let client = create_client(provider, &api_key)?;
-
     // Build messages vector
     let mut messages = Vec::new();
 
@@ -405,11 +435,95 @@ pub async fn send_chat_completion_with_schema(
         content: user_content,
     });
 
+    send_openai_chat(
+        provider,
+        api_key,
+        model,
+        messages,
+        json_schema.map(|schema| ("transcription_output".to_string(), schema)),
+        None,
+        None,
+        disable_reasoning,
+    )
+    .await
+}
+
+/// Send a multi-message chat request in the provider's format (OpenAI-
+/// compatible Chat Completions or Anthropic Messages). Returns the reply text,
+/// `Ok(None)` when the reply has no content, and an error for HTTP failures and
+/// truncated replies.
+pub async fn send_chat(
+    provider: &PostProcessProvider,
+    api_key: String,
+    model: &str,
+    params: ChatParams,
+) -> Result<Option<String>, String> {
+    if provider.api_format == PostProcessApiFormat::Anthropic {
+        let mut system = Vec::new();
+        let mut messages = Vec::new();
+        for (role, content) in params.messages {
+            if role == "system" {
+                system.push(content);
+            } else {
+                messages.push(ChatMessage { role, content });
+            }
+        }
+        let system = (!system.is_empty()).then(|| system.join("\n\n"));
+        return send_anthropic_message(
+            provider,
+            api_key,
+            model,
+            system,
+            messages,
+            params.max_tokens.unwrap_or(ANTHROPIC_MAX_TOKENS),
+            params.temperature,
+        )
+        .await;
+    }
+    let messages = params
+        .messages
+        .into_iter()
+        .map(|(role, content)| ChatMessage { role, content })
+        .collect();
+    send_openai_chat(
+        provider,
+        api_key,
+        model,
+        messages,
+        params.json_schema,
+        params.max_tokens,
+        params.temperature,
+        params.disable_reasoning,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_openai_chat(
+    provider: &PostProcessProvider,
+    api_key: String,
+    model: &str,
+    messages: Vec<ChatMessage>,
+    json_schema: Option<(String, Value)>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    disable_reasoning: bool,
+) -> Result<Option<String>, String> {
+    let base_url = provider.base_url.trim_end_matches('/');
+    let url = format!("{}/chat/completions", base_url);
+
+    debug!(
+        "Sending chat completion request to: {}",
+        sanitized_url_for_log(&url)
+    );
+
+    let client = create_client(provider, &api_key)?;
+
     // Build response_format if schema is provided
-    let response_format = json_schema.map(|schema| ResponseFormat {
+    let response_format = json_schema.map(|(name, schema)| ResponseFormat {
         format_type: "json_schema".to_string(),
         json_schema: JsonSchema {
-            name: "transcription_output".to_string(),
+            name,
             strict: true,
             schema,
         },
@@ -427,6 +541,8 @@ pub async fn send_chat_completion_with_schema(
         messages,
         stream: false,
         response_format,
+        max_tokens,
+        temperature,
         reasoning,
     };
 
@@ -513,7 +629,7 @@ pub async fn send_chat_completion_with_schema(
     Ok(choice.message.content)
 }
 
-/// Send a single-prompt request to an Anthropic Messages API (`/messages`).
+/// Send a request to an Anthropic Messages API (`/messages`).
 /// Used by every provider with the Anthropic format (the built-in Anthropic
 /// provider and a custom provider set to it). None of them use structured
 /// output, and thinking is off unless requested, so no reasoning fields are
@@ -522,7 +638,10 @@ async fn send_anthropic_message(
     provider: &PostProcessProvider,
     api_key: String,
     model: &str,
-    prompt: String,
+    system: Option<String>,
+    messages: Vec<ChatMessage>,
+    max_tokens: u32,
+    temperature: Option<f32>,
 ) -> Result<Option<String>, String> {
     let url = format!("{}/messages", provider.base_url.trim_end_matches('/'));
 
@@ -533,11 +652,10 @@ async fn send_anthropic_message(
 
     let request_body = AnthropicMessagesRequest {
         model: model.to_string(),
-        max_tokens: ANTHROPIC_MAX_TOKENS,
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: prompt,
-        }],
+        max_tokens,
+        system,
+        temperature,
+        messages,
     };
 
     let response = create_client(provider, &api_key)?
@@ -575,7 +693,7 @@ async fn send_anthropic_message(
     if message.stop_reason.as_deref() == Some("max_tokens") {
         return Err(format!(
             "Response was truncated at the {} token limit",
-            ANTHROPIC_MAX_TOKENS
+            max_tokens
         ));
     }
 
@@ -702,6 +820,8 @@ mod tests {
             }],
             stream: false,
             response_format: None,
+            max_tokens: None,
+            temperature: None,
             reasoning,
         };
         serde_json::to_value(&request).unwrap()
@@ -883,6 +1003,8 @@ mod tests {
         let request = AnthropicMessagesRequest {
             model: "claude-haiku".to_string(),
             max_tokens: ANTHROPIC_MAX_TOKENS,
+            system: None,
+            temperature: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
@@ -941,6 +1063,120 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().contains("truncated"));
+    }
+
+    /// Serve one response and hand back the raw request (headers + body).
+    async fn serve_and_capture(
+        body: &'static str,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 4096];
+            // Read until the whole body (per Content-Length) has arrived.
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                request.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                if let Some(split) = text.find("\r\n\r\n") {
+                    let len = text[..split]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= split + 4 + len {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            let _ = tx.send(String::from_utf8_lossy(&request).to_string());
+        });
+        (format!("http://{address}"), rx)
+    }
+
+    fn request_body(raw: &str) -> Value {
+        let body = &raw[raw.find("\r\n\r\n").unwrap() + 4..];
+        serde_json::from_str(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn send_chat_openai_sends_messages_schema_and_limits() {
+        let (base_url, rx) = serve_and_capture(
+            r#"{"choices":[{"message":{"content":"{\"a\":1}"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let result = send_chat(
+            &provider("custom", &base_url),
+            "key".to_string(),
+            "m",
+            ChatParams {
+                messages: vec![
+                    ("system".into(), "sys".into()),
+                    ("user".into(), "hello".into()),
+                ],
+                json_schema: Some((
+                    "meeting_summary".into(),
+                    serde_json::json!({"type":"object"}),
+                )),
+                max_tokens: Some(100),
+                temperature: Some(0.2),
+                disable_reasoning: false,
+            },
+        )
+        .await;
+        assert_eq!(result, Ok(Some("{\"a\":1}".to_string())));
+        let body = request_body(&rx.await.unwrap());
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "hello");
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            "meeting_summary"
+        );
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(body["max_tokens"], 100);
+        assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn send_chat_anthropic_moves_system_to_top_level() {
+        let (base_url, rx) =
+            serve_and_capture(r#"{"type":"message","content":[{"type":"text","text":"ok"}]}"#)
+                .await;
+        let result = send_chat(
+            &anthropic_format_provider(&base_url),
+            "key".to_string(),
+            "claude",
+            ChatParams {
+                messages: vec![
+                    ("system".into(), "be brief".into()),
+                    ("user".into(), "hi".into()),
+                ],
+                max_tokens: Some(8000),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        let body = request_body(&rx.await.unwrap());
+        assert_eq!(body["system"], "be brief");
+        assert_eq!(body["max_tokens"], 8000);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert!(body.get("temperature").is_none());
     }
 
     #[tokio::test]
