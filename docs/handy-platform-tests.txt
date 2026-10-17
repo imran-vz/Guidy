@@ -1,0 +1,13 @@
+# Handy baseline tests that only compile on some platforms (the baseline was
+# listed on macOS/aarch64). `cargo xtask parity` requires them only where they
+# build. Format: <platform> <test path>; platform is one of
+# macos-aarch64, macos, unix, not-linux.
+macos-aarch64 apple_intelligence::tests::test_availability
+macos autostart::macos::tests::launch_agent_path_matches_auto_launch_crate
+macos autostart::macos::tests::missing_launch_agent_is_a_no_op
+macos autostart::macos::tests::removes_existing_launch_agent
+macos autostart::macos::tests::sm_app_service_class_resolves
+macos helpers::clamshell::tests::test_clamshell_check
+macos helpers::clamshell::tests::test_is_laptop
+unix clipboard::tests::external_script_does_not_wait_for_inherited_stdio
+not-linux settings::tests::default_overlay_style_is_live_when_overlay_defaults_on
