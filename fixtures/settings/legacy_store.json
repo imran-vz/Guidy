@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "bindings": {
+      "transcribe": {
+        "id": "transcribe",
+        "name": "Transcribe",
+        "description": "Converts your speech into text.",
+        "default_binding": "option+space",
+        "current_binding": "ctrl+shift+space"
+      }
+    },
+    "push_to_talk": true,
+    "audio_feedback": true,
+    "selected_model": "parakeet-tdt-0.6b-v3",
+    "selected_language": "zh-Hant",
+    "overlay_position": "none",
+    "model_unload_timeout": "min5",
+    "recording_retention_period": "weeks2",
+    "custom_words": ["Guidy", "GPUI"],
+    "history_limit": 12,
+    "transcribe_gpu_device": 2
+  }
+}
