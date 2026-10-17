@@ -146,29 +146,29 @@ pub fn resolve_provider_model(
     if let Some((provider, model)) = provider_override {
         return (provider, model);
     }
+    let id = match feature {
+        Feature::PostProcess => settings.post_process_provider_id.clone(),
+        Feature::Meetings => settings.meetings.llm_provider_id.clone(),
+    };
+    let model = feature_model(settings, feature, &id);
+    (id, model)
+}
+
+/// The model `feature` uses on `provider_id` (empty when none is set).
+/// Meetings fall back to the provider's post-processing model.
+pub fn feature_model(settings: &AppSettings, feature: Feature, provider_id: &str) -> String {
+    let post_process = settings.post_process_models.get(provider_id);
     match feature {
-        Feature::PostProcess => {
-            let id = settings.post_process_provider_id.clone();
-            let model = settings
-                .post_process_models
-                .get(&id)
-                .cloned()
-                .unwrap_or_default();
-            (id, model)
-        }
-        Feature::Meetings => {
-            let id = settings.meetings.llm_provider_id.clone();
-            let model = settings
-                .meetings
-                .llm_models
-                .get(&id)
-                .filter(|m| !m.trim().is_empty())
-                .or_else(|| settings.post_process_models.get(&id))
-                .cloned()
-                .unwrap_or_default();
-            (id, model)
-        }
+        Feature::PostProcess => post_process,
+        Feature::Meetings => settings
+            .meetings
+            .llm_models
+            .get(provider_id)
+            .filter(|m| !m.trim().is_empty())
+            .or(post_process),
     }
+    .cloned()
+    .unwrap_or_default()
 }
 
 /// Build the provider for a feature (or an explicit `(provider_id, model)`).
@@ -246,16 +246,13 @@ pub fn validate_base_url(provider: &PostProcessProvider) -> Result<()> {
 
 /// Check that a provider is usable. Returns a short human-readable status
 /// for the "Test connection" button; the error text explains what's wrong.
-/// Blocking. Never logs or returns the key.
-pub fn test_connection(app: &AppHandle, provider_id: &str) -> Result<String> {
+/// `feature` picks the model probed when the provider has no model list (the
+/// post-processing page tests the post-processing model, the meetings AI
+/// settings the meetings model). Blocking. Never logs or returns the key.
+pub fn test_connection(app: &AppHandle, provider_id: &str, feature: Feature) -> Result<String> {
     let settings = crate::settings::get_settings(app);
     if provider_id == BUILTIN_LLM_PROVIDER_ID {
-        let model = settings
-            .meetings
-            .llm_models
-            .get(provider_id)
-            .cloned()
-            .unwrap_or_default();
+        let model = feature_model(&settings, feature, provider_id);
         let provider = builtin::BuiltinProvider::new(app, &model)?;
         builtin::BuiltinLlm::global().ping()?;
         return Ok(format!("Built-in model ready: {}", provider.model_label()));
@@ -282,14 +279,7 @@ pub fn test_connection(app: &AppHandle, provider_id: &str) -> Result<String> {
         listing => {
             // Some endpoints have no model list: fall back to a 1-token chat
             // with the configured model.
-            let model = settings
-                .meetings
-                .llm_models
-                .get(provider_id)
-                .filter(|m| !m.trim().is_empty())
-                .or_else(|| settings.post_process_models.get(provider_id))
-                .cloned()
-                .unwrap_or_default();
+            let model = feature_model(&settings, feature, provider_id);
             if model.trim().is_empty() {
                 return match listing {
                     Ok(_) => Ok(format!(
@@ -300,16 +290,31 @@ pub fn test_connection(app: &AppHandle, provider_id: &str) -> Result<String> {
                 };
             }
             let http = http::HttpProvider::new(provider.clone(), api_key, model.clone());
-            http.chat(
+            let reply = http.chat(
                 &[ChatMessage::user("Reply with OK.")],
                 &ChatOptions {
                     max_tokens: Some(1),
                     ..Default::default()
                 },
-            )
-            .map(|_| format!("Connected to {} ({model} replied)", provider.label))
+            );
+            match reply {
+                Ok(_) => Ok(format!("Connected to {} ({model} replied)", provider.label)),
+                // A 1-token budget is often spent before any text (reasoning
+                // models): the request still went through.
+                Err(e) if is_probe_cut_short(&e) => Ok(format!(
+                    "Connected to {} ({model} answered)",
+                    provider.label
+                )),
+                Err(e) => Err(e),
+            }
         }
     }
+}
+
+/// Whether a probe's error only says the 1-token reply was cut off or had an
+/// empty message (not a response without any choice).
+fn is_probe_cut_short(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<http::ReplyCutShort>().is_some()
 }
 
 /// Model ids a provider offers (the built-in runtime: downloaded GGUFs).
@@ -608,6 +613,33 @@ mod tests {
             resolve_provider_model(&s, Feature::Meetings, Some(("x".into(), "y".into()))),
             ("x".into(), "y".into())
         );
+    }
+
+    #[test]
+    fn feature_model_picks_the_callers_model() {
+        let mut s = crate::settings::get_default_settings();
+        s.post_process_models
+            .insert("openai".into(), "gpt-pp".into());
+        s.meetings
+            .llm_models
+            .insert("openai".into(), "gpt-meet".into());
+        assert_eq!(feature_model(&s, Feature::PostProcess, "openai"), "gpt-pp");
+        assert_eq!(feature_model(&s, Feature::Meetings, "openai"), "gpt-meet");
+        s.meetings.llm_models.insert("openai".into(), " ".into());
+        assert_eq!(feature_model(&s, Feature::Meetings, "openai"), "gpt-pp");
+        assert_eq!(feature_model(&s, Feature::PostProcess, "groq"), "");
+    }
+
+    #[test]
+    fn a_cut_short_probe_is_recognised_by_type_not_text() {
+        // Same text as a cut-short reply, but not the typed error.
+        assert!(!is_probe_cut_short(&anyhow!(
+            "OpenAI: Response was truncated at the provider's output token limit"
+        )));
+        assert!(!is_probe_cut_short(&anyhow!(
+            "OpenAI returned an empty reply"
+        )));
+        // End-to-end cases are in `http::tests`.
     }
 
     /// Replies from a script, recording what it was sent.

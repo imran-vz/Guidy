@@ -152,7 +152,7 @@ pub fn parse_notification(notification_id: &str, action_id: &str) -> Notificatio
 
 pub struct MeetingRecorder {
     deps: RecorderDeps,
-    /// Serializes start/stop.
+    /// Serializes start/stop/crash recovery.
     op: Mutex<()>,
     session: Mutex<Option<Session>>,
     state: Mutex<RecorderState>,
@@ -262,9 +262,15 @@ impl MeetingRecorder {
             Ok(s) => s,
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
-                // recorded anything (`open_session` removed its files).
+                // recorded anything (`open_session` removed its files). If it
+                // can't be deleted, end it with the error so crash recovery
+                // doesn't take it for an interrupted recording.
                 if let Err(e2) = self.deps.repo.delete_meeting(id) {
                     log::warn!("meetings: cleanup of meeting {id} failed: {e2:#}");
+                    let msg = format!("{e:#}");
+                    if let Err(e3) = self.deps.repo.finish_recording(id, now, Some(&msg)) {
+                        log::warn!("meetings: ending meeting {id} failed: {e3:#}");
+                    }
                 }
                 return Err(e);
             }
@@ -539,12 +545,16 @@ impl MeetingRecorder {
 
     /// Meetings left in `Recording` by a crash: mark them `Recorded`, with
     /// `ended_at` = the newest track file's last-write time. Returns their ids.
+    /// Runs under the start/stop lock, so a recording that is just starting
+    /// (already in the table, not yet the active session) is never taken for
+    /// one.
     ///
     /// The caller ([`crate::meetings::manager::MeetingsManager::start_background`])
     /// then queues each one for processing, like a normal stop; if queueing
     /// fails (e.g. the meeting model is missing) the meeting stays `Recorded`
     /// and the UI offers "Process".
     pub fn recover_interrupted(&self) -> Result<Vec<MeetingId>> {
+        let _op = self.op.lock();
         let active = self.current_meeting_id();
         let mut ids = Vec::new();
         for m in self.deps.repo.list_meetings()? {

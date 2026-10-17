@@ -365,6 +365,11 @@ pub fn initialize_app(
 
     let mut settings = get_settings(app_handle);
 
+    // D14: move legacy provider keys into the Keychain. Off the main thread:
+    // the Keychain may prompt, and key reads fall back to the JSON meanwhile.
+    let migrate_app_handle = app_handle.clone();
+    std::thread::spawn(move || settings::migrate_api_keys_at_startup(&migrate_app_handle));
+
     // Apply the persisted appearance theme before the window is shown.
     shortcut::apply_window_theme(app_handle, settings.theme);
 

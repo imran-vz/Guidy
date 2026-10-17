@@ -869,7 +869,8 @@ pub fn set_provider_api_key(
 /// D14: move legacy plain-text provider keys into the Keychain. Values that
 /// were migrated are removed from `settings`; values that could not be (the
 /// Keychain is unavailable) stay, so they are kept in the JSON and retried on
-/// the next load. Returns true when `settings` changed.
+/// the next launch (see [`migrate_api_keys_once`]). Returns true when
+/// `settings` changed.
 fn migrate_api_keys_to_secrets(settings: &mut AppSettings) -> bool {
     let mut migrated = false;
     settings.post_process_api_keys.retain(|provider_id, value| {
@@ -899,6 +900,64 @@ fn migrate_api_keys_to_secrets(settings: &mut AppSettings) -> bool {
         }
     });
     migrated
+}
+
+/// D14: provider API keys move from the JSON store to the Keychain, through
+/// `migrate`. Attempted at most once per settings store per process (in the
+/// app: once per launch, from [`migrate_api_keys_at_startup`]), so a Keychain
+/// that fails or prompts isn't retried; keys it couldn't move stay in the JSON
+/// until the next launch. The move deletes the JSON copy, so it
+/// only runs when the secrets backend persists (not on the in-memory one),
+/// or the keys would be lost on exit. Returns true when `settings` changed.
+fn migrate_api_keys_once(
+    store_path: &std::path::Path,
+    settings: &mut AppSettings,
+    migrate: impl FnOnce(&mut AppSettings) -> bool,
+) -> bool {
+    static ATTEMPTED: parking_lot::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> =
+        parking_lot::Mutex::new(None);
+    if settings.post_process_api_keys.is_empty() {
+        return false;
+    }
+    if !ATTEMPTED
+        .lock()
+        .get_or_insert_with(Default::default)
+        .insert(store_path.to_path_buf())
+    {
+        return false;
+    }
+    if !secret_store_is_persistent() {
+        info!("Secrets backend is not persistent; leaving provider API keys in settings");
+        return false;
+    }
+    migrate(settings)
+}
+
+/// D14 startup step: move legacy plain-text provider keys into the Keychain
+/// (see [`migrate_api_keys_once`]). The Keychain calls may block on an access
+/// prompt for as long as the user takes, so they run on a snapshot outside
+/// the settings lock; only the keys that moved are then removed from the
+/// fresh settings. Until this finishes, [`provider_api_key`] falls back to
+/// the JSON copy, so it can run off the startup path.
+pub fn migrate_api_keys_at_startup(app: &AppHandle) {
+    let store_path = app
+        .store(crate::portable::store_path(SETTINGS_STORE_PATH))
+        .expect("Failed to initialize store")
+        .path()
+        .to_path_buf();
+    let mut snapshot = get_settings(app);
+    let legacy = snapshot.post_process_api_keys.clone();
+    if !migrate_api_keys_once(&store_path, &mut snapshot, migrate_api_keys_to_secrets) {
+        return;
+    }
+    update_settings(app, |settings| {
+        for (provider_id, value) in legacy.iter() {
+            let moved = !snapshot.post_process_api_keys.contains_key(provider_id);
+            if moved && settings.post_process_api_keys.get(provider_id) == Some(value) {
+                settings.post_process_api_keys.remove(provider_id);
+            }
+        }
+    });
 }
 
 /// Whether the provider-key migration may run. Unit tests run on the
@@ -1184,7 +1243,15 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Serializes every settings write: whole replacements ([`write_settings`]),
+/// the migrations a read persists ([`get_settings`]) and read-modify-write
+/// sections ([`update_settings`], which holds it across its read and write;
+/// reentrant so those can nest). Nothing slow (Keychain, I/O beyond the
+/// store) may run under it: every settings read, the UI's included, waits.
+static SETTINGS_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+
 pub fn get_settings(app: &AppHandle) -> AppSettings {
+    let _guard = SETTINGS_LOCK.lock();
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
@@ -1275,17 +1342,6 @@ fn apply_settings_migrations(
     settings_value: &serde_json::Value,
 ) -> bool {
     let mut updated = false;
-
-    // D14: provider API keys move from the JSON store to the Keychain. The
-    // move deletes the JSON copy, so it only runs when the secrets backend
-    // persists (not on the in-memory one), or the keys would be lost on exit.
-    if secret_store_is_persistent() {
-        if migrate_api_keys_to_secrets(settings) {
-            updated = true;
-        }
-    } else if !settings.post_process_api_keys.is_empty() {
-        info!("Secrets backend is not persistent; leaving provider API keys in settings");
-    }
 
     // One-time onboarding migration: users with an explicit selected model have
     // already made it through model selection. Users who merely have compatible
@@ -1406,22 +1462,28 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
     settings.update_checks_enabled && !update_checks_forced_disabled()
 }
 
-/// Read-modify-write the settings atomically with respect to other
-/// [`update_settings`] calls: `f` runs on the current settings under a
-/// process-wide lock and the result is written before the lock is released.
-/// Use this instead of `get_settings` + `write_settings` wherever two writers
-/// may race (UI setters and background tasks). `f` must not call
-/// `update_settings` itself.
+/// Read-modify-write the settings atomically with respect to every other
+/// settings write: `f` runs on the current settings under the process-wide
+/// settings lock and the result is written before the lock is released.
+/// Every settings change goes through here, so UI setters and background
+/// tasks never revert each other's changes with a stale snapshot. Keep `f` to
+/// the mutation: do slow work and side effects (registering shortcuts,
+/// emitting events, Keychain calls) before or after it. The lock is
+/// reentrant, but a nested write inside `f` is overwritten by this one's:
+/// don't.
 pub fn update_settings<R>(app: &AppHandle, f: impl FnOnce(&mut AppSettings) -> R) -> R {
-    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    let _guard = LOCK.lock();
+    let _guard = SETTINGS_LOCK.lock();
     let mut settings = get_settings(app);
     let result = f(&mut settings);
     write_settings(app, settings);
     result
 }
 
-pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+/// Replace the stored settings whole. Only [`update_settings`] calls this
+/// (with settings it read under the same lock); a write of an earlier
+/// snapshot would revert any change made since it was read.
+fn write_settings(app: &AppHandle, settings: AppSettings) {
+    let _guard = SETTINGS_LOCK.lock();
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
@@ -2032,7 +2094,11 @@ mod tests {
         let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(settings.post_process_api_keys[provider], "sk-legacy-123");
 
-        assert!(apply_settings_migrations(&mut settings, &raw));
+        assert!(migrate_api_keys_once(
+            std::path::Path::new("/test/legacy-keys/settings.json"),
+            &mut settings,
+            migrate_api_keys_to_secrets
+        ));
 
         assert_eq!(
             crate::secrets::get(&crate::secrets::provider_api_key(provider))
@@ -2048,6 +2114,33 @@ mod tests {
 
         // Idempotent: a second pass has nothing to move.
         assert!(!migrate_api_keys_to_secrets(&mut settings));
+    }
+
+    #[test]
+    fn a_failed_key_migration_is_not_retried_until_the_next_launch() {
+        let path = std::path::Path::new("/test/failing-keychain/settings.json");
+        let mut settings = get_default_settings();
+        settings
+            .post_process_api_keys
+            .insert("x".to_string(), "sk-keep".to_string());
+        let attempts = std::cell::Cell::new(0);
+        // A Keychain that refuses every write: the key stays in the JSON.
+        let failing = |_: &mut AppSettings| {
+            attempts.set(attempts.get() + 1);
+            false
+        };
+        for _ in 0..3 {
+            assert!(!migrate_api_keys_once(path, &mut settings, failing));
+        }
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(settings.post_process_api_keys["x"], "sk-keep");
+        // Another store (another app instance in tests) gets its own attempt.
+        migrate_api_keys_once(
+            std::path::Path::new("/test/other-store/settings.json"),
+            &mut settings,
+            failing,
+        );
+        assert_eq!(attempts.get(), 2);
     }
 
     #[test]
@@ -2156,7 +2249,7 @@ mod store_compat_tests {
     }
 
     #[test]
-    fn stored_api_keys_move_to_secrets_on_load() {
+    fn stored_api_keys_move_to_secrets_at_startup() {
         let t = TestApp::new();
         let provider = "store-migration-provider";
         let mut stored = serde_json::to_value(get_default_settings()).unwrap();
@@ -2169,6 +2262,7 @@ mod store_compat_tests {
         )
         .unwrap();
 
+        migrate_api_keys_at_startup(&t.app);
         let s = get_settings(&t.app);
 
         assert_eq!(provider_api_key(&s, provider), "sk-store-999");
@@ -2193,10 +2287,33 @@ mod store_compat_tests {
     #[test]
     fn write_then_read_round_trips() {
         let t = TestApp::new();
-        let mut s = get_settings(&t.app);
-        s.history_limit = 42;
-        write_settings(&t.app, s);
+        update_settings(&t.app, |s| s.history_limit = 42);
         assert_eq!(get_settings(&t.app).history_limit, 42);
+    }
+
+    #[test]
+    fn a_setter_keeps_a_concurrent_background_change() {
+        let t = TestApp::new();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let app = &t.app;
+            // A background task (e.g. saving the Linear default team after
+            // creating tickets) mid read-modify-write...
+            let background = scope.spawn(move || {
+                update_settings(app, |s| {
+                    entered_tx.send(()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    s.meetings.linear_default_team_id = Some("team-1".into());
+                })
+            });
+            entered_rx.recv().unwrap();
+            // ...while the user changes an unrelated setting.
+            crate::shortcut::update_custom_words(app.clone(), vec!["setter".into()]).unwrap();
+            background.join().unwrap();
+        });
+        let s = get_settings(&t.app);
+        assert_eq!(s.custom_words, vec!["setter".to_string()]);
+        assert_eq!(s.meetings.linear_default_team_id.as_deref(), Some("team-1"));
     }
 
     #[test]

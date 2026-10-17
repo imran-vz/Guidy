@@ -13,7 +13,7 @@ use super::{
     block_on, extract_json, json_via_prompt, strip_think, validate_json, ChatMessage, ChatOptions,
     LlmProvider, CANCELLED,
 };
-use crate::llm_client::{self, ChatParams, ModelInfo};
+use crate::llm_client::{self, ChatError, ChatParams, ModelInfo};
 use crate::settings::{
     PostProcessApiFormat, PostProcessProvider, CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
 };
@@ -60,7 +60,7 @@ impl HttpProvider {
                     .as_ref()
                     .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
                 {
-                    return Err(CANCELLED.to_string());
+                    return Err(ChatError::Failed(CANCELLED.to_string()));
                 }
                 if let Ok(r) = tokio::time::timeout(Duration::from_millis(200), &mut request).await
                 {
@@ -68,14 +68,31 @@ impl HttpProvider {
                 }
             }
         });
+        let label = &self.provider.label;
         match reply {
             Ok(Some(text)) => Ok(strip_think(&text).to_string()),
-            Ok(None) => Err(anyhow!("{} returned an empty reply", self.provider.label)),
-            Err(e) if e == CANCELLED => Err(anyhow!(CANCELLED)),
-            Err(e) => Err(anyhow!("{}: {e}", self.provider.label)),
+            Ok(None) => Err(ReplyCutShort(format!("{label} returned an empty reply")).into()),
+            Err(ChatError::Truncated(e)) => Err(ReplyCutShort(format!("{label}: {e}")).into()),
+            Err(ChatError::NoChoices) => Err(anyhow!("{label} returned an empty reply")),
+            Err(ChatError::Failed(e)) if e == CANCELLED => Err(anyhow!(CANCELLED)),
+            Err(e) => Err(anyhow!("{label}: {e}")),
         }
     }
 }
+
+/// A reply that got through but was cut off at the output token limit or
+/// came back with an empty message. A typed error so the connection test can
+/// tell such a probe from a failed one (see `super::test_connection`).
+#[derive(Debug)]
+pub struct ReplyCutShort(String);
+
+impl std::fmt::Display for ReplyCutShort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ReplyCutShort {}
 
 /// Context window when nothing is known about a model: small enough for
 /// most hosted and local models, so long transcripts are chunked rather than
@@ -394,6 +411,36 @@ mod tests {
                 .unwrap(),
             "Hello"
         );
+    }
+
+    #[test]
+    fn only_truncated_or_empty_messages_count_as_a_cut_short_probe() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let probe = |body: serde_json::Value| {
+            let base = rt.block_on(serve(vec![("200 OK", body.to_string())]));
+            let p = HttpProvider::new(provider("custom", &base, false), String::new(), "m".into());
+            p.chat(&[ChatMessage::user("hi")], &ChatOptions::default())
+                .unwrap_err()
+        };
+        let truncated =
+            probe(json!({"choices":[{"message":{"content":""},"finish_reason":"length"}]}));
+        assert!(super::super::is_probe_cut_short(&truncated));
+        assert!(truncated.to_string().contains("truncated"), "{truncated}");
+
+        let empty = probe(json!({"choices":[{"message":{"content":null},"finish_reason":"stop"}]}));
+        assert!(super::super::is_probe_cut_short(&empty));
+        assert_eq!(empty.to_string(), "custom returned an empty reply");
+
+        let no_choices = probe(json!({"choices":[]}));
+        assert!(!super::super::is_probe_cut_short(&no_choices));
+        assert_eq!(no_choices.to_string(), "custom returned an empty reply");
+
+        let base = rt.block_on(serve(vec![("401 Unauthorized", "bad key".into())]));
+        let p = HttpProvider::new(provider("custom", &base, false), String::new(), "m".into());
+        let failed = p
+            .chat(&[ChatMessage::user("hi")], &ChatOptions::default())
+            .unwrap_err();
+        assert!(!super::super::is_probe_cut_short(&failed));
     }
 
     #[test]
