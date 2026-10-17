@@ -1406,6 +1406,21 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
     settings.update_checks_enabled && !update_checks_forced_disabled()
 }
 
+/// Read-modify-write the settings atomically with respect to other
+/// [`update_settings`] calls: `f` runs on the current settings under a
+/// process-wide lock and the result is written before the lock is released.
+/// Use this instead of `get_settings` + `write_settings` wherever two writers
+/// may race (UI setters and background tasks). `f` must not call
+/// `update_settings` itself.
+pub fn update_settings<R>(app: &AppHandle, f: impl FnOnce(&mut AppSettings) -> R) -> R {
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _guard = LOCK.lock();
+    let mut settings = get_settings(app);
+    let result = f(&mut settings);
+    write_settings(app, settings);
+    result
+}
+
 pub fn write_settings(app: &AppHandle, settings: AppSettings) {
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
@@ -2182,5 +2197,21 @@ mod store_compat_tests {
         s.history_limit = 42;
         write_settings(&t.app, s);
         assert_eq!(get_settings(&t.app).history_limit, 42);
+    }
+
+    #[test]
+    fn concurrent_update_settings_lose_no_writes() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.history_limit = 0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        update_settings(&t.app, |s| s.history_limit += 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(get_settings(&t.app).history_limit, 80);
     }
 }

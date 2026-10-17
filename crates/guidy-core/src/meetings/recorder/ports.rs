@@ -73,6 +73,8 @@ pub mod fakes {
     pub struct MemRepo {
         pub rows: Mutex<Vec<Meeting>>,
         next: Mutex<MeetingId>,
+        /// Make `set_audio_paths` fail.
+        pub fail_set_audio_paths: Mutex<bool>,
     }
 
     impl MeetingRepo for MemRepo {
@@ -100,6 +102,9 @@ pub mod fakes {
             mic: Option<&str>,
             system: Option<&str>,
         ) -> Result<()> {
+            if *self.fail_set_audio_paths.lock() {
+                anyhow::bail!("database is locked");
+            }
             let mut rows = self.rows.lock();
             let row = rows
                 .iter_mut()

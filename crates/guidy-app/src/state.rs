@@ -596,6 +596,19 @@ impl AppState {
         value: String,
         cx: &mut Context<Self>,
     ) {
+        self.update_post_process_then(what, provider_id, value, cx, |_, _, _| {});
+    }
+
+    /// [`Self::update_post_process`], then `done(result)` once the backend
+    /// call has finished.
+    pub fn update_post_process_then(
+        &mut self,
+        what: &'static str,
+        provider_id: &str,
+        value: String,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, &Result<(), String>, &mut Context<Self>) + 'static,
+    ) {
         let key = format!("post_process_{what}:{provider_id}");
         self.settings.updating.insert(key.clone());
         if matches!(what, "base_url" | "api_key" | "api_format") {
@@ -619,12 +632,13 @@ impl AppState {
                 _ => Ok(()),
             },
             move |s, r, cx| {
-                match r {
+                match &r {
                     // A new endpoint makes the stored model meaningless
                     // (settingsStore.updatePostProcessBaseUrl).
                     Ok(()) if what == "base_url" => {
                         s.settings.updating.remove(&key);
                         s.update_post_process("model", &pid_done, String::new(), cx);
+                        done(s, &r, cx);
                         return;
                     }
                     Ok(()) => {}
@@ -632,6 +646,7 @@ impl AppState {
                 }
                 s.settings.updating.remove(&key);
                 s.refresh_settings(cx);
+                done(s, &r, cx);
             },
         );
     }

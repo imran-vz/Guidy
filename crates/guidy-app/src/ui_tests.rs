@@ -2327,6 +2327,60 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn failed_api_key_save_keeps_the_cached_key(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        let (w, page) = open(cx, PostProcessingPage::new);
+        cx.run_until_parked();
+        let pid = backend.settings().post_process_provider_id.clone();
+        let pid = if pid.is_empty() {
+            backend.settings().post_process_providers[0].id.clone()
+        } else {
+            pid
+        };
+        let old = page
+            .read_with(cx, |p, _| p.cached_api_key(&pid).map(str::to_string))
+            .expect("key loaded");
+        let toasts = std::rc::Rc::new(std::cell::RefCell::new(0));
+        let t2 = toasts.clone();
+        let _sub = cx.update(|cx| {
+            cx.subscribe(&state, move |_, ev: &crate::state::AppEvent, _| {
+                if matches!(ev, crate::state::AppEvent::Toast(_)) {
+                    *t2.borrow_mut() += 1;
+                }
+            })
+        });
+
+        // Failure: the cache keeps the old key, the input shows it again.
+        backend.data.lock().fail_settings = vec!["post_process_api_key".into()];
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| p.enter_api_key("sk-new", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(backend.called(&format!("change_post_process_api_key {pid} sk-new")));
+        assert_eq!(
+            page.read_with(cx, |p, _| p.cached_api_key(&pid).map(str::to_string)),
+            Some(old.clone())
+        );
+        assert_eq!(page.read_with(cx, |p, cx| p.api_key_input(cx)), old);
+        assert_eq!(*toasts.borrow(), 1);
+
+        // Success: cached once the backend confirms.
+        backend.data.lock().fail_settings.clear();
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| p.enter_api_key("sk-good", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            page.read_with(cx, |p, _| p.cached_api_key(&pid).map(str::to_string)),
+            Some("sk-good".into())
+        );
+        assert_eq!(*toasts.borrow(), 1);
+    }
+
+    #[gpui_kit::test]
     fn post_processing_offers_the_builtin_model(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         let state = setup_meetings(cx, backend.clone(), meetings);

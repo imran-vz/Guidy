@@ -239,6 +239,21 @@ fn failed_capture_leaves_nothing_behind() {
 }
 
 #[test]
+fn failed_audio_path_update_removes_the_created_files() {
+    let r = rig();
+    *r.repo.fail_set_audio_paths.lock() = true;
+    let err = r.rec.start(None, T0).unwrap_err();
+    assert!(format!("{err:#}").contains("database is locked"));
+    assert!(r.repo.list_meetings().unwrap().is_empty());
+    assert!(!r.rec.is_recording());
+    // The track files were created before the row update failed.
+    let leftovers: Vec<_> = std::fs::read_dir(r.dir.path().join("meetings/audio"))
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
 fn missing_key_fails_before_creating_a_meeting() {
     let mut r = rig();
     r.rec.deps.data_key = Arc::new(|| anyhow::bail!("keychain locked"));

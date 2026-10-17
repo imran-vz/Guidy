@@ -86,6 +86,12 @@ impl Processor {
             Some(ProcessingStage::Merge) => ProcessingStage::Merge,
             Some(stage) => next_stage(stage),
         };
+        // Retention deletes a processed meeting's audio. Re-running from
+        // the audio would only fail and mark a good meeting `Failed`, so
+        // refuse up front and leave its status and stage alone.
+        if next <= ProcessingStage::Voiceprints && !has_audio(&meeting) {
+            bail!(AUDIO_DELETED);
+        }
         // Fail fast (nothing queued) when transcription is still to do and
         // the meeting model isn't downloaded: the UI gets the typed
         // `MeetingModelMissing` error to offer the download.
@@ -384,6 +390,15 @@ impl Processor {
     }
 }
 
+/// Why [`Processor::enqueue`] refuses a meeting without audio.
+pub const AUDIO_DELETED: &str =
+    "this meeting's audio has been deleted, so it can't be processed again";
+
+/// Whether the meeting still has a recorded track to process.
+pub fn has_audio(meeting: &Meeting) -> bool {
+    meeting.mic_audio_path.is_some() || meeting.system_audio_path.is_some()
+}
+
 /// Silero (the better detector for long-form audio), falling back to
 /// Earshot when its model can't be loaded.
 fn make_detector(app: &AppHandle) -> Result<Box<dyn SpeechScorer>> {
@@ -461,7 +476,8 @@ mod tests {
             calendar_event: None,
             started_at: 0,
             ended_at: Some(1),
-            mic_audio_path: None,
+            // A track whose file doesn't exist: runs fail in the pipeline.
+            mic_audio_path: Some("missing-mic.gopus".into()),
             system_audio_path: None,
             status,
             error: None,
@@ -495,7 +511,7 @@ mod tests {
             !p.is_busy(id)
                 && store.get_meeting(id).unwrap().unwrap().status != MeetingStatus::Recorded
         });
-        // No audio: it fails with a readable error, and can be retried.
+        // No audio file: it fails with a readable error, and can be retried.
         let m = store.get_meeting(id).unwrap().unwrap();
         assert_eq!(m.status, MeetingStatus::Failed);
         assert!(m.error.unwrap().contains("no recorded audio"));
@@ -522,6 +538,31 @@ mod tests {
         assert!(!p.is_busy(id));
         // Cancelling something that isn't running is fine.
         p.cancel(id).unwrap();
+    }
+
+    #[test]
+    fn meetings_whose_audio_was_deleted_are_refused_untouched() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        // Retention cleared the paths of a processed meeting.
+        let id = store
+            .insert_meeting(&Meeting {
+                mic_audio_path: None,
+                system_audio_path: None,
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+        let err = p.enqueue(id).unwrap_err();
+        assert_eq!(err.to_string(), AUDIO_DELETED);
+        assert!(!p.is_busy(id));
+        assert!(p.progress(id).is_none());
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert_eq!(m.processing_stage.as_deref(), Some("done"));
+        assert_eq!(m.error, None);
+        assert!(app.event_names().is_empty());
     }
 
     #[test]

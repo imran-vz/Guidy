@@ -216,19 +216,29 @@ pub fn provider_by_id(
 }
 
 /// Providers whose URL needs user input (Cloudflare's account / gateway id)
-/// ship with `{placeholders}`; refuse to call them until filled in.
+/// ship with `{placeholders}`; refuse to call them until filled in. Any `{`
+/// or `}` is refused (a real URL never has one unescaped). The one check for
+/// every caller (meetings LLM layer and dictation post-processing).
 pub fn validate_base_url(provider: &PostProcessProvider) -> Result<()> {
     let url = provider.base_url.trim();
     if url.is_empty() {
         bail!("{} has no base URL", provider.label);
     }
-    if let (Some(a), Some(b)) = (url.find('{'), url.find('}')) {
-        if a < b {
-            bail!(
-                "Set the {} part of the {} base URL",
-                &url[a..=b],
+    if let Some(a) = url.find(['{', '}']) {
+        let placeholder = url[a..]
+            .strip_prefix('{')
+            .and_then(|rest| rest.find(['{', '}']))
+            .map(|b| &url[a..=a + 1 + b])
+            .filter(|p| p.ends_with('}'));
+        match placeholder {
+            Some(p) => bail!(
+                "Set the {p} part of the {} base URL in the provider settings",
                 provider.label
-            );
+            ),
+            None => bail!(
+                "The {} base URL has a stray '{{' or '}}': fix it in the provider settings",
+                provider.label
+            ),
         }
     }
     Ok(())
@@ -552,6 +562,22 @@ mod tests {
         assert!(err.contains("{account_id}"), "{err}");
         p.base_url = "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1".into();
         assert!(validate_base_url(&p).is_ok());
+        // Any brace is refused, including a `}` before a `{`.
+        for url in [
+            "https://x.dev/}a{/v1",
+            "https://x.dev/{/v1",
+            "https://x.dev/}/v1",
+            "https://x.dev/{a{b}/v1",
+        ] {
+            p.base_url = url.into();
+            let err = validate_base_url(&p).unwrap_err().to_string();
+            assert!(err.contains("Cloudflare Workers AI"), "{url}: {err}");
+        }
+        p.base_url = "https://x.dev/{a{b}/v1".into();
+        assert!(validate_base_url(&p)
+            .unwrap_err()
+            .to_string()
+            .contains("stray"));
     }
 
     #[test]

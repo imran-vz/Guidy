@@ -100,22 +100,34 @@ pub fn resolve_track_path(audio_dir: &Path, rel: &str) -> Result<PathBuf> {
     Ok(audio_dir.join(p))
 }
 
-/// Delete a meeting's track files (missing files are fine). Returns how many
-/// files were removed.
+/// Delete a meeting's track files (missing files are fine). Paths that
+/// escape `audio_dir` are never touched. Every track is attempted; the first
+/// error is returned after that. Returns how many files were removed.
 pub fn delete_track_files(audio_dir: &Path, meeting: &Meeting) -> Result<usize> {
     let mut n = 0;
+    let mut first_err = None;
     for rel in [&meeting.mic_audio_path, &meeting.system_audio_path]
         .into_iter()
         .flatten()
     {
-        let path = resolve_track_path(audio_dir, rel)?;
-        match fs::remove_file(&path) {
-            Ok(()) => n += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("delete {}", path.display())),
+        let removed =
+            resolve_track_path(audio_dir, rel).and_then(|path| match fs::remove_file(&path) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e).with_context(|| format!("delete {}", path.display())),
+            });
+        match removed {
+            Ok(true) => n += 1,
+            Ok(false) => {}
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
         }
     }
-    Ok(n)
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(n),
+    }
 }
 
 // ---------------------------------------------------------------------------

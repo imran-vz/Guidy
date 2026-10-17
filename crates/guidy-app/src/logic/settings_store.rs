@@ -3,14 +3,20 @@
 //! Pure; the GPUI layer runs the backend calls.
 
 use guidy_core::settings::AppSettings;
-use serde_json::Value;
-use std::collections::HashSet;
+use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Default)]
 pub struct SettingsStore {
     pub settings: Option<AppSettings>,
     pub defaults: Option<AppSettings>,
+    /// Keys with an operation running (set/cleared by the caller).
     pub updating: HashSet<String>,
+    /// In-flight [`SettingsStore::begin_update`] calls per key. Patched
+    /// settings count under the key (`meetings`) and under each patched
+    /// field (`meetings.<field>`), so concurrent patches each hold their own
+    /// count and the key stays "updating" until the last one finishes.
+    in_flight: HashMap<String, usize>,
 }
 
 /// Settings whose value is an object patched field by field: the value
@@ -38,7 +44,36 @@ pub fn apply_setting_value(settings: &mut Value, key: &str, value: Value) {
 #[derive(Clone, Debug)]
 pub struct Pending {
     pub key: String,
+    /// The value before the update. For [`PATCHED_SETTINGS`], an object of
+    /// only the patched fields' previous values.
     pub original: Option<Value>,
+    /// The optimistic value as applied (for patched settings, the patched
+    /// fields as stored). Rollback only restores what still holds it, so a
+    /// later write is never undone.
+    applied: Option<Value>,
+    /// `in_flight` keys this update holds.
+    held: Vec<String>,
+}
+
+/// The fields of a [`PATCHED_SETTINGS`] object update, or `None` when `key`
+/// replaces its whole value.
+fn patched_fields(key: &str, value: &Value) -> Option<Vec<String>> {
+    if !PATCHED_SETTINGS.contains(&key) {
+        return None;
+    }
+    value.as_object().map(|o| o.keys().cloned().collect())
+}
+
+/// The listed fields of an object value.
+fn pick_fields(value: Option<Value>, fields: &[String]) -> Option<Value> {
+    let Some(Value::Object(o)) = value else {
+        return None;
+    };
+    let picked: Map<String, Value> = fields
+        .iter()
+        .filter_map(|f| o.get(f).map(|v| (f.clone(), v.clone())))
+        .collect();
+    Some(Value::Object(picked))
 }
 
 impl SettingsStore {
@@ -53,7 +88,7 @@ impl SettingsStore {
     }
 
     pub fn is_updating(&self, key: &str) -> bool {
-        self.updating.contains(key)
+        self.updating.contains(key) || self.in_flight.get(key).is_some_and(|n| *n > 0)
     }
 
     fn set_value(&mut self, key: &str, value: Value) -> bool {
@@ -76,26 +111,72 @@ impl SettingsStore {
         }
     }
 
-    /// Apply `value` immediately and mark `key` updating.
+    /// Apply `value` immediately and mark `key` updating. For
+    /// [`PATCHED_SETTINGS`], `value` holds only the changed fields, and each
+    /// field (`<key>.<field>`) is marked too.
     pub fn begin_update(&mut self, key: &str, value: Value) -> Pending {
-        let original = self.get(key);
-        self.updating.insert(key.to_string());
-        self.set_value(key, value);
+        let fields = patched_fields(key, &value);
+        let held: Vec<String> = std::iter::once(key.to_string())
+            .chain(fields.iter().flatten().map(|f| format!("{key}.{f}")))
+            .collect();
+        for k in &held {
+            *self.in_flight.entry(k.clone()).or_default() += 1;
+        }
+        let snapshot = |this: &Self| match &fields {
+            Some(fields) => pick_fields(this.get(key), fields),
+            None => this.get(key),
+        };
+        let original = snapshot(self);
+        let applied = self.set_value(key, value).then(|| snapshot(self)).flatten();
         Pending {
             key: key.to_string(),
             original,
+            applied,
+            held,
         }
     }
 
-    /// The backend call finished.
+    /// The backend call finished. On failure, roll back what this update
+    /// changed (only the patched fields of a patched setting), and only where
+    /// the value is still the optimistic one: a newer update wins.
     pub fn finish_update(&mut self, pending: Pending, result: &Result<(), String>) {
         if let Err(e) = result {
             log::error!("Failed to update setting {}: {}", pending.key, e);
-            if let Some(original) = pending.original {
-                self.set_value(&pending.key, original);
+            self.roll_back(&pending);
+        }
+        for k in &pending.held {
+            if let Some(n) = self.in_flight.get_mut(k) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    self.in_flight.remove(k);
+                }
             }
         }
-        self.updating.remove(&pending.key);
+    }
+
+    fn roll_back(&mut self, pending: &Pending) {
+        let (Some(original), Some(applied)) = (&pending.original, &pending.applied) else {
+            return;
+        };
+        let key = pending.key.as_str();
+        if PATCHED_SETTINGS.contains(&key) {
+            let (Value::Object(original), Value::Object(applied)) = (original, applied) else {
+                return;
+            };
+            let current = self.get(key);
+            let restore: Map<String, Value> = original
+                .iter()
+                .filter(|(f, _)| {
+                    current.as_ref().and_then(|c| c.get(f.as_str())) == applied.get(f.as_str())
+                })
+                .map(|(f, v)| (f.clone(), v.clone()))
+                .collect();
+            if !restore.is_empty() {
+                self.set_value(key, Value::Object(restore));
+            }
+        } else if self.get(key).as_ref() == Some(applied) {
+            self.set_value(key, original.clone());
+        }
     }
 
     /// Optimistic binding change (key `binding_<id>`).
@@ -218,7 +299,7 @@ mod tests {
         SettingsStore {
             settings: Some(s.clone()),
             defaults: Some(s),
-            updating: HashSet::new(),
+            ..Default::default()
         }
     }
 
@@ -319,5 +400,57 @@ mod tests {
         let mut v = json!({ "meetings": { "x": 1 } });
         apply_setting_value(&mut v, "meetings", json!({ "y": 2 }));
         assert_eq!(v, json!({ "meetings": { "x": 1, "y": 2 } }));
+    }
+
+    fn meetings(st: &SettingsStore) -> &guidy_core::meetings::settings::MeetingSettings {
+        &st.settings.as_ref().unwrap().meetings
+    }
+
+    #[test]
+    fn failed_meetings_patch_rolls_back_only_its_fields() {
+        let mut st = store();
+        let name_before = meetings(&st).user_display_name.clone();
+        let a = st.begin_update("meetings", json!({ "user_display_name": "Imran" }));
+        let b = st.begin_update("meetings", json!({ "enabled": true }));
+        // `b` succeeds, `a` fails: `enabled` must stay true.
+        st.finish_update(b, &Ok(()));
+        st.finish_update(a, &Err("disk full".into()));
+        assert!(meetings(&st).enabled);
+        assert_eq!(meetings(&st).user_display_name, name_before);
+        assert!(!st.is_updating("meetings"));
+    }
+
+    #[test]
+    fn rollback_skips_fields_a_newer_patch_changed() {
+        let mut st = store();
+        let a = st.begin_update("meetings", json!({ "user_display_name": "A" }));
+        let b = st.begin_update("meetings", json!({ "user_display_name": "B" }));
+        st.finish_update(a, &Err("nope".into()));
+        assert_eq!(meetings(&st).user_display_name, "B");
+        st.finish_update(b, &Ok(()));
+        assert_eq!(meetings(&st).user_display_name, "B");
+        // Whole-value settings follow the same rule.
+        let a = st.begin_update("paste_delay_ms", json!(10));
+        let b = st.begin_update("paste_delay_ms", json!(20));
+        st.finish_update(a, &Err("nope".into()));
+        assert_eq!(st.get("paste_delay_ms"), Some(json!(20)));
+        st.finish_update(b, &Ok(()));
+    }
+
+    #[test]
+    fn concurrent_patches_keep_the_key_updating_until_all_finish() {
+        let mut st = store();
+        let a = st.begin_update("meetings", json!({ "user_display_name": "Imran" }));
+        let b = st.begin_update("meetings", json!({ "enabled": true }));
+        assert!(st.is_updating("meetings"));
+        assert!(st.is_updating("meetings.user_display_name"));
+        assert!(st.is_updating("meetings.enabled"));
+        st.finish_update(a, &Ok(()));
+        assert!(st.is_updating("meetings"), "b is still in flight");
+        assert!(!st.is_updating("meetings.user_display_name"));
+        assert!(st.is_updating("meetings.enabled"));
+        st.finish_update(b, &Ok(()));
+        assert!(!st.is_updating("meetings"));
+        assert!(!st.is_updating("meetings.enabled"));
     }
 }

@@ -262,10 +262,7 @@ impl MeetingRecorder {
             Ok(s) => s,
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
-                // recorded anything.
-                if let Ok(Some(m)) = self.deps.repo.get_meeting(id) {
-                    let _ = audio_store::delete_track_files(&self.deps.audio_dir, &m);
-                }
+                // recorded anything (`open_session` removed its files).
                 if let Err(e2) = self.deps.repo.delete_meeting(id) {
                     log::warn!("meetings: cleanup of meeting {id} failed: {e2:#}");
                 }
@@ -285,11 +282,45 @@ impl MeetingRecorder {
         Ok(id)
     }
 
-    fn open_session(&self, mut meeting: Meeting, id: MeetingId, key: &[u8; 32]) -> Result<Session> {
+    /// Create the track files and start capture. On failure, every file it
+    /// created is deleted (tracked here, not read back from the row: the
+    /// failure may be the row update itself).
+    fn open_session(&self, meeting: Meeting, id: MeetingId, key: &[u8; 32]) -> Result<Session> {
+        let mut created = Vec::new();
+        let result = self.open_session_inner(meeting, id, key, &mut created);
+        if result.is_err() {
+            // The writers are dropped (closed) by now.
+            for path in &created {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => log::warn!(
+                        "meetings: couldn't remove {} after a failed start: {e}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+        result
+    }
+
+    fn open_session_inner(
+        &self,
+        mut meeting: Meeting,
+        id: MeetingId,
+        key: &[u8; 32],
+        created: &mut Vec<PathBuf>,
+    ) -> Result<Session> {
         let mic_rel = audio_store::track_file_name(id, Track::Mic);
         let sys_rel = audio_store::track_file_name(id, Track::System);
-        let mic = TrackWriter::create(&self.deps.audio_dir.join(&mic_rel), key)?;
-        let sys = TrackWriter::create(&self.deps.audio_dir.join(&sys_rel), key)?;
+        let mic_path = self.deps.audio_dir.join(&mic_rel);
+        let sys_path = self.deps.audio_dir.join(&sys_rel);
+        // Tracked before `create`, which may fail after opening (truncating)
+        // the file: whatever is at these fresh-id paths is ours.
+        created.push(mic_path.clone());
+        let mic = TrackWriter::create(&mic_path, key)?;
+        created.push(sys_path.clone());
+        let sys = TrackWriter::create(&sys_path, key)?;
         // Targeted: never overwrite the whole row (a rename may race this).
         self.deps
             .repo

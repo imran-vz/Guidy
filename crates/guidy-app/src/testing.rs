@@ -190,6 +190,15 @@ impl Backend for FakeBackend {
         self.rec(format!(
             "change_post_process_api_key {provider_id} {api_key}"
         ));
+        if self
+            .data
+            .lock()
+            .fail_settings
+            .iter()
+            .any(|k| k == "post_process_api_key")
+        {
+            return Err("keychain write failed".into());
+        }
         Ok(())
     }
     fn change_post_process_model(&self, provider_id: &str, model: &str) -> BackendResult<()> {

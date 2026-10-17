@@ -713,7 +713,24 @@ pub struct SummarizeOutput {
     pub items: Vec<ActionItem>,
 }
 
-/// Group partial summaries so each group's combine prompt fits the budget.
+/// Estimated tokens of one partial in a combine prompt: only the fields
+/// [`combine_messages`] sends (not `action_items`).
+fn combine_part_tokens(p: &MeetingSummary) -> usize {
+    estimate_tokens(
+        &json!({
+            "title": p.title,
+            "short_summary": p.short_summary,
+            "decisions": p.decisions,
+            "topics": p.topics,
+        })
+        .to_string(),
+    )
+}
+
+/// Group partial summaries so each group's combine prompt fits the budget
+/// where possible. Every group (given at least 2 partials) holds at least 2,
+/// even past the budget, so each combine round shrinks the level and the
+/// hierarchical combine always ends.
 fn group_for_combine(
     partials: Vec<MeetingSummary>,
     budget_tokens: usize,
@@ -722,13 +739,19 @@ fn group_for_combine(
     let mut current: Vec<MeetingSummary> = Vec::new();
     let mut size = 0usize;
     for p in partials {
-        let t = estimate_tokens(&serde_json::to_string(&p).unwrap_or_default());
-        if !current.is_empty() && size + t > budget_tokens {
+        let t = combine_part_tokens(&p);
+        if current.len() >= 2 && size + t > budget_tokens {
             groups.push(std::mem::take(&mut current));
             size = 0;
         }
         size += t;
         current.push(p);
+    }
+    if current.len() == 1 {
+        // A lone leftover joins the previous group.
+        if let Some(last) = groups.last_mut() {
+            last.append(&mut current);
+        }
     }
     if !current.is_empty() {
         groups.push(current);
@@ -835,9 +858,8 @@ pub fn summarize_meeting(
         }
         let mut next = Vec::with_capacity(groups.len());
         for group in groups {
-            if group.len() == 1 {
-                next.extend(group);
-                continue;
+            if call_opts.is_cancelled() {
+                bail!(crate::llm::CANCELLED);
             }
             let value =
                 provider.chat_json(&combine_messages(&group, &ctx), &combine_schema, &call_opts)?;
@@ -1386,6 +1408,134 @@ mod tests {
         assert_eq!(texts, vec!["Write the release notes", "Fix the login bug"]);
         assert!(out.items[0].owner_is_user);
         assert_eq!(out.items[1].owner_person_id, Some(100));
+    }
+
+    /// Replies with partial and combined summaries far larger than a tiny
+    /// context's combine budget, so no two partials ever "fit" together.
+    struct Wordy {
+        calls: Mutex<usize>,
+        combines: Mutex<usize>,
+        /// Set this flag during the n-th combine call.
+        cancel_on_combine: Option<(usize, crate::llm::CancelFlag)>,
+    }
+
+    impl LlmProvider for Wordy {
+        fn name(&self) -> String {
+            "fake/wordy".into()
+        }
+        fn context_tokens(&self) -> usize {
+            1024
+        }
+        fn chat(&self, _: &[ChatMessage], _: &ChatOptions) -> Result<String> {
+            unreachable!()
+        }
+        fn chat_json(&self, _: &[ChatMessage], schema: &Value, _: &ChatOptions) -> Result<Value> {
+            *self.calls.lock() += 1;
+            let long = "A very long summary sentence about the meeting. ".repeat(40);
+            let mut v = json!({"title": "Part", "short_summary": long,
+                "decisions": [], "topics": []});
+            if schema["properties"].get("action_items").is_some() {
+                v["action_items"] = json!([]);
+            } else {
+                let mut n = self.combines.lock();
+                *n += 1;
+                if let Some((at, flag)) = &self.cancel_on_combine {
+                    if *n == *at {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }
+            Ok(v)
+        }
+    }
+
+    fn padded_fixture() -> (Vec<Segment>, Vec<MeetingSpeaker>, Vec<Person>) {
+        let mut f = fixture();
+        for i in 0..60 {
+            f.0.push(seg(
+                100 + i,
+                300_000 + i * 5000,
+                Some(12),
+                Track::System,
+                &"We talked about the roadmap and other general things at length. ".repeat(3),
+            ));
+        }
+        f
+    }
+
+    #[test]
+    fn combine_groups_always_shrink_the_level() {
+        let big = |i: usize| MeetingSummary {
+            title: format!("Part {i}"),
+            short_summary: "x".repeat(4000),
+            ..Default::default()
+        };
+        // Nothing fits the budget: still pairs (the odd one out joins the
+        // last group), so the next level is smaller.
+        for n in 2..8 {
+            let groups = group_for_combine((0..n).map(big).collect(), 256);
+            assert!(groups.iter().all(|g| g.len() >= 2), "{n}: {groups:?}");
+            assert!(groups.len() < n);
+            assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), n);
+        }
+        // Action items aren't sent to the combine step, so they don't count.
+        let with_items = |i: usize| MeetingSummary {
+            title: format!("Part {i}"),
+            action_items: vec![
+                ActionItemDraft {
+                    text: "y".repeat(4000),
+                    owner: None,
+                    due: None,
+                    source_quote: String::new(),
+                    source_t_ms: None,
+                };
+                5
+            ],
+            ..Default::default()
+        };
+        let groups = group_for_combine((0..6).map(with_items).collect(), 256);
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn tiny_context_combine_terminates() {
+        let f = padded_fixture();
+        let p = Wordy {
+            calls: Mutex::new(0),
+            combines: Mutex::new(0),
+            cancel_on_combine: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let input = input(&f);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let r = summarize_meeting(&p, &input, &ChatOptions::default(), &|_, _| {});
+                let _ = tx.send(r.map(|o| o.summary.title));
+            });
+            let r = rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .expect("the hierarchical combine must terminate");
+            assert_eq!(r.unwrap(), "Part");
+        });
+        assert!(*p.combines.lock() >= 2, "{} combines", p.combines.lock());
+    }
+
+    #[test]
+    fn cancel_stops_the_combine_loop() {
+        let f = padded_fixture();
+        let flag = crate::llm::CancelFlag::default();
+        let p = Wordy {
+            calls: Mutex::new(0),
+            combines: Mutex::new(0),
+            cancel_on_combine: Some((1, flag.clone())),
+        };
+        let opts = ChatOptions {
+            cancel: Some(flag),
+            ..Default::default()
+        };
+        let err = summarize_meeting(&p, &input(&f), &opts, &|_, _| {}).unwrap_err();
+        assert!(crate::llm::is_cancelled_error(&err), "{err:#}");
+        assert_eq!(*p.combines.lock(), 1);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::logic::flows::{
     post_process_model_options, prompt_is_dirty, should_auto_fetch_models, APPLE_PROVIDER_ID,
     CUSTOM_PROVIDER_ID,
 };
+use crate::logic::settings_store::ToastSpec;
 use crate::state::AppState;
 use crate::ui::kit::{group, icon, page, t, Dropdown, DropdownOption, SettingRow};
 use crate::ui::shortcut_input::ShortcutInput;
@@ -109,12 +110,16 @@ impl PostProcessingPage {
                     this.save_base_url(v, cx);
                 }
             }),
-            cx.subscribe_in(&api_key, window, |this, input, ev: &InputEvent, _, cx| {
-                if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    let v = input.read(cx).value().trim().to_string();
-                    this.save_api_key(v, cx);
-                }
-            }),
+            cx.subscribe_in(
+                &api_key,
+                window,
+                |this, input, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        let v = input.read(cx).value().trim().to_string();
+                        this.save_api_key(v, window, cx);
+                    }
+                },
+            ),
             cx.subscribe_in(&model, window, |this, input, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                     let v = input.read(cx).value().trim().to_string();
@@ -281,7 +286,23 @@ impl PostProcessingPage {
         self.api_keys.get(provider_id).map(String::as_str)
     }
 
-    fn save_api_key(&mut self, value: String, cx: &mut Context<Self>) {
+    #[cfg(test)]
+    pub fn enter_api_key(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let value = value.to_string();
+        self.api_key
+            .update(cx, |st, cx| st.set_value(value.clone(), window, cx));
+        self.save_api_key(value, window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn api_key_input(&self, cx: &App) -> String {
+        self.api_key.read(cx).value().to_string()
+    }
+
+    /// Store the key in the Keychain. The cached key changes only once the
+    /// backend confirms; on failure the input goes back to the stored key
+    /// and an error toast says why.
+    fn save_api_key(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = self.state.read(cx).app_settings().cloned() else {
             return;
         };
@@ -293,10 +314,56 @@ impl PostProcessingPage {
         if *current == value {
             return;
         }
-        self.api_keys.insert(pid.clone(), value.clone());
+        let page = cx.entity().downgrade();
+        let window = window.window_handle();
+        let provider = pid.clone();
         self.state.update(cx, |st, cx| {
-            st.update_post_process("api_key", &pid, value, cx)
+            st.update_post_process_then(
+                "api_key",
+                &provider,
+                value.clone(),
+                cx,
+                move |st, r, cx| {
+                    if let Err(e) = r {
+                        st.toast(
+                            ToastSpec::error(
+                                guidy_i18n::t("settings.postProcessing.api.apiKey.saveFailed"),
+                                Some(e.clone()),
+                            ),
+                            cx,
+                        );
+                    }
+                    let ok = r.is_ok();
+                    cx.defer(move |cx| {
+                        let _ = window.update(cx, |_, window, cx| {
+                            let _ = page.update(cx, |this, cx| {
+                                this.finish_api_key_save(pid, value, ok, window, cx)
+                            });
+                        });
+                    });
+                },
+            )
         });
+    }
+
+    fn finish_api_key_save(
+        &mut self,
+        pid: String,
+        value: String,
+        ok: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ok {
+            self.api_keys.insert(pid, value);
+        } else if let Some(old) = self.api_keys.get(&pid).cloned() {
+            let shown = self.state.read(cx).app_settings().map(|s| provider_of(s).0);
+            if shown.as_deref() == Some(pid.as_str()) {
+                self.api_key
+                    .update(cx, |st, cx| st.set_value(old, window, cx));
+            }
+        }
+        cx.notify();
     }
 
     fn save(

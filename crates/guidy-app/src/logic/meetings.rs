@@ -330,12 +330,15 @@ pub fn status_key(status: MeetingStatus) -> &'static str {
     }
 }
 
-/// Recorded/failed meetings can be (re)processed; processed ones re-run.
+/// Recorded/failed meetings can be (re)processed; processed ones re-run
+/// only while their audio exists (retention deletes it, and re-running
+/// without it would fail and mark a good meeting failed).
 pub fn can_process(m: &Meeting) -> bool {
-    matches!(
-        m.status,
-        MeetingStatus::Recorded | MeetingStatus::Failed | MeetingStatus::Processed
-    )
+    match m.status {
+        MeetingStatus::Recorded | MeetingStatus::Failed => true,
+        MeetingStatus::Processed => m.mic_audio_path.is_some() || m.system_audio_path.is_some(),
+        MeetingStatus::Recording | MeetingStatus::Processing => false,
+    }
 }
 
 /// Retention dropdown value: `"3"`, `"7"`, `"30"` or `"forever"`.
@@ -490,6 +493,36 @@ mod tests {
             Some(MeetingsEvent::RecorderState(RecorderState::Idle))
         );
         assert_eq!(decode_event("history-update-payload", &Value::Null), None);
+    }
+
+    #[test]
+    fn processed_meetings_without_audio_cannot_be_reprocessed() {
+        let mut m = Meeting {
+            id: 1,
+            title: "Sync".into(),
+            calendar_event_id: None,
+            calendar_event: None,
+            started_at: 0,
+            ended_at: Some(1),
+            mic_audio_path: Some("1-mic.gopus".into()),
+            system_audio_path: Some("1-system.gopus".into()),
+            status: MeetingStatus::Processed,
+            error: None,
+            processing_stage: Some("done".into()),
+        };
+        assert!(can_process(&m));
+        // Retention deleted the audio.
+        m.mic_audio_path = None;
+        m.system_audio_path = None;
+        assert!(!can_process(&m));
+        for status in [MeetingStatus::Recorded, MeetingStatus::Failed] {
+            m.status = status;
+            assert!(can_process(&m));
+        }
+        for status in [MeetingStatus::Recording, MeetingStatus::Processing] {
+            m.status = status;
+            assert!(!can_process(&m));
+        }
     }
 
     #[test]
