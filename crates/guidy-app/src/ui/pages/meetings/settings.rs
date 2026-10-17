@@ -3,12 +3,18 @@
 //! notifications, the reminder interval, and the speaker-match thresholds
 //! under "Advanced". G2's AI + Linear settings follow.
 //!
-//! Every change writes the whole nested object through
-//! `update_setting("meetings", <MeetingSettings JSON>)`.
+//! Every change writes only the changed fields through
+//! `update_setting("meetings", {"field": value})`; the backend merges the
+//! patch into the stored object.
 
 use super::ai_settings::AiSettingsView;
-use super::{meeting_settings, run, toast_error};
-use crate::logic::meetings::{non_empty, parse_retention, retention_value};
+use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
+use crate::logic::meetings::{
+    meetings_patch, non_empty, parse_retention, retention_value, MeetingsEvent,
+    PRIVACY_AUDIO_CAPTURE_URL, PRIVACY_CALENDARS_URL, PRIVACY_MICROPHONE_URL,
+};
+use crate::meetings_backend::error_message;
+use crate::state::AppEvent;
 use crate::state::AppState;
 use crate::ui::kit::{
     group, icon, model_name, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
@@ -16,22 +22,74 @@ use crate::ui::kit::{
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::managers::transcription::meeting::{
+    DEFAULT_MEETING_MODEL_ID, DEFAULT_MEETING_MODEL_NAME,
+};
 use guidy_core::meetings::manager::PermissionReport;
+use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::{MeetingSettings, RETENTION_CHOICES};
 
 const REMINDER_CHOICES: [u32; 5] = [5, 10, 15, 20, 30];
 
-/// Persist a change to the nested meetings settings.
+/// Persist a change to the nested meetings settings: only the fields `f`
+/// changes are sent.
 pub fn update_meetings(cx: &mut App, f: impl FnOnce(&mut MeetingSettings)) {
-    let mut m = meeting_settings(cx);
-    f(&mut m);
-    match serde_json::to_value(&m) {
-        Ok(json) => AppState::global(cx).update(cx, |s, cx| s.update_setting("meetings", json, cx)),
-        Err(e) => log::error!("Failed to serialize meeting settings: {e}"),
+    let before = meeting_settings(cx);
+    let mut after = before.clone();
+    f(&mut after);
+    let patch = meetings_patch(&before, &after);
+    if patch.as_object().is_some_and(|p| !p.is_empty()) {
+        AppState::global(cx).update(cx, |s, cx| s.update_setting("meetings", patch, cx));
+    }
+}
+
+/// Which permission a row is about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Permission {
+    Calendar,
+    SystemAudio,
+    Microphone,
+    Notifications,
+}
+
+impl Permission {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Calendar => "calendar",
+            Self::SystemAudio => "system-audio",
+            Self::Microphone => "microphone",
+            Self::Notifications => "notifications",
+        }
+    }
+    fn key(self) -> &'static str {
+        match self {
+            Self::Calendar => "meetings.settings.permissions.calendar",
+            Self::SystemAudio => "meetings.settings.permissions.systemAudio",
+            Self::Microphone => "meetings.settings.permissions.microphone",
+            Self::Notifications => "meetings.settings.permissions.notifications",
+        }
+    }
+    /// The System Settings privacy pane (none for notifications).
+    fn pane(self) -> Option<&'static str> {
+        match self {
+            Self::Calendar => Some(PRIVACY_CALENDARS_URL),
+            Self::SystemAudio => Some(PRIVACY_AUDIO_CAPTURE_URL),
+            Self::Microphone => Some(PRIVACY_MICROPHONE_URL),
+            Self::Notifications => None,
+        }
+    }
+    fn granted(self, p: &PermissionReport) -> bool {
+        match self {
+            Self::Calendar => p.calendar_granted,
+            Self::SystemAudio => p.system_audio_granted,
+            Self::Microphone => p.microphone_granted,
+            Self::Notifications => p.notifications_granted,
+        }
     }
 }
 
@@ -49,6 +107,7 @@ pub struct MeetingSettingsView {
     dragging: bool,
     permissions: Option<PermissionReport>,
     requesting: bool,
+    speaker_model: Option<SpeakerModelStatus>,
     advanced_open: bool,
     ai: Entity<AiSettingsView>,
     _subs: Vec<Subscription>,
@@ -106,8 +165,14 @@ impl MeetingSettingsView {
             cx.subscribe(&suggest_slider, |this, _, ev: &SliderEvent, cx| {
                 this.on_slider(Threshold::Suggest, ev, cx)
             }),
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
+                if let AppEvent::Meetings(MeetingsEvent::SpeakerModelStatus(s)) = ev {
+                    this.speaker_model = Some(s.clone());
+                    cx.notify();
+                }
+            }),
         ];
-        let this = Self {
+        let mut this = Self {
             name_input,
             email_input,
             match_slider,
@@ -115,22 +180,78 @@ impl MeetingSettingsView {
             dragging: false,
             permissions: None,
             requesting: false,
+            speaker_model: None,
             advanced_open: false,
             ai: cx.new(|cx| AiSettingsView::new(window, cx)),
             _subs: subs,
         };
-        if current.enabled {
-            run(
-                cx,
-                |b| b.permission_status(),
-                |this: &mut Self, p, _| {
-                    if this.permissions.is_none() {
-                        this.permissions = Some(p);
-                    }
-                },
-            );
-        }
+        this.reload_status(cx);
         this
+    }
+
+    /// Permission grants and the speaker model's state (no prompts).
+    pub fn reload_status(&mut self, cx: &mut Context<Self>) {
+        run(
+            cx,
+            |b| (b.permission_status(), b.speaker_model_status()),
+            |this: &mut Self, (p, speaker), _| {
+                if !this.requesting {
+                    this.permissions = Some(p);
+                }
+                this.speaker_model = Some(speaker);
+            },
+        );
+    }
+
+    fn request_permissions(&mut self, cx: &mut Context<Self>) {
+        if self.requesting {
+            return;
+        }
+        self.requesting = true;
+        cx.notify();
+        run(
+            cx,
+            |b| b.request_permissions(),
+            |this: &mut Self, r, cx| {
+                this.requesting = false;
+                match r {
+                    Ok(p) => this.permissions = Some(p),
+                    Err(e) => toast_error("meetings.settings.permissions.error", &e, cx),
+                }
+            },
+        );
+    }
+
+    fn open_pane(&mut self, url: &'static str, cx: &mut Context<Self>) {
+        run(
+            cx,
+            move |b| b.open_url(url),
+            |_: &mut Self, r, _| {
+                if let Err(e) = r {
+                    log::warn!("Failed to open System Settings: {e}");
+                }
+            },
+        );
+    }
+
+    fn download_speaker_model(&mut self, cx: &mut Context<Self>) {
+        self.speaker_model = Some(SpeakerModelStatus::Downloading {
+            downloaded: 0,
+            total: 0,
+        });
+        cx.notify();
+        run(
+            cx,
+            |b| b.download_speaker_model(),
+            |this: &mut Self, r, cx| {
+                if let Err(e) = r {
+                    this.speaker_model = Some(SpeakerModelStatus::Failed {
+                        error: error_message(&e),
+                    });
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Mirror stored values into inputs and sliders (not while editing).
@@ -191,68 +312,164 @@ impl MeetingSettingsView {
         if !enabled {
             return;
         }
-        self.requesting = true;
-        cx.notify();
-        run(
-            cx,
-            |b| b.request_permissions(),
-            |this: &mut Self, r, cx| {
-                this.requesting = false;
-                match r {
-                    Ok(p) => this.permissions = Some(p),
-                    Err(e) => toast_error("meetings.settings.permissions.error", &e, cx),
-                }
-            },
-        );
+        // Pre-download the speaker model so the first meeting doesn't wait.
+        if matches!(
+            self.speaker_model,
+            None | Some(SpeakerModelStatus::Missing) | Some(SpeakerModelStatus::Failed { .. })
+        ) {
+            self.download_speaker_model(cx);
+        }
+        self.request_permissions(cx);
     }
 
-    fn render_permissions(&self, cx: &App) -> Option<AnyElement> {
-        let p = self.permissions.as_ref()?;
-        let theme = cx.theme();
-        let item = |key: &str, granted: bool| {
+    fn render_permissions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.permissions.clone()?;
+        let theme = cx.theme().clone();
+        let rows: Vec<AnyElement> = [
+            Permission::Calendar,
+            Permission::SystemAudio,
+            Permission::Microphone,
+            Permission::Notifications,
+        ]
+        .into_iter()
+        .map(|perm| {
+            let granted = perm.granted(&p);
             h_flex()
-                .gap_1()
-                .text_xs()
+                .id(SharedString::from(format!(
+                    "meetings-permission-{}",
+                    perm.id()
+                )))
+                .w_full()
+                .gap_2()
+                .justify_between()
                 .child(
-                    icon(if granted { "check" } else { "x" })
-                        .xsmall()
-                        .text_color(if granted { theme.success } else { theme.danger }),
+                    h_flex()
+                        .gap_1()
+                        .text_xs()
+                        .child(
+                            icon(if granted { "check" } else { "x" })
+                                .xsmall()
+                                .text_color(if granted { theme.success } else { theme.danger }),
+                        )
+                        .child(t(perm.key()))
+                        .child(div().text_color(theme.muted_foreground).child(if granted {
+                            t("meetings.settings.permissions.granted")
+                        } else {
+                            t("meetings.settings.permissions.denied")
+                        })),
                 )
-                .child(t(key))
-                .child(div().text_color(theme.muted_foreground).child(if granted {
-                    t("meetings.settings.permissions.granted")
-                } else {
-                    t("meetings.settings.permissions.denied")
-                }))
-        };
+                .when(!granted, |d| {
+                    d.child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "meetings-permission-request-{}",
+                                    perm.id()
+                                )))
+                                .ghost()
+                                .xsmall()
+                                .label(t("meetings.settings.permissions.requestAgain"))
+                                .disabled(self.requesting)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.request_permissions(cx)),
+                                ),
+                            )
+                            .when_some(perm.pane(), |d, url| {
+                                d.child(
+                                    Button::new(SharedString::from(format!(
+                                        "meetings-permission-open-{}",
+                                        perm.id()
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(icon("external-link"))
+                                    .label(t("meetings.settings.permissions.openSettings"))
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.open_pane(url, cx)),
+                                    ),
+                                )
+                            }),
+                    )
+                })
+                .test_support()
+                .into_any_element()
+        })
+        .collect();
         Some(
             SettingRow::new(
                 "meetings-permissions",
                 t("meetings.settings.permissions.title"),
             )
             .stacked()
-            .control(
-                h_flex()
-                    .flex_wrap()
-                    .gap_x_4()
-                    .gap_y_1()
-                    .child(item(
-                        "meetings.settings.permissions.calendar",
-                        p.calendar_granted,
-                    ))
-                    .child(item(
-                        "meetings.settings.permissions.systemAudio",
-                        p.system_audio_granted,
-                    ))
-                    .child(item(
-                        "meetings.settings.permissions.microphone",
-                        p.microphone_granted,
-                    ))
-                    .child(item(
-                        "meetings.settings.permissions.notifications",
-                        p.notifications_granted,
-                    )),
+            .control(v_flex().w_full().gap_1().children(rows))
+            .into_any_element(),
+        )
+    }
+
+    fn render_speaker_model(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.speaker_model.clone()?;
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
+        let control: AnyElement =
+            match &status {
+                SpeakerModelStatus::Ready => h_flex()
+                    .gap_1()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(icon("check").xsmall().text_color(theme.success))
+                    .child(t("meetings.settings.speakerModel.ready"))
+                    .into_any_element(),
+                SpeakerModelStatus::Downloading { downloaded, total } => {
+                    let fraction = if *total > 0 {
+                        (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
+                    } else {
+                        0.0
+                    };
+                    h_flex()
+                        .id("meetings-speaker-model-progress")
+                        .gap_2()
+                        .w(px(220.))
+                        .child(div().flex_1().child(
+                            Progress::new("meetings-speaker-model-bar").value(fraction * 100.0),
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("{:.0}%", fraction * 100.0)),
+                        )
+                        .test_support()
+                        .into_any_element()
+                }
+                SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. } => {
+                    let failed = matches!(status, SpeakerModelStatus::Failed { .. });
+                    Button::new("meetings-speaker-model-download")
+                        .outline()
+                        .small()
+                        .icon(icon(if failed { "rotate-ccw" } else { "download" }))
+                        .label(if failed {
+                            t("meetings.settings.speakerModel.retry")
+                        } else {
+                            t("meetings.settings.speakerModel.download")
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.download_speaker_model(cx)))
+                        .into_any_element()
+                }
+            };
+        let description = match &status {
+            SpeakerModelStatus::Failed { error } => {
+                t_args("meetings.settings.speakerModel.failed", &[("error", error)])
+            }
+            _ => t("meetings.settings.speakerModel.description"),
+        };
+        Some(
+            SettingRow::new(
+                "meetings-speaker-model",
+                t("meetings.settings.speakerModel.title"),
             )
+            .description(description)
+            .control(control)
             .into_any_element(),
         )
     }
@@ -348,16 +565,29 @@ impl Render for MeetingSettingsView {
             "",
             t("meetings.settings.meetingModel.default"),
         )];
+        let models = state.read(cx).models.models.clone();
+        // The default model is offered even before it is downloaded.
+        let default_downloaded = models
+            .iter()
+            .any(|mi| mi.id == DEFAULT_MEETING_MODEL_ID && mi.is_downloaded);
+        if !default_downloaded && models.iter().any(|mi| mi.id == DEFAULT_MEETING_MODEL_ID) {
+            model_options.push(DropdownOption::new(
+                DEFAULT_MEETING_MODEL_ID,
+                t_args(
+                    "meetings.settings.meetingModel.notDownloaded",
+                    &[("name", DEFAULT_MEETING_MODEL_NAME)],
+                ),
+            ));
+        }
         model_options.extend(
-            state
-                .read(cx)
-                .models
-                .models
+            models
                 .iter()
                 .filter(|mi| mi.is_downloaded)
                 .map(|mi| DropdownOption::new(mi.id.clone(), model_name(mi))),
         );
         let selected_model = m.meeting_model.clone().unwrap_or_default();
+        let model_banner = meeting_model_missing(cx)
+            .map(|missing| render_model_download("settings", &missing, cx));
         let retention_options: Vec<DropdownOption> = RETENTION_CHOICES
             .iter()
             .map(|d| {
@@ -388,20 +618,25 @@ impl Render for MeetingSettingsView {
                 )
             })
             .collect();
-        let recording = vec![
-            SettingRow::new("meetings-model", t("meetings.settings.meetingModel.title"))
-                .description(t("meetings.settings.meetingModel.description"))
-                .control(
-                    Dropdown::new("meetings-model-dropdown")
-                        .options(model_options)
-                        .selected(Some(selected_model))
-                        .min_width(px(220.))
-                        .on_select(|v, _, cx| {
-                            let v = non_empty(v);
-                            update_meetings(cx, |m| m.meeting_model = v);
-                        }),
-                )
-                .into_any_element(),
+        let mut recording =
+            vec![
+                SettingRow::new("meetings-model", t("meetings.settings.meetingModel.title"))
+                    .description(t("meetings.settings.meetingModel.description"))
+                    .control(
+                        Dropdown::new("meetings-model-dropdown")
+                            .options(model_options)
+                            .selected(Some(selected_model))
+                            .min_width(px(220.))
+                            .on_select(|v, _, cx| {
+                                let v = non_empty(v);
+                                update_meetings(cx, |m| m.meeting_model = v);
+                            }),
+                    )
+                    .into_any_element(),
+            ];
+        recording
+            .extend(model_banner.map(|b| div().w_full().px_3().py_2().child(b).into_any_element()));
+        recording.extend([
             SettingRow::new("meetings-retention", t("meetings.settings.retention.title"))
                 .description(t("meetings.settings.retention.description"))
                 .control(
@@ -444,7 +679,8 @@ impl Render for MeetingSettingsView {
                     }),
             )
             .into_any_element(),
-        ];
+        ]);
+        recording.extend(self.render_speaker_model(cx));
 
         // -- advanced -------------------------------------------------------
         let advanced_toggle = Button::new("meetings-advanced-toggle")

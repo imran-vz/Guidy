@@ -106,9 +106,18 @@ pub fn run(cli_args: CliArgs) {
     };
     let reopen_app = app.clone();
     application.on_reopen(move |_cx| guidy_core::handle_reopen(&reopen_app));
+    // `guidy://` links (CFBundleURLTypes): queued until the UI runs, since a
+    // cold launch from a link delivers it before `run`'s callback.
+    let (url_tx, url_rx) = smol::channel::unbounded::<String>();
+    application.on_open_urls(move |urls| {
+        for url in urls {
+            let _ = url_tx.try_send(url);
+        }
+    });
     application.run(move |cx| {
         cx.set_global(InstanceGuard(guard));
         start(app, cli_args, cx);
+        spawn_url_loop(url_rx, cx);
     });
 }
 
@@ -200,6 +209,29 @@ fn overlay_demo(app: &AppHandle) {
             );
         }
     });
+}
+
+/// Handle incoming `guidy://` URLs. Only well-formed meeting links are
+/// acted on, and only by navigating (never recording, deleting, ...).
+fn spawn_url_loop(rx: smol::channel::Receiver<String>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while let Ok(url) = rx.recv().await {
+            cx.update(|cx| open_url_link(&url, cx));
+        }
+    })
+    .detach();
+}
+
+/// Navigate for one `guidy://` URL; anything not a meeting link is ignored.
+pub fn open_url_link(url: &str, cx: &mut App) {
+    let Some(link) = crate::logic::meetings::parse_deep_link(url) else {
+        log::info!("Ignoring an unsupported guidy:// link");
+        return;
+    };
+    windows::show_main(cx);
+    if let Some(main) = windows::main_window_entity(cx) {
+        main.update(cx, |m, cx| m.open_meeting_link(link, cx));
+    }
 }
 
 fn spawn_event_loop(

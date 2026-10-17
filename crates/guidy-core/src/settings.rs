@@ -901,6 +901,12 @@ fn migrate_api_keys_to_secrets(settings: &mut AppSettings) -> bool {
     migrated
 }
 
+/// Whether the provider-key migration may run. Unit tests run on the
+/// in-memory secrets backend but exercise the migration on purpose.
+fn secret_store_is_persistent() -> bool {
+    cfg!(test) || crate::secrets::is_persistent()
+}
+
 fn default_model_for_provider(provider_id: &str) -> String {
     if provider_id == APPLE_INTELLIGENCE_PROVIDER_ID {
         return APPLE_INTELLIGENCE_DEFAULT_MODEL_ID.to_string();
@@ -1270,9 +1276,15 @@ fn apply_settings_migrations(
 ) -> bool {
     let mut updated = false;
 
-    // D14: provider API keys move from the JSON store to the Keychain.
-    if migrate_api_keys_to_secrets(settings) {
-        updated = true;
+    // D14: provider API keys move from the JSON store to the Keychain. The
+    // move deletes the JSON copy, so it only runs when the secrets backend
+    // persists (not on the in-memory one), or the keys would be lost on exit.
+    if secret_store_is_persistent() {
+        if migrate_api_keys_to_secrets(settings) {
+            updated = true;
+        }
+    } else if !settings.post_process_api_keys.is_empty() {
+        info!("Secrets backend is not persistent; leaving provider API keys in settings");
     }
 
     // One-time onboarding migration: users with an explicit selected model have

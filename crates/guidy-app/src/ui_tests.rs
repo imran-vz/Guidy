@@ -1781,7 +1781,9 @@ mod meetings_page {
             window.click("meetings-tab-settings", cx)
         });
         assert!(exists(cx, w, "meetings-settings"));
-        assert!(!exists(cx, w, "meetings-permissions"));
+        // Grants are loaded (without prompting) as soon as settings open.
+        assert!(exists(cx, w, "meetings-permissions"));
+        assert!(!meetings.called("request_permissions"));
         with_window(cx, w, |window, cx| {
             window.click("meetings-enabled-toggle", cx)
         });
@@ -1835,5 +1837,520 @@ mod meetings_page {
         let (w, _) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert!(!exists(cx, w, "nav-meetings"));
+    }
+}
+
+/// Review fixes: settings patches, permissions, speaker model, readiness,
+/// stale views, model download, deep links, URL checks.
+mod meetings_fixes {
+    use super::*;
+    use crate::logic::meetings::{MeetingLink, MeetingsEvent, MeetingsInit};
+    use crate::meetings_backend::MeetingsError;
+    use crate::testing::{
+        action_item_fixture, meeting_fixture, segment_fixture, speaker_fixture, FakeMeetingsBackend,
+    };
+    use crate::ui::main_window::{MainWindow, Section};
+    use crate::ui::pages::meetings::ai_settings::AiSettingsView;
+    use crate::ui::pages::meetings::summary::SummaryView;
+    use crate::ui::pages::meetings::MeetingsPage;
+    use crate::ui::pages::post_processing::PostProcessingPage;
+    use guidy_core::managers::transcription::meeting::DEFAULT_MEETING_MODEL_ID;
+    use guidy_core::meetings::processing::SpeakerModelStatus;
+    use guidy_core::meetings::types::{events, MeetingStatus, StoredSummary};
+
+    fn fixture() -> (Arc<FakeBackend>, Arc<FakeMeetingsBackend>) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let m = FakeMeetingsBackend::new();
+        {
+            let mut d = m.data.lock();
+            d.meetings = vec![
+                meeting_fixture(1, "Weekly sync", MeetingStatus::Processed),
+                meeting_fixture(2, "Design review", MeetingStatus::Recorded),
+            ];
+            d.speakers
+                .insert(1, vec![speaker_fixture(5, 1, "Speaker 1", None, false)]);
+            d.segments.insert(
+                1,
+                vec![
+                    segment_fixture(1, 1, 5, 0, "Hello everyone"),
+                    segment_fixture(2, 1, 5, 60_000, "Next topic"),
+                ],
+            );
+        }
+        (backend, m)
+    }
+
+    fn settings_tab(cx: &mut TestAppContext, w: AnyWindowHandle) {
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-tab-settings", cx)
+        });
+    }
+
+    fn meetings_updates(backend: &FakeBackend) -> Vec<String> {
+        backend
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("update_setting meetings"))
+            .collect()
+    }
+
+    #[gpui_kit::test]
+    fn meeting_settings_write_field_patches(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.with_settings(|s| {
+            s.meetings.enabled = false;
+            s.meetings.user_display_name = "Imran".into();
+        });
+        meetings.data.lock().speaker_model = SpeakerModelStatus::Missing;
+        let state = setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        settings_tab(cx, w);
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-enabled-toggle", cx)
+        });
+        assert_eq!(
+            meetings_updates(&backend),
+            vec![r#"update_setting meetings {"enabled":true}"#.to_string()]
+        );
+        // Enabling pre-downloads the speaker model.
+        assert!(meetings.called("download_speaker_model"));
+        // Another writer changed a different field meanwhile: a patch from
+        // this view doesn't undo it.
+        backend.with_settings(|s| s.meetings.user_display_name = "Someone".into());
+        state.update(cx, |s, cx| s.refresh_settings(cx));
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-calendar-notifications-toggle", cx)
+        });
+        let m = backend.settings().meetings;
+        assert!(m.enabled);
+        assert!(!m.calendar_notifications);
+        assert_eq!(m.user_display_name, "Someone");
+        assert_eq!(
+            meetings_updates(&backend).last().unwrap(),
+            r#"update_setting meetings {"calendar_notifications":false}"#
+        );
+    }
+
+    #[gpui_kit::test]
+    fn permissions_load_on_open_and_offer_fixes(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.with_settings(|s| s.meetings.enabled = false);
+        meetings.data.lock().permissions.calendar_granted = true;
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        settings_tab(cx, w);
+        assert!(exists(cx, w, "meetings-permissions"));
+        assert!(!exists(cx, w, "meetings-permission-open-calendar"));
+        assert!(exists(cx, w, "meetings-permission-open-microphone"));
+        // Notifications have no privacy pane, only "Request again".
+        assert!(!exists(cx, w, "meetings-permission-open-notifications"));
+        assert!(exists(cx, w, "meetings-permission-request-notifications"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-permission-open-system-audio", cx)
+        });
+        assert!(meetings.called(
+            "open_url x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+        ));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-permission-request-microphone", cx)
+        });
+        assert!(meetings.called("request_permissions"));
+    }
+
+    #[gpui_kit::test]
+    fn speaker_model_row_follows_status_events(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().speaker_model = SpeakerModelStatus::Missing;
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        settings_tab(cx, w);
+        assert!(exists(cx, w, "meetings-speaker-model"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-speaker-model-download", cx)
+        });
+        assert!(meetings.called("download_speaker_model"));
+        let st = SpeakerModelStatus::Downloading {
+            downloaded: 10,
+            total: 20,
+        };
+        dispatch(
+            cx,
+            &state,
+            "meetings://speaker-model-status",
+            serde_json::to_value(&st).unwrap(),
+        );
+        assert!(exists(cx, w, "meetings-speaker-model-progress"));
+        dispatch(
+            cx,
+            &state,
+            "meetings://speaker-model-status",
+            serde_json::to_value(SpeakerModelStatus::Ready).unwrap(),
+        );
+        assert!(!exists(cx, w, "meetings-speaker-model-progress"));
+        assert!(!exists(cx, w, "meetings-speaker-model-download"));
+    }
+
+    #[gpui_kit::test]
+    fn init_failure_shows_retry_and_ready_reloads(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().init = MeetingsInit::Failed("Keychain denied".into());
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meetings-init-failed"));
+        assert!(!exists(cx, w, "meeting-1"));
+        // Retry while the manager still can't start: still failed.
+        with_window(cx, w, |window, cx| window.click("meetings-init-retry", cx));
+        assert!(meetings.called("retry_init"));
+        assert!(exists(cx, w, "meetings-init-failed"));
+        // A start in progress, then the ready event.
+        meetings.data.lock().init = MeetingsInit::Starting;
+        with_window(cx, w, |window, cx| window.click("meetings-init-retry", cx));
+        assert!(exists(cx, w, "meetings-starting"));
+        meetings
+            .data
+            .lock()
+            .meetings
+            .push(meeting_fixture(3, "Late", MeetingStatus::Recorded));
+        dispatch(cx, &state, "meetings://ready", serde_json::Value::Null);
+        assert_eq!(
+            state.read_with(cx, |s, _| s.meetings_init.clone()),
+            MeetingsInit::Ready
+        );
+        assert!(exists(cx, w, "meeting-3"));
+        dispatch(
+            cx,
+            &state,
+            "meetings://init-failed",
+            serde_json::json!("store is corrupt"),
+        );
+        assert!(exists(cx, w, "meetings-init-failed"));
+    }
+
+    #[gpui_kit::test]
+    fn missing_meeting_model_offers_a_download(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.data.lock().models =
+            vec![crate::logic::models::test_model(DEFAULT_MEETING_MODEL_ID)];
+        let state = setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meeting-model-missing-list"));
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-model-download-list", cx)
+        });
+        assert!(backend.called(&format!("download_model {DEFAULT_MEETING_MODEL_ID}")));
+        assert!(state.read_with(cx, |s, _| s
+            .meeting_model_downloads
+            .contains(DEFAULT_MEETING_MODEL_ID)));
+        // While downloading the banner shows progress instead.
+        assert!(!exists(cx, w, "meeting-model-download-list"));
+        // Finished: the dictation model is left alone.
+        backend.with_settings(|_| {});
+        backend.data.lock().models[0].is_downloaded = true;
+        dispatch(
+            cx,
+            &state,
+            "model-download-complete",
+            serde_json::json!(DEFAULT_MEETING_MODEL_ID),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert!(!backend.called("set_active_model"));
+        assert!(!exists(cx, w, "meeting-model-missing-list"));
+        // A recorded meeting's detail and the settings show it too.
+        backend.data.lock().models[0].is_downloaded = false;
+        state.update(cx, |s, cx| s.load_models(cx));
+        cx.run_until_parked();
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| p.open_meeting(2, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(exists(cx, w, "meeting-model-download-detail"));
+        settings_tab(cx, w);
+        assert!(exists(cx, w, "meeting-model-download-settings"));
+    }
+
+    #[gpui_kit::test]
+    fn processing_with_a_missing_model_is_a_typed_error(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().fail_process = Some(
+            MeetingsError::ModelMissing {
+                model_id: "m".into(),
+                name: "Parakeet".into(),
+                known: true,
+            }
+            .encode(),
+        );
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-process-2", cx));
+        assert!(meetings.called("process_meeting 2"));
+        // The status stays "recorded" (nothing was queued).
+        assert!(exists(cx, w, "meeting-process-2"));
+    }
+
+    #[gpui_kit::test]
+    fn detail_cancels_processing(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().meetings[1].status = MeetingStatus::Processing;
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| p.open_meeting(2, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-detail-cancel", cx)
+        });
+        assert!(meetings.called("cancel_processing 2"));
+    }
+
+    #[gpui_kit::test]
+    fn summary_reloads_and_shows_progress_with_cancel(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        {
+            let mut d = meetings.data.lock();
+            d.ai.summaries.insert(
+                1,
+                StoredSummary {
+                    meeting_id: 1,
+                    title: "Old".into(),
+                    short_summary: String::new(),
+                    decisions: vec![],
+                    topics: vec![],
+                    generated_by: "x".into(),
+                    generated_at: 1,
+                },
+            );
+            d.ai.items = vec![action_item_fixture(7, 1, "send notes")];
+        }
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        assert!(exists(cx, w, "action-item-7"));
+        assert!(!exists(cx, w, "action-item-8"));
+        // Changed elsewhere (e.g. regenerated in another window).
+        meetings
+            .data
+            .lock()
+            .ai
+            .items
+            .push(action_item_fixture(8, 1, "book a room"));
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        assert!(exists(cx, w, "action-item-8"));
+        // Another meeting's change doesn't matter.
+        meetings.data.lock().ai.items.clear();
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(2));
+        assert!(exists(cx, w, "action-item-8"));
+
+        // A summary running elsewhere: progress + Cancel.
+        meetings.data.lock().ai.summarizing = vec![1];
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        assert!(view.read_with(cx, |v, _| v.is_generating()));
+        dispatch(
+            cx,
+            &state,
+            "meetings://summary-progress",
+            serde_json::json!({"meeting_id": 1, "done": 1, "total": 3}),
+        );
+        assert!(exists(cx, w, "summary-progress"));
+        with_window(cx, w, |window, cx| {
+            window.click("summary-cancel-generate", cx)
+        });
+        assert!(meetings.called("cancel_summarize 1"));
+        meetings.data.lock().ai.summarizing.clear();
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        assert!(!exists(cx, w, "summary-progress"));
+    }
+
+    /// Hosts the ticket list through its public entry point.
+    struct TicketsHost;
+    impl gpui_kit::Render for TicketsHost {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            use gpui_kit::{ParentElement, Styled};
+            gpui_kit::div()
+                .size_full()
+                .child(crate::ui::pages::meetings::tickets::render(1, window, cx))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn tickets_refresh_on_key_and_meeting_changes(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let mut drafted = action_item_fixture(31, 1, "write docs");
+        drafted.ticket.title = "Docs".into();
+        drafted.ticket.team_id = Some("team-1".into());
+        meetings.data.lock().ai.items = vec![drafted];
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, |_, _| TicketsHost);
+        assert!(exists(cx, w, "tickets-no-key"));
+        // The key is saved in AI settings.
+        meetings.data.lock().ai.linear_key = Some("lin_api_1".into());
+        state.update(cx, |s, cx| {
+            s.emit_meetings(MeetingsEvent::LinearKeyChanged, cx)
+        });
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "tickets-no-key"));
+        assert!(exists(cx, w, "ticket-approve-31"));
+        // A created ticket arrives through a meeting change.
+        {
+            let mut d = meetings.data.lock();
+            let i = &mut d.ai.items[0];
+            i.ticket_state = guidy_core::meetings::types::TicketState::Created;
+            i.linear_issue_id = Some("issue".into());
+            i.linear_issue_identifier = Some("ENG-31".into());
+            i.linear_issue_url = Some("https://evil.example/ENG-31".into());
+        }
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        assert!(exists(cx, w, "ticket-issue-31"));
+        // Not a linear.app link: never opened.
+        with_window(cx, w, |window, cx| window.click("ticket-issue-31", cx));
+        assert!(!meetings.called("open_url"), "{:?}", meetings.calls());
+    }
+
+    #[gpui_kit::test]
+    fn saving_a_linear_key_refreshes_open_ticket_lists(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let mut drafted = action_item_fixture(41, 1, "x");
+        drafted.ticket.title = "X".into();
+        meetings.data.lock().ai.items = vec![drafted];
+        setup_meetings(cx, backend, meetings.clone());
+        let (tw, _) = open(cx, |_, _| TicketsHost);
+        assert!(exists(cx, tw, "tickets-no-key"));
+        let (w, view) = open(cx, AiSettingsView::new);
+        cx.update_window(w, |_, window, cx| {
+            view.update(cx, |v, cx| v.enter_linear_key("lin_api_9", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!exists(cx, tw, "tickets-no-key"));
+    }
+
+    #[gpui_kit::test]
+    fn local_model_events_update_ai_settings(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().ai.local_models = vec![crate::meetings_backend::LocalLlmModel {
+            id: "qwen3-4b".into(),
+            name: "Qwen3 4B".into(),
+            description: String::new(),
+            size_mb: 2500,
+            is_default: true,
+            recommended_ram_gb: None,
+            fits_this_mac: true,
+            downloaded: false,
+            download_progress: None,
+        }];
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, AiSettingsView::new);
+        assert!(exists(cx, w, "local-download-qwen3-4b"));
+        dispatch(
+            cx,
+            &state,
+            "llm-models://download-progress",
+            serde_json::json!({"model_id": "qwen3-4b", "downloaded": 10, "total": 100, "percentage": 10.0}),
+        );
+        assert!(exists(cx, w, "local-progress-qwen3-4b"));
+        meetings.data.lock().ai.local_models[0].downloaded = true;
+        dispatch(
+            cx,
+            &state,
+            "llm-models://changed",
+            serde_json::json!({"model_id": "qwen3-4b", "state": "completed", "error": null}),
+        );
+        assert!(!exists(cx, w, "local-progress-qwen3-4b"));
+        assert!(exists(cx, w, "local-delete-qwen3-4b"));
+    }
+
+    #[gpui_kit::test]
+    fn deep_link_opens_the_meeting_and_plays_at_t(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        let link = crate::logic::meetings::parse_deep_link("guidy://meetings/1?t=61000").unwrap();
+        assert_eq!(
+            link,
+            MeetingLink {
+                meeting_id: 1,
+                t_ms: Some(61_000)
+            }
+        );
+        main.update(cx, |m, cx| m.open_meeting_link(link, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "meeting-detail"));
+        cx.run_until_parked();
+        assert_eq!(main.read_with(cx, |m, _| m.section), Section::Meetings);
+        // The segment containing 61 s plays.
+        assert!(
+            meetings.called("segment_audio 1 system 60000 62000"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
+    #[gpui_kit::test]
+    fn deep_links_are_ignored_without_meeting_notes(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().supported = false;
+        setup_meetings(cx, backend, meetings);
+        let (_w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        let link = MeetingLink {
+            meeting_id: 1,
+            t_ms: None,
+        };
+        main.update(cx, |m, cx| m.open_meeting_link(link, cx));
+        cx.run_until_parked();
+        assert_ne!(main.read_with(cx, |m, _| m.section), Section::Meetings);
+    }
+
+    #[gpui_kit::test]
+    fn post_processing_reads_the_key_off_the_render_path(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        setup(cx, backend.clone());
+        let (_w, page) = open(cx, PostProcessingPage::new);
+        cx.run_until_parked();
+        let pid = backend.settings().post_process_provider_id.clone();
+        let pid = if pid.is_empty() {
+            backend.settings().post_process_providers[0].id.clone()
+        } else {
+            pid
+        };
+        assert!(page.read_with(cx, |p, _| p.cached_api_key(&pid).is_some()));
+    }
+
+    #[gpui_kit::test]
+    fn post_processing_offers_the_builtin_model(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let state = setup_meetings(cx, backend.clone(), meetings);
+        let (w, _) = open(cx, PostProcessingPage::new);
+        assert!(exists(cx, w, "pp-api-key"));
+        assert!(!exists(cx, w, "pp-builtin"));
+        state.update(cx, |s, cx| s.set_post_process_provider("guidy_local", cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "pp-builtin"));
+        assert!(exists(cx, w, "pp-builtin-manage"));
+        assert!(!exists(cx, w, "pp-api-key"));
+        assert!(!exists(cx, w, "pp-base-url"));
+        assert!(exists(cx, w, "pp-model"));
+    }
+
+    #[gpui_kit::test]
+    fn builtin_manage_opens_meetings_settings(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings);
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        main.update(cx, |m, cx| m.open_meetings_settings(cx));
+        cx.run_until_parked();
+        assert_eq!(main.read_with(cx, |m, _| m.section), Section::Meetings);
+        assert!(exists(cx, w, "meetings-settings"));
     }
 }

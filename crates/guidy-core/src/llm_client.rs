@@ -206,7 +206,30 @@ impl AnthropicMessagesResponse {
     }
 }
 
-/// Build headers for API requests based on provider type
+/// Refuse to call a base URL that still has a `{placeholder}` (Cloudflare's
+/// `{account_id}` / `{gateway_id}`), with an error that says what to fill in.
+pub fn reject_url_placeholders(provider: &PostProcessProvider) -> Result<(), String> {
+    let url = provider.base_url.trim();
+    if let (Some(a), Some(b)) = (url.find('{'), url.find('}')) {
+        if a < b {
+            return Err(format!(
+                "Set the {} part of the {} base URL in the provider settings",
+                &url[a..=b],
+                provider.label
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Build headers for API requests based on provider type.
+///
+/// Cloudflare AI Gateway: the provider key (the upstream's key, e.g. an
+/// OpenAI key, or a Cloudflare API token for Workers AI models) goes in
+/// `Authorization: Bearer`, like every OpenAI-format provider. Authenticated
+/// gateways additionally want a `cf-aig-authorization` gateway token, which
+/// Guidy does not send (it would need a second secret per provider): turn
+/// gateway authentication off, or use the provider's direct endpoint.
 fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
 
@@ -509,6 +532,7 @@ async fn send_openai_chat(
     temperature: Option<f32>,
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
+    reject_url_placeholders(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
@@ -643,6 +667,7 @@ async fn send_anthropic_message(
     max_tokens: u32,
     temperature: Option<f32>,
 ) -> Result<Option<String>, String> {
+    reject_url_placeholders(provider)?;
     let url = format!("{}/messages", provider.base_url.trim_end_matches('/'));
 
     debug!(
@@ -700,12 +725,34 @@ async fn send_anthropic_message(
     Ok(message.into_text())
 }
 
+/// A model from a `/models` list, with the metadata some endpoints add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub id: String,
+    /// Context window in tokens, when the list reports one (OpenRouter's
+    /// `context_length`, the Vercel AI Gateway's `context_window`, ...).
+    pub context_length: Option<usize>,
+}
+
 /// Fetch available models from an OpenAI-compatible API
 /// Returns a list of model IDs
 pub async fn fetch_models(
     provider: &PostProcessProvider,
     api_key: String,
 ) -> Result<Vec<String>, String> {
+    Ok(fetch_models_with_info(provider, api_key)
+        .await?
+        .into_iter()
+        .map(|m| m.id)
+        .collect())
+}
+
+/// [`fetch_models`] plus per-model metadata.
+pub async fn fetch_models_with_info(
+    provider: &PostProcessProvider,
+    api_key: String,
+) -> Result<Vec<ModelInfo>, String> {
+    reject_url_placeholders(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/models", base_url);
 
@@ -742,15 +789,24 @@ pub async fn fetch_models(
         .await
         .map_err(|e| report_reqwest_error("Failed to parse model list response", &e))?;
 
-    let mut models = Vec::new();
+    Ok(parse_model_list(&parsed))
+}
 
+/// Parse `{ data: [ { id, context_length? } ] }` or `[ "id", ... ]`.
+pub fn parse_model_list(parsed: &Value) -> Vec<ModelInfo> {
+    let mut models = Vec::new();
     // Handle OpenAI format: { data: [ { id: "..." }, ... ] }
     if let Some(data) = parsed.get("data").and_then(|d| d.as_array()) {
         for entry in data {
-            if let Some(id) = entry.get("id").and_then(|i| i.as_str()) {
-                models.push(id.to_string());
-            } else if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
-                models.push(name.to_string());
+            let id = entry
+                .get("id")
+                .and_then(|i| i.as_str())
+                .or_else(|| entry.get("name").and_then(|n| n.as_str()));
+            if let Some(id) = id {
+                models.push(ModelInfo {
+                    id: id.to_string(),
+                    context_length: context_length_of(entry),
+                });
             }
         }
     }
@@ -758,12 +814,41 @@ pub async fn fetch_models(
     else if let Some(array) = parsed.as_array() {
         for entry in array {
             if let Some(model) = entry.as_str() {
-                models.push(model.to_string());
+                models.push(ModelInfo {
+                    id: model.to_string(),
+                    context_length: None,
+                });
             }
         }
     }
+    models
+}
 
-    Ok(models)
+/// The context window a model-list entry reports, under the field names the
+/// gateways use. Values under 512 are treated as bogus.
+fn context_length_of(entry: &Value) -> Option<usize> {
+    const FIELDS: [&str; 4] = [
+        "context_length",
+        "context_window",
+        "max_context_length",
+        "max_input_tokens",
+    ];
+    let as_tokens = |v: &Value| {
+        v.as_u64()
+            .or_else(|| v.as_f64().filter(|f| *f > 0.0).map(|f| f as u64))
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    };
+    FIELDS
+        .iter()
+        .find_map(|f| entry.get(*f).and_then(as_tokens))
+        .or_else(|| {
+            entry
+                .get("top_provider")
+                .and_then(|t| t.get("context_length"))
+                .and_then(as_tokens)
+        })
+        .filter(|&n| n >= 512)
+        .map(|n| n as usize)
 }
 
 #[cfg(test)]
@@ -979,6 +1064,60 @@ mod tests {
         assert!(is_known_rejected(&key));
         // A different model on the same endpoint is tracked separately
         assert!(!is_known_rejected(&endpoint_key(&deepseek, "other-model")));
+    }
+
+    #[test]
+    fn placeholder_base_urls_are_refused_before_any_request() {
+        let p = provider(
+            "cloudflare_ai_gateway",
+            "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat",
+        );
+        let err = reject_url_placeholders(&p).unwrap_err();
+        assert!(err.contains("{account_id}"), "{err}");
+        assert!(reject_url_placeholders(&provider("custom", "http://localhost:1/v1")).is_ok());
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(send_chat_completion(
+                &p,
+                "k".into(),
+                "m",
+                "hi".into(),
+                false,
+            ))
+            .unwrap_err();
+        assert!(err.contains("{account_id}"), "{err}");
+        let err = rt.block_on(fetch_models(&p, "k".into())).unwrap_err();
+        assert!(err.contains("{account_id}"), "{err}");
+    }
+
+    #[test]
+    fn model_lists_carry_context_lengths_when_reported() {
+        let parsed = serde_json::json!({"data": [
+            {"id": "openai/gpt-4o", "context_length": 128000},
+            {"id": "anthropic/claude-sonnet-4", "context_window": "200000"},
+            {"id": "meta/llama", "top_provider": {"context_length": 8192}},
+            {"id": "bogus", "context_length": 0},
+            {"name": "named-only"}
+        ]});
+        let models = parse_model_list(&parsed);
+        let ctx: Vec<_> = models
+            .iter()
+            .map(|m| (m.id.as_str(), m.context_length))
+            .collect();
+        assert_eq!(
+            ctx,
+            vec![
+                ("openai/gpt-4o", Some(128_000)),
+                ("anthropic/claude-sonnet-4", Some(200_000)),
+                ("meta/llama", Some(8_192)),
+                ("bogus", None),
+                ("named-only", None),
+            ]
+        );
+        let plain = parse_model_list(&serde_json::json!(["a", "b"]));
+        assert_eq!(plain[1].id, "b");
+        assert_eq!(plain[1].context_length, None);
     }
 
     #[test]

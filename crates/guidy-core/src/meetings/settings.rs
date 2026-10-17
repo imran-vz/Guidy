@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct MeetingSettings {
     /// Master switch. Turning it on is what requests calendar, system-audio
@@ -62,5 +62,52 @@ impl Default for MeetingSettings {
             linear_default_team_id: None,
             linear_default_project_id: None,
         }
+    }
+}
+
+/// Manual `Debug` so logs never contain the user's name or email.
+impl std::fmt::Debug for MeetingSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |empty: bool| if empty { "<empty>" } else { "<redacted>" };
+        f.debug_struct("MeetingSettings")
+            .field("enabled", &self.enabled)
+            .field("meeting_model", &self.meeting_model)
+            .field("audio_retention_days", &self.audio_retention_days)
+            .field("calendar_notifications", &self.calendar_notifications)
+            .field("reminder_interval_minutes", &self.reminder_interval_minutes)
+            .field(
+                "user_display_name",
+                &redact(self.user_display_name.is_empty()),
+            )
+            .field(
+                "user_email",
+                &self.user_email.as_ref().map(|_| "<redacted>"),
+            )
+            .field("speaker_match_threshold", &self.speaker_match_threshold)
+            .field("speaker_suggest_threshold", &self.speaker_suggest_threshold)
+            .field("llm_provider_id", &self.llm_provider_id)
+            .field("llm_models", &self.llm_models)
+            .field("linear_default_team_id", &self.linear_default_team_id)
+            .field("linear_default_project_id", &self.linear_default_project_id)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_the_users_identity() {
+        let s = MeetingSettings {
+            user_display_name: "Imran Secret".into(),
+            user_email: Some("imran@secret.example".into()),
+            ..Default::default()
+        };
+        let dbg = format!("{s:?}");
+        assert!(!dbg.contains("Imran Secret"), "{dbg}");
+        assert!(!dbg.contains("secret.example"), "{dbg}");
+        assert!(dbg.contains("<redacted>"));
+        assert!(dbg.contains("speaker_match_threshold"));
     }
 }

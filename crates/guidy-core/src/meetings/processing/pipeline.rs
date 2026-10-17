@@ -184,8 +184,7 @@ impl<'a> Pipeline<'a> {
             .processing_stage
             .as_deref()
             .and_then(ProcessingStage::parse);
-        let cache_path = sidecar::cache_path(self.meetings_dir, id);
-        let cached = match sidecar::read::<ProcessingCache>(&cache_path, &self.key) {
+        let cached = match sidecar::read_cache(self.meetings_dir, id, &self.key) {
             Ok(c) => c,
             Err(e) => {
                 log::warn!("meeting {id}: discarding the processing checkpoint: {e:#}");
@@ -243,12 +242,18 @@ impl<'a> Pipeline<'a> {
         });
     }
 
+    /// Fail when the meeting was deleted mid-run, so a save point never
+    /// recreates sidecars (voiceprints) for a meeting that no longer exists.
+    fn ensure_meeting_exists(&self) -> Result<()> {
+        if self.store.get_meeting(self.meeting_id)?.is_none() {
+            bail!("meeting {} was deleted", self.meeting_id);
+        }
+        Ok(())
+    }
+
     fn save(&self, cache: &ProcessingCache) -> Result<()> {
-        sidecar::write(
-            &sidecar::cache_path(self.meetings_dir, self.meeting_id),
-            &self.key,
-            cache,
-        )
+        self.ensure_meeting_exists()?;
+        sidecar::write_cache(self.meetings_dir, self.meeting_id, &self.key, cache)
     }
 
     fn source(&mut self, track: Track) -> Result<&mut (dyn AudioSource + 'a)> {
@@ -463,11 +468,8 @@ impl<'a> Pipeline<'a> {
                 })
             })
             .collect();
-        sidecar::write(
-            &sidecar::embeddings_path(self.meetings_dir, self.meeting_id),
-            &self.key,
-            &embeddings,
-        )?;
+        self.ensure_meeting_exists()?;
+        sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)?;
         Ok(())
     }
 }

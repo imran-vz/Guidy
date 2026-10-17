@@ -3,8 +3,9 @@
 //! with..." (provider + model override); action items with owner, due date
 //! and a source quote whose timestamp jumps to the transcript moment.
 
-use crate::meetings_backend::SharedMeetingsBackend;
-use crate::state::AppState;
+use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
+use crate::meetings_backend::{error_message, SharedMeetingsBackend};
+use crate::state::{AppEvent, AppState};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::{
     error_box, model_label, provider_options, MeetingsLlmChoice,
@@ -12,13 +13,14 @@ use crate::ui::pages::meetings::ai_settings::{
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::types::{
     ActionItem, ActionItemId, MeetingId, MeetingSpeaker, Person, StoredSummary,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// The summary and action-item editor for `meeting_id`.
@@ -122,7 +124,7 @@ pub fn owner_options(
         .iter()
         .filter(|s| !s.is_user && s.person_id.is_none())
     {
-        out.push((format!("name:{}", s.cluster_label), s.cluster_label.clone()));
+        out.push((format!("name:{}", s.cluster_label), cluster_label(s)));
     }
     out
 }
@@ -176,6 +178,14 @@ pub struct SummaryView {
     people: Vec<Person>,
     /// A summary/regeneration is running.
     generating: bool,
+    /// `generating` is this view's own `summarize` call (it ends when the
+    /// call returns), not one seen through `is_summarizing`.
+    own_job: bool,
+    /// LLM calls of the running summary: (done, total).
+    progress: Option<(usize, usize)>,
+    cancelling: bool,
+    /// The user cancelled: the "cancelled" error isn't shown.
+    cancelled: bool,
     error: Option<String>,
     // Summary editor.
     editing: bool,
@@ -190,6 +200,9 @@ pub struct SummaryView {
     picker_model_input: Entity<InputState>,
     // Action items.
     item_inputs: HashMap<ActionItemId, ItemInputs>,
+    /// Items whose text/due changed elsewhere: their (unfocused) inputs
+    /// take the new values on the next render.
+    item_resync: HashSet<ActionItemId>,
     new_item: Entity<InputState>,
     clear_new_item: bool,
     on_seek: Option<SeekHandler>,
@@ -233,6 +246,11 @@ impl SummaryView {
                     cx.notify();
                 }
             }),
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
+                if let AppEvent::Meetings(ev) = ev {
+                    this.on_event(ev, cx);
+                }
+            }),
         ];
         let mut this = Self {
             backend,
@@ -244,6 +262,10 @@ impl SummaryView {
             speakers: Vec::new(),
             people: Vec::new(),
             generating: false,
+            own_job: false,
+            progress: None,
+            cancelling: false,
+            cancelled: false,
             error: None,
             editing: false,
             title,
@@ -255,6 +277,7 @@ impl SummaryView {
             picker_models: HashMap::new(),
             picker_model_input,
             item_inputs: HashMap::new(),
+            item_resync: HashSet::new(),
             new_item,
             clear_new_item: false,
             on_seek: None,
@@ -262,6 +285,50 @@ impl SummaryView {
         };
         this.reload(cx);
         this
+    }
+
+    fn on_event(&mut self, ev: &MeetingsEvent, cx: &mut Context<Self>) {
+        match ev {
+            MeetingsEvent::MeetingChanged(id) if *id == self.meeting_id => self.reload(cx),
+            MeetingsEvent::PeopleChanged | MeetingsEvent::Ready => self.reload(cx),
+            MeetingsEvent::SummaryProgress {
+                meeting_id,
+                done,
+                total,
+            } if *meeting_id == self.meeting_id => {
+                self.progress = Some((*done, *total));
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    /// Stop the running summary (nothing is stored).
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if !self.generating || self.cancelling {
+            return;
+        }
+        self.cancelling = true;
+        self.cancelled = true;
+        let id = self.meeting_id;
+        self.run(
+            cx,
+            move |b| b.cancel_summarize(id),
+            |this, cancelled, _| {
+                this.cancelling = false;
+                if !cancelled {
+                    // Nothing was running (any more).
+                    this.generating = false;
+                    this.progress = None;
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn is_generating(&self) -> bool {
+        self.generating
     }
 
     /// Hook for the detail view: seek the transcript to `t_ms` and play.
@@ -317,20 +384,30 @@ impl SummaryView {
                     b.action_items(id),
                     b.speakers(id),
                     b.list_people(),
+                    b.is_summarizing(id),
                 )
             },
-            move |this, (summary, items, speakers, people), _| {
+            move |this, (summary, items, speakers, people, summarizing), _| {
                 if this.meeting_id != id {
                     return;
                 }
                 this.loaded = true;
+                // A summary started elsewhere (another window, the tray).
+                if summarizing && !this.generating {
+                    this.generating = true;
+                } else if !summarizing && this.generating && !this.own_job {
+                    this.generating = false;
+                    this.progress = None;
+                }
+                // The summary editor keeps its own inputs: an open edit is
+                // not replaced.
                 match summary {
                     Ok(s) => this.summary = s,
-                    Err(e) => this.error = Some(e),
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
                 match items {
                     Ok(items) => this.set_items(items),
-                    Err(e) => this.error = Some(e),
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
                 this.speakers = speakers.unwrap_or_default();
                 this.people = people.unwrap_or_default();
@@ -341,6 +418,16 @@ impl SummaryView {
     fn set_items(&mut self, items: Vec<ActionItem>) {
         self.item_inputs
             .retain(|id, _| items.iter().any(|i| i.id == *id));
+        for item in &items {
+            let changed = self
+                .items
+                .iter()
+                .find(|i| i.id == item.id)
+                .is_some_and(|old| old.text != item.text || old.due != item.due);
+            if changed && self.item_inputs.contains_key(&item.id) {
+                self.item_resync.insert(item.id);
+            }
+        }
         self.items = items;
     }
 
@@ -365,6 +452,9 @@ impl SummaryView {
             return;
         }
         self.generating = true;
+        self.own_job = true;
+        self.cancelled = false;
+        self.progress = None;
         self.error = None;
         self.picker_open = false;
         let id = self.meeting_id;
@@ -376,6 +466,8 @@ impl SummaryView {
             },
             move |this, (summary, items), _| {
                 this.generating = false;
+                this.own_job = false;
+                this.progress = None;
                 if this.meeting_id != id {
                     return;
                 }
@@ -384,8 +476,10 @@ impl SummaryView {
                         this.summary = Some(s);
                         this.editing = false;
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(_) if std::mem::take(&mut this.cancelled) => {}
+                    Err(e) => this.error = Some(error_message(&e)),
                 }
+                this.cancelled = false;
                 if let Ok(items) = items {
                     this.set_items(items);
                 }
@@ -480,7 +574,7 @@ impl SummaryView {
                     this.editing = false;
                     this.error = None;
                 }
-                Err(e) => this.error = Some(e),
+                Err(e) => this.error = Some(error_message(&e)),
             },
         );
     }
@@ -496,7 +590,7 @@ impl SummaryView {
             move |b| b.update_action_item(&item),
             |this, r, _| {
                 if let Err(e) = r {
-                    this.error = Some(e);
+                    this.error = Some(error_message(&e));
                 }
             },
         );
@@ -563,7 +657,7 @@ impl SummaryView {
                     this.clear_new_item = true;
                     cx.notify();
                 }
-                Err(e) => this.error = Some(e),
+                Err(e) => this.error = Some(error_message(&e)),
             },
         );
     }
@@ -577,7 +671,7 @@ impl SummaryView {
                     this.items.retain(|i| i.id != id);
                     this.item_inputs.remove(&id);
                 }
-                Err(e) => this.error = Some(e),
+                Err(e) => this.error = Some(error_message(&e)),
             },
         );
     }
@@ -589,8 +683,29 @@ impl SummaryView {
         }
     }
 
-    /// Lazily create the text/due inputs for each item (needs a window).
+    /// Lazily create the text/due inputs for each item (needs a window),
+    /// and take changes made elsewhere into inputs not being edited.
     fn ensure_item_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for id in std::mem::take(&mut self.item_resync) {
+            let (Some(inputs), Some(item)) = (
+                self.item_inputs.get(&id),
+                self.items.iter().find(|i| i.id == id),
+            ) else {
+                continue;
+            };
+            for (input, value) in [
+                (&inputs.text, item.text.clone()),
+                (&inputs.due, item.due.clone().unwrap_or_default()),
+            ] {
+                if input.focus_handle(cx).is_focused(window) {
+                    // Keep the user's edit; it saves on blur.
+                    continue;
+                }
+                if input.read(cx).value() != value.as_str() {
+                    input.update(cx, |s, cx| s.set_value(value, window, cx));
+                }
+            }
+        }
         let missing: Vec<ActionItem> = self
             .items
             .iter()
@@ -634,6 +749,45 @@ impl SummaryView {
     }
 
     // -- render ---------------------------------------------------------
+
+    /// "Summarizing… n/m" with a progress bar and Cancel.
+    fn progress_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.generating {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        let (done, total) = self.progress.unwrap_or((0, 0));
+        let fraction = summary_fraction(done, total);
+        let label = match fraction {
+            Some(_) => t_args(
+                "meetingsAi.summary.progress",
+                &[("done", &done.to_string()), ("total", &total.to_string())],
+            ),
+            None => t("meetingsAi.summary.generating"),
+        };
+        Some(
+            h_flex()
+                .id("summary-progress")
+                .w_full()
+                .gap_2()
+                .child(div().text_xs().text_color(muted).flex_none().child(label))
+                .child(div().flex_1().child(
+                    Progress::new("summary-progress-bar").value(fraction.unwrap_or(0.0) * 100.0),
+                ))
+                .child(
+                    Button::new("summary-cancel-generate")
+                        .ghost()
+                        .xsmall()
+                        .icon(icon("circle-x"))
+                        .label(t("meetingsAi.common.cancel"))
+                        .loading(self.cancelling)
+                        .disabled(self.cancelling)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
 
     fn header(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_summary = self.summary.is_some();
@@ -1094,6 +1248,7 @@ impl Render for SummaryView {
         }
         self.ensure_item_inputs(window, cx);
         let header = self.header(cx);
+        let progress = self.progress_row(cx);
         let picker = self.picker(cx);
         let summary_rows = self.summary_rows(cx);
         let item_rows = self.item_rows(cx);
@@ -1102,6 +1257,7 @@ impl Render for SummaryView {
             .w_full()
             .gap_4()
             .child(header)
+            .children(progress)
             .children(picker.map(|p| group(None, vec![p], cx)))
             .when_some(self.error.clone(), |d, e| {
                 d.child(error_box("summary-error", e, cx).m_0().test_support())

@@ -83,6 +83,9 @@ pub struct MeetingsManager {
     linear: crate::linear::service::LinearService,
     /// Processing queue and jobs (owner: processing/D).
     processing: crate::meetings::processing::Processor,
+    /// Meetings with a `create_tickets` call running (count per meeting).
+    /// `summarize` refuses to start or to store while its meeting is here.
+    ticket_creations: parking_lot::Mutex<std::collections::HashMap<MeetingId, usize>>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -105,6 +108,7 @@ impl MeetingsManager {
             capture: Default::default(),
             linear: Default::default(),
             processing,
+            ticket_creations: Default::default(),
         }))
     }
 
@@ -228,9 +232,12 @@ impl MeetingsManager {
 
     /// Delete raw audio past the retention period. Never touches voiceprints.
     pub fn apply_retention(&self) -> Result<usize> {
+        let processing = &self.processing;
         let n = self
             .recorder()
-            .apply_retention(crate::meetings::recorder::now_ms())?;
+            .apply_retention(crate::meetings::recorder::now_ms(), &|id| {
+                processing.is_busy(id)
+            })?;
         if n > 0 {
             log::info!("meetings: retention deleted {n} audio file(s)");
         }
@@ -292,8 +299,20 @@ impl MeetingsManager {
             .name("meetings-maintenance".into())
             .spawn(move || {
                 if let Some(m) = this.upgrade() {
-                    if let Err(e) = m.recorder().recover_interrupted() {
-                        log::error!("meetings: crash recovery failed: {e:#}");
+                    // Recordings cut short by a crash are processed like a
+                    // normal stop. If queueing fails (e.g. no meeting model)
+                    // they stay `Recorded` and the UI offers "Process".
+                    match m.recorder().recover_interrupted() {
+                        Ok(ids) => {
+                            for id in ids {
+                                if let Err(e) = m.process_meeting(id) {
+                                    log::info!(
+                                        "meetings: recovered meeting {id} not queued: {e:#}"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => log::error!("meetings: crash recovery failed: {e:#}"),
                     }
                     if let Err(e) = m.resume_interrupted_processing() {
                         log::error!("meetings: resuming processing failed: {e:#}");
@@ -397,9 +416,37 @@ impl MeetingsManager {
         Ok(())
     }
 
-    /// Deletes the person and their voiceprints.
+    /// Deletes the person and their voiceprints, including the speaker
+    /// centroids linked to them and their per-segment voiceprints in the
+    /// meetings' embeddings sidecars (found through the segments' speakers).
     pub fn delete_person(&self, id: PersonId) -> Result<()> {
+        let segments = self.store.person_segments(id)?;
         self.store.delete_person(id)?;
+        if !segments.is_empty() {
+            match crate::secrets::meetings_data_key() {
+                Ok(key) => {
+                    for (meeting_id, ids) in &segments {
+                        let ids: std::collections::HashSet<i64> = ids.iter().copied().collect();
+                        if let Err(e) =
+                            crate::meetings::processing::sidecar::drop_segment_embeddings(
+                                &self.meetings_dir,
+                                *meeting_id,
+                                &key,
+                                &ids,
+                            )
+                        {
+                            log::warn!(
+                                "meetings: dropping voiceprints from meeting {meeting_id}: {e:#}"
+                            );
+                        }
+                    }
+                }
+                Err(e) => log::warn!("meetings: voiceprint sidecars not cleaned: {e:#}"),
+            }
+            for meeting_id in segments.keys() {
+                self.emit_meeting_changed(*meeting_id);
+            }
+        }
         self.emit_people_changed();
         Ok(())
     }
@@ -483,9 +530,22 @@ impl MeetingsManager {
     /// Forget a deleted meeting's processing state: cancel/unqueue it and
     /// delete its checkpoint and per-segment voiceprint sidecars (which hold
     /// voiceprints of people nobody named). `delete_meeting` should call it.
+    ///
+    /// Waits (up to 10 s) for a running job to stop first, so it can't write
+    /// a sidecar after they are deleted; a job that outlives the wait finds
+    /// the meeting gone and removes its own files when it finishes.
     pub fn forget_processing(&self, id: MeetingId) -> Result<()> {
-        self.processing.cancel(id)?;
+        if !self
+            .processing
+            .cancel_and_wait(id, std::time::Duration::from_secs(10))?
+        {
+            log::warn!("meetings: processing of {id} did not stop in time");
+        }
         crate::meetings::processing::delete_sidecars(&self.meetings_dir, id)
+    }
+
+    fn creating_tickets_for(&self, meeting_id: MeetingId) -> bool {
+        self.ticket_creations.lock().contains_key(&meeting_id)
     }
 
     fn emit_speaker_changed(&self, speaker_id: SpeakerId) {
@@ -515,6 +575,9 @@ impl MeetingsManager {
             .store
             .get_meeting(id)?
             .ok_or_else(|| anyhow::anyhow!("meeting {id} not found"))?;
+        if self.creating_tickets_for(id) {
+            anyhow::bail!(SUMMARIZE_DURING_CREATE);
+        }
         let settings = crate::settings::get_settings(&self.app);
         let provider = crate::llm::provider_for_feature(
             &self.app,
@@ -526,11 +589,7 @@ impl MeetingsManager {
         let segments = self.store.segments(id)?;
         let speakers = self.store.speakers(id)?;
         let people = self.store.list_people()?;
-        let title = meeting
-            .calendar_event
-            .as_ref()
-            .map(|e| e.title.clone())
-            .unwrap_or_else(|| meeting.title.clone());
+        let title = summary_title(&meeting).to_string();
         let input = sum::SummarizeInput {
             meeting_id: id,
             meeting_title: Some(title.as_str()),
@@ -563,7 +622,21 @@ impl MeetingsManager {
                 },
             );
         })?;
-        let stored = sum::persist(&self.store, id, &output, &provider.name())?;
+        let stored = {
+            // Held while storing: `create_tickets` claims its meetings under
+            // this lock, so the two can't interleave.
+            let creating = self.ticket_creations.lock();
+            if creating.contains_key(&id) {
+                anyhow::bail!(SUMMARIZE_DURING_CREATE);
+            }
+            sum::persist(
+                &self.store,
+                id,
+                &output,
+                &provider.name(),
+                &self.linear.in_flight_ids(),
+            )?
+        };
         drop(job);
         self.emit_meeting_changed(id);
         Ok(stored)
@@ -594,9 +667,44 @@ impl MeetingsManager {
         self.store.action_items(id)
     }
 
+    /// Save the user's edits to an action item: its fields (text, owner,
+    /// due, quote, timestamp) always; its ticket draft and state only while
+    /// the Linear issue doesn't exist (a stale copy can't unlink or reopen a
+    /// created ticket; `Created` itself can't be set here). The Linear link
+    /// fields of `item` are ignored. Edited items survive a regenerated
+    /// summary.
     pub fn update_action_item(&self, item: &ActionItem) -> Result<()> {
+        use crate::meetings::store::TicketEditError;
+        let current = self
+            .store
+            .get_action_item(item.id)?
+            .ok_or_else(|| anyhow::anyhow!("action item {} not found", item.id))?;
         self.store.update_action_item(item)?;
-        self.emit_meeting_changed(item.meeting_id);
+        let created =
+            current.ticket_state == TicketState::Created || current.linear_issue_id.is_some();
+        if !created {
+            let frozen = |r: Result<()>| -> Result<bool> {
+                match r {
+                    Ok(()) => Ok(true),
+                    // Created meanwhile: the issue wins, silently.
+                    Err(e) if e.downcast_ref::<TicketEditError>().is_some() => Ok(false),
+                    Err(e) => Err(e),
+                }
+            };
+            let mut changed = false;
+            if item.ticket != current.ticket {
+                changed |= frozen(self.store.update_ticket_draft(item.id, &item.ticket))?;
+            }
+            if item.ticket_state != current.ticket_state
+                && item.ticket_state != TicketState::Created
+            {
+                changed |= frozen(self.store.set_ticket_state(item.id, item.ticket_state))?;
+            }
+            if changed {
+                self.store.mark_action_item_user_edited(item.id)?;
+            }
+        }
+        self.emit_meeting_changed(current.meeting_id);
         Ok(())
     }
 
@@ -606,7 +714,7 @@ impl MeetingsManager {
         if text.is_empty() {
             anyhow::bail!("an action item needs some text");
         }
-        let item = self.store.insert_action_item(&ActionItem {
+        let item = self.store.insert_manual_action_item(&ActionItem {
             id: 0,
             meeting_id,
             text: text.to_string(),
@@ -678,20 +786,40 @@ impl MeetingsManager {
             team_id: m.linear_default_team_id,
             project_id: m.linear_default_project_id,
         };
-        crate::host::async_runtime::block_on(self.linear.draft_tickets(
+        let items = crate::host::async_runtime::block_on(self.linear.draft_tickets(
             self.store.as_ref(),
             meeting_id,
             &defaults,
-        ))
+        ))?;
+        self.emit_meeting_changed(meeting_id);
+        Ok(items)
     }
 
     /// Create Linear issues for the given approved items. Items that already
     /// have an issue are skipped (`already_existed`), so retries never
     /// duplicate. The team/project used become the remembered defaults.
+    ///
+    /// While it runs, [`Self::summarize`] refuses to run for the meetings
+    /// involved.
     pub fn create_tickets(&self, ids: &[ActionItemId]) -> Result<Vec<TicketResult>> {
-        let outcome = crate::host::async_runtime::block_on(
-            self.linear.create_tickets(self.store.as_ref(), ids),
-        )?;
+        let mut meetings: Vec<MeetingId> = Vec::new();
+        for id in ids {
+            if let Some(item) = self.store.get_action_item(*id)? {
+                if !meetings.contains(&item.meeting_id) {
+                    meetings.push(item.meeting_id);
+                }
+            }
+        }
+        let outcome = {
+            let _claim = TicketCreationClaim::new(&self.ticket_creations, &meetings);
+            crate::host::async_runtime::block_on(
+                self.linear.create_tickets(self.store.as_ref(), ids),
+            )
+        };
+        for m in &meetings {
+            self.emit_meeting_changed(*m);
+        }
+        let outcome = outcome?;
         if let Some((team, project)) = outcome.used_team_project {
             let mut settings = crate::settings::get_settings(&self.app);
             let m = &mut settings.meetings;
@@ -704,6 +832,51 @@ impl MeetingsManager {
             }
         }
         Ok(outcome.results)
+    }
+}
+
+/// The title the summarizer sees: the meeting's current title (the user may
+/// have renamed it), never the linked calendar event's snapshot.
+fn summary_title(meeting: &Meeting) -> &str {
+    &meeting.title
+}
+
+const SUMMARIZE_DURING_CREATE: &str =
+    "Linear tickets are being created for this meeting. Summarize again when that finishes.";
+
+/// Marks meetings as having a `create_tickets` call running, until dropped.
+struct TicketCreationClaim<'a> {
+    map: &'a parking_lot::Mutex<std::collections::HashMap<MeetingId, usize>>,
+    meetings: Vec<MeetingId>,
+}
+
+impl<'a> TicketCreationClaim<'a> {
+    fn new(
+        map: &'a parking_lot::Mutex<std::collections::HashMap<MeetingId, usize>>,
+        meetings: &[MeetingId],
+    ) -> Self {
+        let mut m = map.lock();
+        for id in meetings {
+            *m.entry(*id).or_default() += 1;
+        }
+        Self {
+            map,
+            meetings: meetings.to_vec(),
+        }
+    }
+}
+
+impl Drop for TicketCreationClaim<'_> {
+    fn drop(&mut self) {
+        let mut m = self.map.lock();
+        for id in &self.meetings {
+            if let Some(n) = m.get_mut(id) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(id);
+                }
+            }
+        }
     }
 }
 
@@ -801,5 +974,195 @@ mod store_section_tests {
             .lock()
             .iter()
             .any(|e| e.name == events::PEOPLE_CHANGED));
+    }
+
+    fn item_in(mgr: &MeetingsManager, meeting_id: MeetingId, text: &str) -> ActionItem {
+        mgr.store()
+            .insert_action_item(&ActionItem {
+                id: 0,
+                meeting_id,
+                text: text.into(),
+                owner_person_id: None,
+                owner_name: None,
+                owner_is_user: true,
+                due: None,
+                source_quote: "I'll do it".into(),
+                source_t_ms: Some(0),
+                ticket: TicketDraft {
+                    title: text.into(),
+                    team_id: Some("t".into()),
+                    ..Default::default()
+                },
+                ticket_state: TicketState::Draft,
+                linear_issue_id: None,
+                linear_issue_identifier: None,
+                linear_issue_url: None,
+            })
+            .unwrap()
+    }
+
+    fn changed_events(t: &TestApp) -> usize {
+        t.events
+            .lock()
+            .iter()
+            .filter(|e| e.name == events::MEETING_CHANGED)
+            .count()
+    }
+
+    #[test]
+    fn update_action_item_applies_ticket_only_until_created() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let a = item_in(&mgr, m, "first");
+
+        // Before creation: fields, ticket and state are all applied.
+        let before = changed_events(&t);
+        let mut e = a.clone();
+        e.text = "first, edited".into();
+        e.ticket.title = "Better title".into();
+        e.ticket_state = TicketState::Approved;
+        mgr.update_action_item(&e).unwrap();
+        let got = mgr.store().get_action_item(a.id).unwrap().unwrap();
+        assert_eq!(got.text, "first, edited");
+        assert_eq!(got.ticket.title, "Better title");
+        assert_eq!(got.ticket_state, TicketState::Approved);
+        assert_eq!(
+            mgr.store().action_item_flags(a.id).unwrap(),
+            Some((false, true))
+        );
+        assert!(changed_events(&t) > before);
+
+        // Created meanwhile; the UI saves its stale copy.
+        mgr.store()
+            .set_linear_issue(a.id, "iss", "ENG-1", "u")
+            .unwrap();
+        let mut stale = e.clone();
+        stale.text = "after".into();
+        stale.ticket.title = "Stale".into();
+        stale.ticket_state = TicketState::Draft;
+        stale.linear_issue_id = None;
+        mgr.update_action_item(&stale).unwrap();
+        let got = mgr.store().get_action_item(a.id).unwrap().unwrap();
+        assert_eq!(got.text, "after");
+        assert_eq!(got.ticket.title, "Better title");
+        assert_eq!(got.ticket_state, TicketState::Created);
+        assert_eq!(got.linear_issue_id.as_deref(), Some("iss"));
+    }
+
+    #[test]
+    fn manual_items_survive_a_regenerated_summary_and_mutations_emit() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let before = changed_events(&t);
+        let manual = mgr.add_action_item(m, "Book the room").unwrap();
+        assert_eq!(changed_events(&t), before + 1);
+        assert_eq!(
+            mgr.store().action_item_flags(manual.id).unwrap(),
+            Some((true, false))
+        );
+        let generated = item_in(&mgr, m, "generated");
+        let out = crate::meetings::summarize::SummarizeOutput {
+            summary: Default::default(),
+            items: vec![],
+        };
+        crate::meetings::summarize::persist(mgr.store(), m, &out, "x/y", &[]).unwrap();
+        let left: Vec<_> = mgr
+            .action_items(m)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(left, vec![manual.id]);
+        assert!(mgr.store().get_action_item(generated.id).unwrap().is_none());
+
+        // draft_tickets (no Linear key: drafts from defaults) emits too.
+        let before = changed_events(&t);
+        mgr.draft_tickets(m).unwrap();
+        assert_eq!(changed_events(&t), before + 1);
+        mgr.delete_action_item(manual.id).unwrap();
+        assert_eq!(changed_events(&t), before + 2);
+    }
+
+    #[test]
+    fn summarize_is_refused_while_tickets_are_created() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let claim = TicketCreationClaim::new(&mgr.ticket_creations, &[m, m]);
+        let e = mgr.summarize(m, None).unwrap_err();
+        assert!(e.to_string().contains("being created"), "{e}");
+        drop(claim);
+        assert!(!mgr.creating_tickets_for(m));
+    }
+
+    #[test]
+    fn summaries_use_the_current_meeting_title() {
+        let mut m = meeting(None);
+        m.title = "Renamed by the user".into();
+        m.calendar_event = Some(CalendarEvent {
+            id: "e".into(),
+            title: "Old calendar title".into(),
+            start_at: 0,
+            end_at: 1,
+            meeting_url: None,
+            attendees: vec![],
+        });
+        assert_eq!(summary_title(&m), "Renamed by the user");
+    }
+
+    #[test]
+    fn deleting_a_person_drops_their_sidecar_voiceprints() {
+        use crate::meetings::processing::sidecar::{self, SegmentEmbedding};
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let ann = mgr.store().insert_person("Ann", None).unwrap();
+        let sp = |id, person| MeetingSpeaker {
+            id,
+            meeting_id: m,
+            cluster_label: format!("Speaker {id}"),
+            person_id: person,
+            match_confidence: None,
+            confirmed: true,
+            is_user: false,
+        };
+        let seg = |t0, speaker| Segment {
+            id: 0,
+            meeting_id: m,
+            track: Track::System,
+            t0_ms: t0,
+            t1_ms: t0 + 1000,
+            text: "hi".into(),
+            words: vec![],
+            speaker_id: Some(speaker),
+        };
+        let (speakers, segs) = mgr
+            .store()
+            .replace_transcript(
+                m,
+                &[sp(1, Some(ann.id)), sp(2, None)],
+                &[seg(0, 1), seg(2000, 2)],
+            )
+            .unwrap();
+        mgr.store()
+            .set_speaker_embedding(speakers[0].id, Some(&[1.0]))
+            .unwrap();
+        let key = crate::secrets::meetings_data_key().unwrap();
+        let e = |id| SegmentEmbedding {
+            segment_id: id,
+            duration_ms: 1000,
+            embedding: vec![1.0],
+        };
+        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[e(segs[0].id), e(segs[1].id)])
+            .unwrap();
+
+        mgr.delete_person(ann.id).unwrap();
+        let left = sidecar::read_embeddings(mgr.meetings_dir(), m, &key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(left, vec![e(segs[1].id)]);
+        assert_eq!(mgr.store().speaker_embedding(speakers[0].id).unwrap(), None);
     }
 }

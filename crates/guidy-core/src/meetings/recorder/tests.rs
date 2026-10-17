@@ -65,6 +65,7 @@ fn ev(id: &str, start: i64, end: i64) -> CalendarEvent {
         attendees: vec![Attendee {
             name: Some("Ann".into()),
             email: Some("ann@example.com".into()),
+            is_current_user: false,
         }],
     }
 }
@@ -149,6 +150,34 @@ fn start_feed_stop_produces_a_recorded_meeting_with_two_tracks() {
 
     // Stopping again is a no-op.
     assert_eq!(r.rec.stop(T0 + 3_000).unwrap(), None);
+}
+
+#[test]
+fn rename_while_recording_survives_stop() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    // The user renames the meeting mid-recording (a targeted title update).
+    r.repo.rows.lock()[0].title = "Renamed by user".into();
+    r.rec.stop(T0 + 5_000).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.title, "Renamed by user");
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.ended_at, Some(T0 + 5_000));
+    assert!(m.mic_audio_path.is_some());
+}
+
+#[test]
+fn manual_start_links_to_a_current_event_without_a_meeting_link() {
+    let r = rig();
+    let mut office = ev("office", T0 - 5 * M, T0 + 25 * M);
+    office.meeting_url = None;
+    office.title = "In-person 1:1".into();
+    r.calendar.events.lock().push(office);
+    let id = r.rec.start(None, T0).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id.as_deref(), Some("office"));
+    assert_eq!(m.title, "In-person 1:1");
+    r.rec.stop(T0 + 1_000).unwrap();
 }
 
 #[test]
@@ -435,7 +464,7 @@ mod manager_section {
                 system_audio_path: None,
                 status: MeetingStatus::Processed,
                 error: None,
-                processing_stage: None,
+                processing_stage: Some("done".into()),
             })
             .unwrap();
         let key = crate::secrets::meetings_data_key().unwrap();
@@ -443,9 +472,7 @@ mod manager_section {
         let mut w = TrackWriter::create(&mgr.audio_dir().join(&rel), &key).unwrap();
         w.push(&vec![0.25; 32_000]).unwrap();
         w.finish().unwrap();
-        let mut m = mgr.store().get_meeting(id).unwrap().unwrap();
-        m.mic_audio_path = Some(rel);
-        mgr.store().update_meeting(&m).unwrap();
+        mgr.store().set_audio_paths(id, Some(&rel), None).unwrap();
         id
     }
 

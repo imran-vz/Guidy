@@ -8,9 +8,16 @@
 //!   segment id. Naming a speaker copies the longest ones into `voiceprints`.
 //!   Deleted with the meeting ([`delete_sidecars`]), never by audio retention.
 //!
-//! Format: `"GDYSIDE1" || nonce (12) || ChaCha20-Poly1305(JSON)`, keyed with
-//! the meetings data key, AAD = the magic.
+//! Format: `"GDYSIDE2" || nonce (12) || ChaCha20-Poly1305(JSON)`, keyed with
+//! the meetings data key. The AAD is `magic || kind (1 byte) || meeting id
+//! (i64 LE)`, so a file can't be swapped between meetings or between the
+//! cache and the embeddings slot. Files written by the first format
+//! (`GDYSIDE1`, AAD = magic only) are not read any more: they are caches, so
+//! a checkpoint restarts processing and a missing embeddings file makes
+//! naming fall back to the speaker centroid. Files (and their temp files) are
+//! created owner-only (0600) on unix.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -24,10 +31,41 @@ use super::timeline::RawSegment;
 use super::vad::Span;
 use crate::meetings::types::{MeetingId, Track};
 
-const MAGIC: &[u8; 8] = b"GDYSIDE1";
+const MAGIC: &[u8; 8] = b"GDYSIDE2";
 const NONCE_LEN: usize = 12;
 
-pub fn seal(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+/// Which sidecar a file is (bound into the AAD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidecarKind {
+    /// The [`ProcessingCache`] checkpoint.
+    Cache,
+    /// Per-segment voiceprints ([`SegmentEmbedding`]s).
+    Embeddings,
+}
+
+impl SidecarKind {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Cache => 1,
+            Self::Embeddings => 2,
+        }
+    }
+}
+
+fn aad(kind: SidecarKind, meeting_id: MeetingId) -> Vec<u8> {
+    let mut a = Vec::with_capacity(MAGIC.len() + 9);
+    a.extend_from_slice(MAGIC);
+    a.push(kind.tag());
+    a.extend_from_slice(&meeting_id.to_le_bytes());
+    a
+}
+
+pub fn seal(
+    key: &[u8; 32],
+    kind: SidecarKind,
+    meeting_id: MeetingId,
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let mut nonce = [0u8; NONCE_LEN];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut nonce);
@@ -36,7 +74,7 @@ pub fn seal(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
             Nonce::from_slice(&nonce),
             Payload {
                 msg: plaintext,
-                aad: MAGIC,
+                aad: &aad(kind, meeting_id),
             },
         )
         .map_err(|_| anyhow::anyhow!("sidecar encryption failed"))?;
@@ -47,9 +85,14 @@ pub fn seal(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn open(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
+pub fn open(
+    key: &[u8; 32],
+    kind: SidecarKind,
+    meeting_id: MeetingId,
+    data: &[u8],
+) -> Result<Vec<u8>> {
     if data.len() < MAGIC.len() + NONCE_LEN || &data[..MAGIC.len()] != MAGIC {
-        bail!("not a Guidy sidecar file");
+        bail!("not a Guidy sidecar file (or an old format)");
     }
     let (nonce, ct) = data[MAGIC.len()..].split_at(NONCE_LEN);
     ChaCha20Poly1305::new(Key::from_slice(key))
@@ -57,35 +100,140 @@ pub fn open(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
             Nonce::from_slice(nonce),
             Payload {
                 msg: ct,
-                aad: MAGIC,
+                aad: &aad(kind, meeting_id),
             },
         )
-        .map_err(|_| anyhow::anyhow!("sidecar could not be decrypted (wrong key or damaged)"))
+        .map_err(|_| {
+            anyhow::anyhow!("sidecar could not be decrypted (wrong key, meeting or damaged)")
+        })
+}
+
+/// Write `bytes` to `path` creating it owner-only (0600) on unix.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 /// Write `value` encrypted, atomically (temp file + rename).
-pub fn write<T: Serialize>(path: &Path, key: &[u8; 32], value: &T) -> Result<()> {
+fn write_at<T: Serialize + ?Sized>(
+    path: &Path,
+    key: &[u8; 32],
+    kind: SidecarKind,
+    meeting_id: MeetingId,
+    value: &T,
+) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    let sealed = seal(key, &serde_json::to_vec(value)?)?;
+    let sealed = seal(key, kind, meeting_id, &serde_json::to_vec(value)?)?;
     let tmp = path.with_extension("bin.tmp");
-    std::fs::write(&tmp, sealed).with_context(|| format!("write {}", tmp.display()))?;
+    write_private(&tmp, &sealed).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
     Ok(())
 }
 
 /// Read a sidecar. `Ok(None)` when the file doesn't exist.
-pub fn read<T: DeserializeOwned>(path: &Path, key: &[u8; 32]) -> Result<Option<T>> {
+fn read_at<T: DeserializeOwned>(
+    path: &Path,
+    key: &[u8; 32],
+    kind: SidecarKind,
+    meeting_id: MeetingId,
+) -> Result<Option<T>> {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
-    let plain = open(key, &data).with_context(|| path.display().to_string())?;
+    let plain = open(key, kind, meeting_id, &data).with_context(|| path.display().to_string())?;
     Ok(Some(serde_json::from_slice(&plain).with_context(|| {
         format!("{}: unreadable contents", path.display())
     })?))
+}
+
+pub fn write_cache(
+    meetings_dir: &Path,
+    id: MeetingId,
+    key: &[u8; 32],
+    cache: &ProcessingCache,
+) -> Result<()> {
+    write_at(
+        &cache_path(meetings_dir, id),
+        key,
+        SidecarKind::Cache,
+        id,
+        cache,
+    )
+}
+
+pub fn read_cache(
+    meetings_dir: &Path,
+    id: MeetingId,
+    key: &[u8; 32],
+) -> Result<Option<ProcessingCache>> {
+    read_at(&cache_path(meetings_dir, id), key, SidecarKind::Cache, id)
+}
+
+pub fn write_embeddings(
+    meetings_dir: &Path,
+    id: MeetingId,
+    key: &[u8; 32],
+    embeddings: &[SegmentEmbedding],
+) -> Result<()> {
+    write_at(
+        &embeddings_path(meetings_dir, id),
+        key,
+        SidecarKind::Embeddings,
+        id,
+        embeddings,
+    )
+}
+
+pub fn read_embeddings(
+    meetings_dir: &Path,
+    id: MeetingId,
+    key: &[u8; 32],
+) -> Result<Option<Vec<SegmentEmbedding>>> {
+    read_at(
+        &embeddings_path(meetings_dir, id),
+        key,
+        SidecarKind::Embeddings,
+        id,
+    )
+}
+
+/// Remove the per-segment voiceprints of `segment_ids` from meeting `id`'s
+/// embeddings sidecar (e.g. a deleted person's). Returns how many were
+/// removed; a missing sidecar is fine.
+pub fn drop_segment_embeddings(
+    meetings_dir: &Path,
+    id: MeetingId,
+    key: &[u8; 32],
+    segment_ids: &HashSet<i64>,
+) -> Result<usize> {
+    let Some(mut all) = read_embeddings(meetings_dir, id, key)? else {
+        return Ok(0);
+    };
+    let before = all.len();
+    all.retain(|e| !segment_ids.contains(&e.segment_id));
+    let removed = before - all.len();
+    if removed > 0 {
+        write_embeddings(meetings_dir, id, key, &all)?;
+    }
+    Ok(removed)
 }
 
 fn remove(path: &Path) -> Result<()> {
@@ -208,31 +356,98 @@ mod tests {
             track: Track::System,
             span: Span::new(1, 2),
         });
-        write(&path, &key, &cache).unwrap();
-        let back: ProcessingCache = read(&path, &key).unwrap().unwrap();
+        write_cache(dir.path(), 3, &key, &cache).unwrap();
+        let back = read_cache(dir.path(), 3, &key).unwrap().unwrap();
         assert_eq!(back, cache);
-        assert!(read::<ProcessingCache>(&path, &[8u8; 32]).is_err());
+        assert!(read_cache(dir.path(), 3, &[8u8; 32]).is_err());
         // The plaintext is not on disk.
         let raw = std::fs::read(&path).unwrap();
         assert!(!raw.windows(4).any(|w| w == b"1234"));
 
-        assert!(read::<ProcessingCache>(&cache_path(dir.path(), 4), &key)
-            .unwrap()
-            .is_none());
-        write(
-            &embeddings_path(dir.path(), 3),
-            &key,
-            &Vec::<SegmentEmbedding>::new(),
-        )
-        .unwrap();
+        assert!(read_cache(dir.path(), 4, &key).unwrap().is_none());
+        write_embeddings(dir.path(), 3, &key, &[]).unwrap();
         delete_sidecars(dir.path(), 3).unwrap();
         assert!(!path.exists() && !embeddings_path(dir.path(), 3).exists());
         delete_sidecars(dir.path(), 3).unwrap();
     }
 
     #[test]
+    fn a_sidecar_is_bound_to_its_meeting_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        let prints = vec![SegmentEmbedding {
+            segment_id: 1,
+            duration_ms: 2000,
+            embedding: vec![0.5],
+        }];
+        write_embeddings(dir.path(), 1, &key, &prints).unwrap();
+        // Copied into another meeting's slot: refused.
+        std::fs::create_dir_all(embeddings_path(dir.path(), 2).parent().unwrap()).unwrap();
+        std::fs::copy(
+            embeddings_path(dir.path(), 1),
+            embeddings_path(dir.path(), 2),
+        )
+        .unwrap();
+        assert!(read_embeddings(dir.path(), 2, &key).is_err());
+        // Copied into the cache slot of the same meeting: refused.
+        std::fs::create_dir_all(cache_path(dir.path(), 1).parent().unwrap()).unwrap();
+        std::fs::copy(embeddings_path(dir.path(), 1), cache_path(dir.path(), 1)).unwrap();
+        assert!(read_cache(dir.path(), 1, &key).is_err());
+        assert_eq!(read_embeddings(dir.path(), 1, &key).unwrap(), Some(prints));
+    }
+
+    #[test]
+    fn old_format_files_are_not_read() {
+        // A GDYSIDE1 file (AAD = magic only) is treated as unreadable.
+        let mut old = b"GDYSIDE1".to_vec();
+        old.extend_from_slice(&[0u8; 40]);
+        assert!(open(&[0u8; 32], SidecarKind::Cache, 1, &old).is_err());
+    }
+
+    #[test]
+    fn drop_segment_embeddings_removes_only_the_given_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        let e = |id| SegmentEmbedding {
+            segment_id: id,
+            duration_ms: 1000,
+            embedding: vec![id as f32],
+        };
+        write_embeddings(dir.path(), 5, &key, &[e(1), e(2), e(3)]).unwrap();
+        let n = drop_segment_embeddings(dir.path(), 5, &key, &HashSet::from([1, 3, 9])).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(
+            read_embeddings(dir.path(), 5, &key).unwrap(),
+            Some(vec![e(2)])
+        );
+        assert_eq!(
+            drop_segment_embeddings(dir.path(), 6, &key, &HashSet::from([1])).unwrap(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecars_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write_cache(dir.path(), 1, &[7u8; 32], &ProcessingCache::new()).unwrap();
+        let mode = std::fs::metadata(cache_path(dir.path(), 1))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
     fn rejects_garbage() {
-        assert!(open(&[0u8; 32], b"short").is_err());
-        assert!(open(&[0u8; 32], b"GDYSIDE1............garbage").is_err());
+        assert!(open(&[0u8; 32], SidecarKind::Cache, 1, b"short").is_err());
+        assert!(open(
+            &[0u8; 32],
+            SidecarKind::Cache,
+            1,
+            b"GDYSIDE2............garbage"
+        )
+        .is_err());
     }
 }

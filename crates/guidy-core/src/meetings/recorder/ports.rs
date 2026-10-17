@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+#[cfg(test)]
+use crate::meetings::types::MeetingStatus;
 use crate::meetings::types::{CalendarEvent, Meeting, MeetingId, Track};
 
 /// What the recorder and retention need from `meetings.db`.
@@ -14,9 +16,17 @@ pub trait MeetingRepo: Send + Sync {
     fn insert_meeting(&self, meeting: &Meeting) -> Result<MeetingId>;
     fn get_meeting(&self, id: MeetingId) -> Result<Option<Meeting>>;
     fn list_meetings(&self) -> Result<Vec<Meeting>>;
-    /// Overwrite the row's mutable fields from `meeting`.
-    fn update_meeting(&self, meeting: &Meeting) -> Result<()>;
     fn delete_meeting(&self, id: MeetingId) -> Result<()>;
+    /// Set both track paths (nothing else: a concurrent rename survives).
+    fn set_audio_paths(&self, id: MeetingId, mic: Option<&str>, system: Option<&str>)
+        -> Result<()>;
+    /// End a recording: set `ended_at`, status `Recorded` and `error`, only
+    /// while the row is still `Recording`. Returns false when it wasn't.
+    fn finish_recording(&self, id: MeetingId, ended_at: i64, error: Option<&str>) -> Result<bool>;
+    /// Retention: clear both track paths, only when the meeting is fully
+    /// processed (`processing_stage = done`) and not recording/processing.
+    /// Returns false (nothing changed) otherwise.
+    fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool>;
 }
 
 /// Called from the capture (audio) threads with 16 kHz mono f32 samples.
@@ -36,6 +46,11 @@ pub trait CaptureSession: Send {
 pub trait CalendarSource: Send + Sync {
     /// Events overlapping `[start_ms, end_ms)` (unix ms).
     fn events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>>;
+    /// Every timed event overlapping the range, with or without a meeting
+    /// link (manual starts link to whatever is happening now).
+    fn timed_events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
+        self.events_between(start_ms, end_ms)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,18 +90,62 @@ pub mod fakes {
         fn list_meetings(&self) -> Result<Vec<Meeting>> {
             Ok(self.rows.lock().clone())
         }
-        fn update_meeting(&self, meeting: &Meeting) -> Result<()> {
-            let mut rows = self.rows.lock();
-            let row = rows
-                .iter_mut()
-                .find(|m| m.id == meeting.id)
-                .ok_or_else(|| anyhow::anyhow!("no meeting {}", meeting.id))?;
-            *row = meeting.clone();
-            Ok(())
-        }
         fn delete_meeting(&self, id: MeetingId) -> Result<()> {
             self.rows.lock().retain(|m| m.id != id);
             Ok(())
+        }
+        fn set_audio_paths(
+            &self,
+            id: MeetingId,
+            mic: Option<&str>,
+            system: Option<&str>,
+        ) -> Result<()> {
+            let mut rows = self.rows.lock();
+            let row = rows
+                .iter_mut()
+                .find(|m| m.id == id)
+                .ok_or_else(|| anyhow::anyhow!("no meeting {id}"))?;
+            row.mic_audio_path = mic.map(Into::into);
+            row.system_audio_path = system.map(Into::into);
+            Ok(())
+        }
+        fn finish_recording(
+            &self,
+            id: MeetingId,
+            ended_at: i64,
+            error: Option<&str>,
+        ) -> Result<bool> {
+            let mut rows = self.rows.lock();
+            match rows
+                .iter_mut()
+                .find(|m| m.id == id && m.status == MeetingStatus::Recording)
+            {
+                Some(row) => {
+                    row.ended_at = Some(ended_at);
+                    row.status = MeetingStatus::Recorded;
+                    row.error = error.map(Into::into);
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool> {
+            let mut rows = self.rows.lock();
+            match rows.iter_mut().find(|m| {
+                m.id == id
+                    && !matches!(
+                        m.status,
+                        MeetingStatus::Recording | MeetingStatus::Processing
+                    )
+                    && m.processing_stage.as_deref() == Some("done")
+            }) {
+                Some(row) => {
+                    row.mic_audio_path = None;
+                    row.system_audio_path = None;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
         }
     }
 
@@ -131,7 +190,15 @@ pub mod fakes {
     }
 
     impl CalendarSource for FakeCalendar {
+        /// Like the native source: only events with a meeting link.
         fn events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
+            Ok(self
+                .timed_events_between(start_ms, end_ms)?
+                .into_iter()
+                .filter(|e| e.meeting_url.is_some())
+                .collect())
+        }
+        fn timed_events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
             *self.queries.lock() += 1;
             Ok(self
                 .events

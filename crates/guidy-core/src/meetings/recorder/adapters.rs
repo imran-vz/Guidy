@@ -25,11 +25,22 @@ impl MeetingRepo for StoreRepo {
     fn list_meetings(&self) -> Result<Vec<Meeting>> {
         self.0.list_meetings()
     }
-    fn update_meeting(&self, meeting: &Meeting) -> Result<()> {
-        self.0.update_meeting(meeting)
-    }
     fn delete_meeting(&self, id: MeetingId) -> Result<()> {
         self.0.delete_meeting(id).map(|_| ())
+    }
+    fn set_audio_paths(
+        &self,
+        id: MeetingId,
+        mic: Option<&str>,
+        system: Option<&str>,
+    ) -> Result<()> {
+        self.0.set_audio_paths(id, mic, system)
+    }
+    fn finish_recording(&self, id: MeetingId, ended_at: i64, error: Option<&str>) -> Result<bool> {
+        self.0.finish_recording(id, ended_at, error)
+    }
+    fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool> {
+        self.0.clear_audio_paths_if_processed(id)
     }
 }
 
@@ -91,6 +102,9 @@ impl CaptureBackend for NativeCapture {
 impl CalendarSource for NativeCalendar {
     fn events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
         native::events_between(start_ms, end_ms)
+    }
+    fn timed_events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
+        native::timed_events_between(start_ms, end_ms)
     }
 }
 

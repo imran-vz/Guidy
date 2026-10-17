@@ -235,6 +235,70 @@ fn init_meetings(app_handle: &AppHandle) {
         tray::update_tray_menu(&settings_app);
     });
 
+    spawn_meetings_init(app_handle);
+}
+
+/// Emitted (payload `()`) once the [`meetings::manager::MeetingsManager`] is
+/// registered.
+pub const MEETINGS_READY_EVENT: &str = "meetings://ready";
+/// Emitted (payload: the error string) when the manager failed to start.
+pub const MEETINGS_INIT_FAILED_EVENT: &str = "meetings://init-failed";
+
+/// Where meeting-notes startup is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeetingsInitStatus {
+    /// Not supported on this system: never started.
+    Unsupported,
+    /// Opening the store (Keychain, database) is in progress.
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+fn meetings_init_cell() -> &'static parking_lot::Mutex<MeetingsInitStatus> {
+    static CELL: std::sync::OnceLock<parking_lot::Mutex<MeetingsInitStatus>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| parking_lot::Mutex::new(MeetingsInitStatus::Unsupported))
+}
+
+/// The current meeting-notes startup status (for a UI that missed the
+/// ready / init-failed events).
+pub fn meetings_init_status(app: &AppHandle) -> MeetingsInitStatus {
+    if app
+        .try_state::<Arc<meetings::manager::MeetingsManager>>()
+        .is_some()
+    {
+        return MeetingsInitStatus::Ready;
+    }
+    meetings_init_cell().lock().clone()
+}
+
+/// Start the meetings manager again after a failed start (e.g. the Keychain
+/// prompt was denied). A no-op while a start is running; emits
+/// [`MEETINGS_READY_EVENT`] right away when the manager already exists.
+pub fn retry_init_meetings(app: &AppHandle) {
+    if !meetings::is_supported() {
+        return;
+    }
+    if app
+        .try_state::<Arc<meetings::manager::MeetingsManager>>()
+        .is_some()
+    {
+        *meetings_init_cell().lock() = MeetingsInitStatus::Ready;
+        let _ = app.emit(MEETINGS_READY_EVENT, ());
+        return;
+    }
+    spawn_meetings_init(app);
+}
+
+fn spawn_meetings_init(app_handle: &AppHandle) {
+    {
+        let mut status = meetings_init_cell().lock();
+        if *status == MeetingsInitStatus::Starting {
+            return;
+        }
+        *status = MeetingsInitStatus::Starting;
+    }
     let app = app_handle.clone();
     let spawned = std::thread::Builder::new()
         .name("meetings-init".into())
@@ -242,14 +306,24 @@ fn init_meetings(app_handle: &AppHandle) {
             move || match meetings::manager::MeetingsManager::new(&app) {
                 Ok(manager) => {
                     app.manage(manager.clone());
+                    *meetings_init_cell().lock() = MeetingsInitStatus::Ready;
+                    let _ = app.emit(MEETINGS_READY_EVENT, ());
                     manager.start_background();
                     tray::update_tray_menu(&app);
                 }
-                Err(e) => log::error!("Meeting notes unavailable: {e:#}"),
+                Err(e) => {
+                    let error = format!("{e:#}");
+                    log::error!("Meeting notes unavailable: {error}");
+                    *meetings_init_cell().lock() = MeetingsInitStatus::Failed(error.clone());
+                    let _ = app.emit(MEETINGS_INIT_FAILED_EVENT, error);
+                }
             },
         );
     if let Err(e) = spawned {
-        log::error!("Failed to start meeting notes: {e}");
+        let error = format!("Failed to start meeting notes: {e}");
+        log::error!("{error}");
+        *meetings_init_cell().lock() = MeetingsInitStatus::Failed(error.clone());
+        let _ = app_handle.emit(MEETINGS_INIT_FAILED_EVENT, error);
     }
 }
 

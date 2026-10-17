@@ -301,3 +301,170 @@ pub(super) fn set_notification_handler(handler: Box<dyn Fn(&str, &str) + Send + 
     }
     unsafe { guidy_mb_set_notification_handler(Some(notification_trampoline)) }
 }
+
+#[cfg(test)]
+mod aligner_tests {
+    //! The Swift `TimelineAligner` (mic and system tracks on one timeline),
+    //! driven through the `guidy_mb_test_aligner_*` hooks.
+
+    use std::ffi::c_void;
+
+    extern "C" {
+        fn guidy_mb_test_aligner_new(start_nanos: u64, tolerance_samples: i64) -> *mut c_void;
+        fn guidy_mb_test_aligner_audio(
+            aligner: *mut c_void,
+            samples: *const f32,
+            count: i32,
+            at_nanos: u64,
+            out: *mut f32,
+            capacity: i64,
+        ) -> i64;
+        fn guidy_mb_test_aligner_tick(
+            aligner: *mut c_void,
+            now_nanos: u64,
+            out: *mut f32,
+            capacity: i64,
+        ) -> i64;
+        fn guidy_mb_test_aligner_free(aligner: *mut c_void);
+    }
+
+    const START: u64 = 1_000_000_000_000;
+    const MS: u64 = 1_000_000;
+    const TOLERANCE: i64 = 800; // 50 ms, the bridge default
+
+    /// Everything the aligner emitted so far, as one track.
+    struct Aligner {
+        raw: *mut c_void,
+        track: Vec<f32>,
+    }
+
+    impl Aligner {
+        fn new() -> Self {
+            Self {
+                raw: unsafe { guidy_mb_test_aligner_new(START, TOLERANCE) },
+                track: Vec::new(),
+            }
+        }
+
+        /// `count` samples of `value` captured `at_ms` after the origin.
+        fn audio(&mut self, at_ms: f64, count: usize, value: f32) -> usize {
+            let input = vec![value; count];
+            let mut out = vec![0f32; count + 16_000 * 120];
+            let n = unsafe {
+                guidy_mb_test_aligner_audio(
+                    self.raw,
+                    input.as_ptr(),
+                    count as i32,
+                    START + (at_ms * MS as f64) as u64,
+                    out.as_mut_ptr(),
+                    out.len() as i64,
+                )
+            } as usize;
+            self.track.extend_from_slice(&out[..n]);
+            n
+        }
+
+        fn tick(&mut self, now_ms: u64) -> usize {
+            let mut out = vec![0f32; 16_000 * 120];
+            let n = unsafe {
+                guidy_mb_test_aligner_tick(
+                    self.raw,
+                    START + now_ms * MS,
+                    out.as_mut_ptr(),
+                    out.len() as i64,
+                )
+            } as usize;
+            self.track.extend_from_slice(&out[..n]);
+            n
+        }
+    }
+
+    impl Drop for Aligner {
+        fn drop(&mut self) {
+            unsafe { guidy_mb_test_aligner_free(self.raw) }
+        }
+    }
+
+    fn samples_at(ms: u64) -> usize {
+        (ms * 16) as usize
+    }
+
+    #[test]
+    fn late_start_is_padded_with_leading_silence() {
+        // The mic's VPIO unit took 200 ms to deliver its first buffer.
+        let mut a = Aligner::new();
+        assert_eq!(a.audio(200.0, 160, 1.0), samples_at(200) + 160);
+        assert!(a.track[..samples_at(200)].iter().all(|&s| s == 0.0));
+        assert!(a.track[samples_at(200)..].iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn small_jitter_is_left_alone() {
+        let mut a = Aligner::new();
+        a.audio(0.0, 1_600, 1.0);
+        // 30 ms late, then 30 ms early: within 50 ms, no padding or trimming.
+        assert_eq!(a.audio(130.0, 1_600, 1.0), 1_600);
+        assert_eq!(a.audio(170.0, 1_600, 1.0), 1_600);
+        assert_eq!(a.track.len(), 4_800);
+    }
+
+    #[test]
+    fn a_restart_gap_becomes_silence_at_the_right_place() {
+        // 100 ms of audio, then the device changed and VPIO restarted: the
+        // next buffer was captured 2 s after the origin.
+        let mut a = Aligner::new();
+        a.audio(0.0, 1_600, 1.0);
+        a.audio(2_000.0, 1_600, 2.0);
+        assert_eq!(a.track.len(), samples_at(2_000) + 1_600);
+        assert!(a.track[1_600..samples_at(2_000)].iter().all(|&s| s == 0.0));
+        // Sample index / 16 kHz is the capture time.
+        assert_eq!(a.track[samples_at(2_000)], 2.0);
+    }
+
+    #[test]
+    fn overlap_is_trimmed_or_dropped() {
+        let mut a = Aligner::new();
+        // 0..200 ms.
+        a.audio(0.0, 3_200, 1.0);
+        // A chunk claiming 0 ms again overlaps completely: dropped.
+        assert_eq!(a.audio(0.0, 1_600, 2.0), 0);
+        // 50..250 ms: the first 150 ms overlap, only the last 50 ms are kept.
+        assert_eq!(a.audio(50.0, 3_200, 3.0), 800);
+        assert_eq!(a.track.len(), samples_at(250));
+        assert!(a.track[3_200..].iter().all(|&s| s == 3.0));
+    }
+
+    #[test]
+    fn tick_fills_a_silent_stream_up_to_shortly_before_now() {
+        let mut a = Aligner::new();
+        // Nothing for 200 ms: not idle long enough yet.
+        assert_eq!(a.tick(200), 0);
+        // At 1 s: padded up to 900 ms (100 ms left for audio in flight).
+        assert_eq!(a.tick(1_000), samples_at(900));
+        assert!(a.track.iter().all(|&s| s == 0.0));
+        // Audio captured at 950 ms continues the track without a jump.
+        assert_eq!(a.audio(950.0, 160, 1.0), 160);
+        // Just after audio: no padding.
+        assert_eq!(a.tick(1_100), 0);
+    }
+
+    #[test]
+    fn a_long_drifting_stream_stays_within_tolerance_of_the_wall_clock() {
+        // A device clock 0.5% fast and jittery timestamps: after every chunk
+        // the track length matches the chunk's end time within tolerance.
+        let mut a = Aligner::new();
+        let mut t = 0.0f64;
+        for i in 0..2_000 {
+            let jitter = ((i * 7919) % 11) as f64 - 5.0; // -5..5 ms
+            let at = (t + jitter).max(0.0);
+            a.audio(at, 1_365, 0.5);
+            let end = (at * 16.0) as i64 + 1_365;
+            let drift = a.track.len() as i64 - end;
+            assert!(drift.abs() <= TOLERANCE + 1_365, "chunk {i}: drift {drift}");
+            t += 1_365.0 / 16.0 / 1.005;
+        }
+        let total_ms = t;
+        let expected = (total_ms * 16.0) as i64;
+        assert!((a.track.len() as i64 - expected).abs() <= TOLERANCE + 160);
+    }
+}

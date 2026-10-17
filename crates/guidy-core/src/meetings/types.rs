@@ -78,6 +78,10 @@ impl Track {
 pub struct Attendee {
     pub name: Option<String>,
     pub email: Option<String>,
+    /// EventKit says this attendee is the Mac's user. Excluded from speaker
+    /// suggestions and from owner matching (the user is "me").
+    #[serde(default)]
+    pub is_current_user: bool,
 }
 
 /// A calendar event, as read from EventKit.
@@ -156,6 +160,19 @@ pub struct MeetingSpeaker {
     pub confirmed: bool,
     /// True for the mic track's speaker (the user).
     pub is_user: bool,
+}
+
+impl MeetingSpeaker {
+    /// The number in a generated "Speaker {n}" label, so the UI can show a
+    /// translated label. `None` for the user's label and anything else.
+    pub fn speaker_number(&self) -> Option<u32> {
+        self.cluster_label
+            .trim()
+            .strip_prefix("Speaker ")?
+            .trim()
+            .parse()
+            .ok()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -355,4 +372,36 @@ pub mod events {
     pub const MEETING_CHANGED: &str = "meetings://meeting-changed";
     /// Payload: (). The People list changed.
     pub const PEOPLE_CHANGED: &str = "meetings://people-changed";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn speaker(label: &str) -> MeetingSpeaker {
+        MeetingSpeaker {
+            id: 1,
+            meeting_id: 1,
+            cluster_label: label.into(),
+            person_id: None,
+            match_confidence: None,
+            confirmed: false,
+            is_user: false,
+        }
+    }
+
+    #[test]
+    fn speaker_number_parses_generated_labels_only() {
+        assert_eq!(speaker("Speaker 1").speaker_number(), Some(1));
+        assert_eq!(speaker("Speaker 12").speaker_number(), Some(12));
+        assert_eq!(speaker("Imran").speaker_number(), None);
+        assert_eq!(speaker("Speaker").speaker_number(), None);
+        assert_eq!(speaker("Speaker x").speaker_number(), None);
+    }
+
+    #[test]
+    fn attendee_is_current_user_defaults_to_false() {
+        let a: Attendee = serde_json::from_str(r#"{"name":"Ann","email":null}"#).unwrap();
+        assert!(!a.is_current_user);
+    }
 }

@@ -319,6 +319,10 @@ pub fn should_auto_fetch_models(provider_id: &str, base_url: &str, api_key: &str
     if provider_id == APPLE_PROVIDER_ID {
         return false;
     }
+    // Built-in llama.cpp: the downloaded models, no key or URL needed.
+    if provider_id == guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID {
+        return true;
+    }
     if provider_id == CUSTOM_PROVIDER_ID {
         !base_url.trim().is_empty()
     } else {

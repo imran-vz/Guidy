@@ -1,7 +1,7 @@
 //! Meeting list: title, date, duration, processing status (with live
 //! progress), and open / rename / process / delete actions.
 
-use super::{run, toast_error};
+use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
     apply_progress, can_process, duration_minutes, format_meeting_date, non_empty, status_key,
     MeetingsEvent,
@@ -77,8 +77,10 @@ impl MeetingList {
                 }
                 cx.notify();
             }
-            MeetingsEvent::MeetingChanged(_) | MeetingsEvent::RecorderState(_) => self.reload(cx),
-            MeetingsEvent::PeopleChanged => {}
+            MeetingsEvent::MeetingChanged(_)
+            | MeetingsEvent::RecorderState(_)
+            | MeetingsEvent::Ready => self.reload(cx),
+            _ => {}
         }
     }
 
@@ -418,6 +420,14 @@ impl MeetingList {
 impl Render for MeetingList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let needs_model = meeting_settings(cx).enabled
+            || self
+                .meetings
+                .iter()
+                .any(|m| matches!(m.status, MeetingStatus::Recorded | MeetingStatus::Failed));
+        let model_banner = meeting_model_missing(cx)
+            .filter(|_| needs_model)
+            .map(|m| render_model_download("list", &m, cx));
         let content: AnyElement = if self.loading {
             div()
                 .px_4()
@@ -460,6 +470,7 @@ impl Render for MeetingList {
                     .text_color(theme.muted_foreground)
                     .child(t("meetings.list.title").to_uppercase()),
             )
+            .children(model_banner)
             .child(
                 div()
                     .w_full()

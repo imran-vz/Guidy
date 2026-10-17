@@ -1010,6 +1010,11 @@ fn validate_provider_exists(
     settings: &settings::AppSettings,
     provider_id: &str,
 ) -> Result<(), String> {
+    // The built-in llama.cpp runtime is not a `post_process_providers` entry,
+    // but post-processing can use it (through `crate::llm`).
+    if provider_id == crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID {
+        return Ok(());
+    }
     if !settings
         .post_process_providers
         .iter()
@@ -1126,6 +1131,11 @@ pub async fn fetch_post_process_models(
 ) -> Result<Vec<String>, String> {
     let settings = settings::get_settings(&app);
 
+    // The built-in runtime: its downloaded models.
+    if provider_id == crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID {
+        return crate::llm::list_models(&app, &provider_id).map_err(|e| e.to_string());
+    }
+
     // Find the provider
     let provider = settings
         .post_process_providers
@@ -1158,7 +1168,12 @@ pub async fn fetch_post_process_models(
         ));
     }
 
-    crate::llm_client::fetch_models(provider, api_key).await
+    // The provider layer's listing: Cloudflare Workers AI has no OpenAI-style
+    // `/models` (it uses the model search API), `{placeholder}` URLs are
+    // refused with a clear error, and context windows are remembered.
+    crate::llm::http::list_models(provider, api_key)
+        .await
+        .map_err(|e| e.to_string())
 }
 pub fn set_post_process_selected_prompt(app: AppHandle, id: String) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);

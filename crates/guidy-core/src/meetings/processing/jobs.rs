@@ -128,12 +128,23 @@ impl Processor {
     }
 
     /// Cancel `id`: dropped from the queue, or stopped if it is running (its
-    /// completed stages are kept, so processing it again resumes).
+    /// completed stages are kept, so processing it again resumes). A queued
+    /// meeting left in `Processing` (by a crash, waiting to resume) goes back
+    /// to `Recorded`, so the UI offers "Process" again instead of a spinner.
     pub fn cancel(&self, id: MeetingId) -> Result<()> {
         let mut state = self.inner.state.lock();
         if let Some(pos) = state.queue.iter().position(|q| *q == id) {
             state.queue.remove(pos);
             state.progress.remove(&id);
+            drop(state);
+            if let Some(m) = self.inner.store.get_meeting(id)? {
+                if m.status == MeetingStatus::Processing {
+                    self.inner
+                        .store
+                        .set_meeting_status(id, MeetingStatus::Recorded, None)?;
+                }
+                self.emit_changed(id);
+            }
             return Ok(());
         }
         if let Some((current, flag)) = &state.current {
@@ -156,16 +167,62 @@ impl Processor {
         state.queue.contains(&id) || state.current.as_ref().is_some_and(|(c, _)| *c == id)
     }
 
-    /// Queue every meeting a crash left in `Processing`. Returns how many.
+    /// True while `id`'s job is the one running.
+    pub fn is_running(&self, id: MeetingId) -> bool {
+        self.inner
+            .state
+            .lock()
+            .current
+            .as_ref()
+            .is_some_and(|(c, _)| *c == id)
+    }
+
+    /// [`Self::cancel`], then wait (at most `timeout`) until `id`'s job has
+    /// stopped running, so nothing writes its files afterwards. Returns false
+    /// on timeout.
+    pub fn cancel_and_wait(&self, id: MeetingId, timeout: std::time::Duration) -> Result<bool> {
+        self.cancel(id)?;
+        let deadline = std::time::Instant::now() + timeout;
+        while self.is_running(id) {
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Ok(true)
+    }
+
+    /// Queue every meeting a crash left in `Processing`. A meeting that can't
+    /// be queued (e.g. the meeting model is missing) is logged and set to
+    /// `Failed` with the reason, so it never sits in `Processing` forever;
+    /// the others still resume. Returns how many were queued.
     pub fn resume_interrupted(&self) -> Result<usize> {
+        self.resume_interrupted_with(|id| self.enqueue(id))
+    }
+
+    fn resume_interrupted_with(&self, enqueue: impl Fn(MeetingId) -> Result<()>) -> Result<usize> {
         let interrupted = self
             .inner
             .store
             .meetings_with_status(&[MeetingStatus::Processing])?;
+        let mut queued = 0;
         for m in &interrupted {
-            self.enqueue(m.id)?;
+            match enqueue(m.id) {
+                Ok(()) => queued += 1,
+                Err(e) => {
+                    log::error!("meeting {}: could not resume processing: {e:#}", m.id);
+                    if let Err(e2) = self.inner.store.set_meeting_status(
+                        m.id,
+                        MeetingStatus::Failed,
+                        Some(&format!("{e:#}")),
+                    ) {
+                        log::warn!("meeting {}: {e2:#}", m.id);
+                    }
+                    self.emit_changed(m.id);
+                }
+            }
         }
-        Ok(interrupted.len())
+        Ok(queued)
     }
 
     fn emit_progress(&self, p: &ProcessingProgress) {
@@ -228,6 +285,17 @@ impl Processor {
 
     fn finish(&self, id: MeetingId, outcome: Result<()>) {
         let store = &self.inner.store;
+        // Deleted while it ran: drop whatever sidecars it wrote (they hold
+        // voiceprints of people nobody named) instead of recording an outcome.
+        if matches!(store.get_meeting(id), Ok(None)) {
+            log::info!("meeting {id}: deleted during processing; removing its files");
+            if let Err(e) = super::sidecar::delete_sidecars(&self.inner.meetings_dir, id) {
+                log::warn!("meeting {id}: {e:#}");
+            }
+            self.inner.state.lock().progress.remove(&id);
+            self.emit_changed(id);
+            return;
+        }
         let result = match &outcome {
             Ok(()) => store.set_meeting_status(id, MeetingStatus::Processed, None),
             Err(e) if is_cancelled(e) => {
@@ -474,5 +542,109 @@ mod tests {
         p.cancel(id).unwrap();
         assert!(!p.is_busy(id));
         assert!(p.progress(id).is_none());
+    }
+
+    #[test]
+    fn cancelling_a_queued_interrupted_meeting_resets_it_to_recorded() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let id = store
+            .insert_meeting(&meeting(MeetingStatus::Processing))
+            .unwrap();
+        p.inner.state.lock().running = true;
+        assert_eq!(p.resume_interrupted().unwrap(), 1);
+        assert!(p.is_busy(id));
+        p.cancel(id).unwrap();
+        assert!(!p.is_busy(id));
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Recorded
+        );
+        // A queued meeting in another state keeps it.
+        let done = store
+            .insert_meeting(&meeting(MeetingStatus::Processed))
+            .unwrap();
+        p.enqueue(done).unwrap();
+        p.cancel(done).unwrap();
+        assert_eq!(
+            store.get_meeting(done).unwrap().unwrap().status,
+            MeetingStatus::Processed
+        );
+    }
+
+    #[test]
+    fn resume_marks_unqueueable_meetings_failed_and_continues() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let bad = store
+            .insert_meeting(&meeting(MeetingStatus::Processing))
+            .unwrap();
+        let good = store
+            .insert_meeting(&meeting(MeetingStatus::Processing))
+            .unwrap();
+        p.inner.state.lock().running = true;
+        let n = p
+            .resume_interrupted_with(|id| {
+                if id == bad {
+                    anyhow::bail!("the meeting model is not downloaded")
+                }
+                p.enqueue(id)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        let m = store.get_meeting(bad).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Failed);
+        assert!(m.error.unwrap().contains("not downloaded"));
+        assert!(p.is_busy(good));
+    }
+
+    #[test]
+    fn cancel_and_wait_waits_for_the_running_job() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store, std::env::temp_dir());
+        let flag = Arc::new(AtomicBool::new(false));
+        p.inner.state.lock().current = Some((7, flag.clone()));
+        // Never stops: times out.
+        assert!(!p
+            .cancel_and_wait(7, std::time::Duration::from_millis(50))
+            .unwrap());
+        assert!(flag.load(Ordering::SeqCst));
+        let worker = p.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            worker.inner.state.lock().current = None;
+        });
+        assert!(p
+            .cancel_and_wait(7, std::time::Duration::from_secs(10))
+            .unwrap());
+        assert!(!p.is_running(7));
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn finishing_a_deleted_meeting_removes_its_sidecars() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
+        let id = store
+            .insert_meeting(&meeting(MeetingStatus::Processing))
+            .unwrap();
+        let key = [3u8; 32];
+        super::super::sidecar::write_embeddings(dir.path(), id, &key, &[]).unwrap();
+        super::super::sidecar::write_cache(
+            dir.path(),
+            id,
+            &key,
+            &super::super::sidecar::ProcessingCache::new(),
+        )
+        .unwrap();
+        store.delete_meeting(id).unwrap();
+        p.finish(id, Ok(()));
+        assert!(!super::super::sidecar::embeddings_path(dir.path(), id).exists());
+        assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
     }
 }

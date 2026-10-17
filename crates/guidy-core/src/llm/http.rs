@@ -1,16 +1,19 @@
 //! [`HttpProvider`]: any `post_process_providers` entry (OpenAI-compatible or
 //! Anthropic format) as an [`LlmProvider`], through [`crate::llm_client`].
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use super::{
     block_on, extract_json, json_via_prompt, strip_think, validate_json, ChatMessage, ChatOptions,
     LlmProvider, CANCELLED,
 };
-use crate::llm_client::{self, ChatParams};
+use crate::llm_client::{self, ChatParams, ModelInfo};
 use crate::settings::{
     PostProcessApiFormat, PostProcessProvider, CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
 };
@@ -74,17 +77,119 @@ impl HttpProvider {
     }
 }
 
-/// Context window assumed per provider. Cloud models are large enough that
-/// meeting transcripts are summarized in one pass; Custom (often a local
-/// Ollama with a small default context) is chunked.
-pub fn context_tokens_for(provider: &PostProcessProvider) -> usize {
-    match provider.id.as_str() {
-        "anthropic" => 200_000,
-        "custom" => 8_192,
-        "groq" | "cerebras" => 32_000,
-        CLOUDFLARE_WORKERS_AI_PROVIDER_ID => 24_000,
-        _ => 128_000,
+/// Context window when nothing is known about a model: small enough for
+/// most hosted and local models, so long transcripts are chunked rather than
+/// rejected.
+pub const DEFAULT_CONTEXT_TOKENS: usize = 16_000;
+
+/// Context windows reported by model lists, per provider (id + base URL) and
+/// model. A provider key with an empty map was listed without metadata (or
+/// the listing failed), so it isn't fetched again.
+fn context_cache() -> &'static Mutex<HashMap<String, HashMap<String, usize>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, HashMap<String, usize>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_key(provider: &PostProcessProvider) -> String {
+    format!(
+        "{}|{}",
+        provider.id,
+        provider.base_url.trim().trim_end_matches('/')
+    )
+}
+
+/// Record the context windows a model list reported.
+pub fn remember_model_info(provider: &PostProcessProvider, models: &[ModelInfo]) {
+    let mut cache = context_cache().lock();
+    let entry = cache.entry(cache_key(provider)).or_default();
+    for m in models {
+        if let Some(n) = m.context_length {
+            entry.insert(m.id.clone(), n);
+        }
     }
+}
+
+fn cached_context(provider: &PostProcessProvider, model: &str) -> Option<Option<usize>> {
+    let cache = context_cache().lock();
+    cache
+        .get(&cache_key(provider))
+        .map(|models| models.get(model).copied())
+}
+
+/// Providers whose `/models` list reports context windows: worth one listing
+/// the first time a model's context is needed.
+fn lists_context_lengths(provider: &PostProcessProvider) -> bool {
+    matches!(provider.id.as_str(), "openrouter" | "vercel_ai_gateway")
+}
+
+/// Context window for `model` on `provider`: the model list's metadata when
+/// it has been seen (see [`remember_model_info`]), else
+/// [`context_tokens_by_name`].
+pub fn context_tokens_for(provider: &PostProcessProvider, model: &str) -> usize {
+    cached_context(provider, model)
+        .flatten()
+        .unwrap_or_else(|| context_tokens_by_name(&provider.id, model))
+}
+
+/// Conservative context windows of well-known models, by name. Hosted
+/// variants are often smaller than the model's maximum, so these are the
+/// common hosted sizes, not the largest ones.
+pub fn context_tokens_by_name(provider_id: &str, model: &str) -> usize {
+    let lower = model.trim().to_ascii_lowercase();
+    // `openai/gpt-4o`, `@cf/meta/llama-3.1-8b-instruct`, ... -> the last part.
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let has = |s: &str| name.contains(s);
+    let starts = |s: &str| name.starts_with(s);
+
+    // Custom endpoints are usually a local server (Ollama defaults to a few
+    // thousand tokens) whatever the model is called.
+    if provider_id == "custom" {
+        return 8_192;
+    }
+    if provider_id == CLOUDFLARE_WORKERS_AI_PROVIDER_ID || lower.contains("@cf/") {
+        return if has("llama-3.3-70b") || has("llama-4") || has("gpt-oss") {
+            24_000
+        } else if has("8b") || has("3b") || has("1b") || has("7b") {
+            8_000
+        } else {
+            DEFAULT_CONTEXT_TOKENS
+        };
+    }
+    if starts("claude") {
+        return 200_000;
+    }
+    if starts("gpt-4o")
+        || starts("gpt-4.1")
+        || starts("gpt-5")
+        || starts("gpt-4-turbo")
+        || starts("gpt-oss")
+        || starts("o1")
+        || starts("o3")
+        || starts("o4")
+        || starts("chatgpt-4o")
+    {
+        return 128_000;
+    }
+    if starts("gpt-4") {
+        return 8_192;
+    }
+    if starts("gpt-3.5") {
+        return 16_000;
+    }
+    if starts("gemini") || starts("grok") || starts("kimi") || starts("moonshot") {
+        return 128_000;
+    }
+    if starts("deepseek") {
+        return 64_000;
+    }
+    if starts("llama-3.1") || starts("llama-3.3") || starts("llama-4") || starts("llama3.1") {
+        // Groq/Cerebras free tiers cap these well below 128k.
+        return 32_000;
+    }
+    if starts("mistral") || starts("mixtral") || starts("qwen") || starts("command") {
+        return 32_000;
+    }
+    DEFAULT_CONTEXT_TOKENS
 }
 
 impl LlmProvider for HttpProvider {
@@ -93,7 +198,27 @@ impl LlmProvider for HttpProvider {
     }
 
     fn context_tokens(&self) -> usize {
-        context_tokens_for(&self.provider)
+        if cached_context(&self.provider, &self.model).is_none()
+            && lists_context_lengths(&self.provider)
+        {
+            // Once per provider: learn the context windows from the model list
+            // (short timeout; a failure falls back to the name table).
+            let provider = self.provider.clone();
+            let api_key = self.api_key.clone();
+            let listed = block_on(async move {
+                tokio::time::timeout(Duration::from_secs(5), list_models(&provider, api_key)).await
+            });
+            match listed {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    log::debug!("{}: model list for context sizes failed: {e}", self.name())
+                }
+                Err(_) => log::debug!("{}: model list for context sizes timed out", self.name()),
+            }
+            // Mark the provider as listed even when that failed.
+            remember_model_info(&self.provider, &[]);
+        }
+        context_tokens_for(&self.provider, &self.model)
     }
 
     fn chat(&self, messages: &[ChatMessage], opts: &ChatOptions) -> Result<String> {
@@ -130,13 +255,18 @@ impl LlmProvider for HttpProvider {
 
 /// List a provider's models. Cloudflare Workers AI has no OpenAI-style
 /// `/models`, so it uses its model search API.
+/// Also records the context windows the list reports (see
+/// [`context_tokens_for`]). Refuses base URLs with `{placeholders}`.
 pub async fn list_models(provider: &PostProcessProvider, api_key: String) -> Result<Vec<String>> {
+    super::validate_base_url(provider)?;
     if provider.id == CLOUDFLARE_WORKERS_AI_PROVIDER_ID {
         return cloudflare_models(provider, &api_key).await;
     }
-    llm_client::fetch_models(provider, api_key)
+    let models = llm_client::fetch_models_with_info(provider, api_key)
         .await
-        .map_err(|e| anyhow!(e))
+        .map_err(|e| anyhow!(e))?;
+    remember_model_info(provider, &models);
+    Ok(models.into_iter().map(|m| m.id).collect())
 }
 
 /// `.../accounts/<id>/ai/v1` -> `.../accounts/<id>/ai/models/search`.
@@ -166,17 +296,45 @@ async fn cloudflare_models(provider: &PostProcessProvider, api_key: &str) -> Res
         .json()
         .await
         .map_err(|_| anyhow!("Cloudflare model list: unexpected response"))?;
-    Ok(parse_cloudflare_models(&json))
+    let models = parse_cloudflare_model_info(&json);
+    remember_model_info(provider, &models);
+    Ok(models.into_iter().map(|m| m.id).collect())
 }
 
 pub fn parse_cloudflare_models(json: &Value) -> Vec<String> {
+    parse_cloudflare_model_info(json)
+        .into_iter()
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Model search results, with `properties: [{property_id: "context_window",
+/// value: "24000"}]` when Cloudflare reports it.
+pub fn parse_cloudflare_model_info(json: &Value) -> Vec<ModelInfo> {
+    let context_of = |m: &Value| {
+        m.get("properties")
+            .and_then(Value::as_array)?
+            .iter()
+            .find(|p| p.get("property_id").and_then(Value::as_str) == Some("context_window"))
+            .and_then(|p| p.get("value"))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            })
+            .filter(|&n| n >= 512)
+            .map(|n| n as usize)
+    };
     json.get("result")
         .and_then(Value::as_array)
         .map(|models| {
             models
                 .iter()
-                .filter_map(|m| m.get("name").and_then(Value::as_str))
-                .map(str::to_string)
+                .filter_map(|m| {
+                    m.get("name").and_then(Value::as_str).map(|id| ModelInfo {
+                        id: id.to_string(),
+                        context_length: context_of(m),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -300,6 +458,128 @@ mod tests {
             parse_cloudflare_models(&json),
             vec!["@cf/meta/llama-3.1-8b-instruct".to_string()]
         );
+    }
+
+    #[test]
+    fn context_comes_from_the_model_name_when_nothing_is_listed() {
+        assert_eq!(context_tokens_by_name("openai", "gpt-4o-mini"), 128_000);
+        assert_eq!(
+            context_tokens_by_name("openrouter", "openai/gpt-5"),
+            128_000
+        );
+        assert_eq!(context_tokens_by_name("openai", "gpt-4.1-nano"), 128_000);
+        assert_eq!(
+            context_tokens_by_name("anthropic", "claude-haiku-4-5"),
+            200_000
+        );
+        assert_eq!(
+            context_tokens_by_name("vercel_ai_gateway", "anthropic/claude-sonnet-4"),
+            200_000
+        );
+        assert_eq!(
+            context_tokens_by_name(
+                CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
+                "@cf/meta/llama-3.1-8b-instruct"
+            ),
+            8_000
+        );
+        assert_eq!(
+            context_tokens_by_name(
+                CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
+                "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+            ),
+            24_000
+        );
+        // Through the AI Gateway, Workers AI models keep their small windows.
+        assert_eq!(
+            context_tokens_by_name("cloudflare_ai_gateway", "@cf/meta/llama-3.2-3b-instruct"),
+            8_000
+        );
+        assert_eq!(context_tokens_by_name("custom", "gpt-4o"), 8_192);
+        assert_eq!(
+            context_tokens_by_name("groq", "some-new-model"),
+            DEFAULT_CONTEXT_TOKENS
+        );
+    }
+
+    #[test]
+    fn listed_context_lengths_win_and_are_cached_per_provider_and_model() {
+        let p = provider("openrouter", "https://ctx-test.invalid/api/v1", true);
+        let other = provider("openrouter", "https://ctx-test-other.invalid/api/v1", true);
+        remember_model_info(
+            &p,
+            &[
+                ModelInfo {
+                    id: "meta-llama/llama-3.1-8b-instruct".into(),
+                    context_length: Some(131_072),
+                },
+                ModelInfo {
+                    id: "x/unlisted".into(),
+                    context_length: None,
+                },
+            ],
+        );
+        assert_eq!(
+            context_tokens_for(&p, "meta-llama/llama-3.1-8b-instruct"),
+            131_072
+        );
+        // Not reported: the name table.
+        assert_eq!(context_tokens_for(&p, "x/unlisted"), DEFAULT_CONTEXT_TOKENS);
+        // Another base URL is another provider.
+        assert_eq!(
+            context_tokens_for(&other, "meta-llama/llama-3.1-8b-instruct"),
+            32_000
+        );
+        // Already listed: no request (the URL is unroutable).
+        let http = HttpProvider::new(p, "k".into(), "meta-llama/llama-3.1-8b-instruct".into());
+        assert_eq!(http.context_tokens(), 131_072);
+    }
+
+    #[test]
+    fn openrouter_context_is_learned_from_one_model_listing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base = rt.block_on(serve(vec![(
+            "200 OK",
+            json!({"data":[{"id":"z-ai/glm-4.6","context_length":202752}]}).to_string(),
+        )]));
+        let p = HttpProvider::new(
+            provider("openrouter", &base, true),
+            "k".into(),
+            "z-ai/glm-4.6".into(),
+        );
+        assert_eq!(p.context_tokens(), 202_752);
+        // Cached: the mock serves only one connection.
+        assert_eq!(p.context_tokens(), 202_752);
+    }
+
+    #[test]
+    fn cloudflare_listing_reports_context_windows() {
+        let json = json!({"result":[{
+            "name":"@cf/meta/llama-3.1-8b-instruct",
+            "properties":[{"property_id":"context_window","value":"7968"}]
+        }]});
+        assert_eq!(
+            parse_cloudflare_model_info(&json),
+            vec![ModelInfo {
+                id: "@cf/meta/llama-3.1-8b-instruct".into(),
+                context_length: Some(7_968),
+            }]
+        );
+    }
+
+    #[test]
+    fn list_models_refuses_placeholder_urls() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let p = provider(
+            CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
+            "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+            false,
+        );
+        let err = rt
+            .block_on(list_models(&p, "k".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("{account_id}"), "{err}");
     }
 
     #[test]

@@ -10,5 +10,16 @@
   <string>Guidy reads your calendar to find meetings and their attendees for meeting notes.</string>
   <key>NSCalendarsUsageDescription</key>
   <string>Guidy reads your calendar to find meetings and their attendees for meeting notes.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>dev.guidy.app</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>guidy</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

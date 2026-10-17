@@ -211,7 +211,9 @@ impl MeetingRecorder {
     }
 
     fn current_event(&self, now: i64) -> Option<CalendarEvent> {
-        match self.deps.calendar.events_between(now, now + 1) {
+        // Any timed event, with or without a meeting link (plan 1.3);
+        // `schedule::current_event` still prefers one with a link.
+        match self.deps.calendar.timed_events_between(now, now + 1) {
             Ok(events) => schedule::current_event(&events, now).cloned(),
             Err(e) => {
                 log::debug!("meetings: no calendar for manual start: {e:#}");
@@ -288,10 +290,13 @@ impl MeetingRecorder {
         let sys_rel = audio_store::track_file_name(id, Track::System);
         let mic = TrackWriter::create(&self.deps.audio_dir.join(&mic_rel), key)?;
         let sys = TrackWriter::create(&self.deps.audio_dir.join(&sys_rel), key)?;
+        // Targeted: never overwrite the whole row (a rename may race this).
+        self.deps
+            .repo
+            .set_audio_paths(id, Some(&mic_rel), Some(&sys_rel))?;
         meeting.id = id;
         meeting.mic_audio_path = Some(mic_rel);
         meeting.system_audio_path = Some(sys_rel);
-        self.deps.repo.update_meeting(&meeting)?;
 
         let (tx, rx) = channel();
         let writer = std::thread::Builder::new()
@@ -359,18 +364,23 @@ impl MeetingRecorder {
         }
         self.set_state(RecorderState::Idle);
 
-        let mut meeting = self
+        let meeting = self
             .deps
             .repo
             .get_meeting(id)?
             .ok_or_else(|| anyhow!("meeting {id} disappeared while recording"))?;
-        meeting.ended_at = Some(now.max(meeting.started_at));
-        meeting.status = MeetingStatus::Recorded;
-        if !errors.is_empty() {
-            log::error!("meetings: meeting {id}: {}", errors.join("; "));
-            meeting.error = Some(errors.join("; "));
+        let error = (!errors.is_empty()).then(|| errors.join("; "));
+        if let Some(e) = &error {
+            log::error!("meetings: meeting {id}: {e}");
         }
-        self.deps.repo.update_meeting(&meeting)?;
+        // Targeted update: the title (renamed while recording) is untouched.
+        if !self
+            .deps
+            .repo
+            .finish_recording(id, now.max(meeting.started_at), error.as_deref())?
+        {
+            log::warn!("meetings: meeting {id} was no longer recording at stop");
+        }
         (self.deps.on_meeting_changed)(id);
         log::info!("meetings: stopped recording meeting {id}");
         Ok(Some(id))
@@ -498,10 +508,15 @@ impl MeetingRecorder {
 
     /// Meetings left in `Recording` by a crash: mark them `Recorded`, with
     /// `ended_at` = the newest track file's last-write time. Returns their ids.
+    ///
+    /// The caller ([`crate::meetings::manager::MeetingsManager::start_background`])
+    /// then queues each one for processing, like a normal stop; if queueing
+    /// fails (e.g. the meeting model is missing) the meeting stays `Recorded`
+    /// and the UI offers "Process".
     pub fn recover_interrupted(&self) -> Result<Vec<MeetingId>> {
         let active = self.current_meeting_id();
         let mut ids = Vec::new();
-        for mut m in self.deps.repo.list_meetings()? {
+        for m in self.deps.repo.list_meetings()? {
             if m.status != MeetingStatus::Recording || Some(m.id) == active {
                 continue;
             }
@@ -511,9 +526,10 @@ impl MeetingRecorder {
                 .filter_map(|rel| audio_store::resolve_track_path(&self.deps.audio_dir, rel).ok())
                 .filter_map(|p| audio_store::file_mtime_ms(&p))
                 .max();
-            m.ended_at = Some(last_write.unwrap_or(m.started_at).max(m.started_at));
-            m.status = MeetingStatus::Recorded;
-            self.deps.repo.update_meeting(&m)?;
+            let ended_at = last_write.unwrap_or(m.started_at).max(m.started_at);
+            if !self.deps.repo.finish_recording(m.id, ended_at, None)? {
+                continue;
+            }
             log::warn!("meetings: recovered interrupted recording {}", m.id);
             (self.deps.on_meeting_changed)(m.id);
             ids.push(m.id);
@@ -544,11 +560,18 @@ impl MeetingRecorder {
         audio_store::TrackReader::open(&path, &key)?.read_range(t0_ms, t1_ms)
     }
 
-    /// Apply the retention setting at `now`. Returns files deleted.
-    pub fn apply_retention(&self, now: i64) -> Result<usize> {
+    /// Apply the retention setting at `now`. `is_busy` says whether the
+    /// processor has a meeting queued or running (those are skipped).
+    /// Returns files deleted.
+    pub fn apply_retention(&self, now: i64, is_busy: &dyn Fn(MeetingId) -> bool) -> Result<usize> {
         let days = (self.deps.settings)().audio_retention_days;
-        let outcome =
-            audio_store::apply_retention(self.deps.repo.as_ref(), &self.deps.audio_dir, days, now)?;
+        let outcome = audio_store::apply_retention(
+            self.deps.repo.as_ref(),
+            &self.deps.audio_dir,
+            days,
+            now,
+            is_busy,
+        )?;
         for id in &outcome.meetings {
             (self.deps.on_meeting_changed)(*id);
         }

@@ -399,6 +399,11 @@
           "title": "Provider",
           "description": "Select an OpenAI-compatible or Anthropic-compatible provider."
         },
+        "builtin": {
+          "label": "Built-in model (on this Mac)",
+          "description": "Runs a local model on this Mac. Nothing leaves your computer. Download models in Meetings > Settings.",
+          "manage": "Manage built-in models"
+        },
         "apiFormat": {
           "title": "API Format",
           "description": "Request format expected by your custom endpoint.",
@@ -718,6 +723,22 @@
   "meetings": {
     "title": "Meetings",
     "description": "Record a meeting on this Mac, then read the transcript with named speakers.",
+    "init": {
+      "starting": "Starting meeting notes...",
+      "failed": "Meeting notes couldn't start",
+      "retry": "Retry"
+    },
+    "errors": {
+      "unavailable": "Meeting notes aren't available on this Mac.",
+      "modelMissing": "The meeting transcription model ({{name}}) isn't downloaded yet.",
+      "modelUnknown": "The meeting model {{name}} isn't installed. Choose another meeting model in Settings.",
+      "noLinearKey": "Add a Linear API key in Settings first.",
+      "linearUnauthorized": "Linear rejected the API key. Check it in Settings."
+    },
+    "model": {
+      "download": "Download meeting model",
+      "downloadError": "Couldn't download the meeting model"
+    },
     "tabs": {
       "meetings": "Meetings",
       "people": "People",
@@ -802,7 +823,8 @@
       "save": "Save",
       "cancel": "Cancel",
       "assignError": "Couldn't name the speaker",
-      "confirmError": "Couldn't confirm the speaker"
+      "confirmError": "Couldn't confirm the speaker",
+      "unnamed": "Speaker {{n}}"
     },
     "people": {
       "title": "People",
@@ -842,7 +864,9 @@
         "notifications": "Notifications",
         "granted": "Granted",
         "denied": "Not granted",
-        "error": "Couldn't request permissions"
+        "error": "Couldn't request permissions",
+        "requestAgain": "Request again",
+        "openSettings": "Open System Settings"
       },
       "you": "You",
       "userName": {
@@ -859,7 +883,16 @@
       "meetingModel": {
         "title": "Meeting model",
         "description": "Transcription model used for meetings. Download more models on the Models page.",
-        "default": "Default (Parakeet V3)"
+        "default": "Default (Parakeet V3)",
+        "notDownloaded": "{{name}} (not downloaded)"
+      },
+      "speakerModel": {
+        "title": "Speaker recognition model",
+        "description": "Recognizes who is speaking. Downloaded once (about 25 MB).",
+        "ready": "Downloaded",
+        "download": "Download",
+        "retry": "Retry download",
+        "failed": "Download failed: {{error}}"
       },
       "retention": {
         "title": "Keep meeting audio",
@@ -907,6 +940,7 @@
       "regenerate": "Regenerate",
       "regenerateWith": "Regenerate with...",
       "generating": "Summarizing the meeting. This can take a few minutes with a local model.",
+      "progress": "Summarizing ({{done}} of {{total}} steps)",
       "empty": "No summary yet. Generate one from the transcript.",
       "untitled": "Untitled meeting",
       "edit": "Edit",

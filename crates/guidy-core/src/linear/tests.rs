@@ -374,6 +374,9 @@ mod service {
         fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>> {
             self.items.action_item(id)
         }
+        fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String> {
+            self.items.begin_create(id)
+        }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             self.items.set_linear_issue(id, issue)
         }
@@ -398,8 +401,10 @@ mod service {
         fn people(&self) -> anyhow::Result<Vec<Person>> {
             Ok(self.people.clone())
         }
-        fn save_action_item(&self, item: &ActionItem) -> anyhow::Result<()> {
-            self.items.0.lock().insert(item.id, item.clone());
+        fn save_ticket_draft(&self, id: ActionItemId, draft: &TicketDraft) -> anyhow::Result<()> {
+            if let Some(item) = self.items.0.lock().get_mut(&id) {
+                item.ticket = draft.clone();
+            }
             Ok(())
         }
     }
@@ -470,6 +475,7 @@ mod service {
                     attendees: vec![Attendee {
                         name: Some("Dana".into()),
                         email: Some("DANA@x.com".into()),
+                        is_current_user: false,
                     }],
                 }),
                 started_at: 1_781_524_800_000,
@@ -628,10 +634,9 @@ mod with_store {
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert!(out.results[0].result.is_err());
         assert_eq!(m.count("issueCreate"), 0);
+        let item_before_create = store.get_action_item(id).unwrap().unwrap();
 
-        let mut item = store.get_action_item(id).unwrap().unwrap();
-        item.ticket_state = TicketState::Approved;
-        store.update_action_item(&item).unwrap();
+        store.set_ticket_state(id, TicketState::Approved).unwrap();
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert_eq!(out.results[0].result, Ok("ENG-1".into()));
         let saved = store.get_action_item(id).unwrap().unwrap();
@@ -642,10 +647,26 @@ mod with_store {
             Some("https://linear.app/a/issue/ENG-1")
         );
 
-        // Approve again (state only; the issue link stays) and retry.
-        let mut item = saved.clone();
-        item.ticket_state = TicketState::Approved;
-        store.update_action_item(&item).unwrap();
+        // The client UUID was sent as the issue id.
+        let sent = m
+            .requests()
+            .into_iter()
+            .find(|r| r.query().contains("issueCreate"))
+            .unwrap();
+        let client_id = store.linear_client_id(id).unwrap().unwrap();
+        assert_eq!(sent.vars()["input"]["id"], json!(client_id));
+        assert_eq!(client_id.len(), 36);
+
+        // Approving again is refused (the issue exists); a stale full-item
+        // save keeps the link; retrying creates nothing new.
+        assert!(store.set_ticket_state(id, TicketState::Approved).is_err());
+        let mut stale = item_before_create.clone();
+        stale.text = "edited after create".into();
+        store.update_action_item(&stale).unwrap();
+        let after = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(after.linear_issue_id.as_deref(), Some("iss-1"));
+        assert_eq!(after.ticket_state, TicketState::Created);
+        assert_eq!(after.text, "edited after create");
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert!(out.results[0].already_existed);
         assert_eq!(out.results[0].result, Ok("ENG-1".into()));
@@ -657,5 +678,155 @@ mod with_store {
             .await
             .unwrap();
         assert_eq!(items[0].linear_issue_id.as_deref(), Some("iss-1"));
+    }
+}
+
+// ----- Idempotent creation with a client UUID ---------------------------------
+
+mod idempotent {
+    use super::*;
+    use crate::linear::service::{KeySource, LinearService};
+    use crate::meetings::store::MeetingsStore;
+    use crate::meetings::types::{Meeting, MeetingStatus};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn store_with_approved() -> (MeetingsStore, i64) {
+        let store = MeetingsStore::open_in_memory(&[4u8; 32]).unwrap();
+        let meeting_id = store
+            .insert_meeting(&Meeting {
+                id: 0,
+                title: "Planning".into(),
+                calendar_event_id: None,
+                calendar_event: None,
+                started_at: 0,
+                ended_at: None,
+                mic_audio_path: None,
+                system_audio_path: None,
+                status: MeetingStatus::Processed,
+                error: None,
+                processing_stage: None,
+            })
+            .unwrap();
+        let mut item = approved_item(0);
+        item.meeting_id = meeting_id;
+        let item = store.insert_action_item(&item).unwrap();
+        (store, item.id)
+    }
+
+    #[tokio::test]
+    async fn retry_after_a_lost_response_records_the_existing_issue() {
+        // The first create reaches Linear but the response is lost (500);
+        // Linear has the issue under our client id. The retry's create is
+        // rejected as a duplicate and the lookup by id finds it.
+        let created_id: Arc<Mutex<Option<String>>> = Arc::default();
+        let creates = Arc::new(AtomicUsize::new(0));
+        let (cid, n) = (created_id.clone(), creates.clone());
+        let m = mock(move |r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                let id = r.vars()["input"]["id"].as_str().unwrap().to_string();
+                if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                    *cid.lock() = Some(id);
+                    (500, json!({}))
+                } else {
+                    (
+                        200,
+                        json!({ "errors": [{ "message": "Entity already exists" }] }),
+                    )
+                }
+            } else if q.contains("issue(id:") {
+                let id = r.vars()["id"].as_str().unwrap();
+                if cid.lock().as_deref() == Some(id) {
+                    ok(json!({ "issue": { "id": id, "identifier": "ENG-5", "url": "u5" } }))
+                } else {
+                    (
+                        200,
+                        json!({ "errors": [{ "message": "Entity not found" }] }),
+                    )
+                }
+            } else {
+                (500, json!({}))
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+
+        // First attempt: the create fails, and the lookup (the issue does
+        // exist on Linear's side here) recovers it right away.
+        let first = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(first.results[0].result, Ok("ENG-5".into()));
+        assert!(first.results[0].already_existed);
+        let saved = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(saved.ticket_state, TicketState::Created);
+        assert_eq!(
+            saved.linear_issue_id.as_deref(),
+            created_id.lock().as_deref()
+        );
+        assert_eq!(creates.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn crash_after_creating_state_reuses_the_client_id() {
+        // A crash after "creating" was persisted: the item has a client id
+        // but no issue. The retry sends the same id; Linear says it exists.
+        let m = mock(|r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                (200, json!({ "errors": [{ "message": "duplicate key value violates unique constraint" }] }))
+            } else if q.contains("issue(id:") {
+                let id = r.vars()["id"].as_str().unwrap();
+                ok(json!({ "issue": { "id": id, "identifier": "ENG-8", "url": "u8" } }))
+            } else {
+                (500, json!({}))
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let before = store.ensure_linear_client_id(id).unwrap();
+        // Idempotent: the same id comes back.
+        assert_eq!(store.ensure_linear_client_id(id).unwrap(), before);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-8".into()));
+        assert!(out.results[0].already_existed);
+        let sent = m
+            .requests()
+            .into_iter()
+            .find(|r| r.query().contains("issueCreate"))
+            .unwrap();
+        assert_eq!(sent.vars()["input"]["id"], json!(before));
+        assert_eq!(
+            store.get_action_item(id).unwrap().unwrap().linear_issue_id,
+            Some(before)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_failure_keeps_the_client_id_for_the_retry() {
+        let m = mock(|r| {
+            if r.query().contains("issue(id:") {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "Entity not found" }] }),
+                )
+            } else {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "assignee is not a team member" }] }),
+                )
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        let err = out.results[0].result.clone().unwrap_err();
+        assert!(err.contains("assignee is not a team member"), "{err}");
+        let item = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(item.linear_issue_id, None);
+        assert_eq!(item.ticket_state, TicketState::Approved);
+        assert!(store.linear_client_id(id).unwrap().is_some());
     }
 }

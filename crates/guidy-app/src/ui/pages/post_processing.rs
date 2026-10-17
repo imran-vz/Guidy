@@ -13,6 +13,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID;
 use guidy_core::settings::{AppSettings, PostProcessApiFormat};
 
 pub struct PostProcessingPage {
@@ -30,6 +31,11 @@ pub struct PostProcessingPage {
     test_result: Option<(String, Result<String, String>)>,
     /// (provider id, prompt id) the inputs were last synced for.
     synced: (String, Option<String>),
+    /// API keys per provider, read from the Keychain off the UI thread
+    /// when the provider is first shown (never on render/notify).
+    api_keys: std::collections::HashMap<String, String>,
+    /// Providers whose key is being read.
+    loading_keys: std::collections::HashSet<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -106,7 +112,7 @@ impl PostProcessingPage {
             cx.subscribe_in(&api_key, window, |this, input, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                     let v = input.read(cx).value().trim().to_string();
-                    this.save("api_key", v, guidy_core::settings::provider_api_key, cx);
+                    this.save_api_key(v, cx);
                 }
             }),
             cx.subscribe_in(&model, window, |this, input, ev: &InputEvent, _, cx| {
@@ -144,6 +150,8 @@ impl PostProcessingPage {
             testing: false,
             test_result: None,
             synced: (String::new(), None),
+            api_keys: Default::default(),
+            loading_keys: Default::default(),
             _subs: subs,
         };
         this.sync_inputs(true, window, cx);
@@ -175,12 +183,18 @@ impl PostProcessingPage {
                 .map(|p| p.base_url.clone())
                 .unwrap_or_default();
             set_if(&self.base_url, base, window, cx);
-            set_if(
-                &self.api_key,
-                guidy_core::settings::provider_api_key(&s, &pid),
-                window,
-                cx,
-            );
+            match self.api_keys.get(&pid).cloned() {
+                Some(key) => set_if(&self.api_key, key, window, cx),
+                // No key for the built-in runtime.
+                None if pid == BUILTIN_LLM_PROVIDER_ID => {}
+                None => {
+                    if provider_changed {
+                        // Don't show the previous provider's key meanwhile.
+                        set_if(&self.api_key, String::new(), window, cx);
+                    }
+                    self.load_api_key(pid.clone(), s.clone(), cx, |_, _, _| {});
+                }
+            }
             set_if(
                 &self.model,
                 s.post_process_models.get(&pid).cloned().unwrap_or_default(),
@@ -228,6 +242,61 @@ impl PostProcessingPage {
         self.prompt_text
             .update(cx, |s, cx| s.set_value(text, window, cx));
         cx.notify();
+    }
+
+    /// Read a provider's API key off the UI thread (Keychain), cache it,
+    /// then `done(key)`.
+    fn load_api_key(
+        &mut self,
+        provider_id: String,
+        settings: AppSettings,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, String, &mut Context<Self>) + 'static,
+    ) {
+        if self.loading_keys.contains(&provider_id) {
+            return;
+        }
+        self.loading_keys.insert(provider_id.clone());
+        cx.spawn(async move |this, cx| {
+            let pid = provider_id.clone();
+            let key = cx
+                .background_spawn(
+                    async move { guidy_core::settings::provider_api_key(&settings, &pid) },
+                )
+                .await;
+            this.update(cx, |this, cx| {
+                this.loading_keys.remove(&provider_id);
+                this.api_keys.insert(provider_id, key.clone());
+                // The observer mirrors the cached key into the input.
+                cx.notify();
+                done(this, key, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub fn cached_api_key(&self, provider_id: &str) -> Option<&str> {
+        self.api_keys.get(provider_id).map(String::as_str)
+    }
+
+    fn save_api_key(&mut self, value: String, cx: &mut Context<Self>) {
+        let Some(s) = self.state.read(cx).app_settings().cloned() else {
+            return;
+        };
+        let (pid, _) = provider_of(&s);
+        // Unknown until loaded: don't overwrite a key we haven't seen.
+        let Some(current) = self.api_keys.get(&pid) else {
+            return;
+        };
+        if *current == value {
+            return;
+        }
+        self.api_keys.insert(pid.clone(), value.clone());
+        self.state.update(cx, |st, cx| {
+            st.update_post_process("api_key", &pid, value, cx)
+        });
     }
 
     fn save(
@@ -286,14 +355,26 @@ impl PostProcessingPage {
             .find(|p| p.id == id)
             .map(|p| p.base_url.clone())
             .unwrap_or_default();
-        let key = guidy_core::settings::provider_api_key(&s, &id);
-        let fetch = should_auto_fetch_models(&id, &base, &key);
-        self.state.update(cx, |st, cx| {
-            st.set_post_process_provider(&id, cx);
-            if fetch {
-                st.fetch_post_process_models(&id, cx);
+        self.state
+            .update(cx, |st, cx| st.set_post_process_provider(&id, cx));
+        // Fetch models once the provider's key is known (Keychain read
+        // off the UI thread, cached).
+        let pid = id.clone();
+        let cached = if id == BUILTIN_LLM_PROVIDER_ID {
+            Some(String::new())
+        } else {
+            self.api_keys.get(&id).cloned()
+        };
+        let fetch_if = move |this: &mut Self, key: String, cx: &mut Context<Self>| {
+            if should_auto_fetch_models(&id, &base, &key) {
+                this.state
+                    .update(cx, |st, cx| st.fetch_post_process_models(&id, cx));
             }
-        });
+        };
+        match cached {
+            Some(key) => fetch_if(self, key, cx),
+            None => self.load_api_key(pid, s, cx, fetch_if),
+        }
         cx.notify();
     }
 
@@ -397,8 +478,9 @@ impl PostProcessingPage {
         let (pid, provider) = provider_of(s);
         let is_apple = pid == APPLE_PROVIDER_ID;
         let is_custom = pid == CUSTOM_PROVIDER_ID;
+        let is_builtin = pid == BUILTIN_LLM_PROVIDER_ID;
         let base_url_editable =
-            is_custom || provider.as_ref().is_some_and(|p| p.allow_base_url_edit);
+            !is_builtin && (is_custom || provider.as_ref().is_some_and(|p| p.allow_base_url_edit));
         let up = |k: String| st.settings.is_updating(&k);
         let mut rows = vec![SettingRow::new(
             "pp-provider",
@@ -408,10 +490,19 @@ impl PostProcessingPage {
         .control(
             Dropdown::new("pp-provider-dropdown")
                 .options(
-                    s.post_process_providers
-                        .iter()
-                        .map(|p| DropdownOption::new(p.id.clone(), p.label.clone()))
-                        .collect(),
+                    std::iter::once(
+                        DropdownOption::new(
+                            BUILTIN_LLM_PROVIDER_ID,
+                            t("settings.postProcessing.api.builtin.label"),
+                        )
+                        .description(t("settings.postProcessing.api.builtin.description")),
+                    )
+                    .chain(
+                        s.post_process_providers
+                            .iter()
+                            .map(|p| DropdownOption::new(p.id.clone(), p.label.clone())),
+                    )
+                    .collect(),
                 )
                 .selected(Some(pid.clone()))
                 .disabled(up("post_process_provider_id".into()))
@@ -488,6 +579,29 @@ impl PostProcessingPage {
                 .into_any_element(),
             );
         }
+        if is_builtin {
+            // No key or URL: point to where built-in models are downloaded.
+            let meetings_available = st.meetings_supported;
+            rows.push(
+                SettingRow::new("pp-builtin", t("settings.postProcessing.api.builtin.label"))
+                    .description(t("settings.postProcessing.api.builtin.description"))
+                    .when(meetings_available, |r| {
+                        r.control(
+                            Button::new("pp-builtin-manage")
+                                .outline()
+                                .small()
+                                .icon(icon("download"))
+                                .label(t("settings.postProcessing.api.builtin.manage"))
+                                .on_click(|_, _, cx| {
+                                    if let Some(main) = crate::windows::main_window_entity(cx) {
+                                        main.update(cx, |m, cx| m.open_meetings_settings(cx));
+                                    }
+                                }),
+                        )
+                    })
+                    .into_any_element(),
+            );
+        }
         if base_url_editable {
             rows.push(
                 SettingRow::new(
@@ -509,7 +623,7 @@ impl PostProcessingPage {
                 .into_any_element(),
             );
         }
-        rows.push(
+        rows.extend((!is_builtin).then(|| {
             SettingRow::new("pp-api-key", t("settings.postProcessing.api.apiKey.title"))
                 .description(t("settings.postProcessing.api.apiKey.description"))
                 .control(
@@ -520,8 +634,8 @@ impl PostProcessingPage {
                             .disabled(up(format!("post_process_api_key:{pid}"))),
                     ),
                 )
-                .into_any_element(),
-        );
+                .into_any_element()
+        }));
 
         let current_model = s.post_process_models.get(&pid).cloned().unwrap_or_default();
         let fetched = st.pp_model_options.get(&pid).cloned().unwrap_or_default();
@@ -546,13 +660,15 @@ impl PostProcessingPage {
                     h_flex()
                         .w_full()
                         .gap_2()
-                        .child(
-                            div().flex_1().child(
-                                Input::new(&self.model)
-                                    .small()
-                                    .disabled(up(format!("post_process_model:{pid}"))),
-                            ),
-                        )
+                        .when(!is_builtin, |d| {
+                            d.child(
+                                div().flex_1().child(
+                                    Input::new(&self.model)
+                                        .small()
+                                        .disabled(up(format!("post_process_model:{pid}"))),
+                                ),
+                            )
+                        })
                         .child(
                             Dropdown::new("pp-model-options")
                                 .options(
