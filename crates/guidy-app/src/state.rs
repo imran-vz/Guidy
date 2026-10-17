@@ -3,7 +3,11 @@
 //! the background executor; results land back on the entity.
 
 use crate::backend::SharedBackend;
-use crate::logic::flows::{append_log_lines, LogLine, LOG_FLUSH_MS};
+use crate::logic::flows::{
+    after_permissions, append_log_lines, initial_step, LogLine, OnboardingStep, StartupFacts,
+    LOG_FLUSH_MS,
+};
+use crate::logic::keyboard::OsType;
 use crate::logic::models::{initial_selector_status, selector_status_after_event, SelectorStatus};
 use crate::logic::models_store::{ModelsEffect, ModelsStore};
 use crate::logic::settings_store::{toast_for_event, SettingsStore, ToastKind, ToastSpec};
@@ -30,11 +34,27 @@ pub enum AppEvent {
     LanguageChanged,
 }
 
+/// The startup step machine (Handy's `App.tsx` onboarding state). Lives on
+/// the app, not the window: it must run when Guidy starts hidden, and survive
+/// the settings window being closed and reopened.
+#[derive(Default)]
+pub struct Startup {
+    /// `None` while the startup check runs.
+    pub step: Option<OnboardingStep>,
+    pub returning_user: bool,
+    pub migration_model_id: Option<String>,
+    checked: bool,
+    initialized_after_onboarding: bool,
+}
+
 pub struct AppState {
     pub backend: SharedBackend,
+    pub startup: Startup,
     pub settings: SettingsStore,
     pub models: ModelsStore,
     pub selector_status: SelectorStatus,
+    /// The load error shown in the footer when `selector_status` is Error.
+    pub selector_error: Option<String>,
     /// Optimistic footer selection while a switch is in flight.
     pub pending_model: Option<String>,
     pub audio_devices: Vec<AudioDevice>,
@@ -80,9 +100,11 @@ impl AppState {
     pub fn new(backend: SharedBackend) -> Self {
         Self {
             backend,
+            startup: Startup::default(),
             settings: SettingsStore::default(),
             models: ModelsStore::default(),
             selector_status: SelectorStatus::None,
+            selector_error: None,
             pending_model: None,
             audio_devices: Vec::new(),
             output_devices: Vec::new(),
@@ -110,6 +132,7 @@ impl AppState {
         let entity = cx.new(|cx| {
             let mut s = AppState::new(backend);
             s.initialize(cx);
+            s.check_onboarding(cx);
             s
         });
         cx.set_global(GlobalAppState(entity.clone()));
@@ -216,6 +239,115 @@ impl AppState {
         crate::theme::apply_setting(theme, cx);
     }
 
+    // -- startup ------------------------------------------------------------
+
+    pub fn onboarding_done(&self) -> bool {
+        self.startup.step == Some(OnboardingStep::Done)
+    }
+
+    /// Decide the first step (returning vs new user, permissions, retired
+    /// model). Runs once per session.
+    pub fn check_onboarding(&mut self, cx: &mut Context<Self>) {
+        if self.startup.checked {
+            return;
+        }
+        self.startup.checked = true;
+        let os = OsType::current();
+        self.call(
+            cx,
+            move |backend| {
+                let settings = backend.get_app_settings().ok();
+                let mut facts = StartupFacts {
+                    onboarding_completed: settings.as_ref().map(|s| s.onboarding_completed),
+                    ..Default::default()
+                };
+                if facts.onboarding_completed == Some(true) {
+                    let selected = settings.map(|s| s.selected_model).unwrap_or_default();
+                    facts.migration_model_id = backend
+                        .get_retired_models()
+                        .into_iter()
+                        .any(|m| m.id == selected)
+                        .then_some(selected);
+                    let dev_skip = cfg!(debug_assertions)
+                        && std::env::var_os("GUIDY_DEV_SKIP_PERMISSIONS").is_some();
+                    match os {
+                        _ if dev_skip => facts.mac_permissions_ok = Some(true),
+                        OsType::MacOs => {
+                            facts.mac_permissions_ok = Some(
+                                backend.check_accessibility_permission()
+                                    && backend.check_microphone_permission(),
+                            )
+                        }
+                        OsType::Windows => {
+                            facts.windows_mic =
+                                Some(backend.get_windows_microphone_permission_status())
+                        }
+                        _ => {}
+                    }
+                }
+                facts
+            },
+            move |s, facts, cx| {
+                let outcome = initial_step(&facts, os);
+                s.startup.returning_user = outcome.returning_user;
+                s.startup.migration_model_id = facts.migration_model_id.clone();
+                if outcome.reveal_window {
+                    s.backend.show_main_window();
+                }
+                s.set_step(outcome.step, cx);
+            },
+        );
+    }
+
+    pub fn set_step(&mut self, step: OnboardingStep, cx: &mut Context<Self>) {
+        self.startup.step = Some(step);
+        if step == OnboardingStep::Done && !self.startup.initialized_after_onboarding {
+            self.startup.initialized_after_onboarding = true;
+            // Enigo + shortcuts only after onboarding (avoids early macOS
+            // permission prompts), then load devices.
+            self.call(
+                cx,
+                |b| (b.initialize_enigo(), b.initialize_shortcuts()),
+                |s, (enigo, shortcuts), cx| {
+                    if let Err(e) = enigo {
+                        log::warn!("Failed to initialize input: {e}");
+                    }
+                    if let Err(e) = shortcuts {
+                        log::warn!("Failed to initialize shortcuts: {e}");
+                    }
+                    s.refresh_audio_devices(cx);
+                    s.refresh_output_devices(cx);
+                },
+            );
+        }
+        cx.notify();
+    }
+
+    pub fn on_permissions_complete(&mut self, cx: &mut Context<Self>) {
+        let o = after_permissions(
+            self.startup.returning_user,
+            self.startup.migration_model_id.as_deref(),
+        );
+        self.set_step(o.step, cx);
+    }
+
+    pub fn on_model_selected(&mut self, cx: &mut Context<Self>) {
+        if self.startup.migration_model_id.is_some() {
+            // Picked a different model instead of updating: retired models
+            // left on disk can't run anymore.
+            self.call(
+                cx,
+                |b| {
+                    for m in b.get_retired_models() {
+                        let _ = b.delete_retired_model(&m.id);
+                    }
+                },
+                |_, _, _| {},
+            );
+        }
+        self.set_step(OnboardingStep::Done, cx);
+    }
+
     // -- settings -----------------------------------------------------------
 
     pub fn refresh_settings(&mut self, cx: &mut Context<Self>) {
@@ -231,6 +363,19 @@ impl AppState {
 
     /// Optimistic update + backend write + rollback on error.
     pub fn update_setting(&mut self, key: &str, value: Value, cx: &mut Context<Self>) {
+        self.update_setting_then(key, value, cx, |_, _, _| {});
+    }
+
+    /// `update_setting`, then `done(ok)` once the write has finished. Chain
+    /// writes through this when one must land before the next (the backend
+    /// setters read-modify-write the whole settings object).
+    pub fn update_setting_then(
+        &mut self,
+        key: &str,
+        value: Value,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, bool, &mut Context<Self>) + 'static,
+    ) {
         let pending = self.settings.begin_update(key, value.clone());
         // Side effects the React store applied immediately.
         match key {
@@ -266,8 +411,28 @@ impl AppState {
                         s.toast_error(e.clone(), cx);
                     }
                 }
+                done(s, result.is_ok(), cx);
             },
         );
+    }
+
+    /// Apply writes one after another (Handy awaited each), stopping at the
+    /// first failure. Pairs like gpu device + accelerator, or auto-submit key
+    /// + flag, would otherwise race and one write could undo the other.
+    pub fn update_settings_in_order(
+        &mut self,
+        mut writes: Vec<(&'static str, Value)>,
+        cx: &mut Context<Self>,
+    ) {
+        if writes.is_empty() {
+            return;
+        }
+        let (key, value) = writes.remove(0);
+        self.update_setting_then(key, value, cx, move |s, ok, cx| {
+            if ok {
+                s.update_settings_in_order(writes, cx);
+            }
+        });
     }
 
     pub fn reset_setting(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -328,7 +493,11 @@ impl AppState {
             |b| b.get_available_microphones(),
             |s, r, _| match r {
                 Ok(d) => s.audio_devices = device_with_default(d),
-                Err(e) => log::error!("Failed to load microphones: {e}"),
+                Err(e) => {
+                    // Like Handy: fall back to "Default" so the select stays usable.
+                    log::error!("Failed to load microphones: {e}");
+                    s.audio_devices = device_with_default(Vec::new());
+                }
             },
         );
     }
@@ -339,7 +508,11 @@ impl AppState {
             |b| b.get_available_output_devices(),
             |s, r, _| match r {
                 Ok(d) => s.output_devices = device_with_default(d),
-                Err(e) => log::error!("Failed to load output devices: {e}"),
+                Err(e) => {
+                    // Like Handy: fall back to "Default" so the select stays usable.
+                    log::error!("Failed to load output devices: {e}");
+                    s.output_devices = device_with_default(Vec::new());
+                }
             },
         );
     }
@@ -400,6 +573,7 @@ impl AppState {
         }
         cx.notify();
         let pid = provider_id.to_string();
+        let pid_done = pid.clone();
         self.call(
             cx,
             move |b| match what {
@@ -413,8 +587,16 @@ impl AppState {
                 _ => Ok(()),
             },
             move |s, r, cx| {
-                if let Err(e) = r {
-                    log::error!("Failed to update post-process {what}: {e}");
+                match r {
+                    // A new endpoint makes the stored model meaningless
+                    // (settingsStore.updatePostProcessBaseUrl).
+                    Ok(()) if what == "base_url" => {
+                        s.settings.updating.remove(&key);
+                        s.update_post_process("model", &pid_done, String::new(), cx);
+                        return;
+                    }
+                    Ok(()) => {}
+                    Err(e) => log::error!("Failed to update post-process {what}: {e}"),
                 }
                 s.settings.updating.remove(&key);
                 s.refresh_settings(cx);
@@ -467,12 +649,21 @@ impl AppState {
         self.call(
             cx,
             |b| b.get_current_model(),
-            |s, r, _| {
+            |s, r, cx| {
                 if let Ok(id) = r {
-                    s.models.current_model = id;
+                    s.set_current_model(id, cx);
                 }
             },
         );
+    }
+
+    /// ModelSelector re-checks its status whenever the current model changes
+    /// (e.g. deleting the active model must show "download required").
+    fn set_current_model(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.models.current_model != id {
+            self.models.current_model = id;
+            self.refresh_selector_status(cx);
+        }
     }
 
     fn refresh_selector_status(&mut self, cx: &mut Context<Self>) {
@@ -518,7 +709,7 @@ impl AppState {
             move |s, r, cx| {
                 let ok = match r {
                     Ok(()) => {
-                        s.models.current_model = id_b;
+                        s.set_current_model(id_b, cx);
                         true
                     }
                     Err(e) => {
@@ -532,6 +723,17 @@ impl AppState {
     }
 
     pub fn download_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.download_model_then(id, cx, |_, _, _| {});
+    }
+
+    /// Start a download; `done` gets the command's final result (the backend
+    /// command returns once the download has finished or failed).
+    pub fn download_model_then(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+    ) {
         self.models.begin_download(id);
         cx.notify();
         let id_a = id.to_string();
@@ -539,11 +741,12 @@ impl AppState {
         self.call(
             cx,
             move |b| b.download_model(&id_a),
-            move |s, r, _| {
+            move |s, r, cx| {
                 if r.is_err() {
                     // The failed event may not arrive (e.g. listener not ready).
                     s.models.download_command_failed(&id_b);
                 }
+                done(s, r, cx);
             },
         );
     }
@@ -585,6 +788,9 @@ impl AppState {
             ModelsEffect::ReloadModels => self.load_models(cx),
             ModelsEffect::ReloadCurrentModel => self.load_current_model(cx),
             ModelsEffect::ToastError(e) => self.toast_error(e, cx),
+            // ModelSelector (mounted only once onboarding is done): during
+            // onboarding and migration those screens pick the model.
+            ModelsEffect::DownloadCompleted(_) if !self.onboarding_done() => {}
             ModelsEffect::DownloadCompleted(id) => {
                 // ModelSelector: auto-select the finished download after
                 // 500 ms unless a recording is running.
@@ -667,6 +873,18 @@ impl AppState {
                 self.refresh_settings(cx);
                 if let Some(t) = payload["event_type"].as_str() {
                     self.selector_status = selector_status_after_event(self.selector_status, t);
+                    if matches!(
+                        t,
+                        "loading_started" | "loading_completed" | "loading_failed" | "unloaded"
+                    ) {
+                        self.selector_error = (t == "loading_failed").then(|| {
+                            payload["error"]
+                                .as_str()
+                                .filter(|e| !e.is_empty())
+                                .unwrap_or("Failed to load model")
+                                .to_string()
+                        });
+                    }
                     if t == "loading_completed" || t == "loading_failed" {
                         self.pending_model = None;
                     }

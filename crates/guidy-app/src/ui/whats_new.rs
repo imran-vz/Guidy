@@ -27,6 +27,8 @@ impl WhatsNewGate {
         let subs = vec![cx.observe_in(&state, window, |this, _, window, cx| {
             this.evaluate(window, cx)
         })];
+        // Onboarding may already be done when the window opens.
+        cx.defer_in(window, |this, window, cx| this.evaluate(window, cx));
         Self {
             state,
             dismissed: None,
@@ -36,7 +38,13 @@ impl WhatsNewGate {
     }
 
     fn evaluate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(settings) = self.state.read(cx).app_settings() else {
+        let st = self.state.read(cx);
+        // Handy mounts the gate only in the main app view, never over
+        // onboarding or the model update screen.
+        if !st.onboarding_done() {
+            return;
+        }
+        let Some(settings) = st.app_settings() else {
             return;
         };
         if !settings.show_whats_new_on_update {

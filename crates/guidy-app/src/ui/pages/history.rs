@@ -145,6 +145,13 @@ impl HistoryPage {
     }
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
+        // The entry's player goes away with it (Handy unmounted the <audio>).
+        if let Some(path) = self.audio_paths.remove(&id) {
+            let player = Playback::global();
+            if player.state().path.as_ref() == Some(&path) {
+                player.stop();
+            }
+        }
         self.list.remove(id);
         cx.notify();
         let backend = self.backend(cx);
@@ -303,14 +310,18 @@ impl HistoryPage {
                             .absolute()
                             .size_full(),
                     )
-                    .on_mouse_down(MouseButton::Left, move |ev, _, _| {
-                        if !active {
-                            return;
+                    .on_mouse_down(MouseButton::Left, {
+                        let bounds = bounds.clone();
+                        move |ev, _, _| {
+                            if active {
+                                seek_to(ev.position, &bounds, duration);
+                            }
                         }
-                        if let Some(b) = bounds.get() {
-                            let x = (ev.position.x - b.origin.x) / b.size.width;
-                            let x = x.clamp(0.0, 1.0);
-                            Playback::global().seek(duration.mul_f32(x));
+                    })
+                    // Drag to scrub, like the HTML range input Handy used.
+                    .on_mouse_move(move |ev, _, _| {
+                        if active && ev.pressed_button == Some(MouseButton::Left) {
+                            seek_to(ev.position, &bounds, duration);
                         }
                     }),
             )
@@ -331,7 +342,7 @@ impl HistoryPage {
         let theme = cx.theme().clone();
         let id = entry.id;
         let retrying = self.retrying.contains(&id);
-        let has_text = !entry.transcription_text.is_empty();
+        let has_text = !entry.transcription_text.trim().is_empty();
         let lang = guidy_i18n::language();
         let e_copy = entry.clone();
         let icon_btn = |name: &'static str, label: SharedString, suffix: &str| {
@@ -390,19 +401,14 @@ impl HistoryPage {
                                 ),
                             )
                             .child(
-                                icon_btn(
-                                    if retrying {
-                                        "loader-circle"
-                                    } else {
-                                        "rotate-ccw"
-                                    },
-                                    t("settings.history.retranscribe"),
-                                    "retry",
-                                )
-                                .disabled(retrying)
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.retranscribe(id, cx)),
-                                ),
+                                icon_btn("rotate-ccw", t("settings.history.retranscribe"), "retry")
+                                    .loading(retrying)
+                                    .disabled(retrying)
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.retranscribe(id, cx)
+                                        }),
+                                    ),
                             )
                             .child(
                                 icon_btn("trash", t("settings.history.delete"), "delete")
@@ -541,5 +547,13 @@ impl Render for HistoryPage {
                     ),
             )
             .test_support()
+    }
+}
+
+/// Seek to the fraction of the bar under `position`.
+fn seek_to(position: Point<Pixels>, bounds: &Cell<Option<Bounds<Pixels>>>, duration: Duration) {
+    if let Some(b) = bounds.get() {
+        let x = ((position.x - b.origin.x) / b.size.width).clamp(0.0, 1.0);
+        Playback::global().seek(duration.mul_f32(x));
     }
 }

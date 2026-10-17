@@ -38,8 +38,21 @@ const OVERLAY_EVENTS: &[&str] = &[
 ];
 
 /// Keeps the single-instance listener alive for the process lifetime.
-struct InstanceGuard(#[allow(dead_code)] Option<single_instance::PrimaryGuard>);
+struct InstanceGuard(Option<single_instance::PrimaryGuard>);
 impl Global for InstanceGuard {}
+
+/// Stop accepting second launches (before relaunching after an update, so
+/// the new process becomes primary instead of forwarding to this one).
+pub fn release_single_instance(cx: &mut App) {
+    if let Some(guard) = cx
+        .try_global::<InstanceGuard>()
+        .is_some()
+        .then(|| cx.global_mut::<InstanceGuard>().0.take())
+        .flatten()
+    {
+        guard.shutdown();
+    }
+}
 
 pub fn run(cli_args: CliArgs) {
     let app = guidy_core::create_app_handle();
@@ -70,6 +83,25 @@ pub fn run(cli_args: CliArgs) {
     let application = gpui_kit::application()
         .with_assets(assets::AppAssets)
         .with_quit_mode(QuitMode::Explicit);
+    // macOS: a start-hidden launch with a tray must *launch* as Accessory.
+    // Demoting a running Regular app later is unreliable and can leave a
+    // Dock icon behind (Handy #1787). Showing the window promotes it.
+    #[cfg(target_os = "macos")]
+    let application = {
+        let settings = guidy_core::settings::get_settings(&app);
+        let d = guidy_core::startup_decision(
+            settings.start_hidden,
+            settings.show_tray_icon,
+            &cli_args,
+            false,
+        );
+        if d.start_as_accessory {
+            log::info!("Starting hidden with tray available: launching as Accessory");
+            application.with_windowing(WindowingRequest::Headless)
+        } else {
+            application
+        }
+    };
     let reopen_app = app.clone();
     application.on_reopen(move |_cx| guidy_core::handle_reopen(&reopen_app));
     application.run(move |cx| {
@@ -82,6 +114,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     gpui_kit::init(cx);
     theme::init(cx);
     ui::init(cx);
+    ui::set_app_menus(cx);
 
     // Backend → UI plumbing.
     let (shell_tx, shell_rx) = smol::channel::unbounded();
@@ -92,6 +125,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         app: app.clone(),
     });
     windows::spawn_shell_loop(shell, shell_rx, cx);
+    windows::spawn_appearance_watch(cx);
 
     // Queue backend events from now on; consumed once state exists.
     let (event_tx, event_rx) = smol::channel::unbounded::<CoreEvent>();
@@ -99,13 +133,20 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         let _ = event_tx.try_send(e.clone());
     });
 
-    // Initial UI language before any window renders.
-    state::apply_app_language(&guidy_core::settings::get_settings(&app).app_language);
+    // Initial UI language and theme before any window renders (the theme
+    // would otherwise flash the system palette until settings load).
+    let initial = guidy_core::settings::get_settings(&app);
+    state::apply_app_language(&initial.app_language);
+    theme::apply_setting(initial.theme, cx);
 
     let decision = guidy_core::initialize_app(&app, &cli_args, !cli_args.no_tray);
 
+    // AppState runs the startup step machine (onboarding check, then input +
+    // shortcut init) whether or not the settings window is ever opened.
     let state = AppState::install(Arc::new(CoreBackend::new(app.clone())), cx);
     let overlay = OverlayState::install(cx);
+    // Session-wide update checker (automatic check, tray "check for updates").
+    ui::status_bar::StatusBar::global(cx);
     spawn_event_loop(event_rx, state, overlay, cx);
 
     #[cfg(debug_assertions)]

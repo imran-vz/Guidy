@@ -2,7 +2,9 @@
 //! acknowledgments. (Handy's donate/source links are branding and omitted.)
 
 use crate::state::AppState;
-use crate::ui::kit::{group, page, path_display, t, toggle, Dropdown, DropdownOption, SettingRow};
+use crate::ui::kit::{
+    group, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
+};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
@@ -11,8 +13,8 @@ use serde_json::json;
 
 pub struct AboutPage {
     state: Entity<AppState>,
-    app_dir: Option<String>,
-    log_dir: Option<String>,
+    app_dir: Option<Result<String, String>>,
+    log_dir: Option<Result<String, String>>,
     _subs: Vec<Subscription>,
 }
 
@@ -28,8 +30,8 @@ impl AboutPage {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.app_dir = Some(app.unwrap_or_else(|_| guidy_i18n::t("errors.loadDirectory")));
-                this.log_dir = Some(log.unwrap_or_else(|_| guidy_i18n::t("errors.loadDirectory")));
+                this.app_dir = Some(app);
+                this.log_dir = Some(log);
                 cx.notify();
             })
             .ok();
@@ -41,6 +43,15 @@ impl AboutPage {
             log_dir: None,
             _subs: subs,
         }
+    }
+}
+
+/// The path, "Loading…", or Handy's "Error loading directory: …".
+fn dir_label(dir: &Option<Result<String, String>>) -> SharedString {
+    match dir {
+        None => t("common.loading"),
+        Some(Ok(path)) => path.clone().into(),
+        Some(Err(e)) => t_args("errors.loadDirectory", &[("error", e)]),
     }
 }
 
@@ -125,10 +136,8 @@ impl Render for AboutPage {
                 .stacked()
                 .control(path_display(
                     "open-app-data",
-                    self.app_dir
-                        .clone()
-                        .unwrap_or_else(|| guidy_i18n::t("common.loading"))
-                        .into(),
+                    dir_label(&self.app_dir),
+                    matches!(self.app_dir, Some(Ok(_))),
                     |_, cx| {
                         let b = AppState::global(cx).read(cx).backend.clone();
                         cx.background_spawn(async move {
@@ -144,10 +153,8 @@ impl Render for AboutPage {
                 .stacked()
                 .control(path_display(
                     "open-log-dir",
-                    self.log_dir
-                        .clone()
-                        .unwrap_or_else(|| guidy_i18n::t("common.loading"))
-                        .into(),
+                    dir_label(&self.log_dir),
+                    matches!(self.log_dir, Some(Ok(_))),
                     |_, cx| {
                         let b = AppState::global(cx).read(cx).backend.clone();
                         cx.background_spawn(async move {

@@ -549,6 +549,11 @@ impl Render for DebugPage {
                                         .and_then(|v| v.as_str().map(str::to_string)),
                                 )
                                 .disabled(up("sound_theme"))
+                                // SoundPicker re-checks for custom sounds on open.
+                                .on_open(|_, cx| {
+                                    AppState::global(cx)
+                                        .update(cx, |s, cx| s.check_custom_sounds(cx))
+                                })
                                 .on_select(|v, _, cx| set("sound_theme", json!(v), cx)),
                         )
                         .child(
@@ -611,6 +616,8 @@ impl Render for DebugPage {
                 Some(m) => m.to_string(),
             };
             let busy = up("clamshell_microphone");
+            // The list always holds "Default" once loaded.
+            let loading = st.audio_devices.is_empty();
             rows.push(
                 SettingRow::new(
                     "clamshell-microphone",
@@ -624,8 +631,13 @@ impl Render for DebugPage {
                             Dropdown::new("clamshell-dropdown")
                                 .options(options)
                                 .selected(Some(selected))
-                                .placeholder(t("settings.sound.microphone.placeholder"))
-                                .disabled(busy)
+                                .placeholder(if loading {
+                                    t("settings.sound.microphone.loading")
+                                } else {
+                                    t("settings.sound.microphone.placeholder")
+                                })
+                                .loading(loading)
+                                .disabled(busy || loading)
                                 .on_open(|_, cx| {
                                     AppState::global(cx)
                                         .update(cx, |s, cx| s.refresh_audio_devices(cx))

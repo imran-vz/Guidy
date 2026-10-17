@@ -299,11 +299,14 @@ impl PostProcessingPage {
                 move |b| b.add_post_process_prompt(&name, &text),
                 move |s, r, cx| match r {
                     Ok(prompt) => {
-                        s.refresh_settings(cx);
-                        s.update_setting(
+                        // Select only after the write lands, then refresh: a
+                        // refresh racing the write would restore the old id
+                        // (the setter emits no settings-changed).
+                        s.update_setting_then(
                             "post_process_selected_prompt_id",
                             serde_json::json!(prompt.id),
                             cx,
+                            |s, _, cx| s.refresh_settings(cx),
                         );
                         weak.update(cx, |this, cx| {
                             this.creating = false;
@@ -518,6 +521,8 @@ impl PostProcessingPage {
                                 .selected(Some(current_model.clone()))
                                 .placeholder(placeholder)
                                 .menu_width(px(320.))
+                                .loading(fetching)
+                                .disabled(up(format!("post_process_model:{pid}")))
                                 .on_select(move |v, _, cx| {
                                     let (pid, v) = (pid_sel.clone(), v.trim().to_string());
                                     AppState::global(cx).update(cx, |s, cx| {

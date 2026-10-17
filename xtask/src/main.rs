@@ -115,9 +115,38 @@ fn source_text(dirs: &[&str]) -> String {
     s
 }
 
+/// Does a test gated to `platform` (see docs/handy-platform-tests.txt) build
+/// on this host? xtask runs on the platform it tests.
+fn built_here(platform: &str) -> bool {
+    match platform {
+        "macos-aarch64" => cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        "macos" => cfg!(target_os = "macos"),
+        "unix" => cfg!(unix),
+        "not-linux" => !cfg!(target_os = "linux"),
+        other => panic!("handy-platform-tests.txt: unknown platform `{other}`"),
+    }
+}
+
+/// Platform-gated tests that don't build on this host (full paths).
+fn not_built_here() -> BTreeSet<String> {
+    read("docs/handy-platform-tests.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(' '))
+        .filter(|(platform, _)| !built_here(platform))
+        .map(|(_, test)| test.trim().to_string())
+        .collect()
+}
+
 fn parity() -> bool {
     let mut ok = true;
     let tests = list_tests();
+    let elsewhere = not_built_here();
+    let elsewhere_short: BTreeSet<&str> = elsewhere
+        .iter()
+        .map(|t| t.rsplit("::").next().unwrap())
+        .collect();
     let short: BTreeSet<String> = tests
         .iter()
         .map(|t| t.rsplit("::").next().unwrap().to_string())
@@ -127,11 +156,21 @@ fn parity() -> bool {
     let baseline = read("docs/handy-baseline-tests.txt");
     let missing: Vec<_> = baseline
         .lines()
+        .filter(|t| !elsewhere.contains(*t))
         .map(|l| l.replace("tauri_impl", "global_hotkey_impl"))
         .filter(|t| !tests.contains(t))
         .collect();
     if missing.is_empty() {
-        println!("✓ all {} Handy tests are present", baseline.lines().count());
+        let skipped = baseline.lines().filter(|t| elsewhere.contains(*t)).count();
+        println!(
+            "✓ all {} Handy tests are present{}",
+            baseline.lines().count() - skipped,
+            if skipped > 0 {
+                format!(" ({skipped} more only build on other platforms)")
+            } else {
+                String::new()
+            }
+        );
     } else {
         ok = false;
         println!("✗ Handy tests missing: {missing:?}");
@@ -194,7 +233,8 @@ fn parity() -> bool {
         for item in cover.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             if let Some(name) = item.strip_prefix("test:") {
                 let name = name.trim();
-                if !(tests.contains(name) || short.contains(name)) {
+                if !(tests.contains(name) || short.contains(name) || elsewhere_short.contains(name))
+                {
                     println!("✗ {id}: unknown test `{name}`");
                     row_ok = false;
                 }

@@ -7,7 +7,7 @@ use crate::logic::models::{
 };
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
-use crate::ui::kit::{icon, page, page_header, t, t_args};
+use crate::ui::kit::{icon, page, page_header, spinner, t, t_args};
 use crate::ui::model_card::ModelCard;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, Toggle};
@@ -222,11 +222,8 @@ impl ModelsPage {
                     Button::new("retired-delete")
                         .warning()
                         .small()
-                        .icon(icon(if self.deleting_retired {
-                            "loader-circle"
-                        } else {
-                            "trash"
-                        }))
+                        .icon(icon("trash"))
+                        .loading(self.deleting_retired)
                         .label(t("settings.models.retiredNotice.delete"))
                         .disabled(self.deleting_retired)
                         .on_click(cx.listener(|this, _, _, cx| this.delete_retired(cx))),
@@ -380,7 +377,7 @@ impl Render for ModelsPage {
                         .p_8()
                         .flex()
                         .justify_center()
-                        .child(icon("loader-circle").large()),
+                        .child(spinner("models-loading", icon("loader-circle").large())),
                 )
                 .into_any_element();
         }
@@ -392,7 +389,9 @@ impl Render for ModelsPage {
         let available: Vec<_> = available.into_iter().cloned().collect();
         let rescanning = m.rescanning;
 
+        // Handy hides the "recommended" badge on models you already have.
         let make_cards = |models: &[guidy_core::managers::model::ModelInfo],
+                          show_recommended: bool,
                           cx: &mut Context<Self>|
          -> Vec<AnyElement> {
             models
@@ -400,6 +399,7 @@ impl Render for ModelsPage {
                 .map(|model| {
                     let entity = entity.clone();
                     self.card(model, cx)
+                        .show_recommended(show_recommended)
                         .on_select(move |id, _, cx| {
                             let id = id.to_string();
                             entity
@@ -423,8 +423,8 @@ impl Render for ModelsPage {
                 })
                 .collect()
         };
-        let downloaded_cards = make_cards(&downloaded, cx);
-        let available_cards = make_cards(&available, cx);
+        let downloaded_cards = make_cards(&downloaded, false, cx);
+        let available_cards = make_cards(&available, true, cx);
 
         let header = h_flex()
             .w_full()

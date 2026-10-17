@@ -33,7 +33,22 @@ pub enum Instance {
 }
 
 pub struct PrimaryGuard {
-    _thread: std::thread::JoinHandle<()>,
+    id: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl PrimaryGuard {
+    /// Stop listening, so a process started now becomes the new primary
+    /// instead of forwarding to this one (used when relaunching after an
+    /// update, while this process is still exiting).
+    pub fn shutdown(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the blocking accept; the thread sees `stop` and exits,
+        // dropping the listener.
+        let _ = forward(&self.id, &[]);
+        let _ = self.thread.join();
+    }
 }
 
 /// Become the primary instance for `id`, or forward `args` to the running one.
@@ -53,10 +68,15 @@ where
         .try_overwrite(true)
         .create_sync()?;
 
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag = stop.clone();
     let thread = std::thread::Builder::new()
         .name("single-instance".into())
         .spawn(move || {
             for conn in listener.incoming() {
+                if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
                 let Ok(conn) = conn else { continue };
                 let mut reader = BufReader::new(conn);
                 let mut line = String::new();
@@ -70,7 +90,11 @@ where
             }
         })?;
 
-    Ok(Instance::Primary(PrimaryGuard { _thread: thread }))
+    Ok(Instance::Primary(PrimaryGuard {
+        id: id.to_string(),
+        stop,
+        thread,
+    }))
 }
 
 /// Send `args` to a running primary; `Err` when there is none.
@@ -120,6 +144,23 @@ mod tests {
         let got = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(got, args);
         drop(first);
+    }
+
+    #[test]
+    fn after_shutdown_a_new_launch_becomes_primary() {
+        let id = unique_id();
+        let first = acquire(&id, &[], |_| {}).unwrap();
+        let Instance::Primary(guard) = first else {
+            panic!("first launch must be primary");
+        };
+        guard.shutdown();
+        let (tx, rx) = mpsc::channel();
+        let relaunched = acquire(&id, &["guidy".into()], move |a| tx.send(a).unwrap()).unwrap();
+        assert!(
+            matches!(relaunched, Instance::Primary(_)),
+            "the relaunched app must not forward to the exiting one"
+        );
+        assert!(rx.try_recv().is_err(), "nothing forwarded");
     }
 
     #[test]

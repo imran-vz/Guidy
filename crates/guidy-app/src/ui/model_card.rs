@@ -4,7 +4,7 @@ use crate::logic::languages::{language_label, unique_capability_languages};
 use crate::logic::models::{
     format_model_size, is_legacy_model, quantization_label, ModelCardStatus,
 };
-use crate::ui::kit::{icon, model_description, model_name, t, t_args};
+use crate::ui::kit::{icon, model_description, model_name, spinner, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::progress::Progress;
@@ -182,7 +182,7 @@ impl RenderOnce for ModelCard {
                 Tag::secondary().small().child(
                     h_flex()
                         .gap_1()
-                        .child(icon("loader-circle").xsmall())
+                        .child(spinner("switching-spin", icon("loader-circle").xsmall()))
                         .child(t("modelSelector.switching")),
                 ),
             );

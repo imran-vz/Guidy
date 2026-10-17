@@ -158,6 +158,8 @@ mod general_page {
         let backend = FakeBackend::new();
         setup(cx, backend.clone());
         let (w, _) = open(cx, GeneralPage::new);
+        // Startup already loaded the device lists once.
+        backend.calls.lock().clear();
         // Disabled while feedback is off: the menu doesn't open.
         with_window(cx, w, |window, cx| {
             window.click("output-device-dropdown", cx)
@@ -230,7 +232,7 @@ mod main_window {
         let (w, main) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Done)
         );
         for id in [
@@ -280,7 +282,7 @@ mod main_window {
         let (_w, main) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Done)
         );
         assert!(backend.called("initialize_enigo"));
@@ -297,14 +299,14 @@ mod main_window {
         let (w, main) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Accessibility)
         );
         // Permissions already granted on this fake: completes after 300 ms.
         cx.executor().advance_clock(Duration::from_millis(400));
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Model)
         );
         assert!(exists(cx, w, "model-picker"));
@@ -333,7 +335,7 @@ mod main_window {
         cx.executor().advance_clock(Duration::from_millis(400));
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Model)
         );
     }
@@ -391,6 +393,8 @@ mod advanced_page {
     #[gpui_kit::test]
     fn app_group_rows_and_overlay_position_visibility(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
+        // Linux defaults the overlay off; position only shows when it's on.
+        backend.with_settings(|s| s.overlay_style = guidy_core::settings::OverlayStyle::Live);
         let state = setup(cx, backend.clone());
         let (w, _) = open(cx, AdvancedPage::new);
         for id in [
@@ -833,6 +837,8 @@ mod overlay_view {
     #[gpui_kit::test]
     fn live_card_shows_text_and_timer(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
+        // The live card needs the live style (Linux defaults the overlay off).
+        backend.with_settings(|s| s.overlay_style = guidy_core::settings::OverlayStyle::Live);
         let state = setup(cx, backend.clone());
         let (w, _) = open(cx, OverlayView::new);
         dispatch(cx, &state, "show-overlay", serde_json::json!("streaming"));
@@ -957,7 +963,7 @@ mod onboarding_flows {
             .advance_clock(std::time::Duration::from_millis(400));
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Model)
         );
         with_window(cx, w, |window, cx| window.click("model-card-rec", cx));
@@ -976,7 +982,7 @@ mod onboarding_flows {
         cx.run_until_parked();
         assert!(backend.called("set_active_model rec"));
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Done)
         );
     }
@@ -999,7 +1005,7 @@ mod onboarding_flows {
         let (w, main) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Migration)
         );
         with_window(cx, w, |window, cx| window.click("migration-start", cx));
@@ -1007,7 +1013,7 @@ mod onboarding_flows {
         assert!(backend.called("set_active_model new"));
         assert!(backend.called("delete_retired_model old"));
         assert_eq!(
-            main.read_with(cx, |m, _| m.step),
+            main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Done)
         );
     }
@@ -1135,7 +1141,7 @@ mod banners_and_events {
     fn tray_update_check_event_runs_a_manual_check(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
         let state = setup(cx, backend.clone());
-        let (_w, bar) = open(cx, StatusBar::new);
+        let (_w, bar) = open(cx, |_, cx| StatusBar::new(cx));
         cx.run_until_parked();
         dispatch(cx, &state, "check-for-updates", serde_json::Value::Null);
         cx.run_until_parked();
@@ -1162,5 +1168,307 @@ mod banners_and_events {
         let (w, _) = open(cx, crate::ui::pages::history::HistoryPage::new);
         with_window(cx, w, |window, cx| window.click("open-recordings", cx));
         assert!(backend.called("open_recordings_folder"));
+    }
+}
+
+/// Gaps found comparing the running app with Handy (startup without a
+/// window, failed downloads, write ordering, recorder cleanup, footer status).
+mod handy_gap_regressions {
+    use super::*;
+    use crate::logic::flows::OnboardingStep;
+    use crate::logic::models::SelectorStatus;
+    use crate::ui::main_window::MainWindow;
+    use crate::ui::shortcut_input::ShortcutInput;
+    use guidy_core::managers::model::RetiredModel;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn index_of(backend: &FakeBackend, prefix: &str) -> usize {
+        backend
+            .calls()
+            .iter()
+            .position(|c| c.starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix} not called: {:?}", backend.calls()))
+    }
+
+    /// PARITY F-01, S-07 (start hidden: no window is ever opened)
+    #[gpui_kit::test]
+    fn startup_initializes_dictation_without_a_window(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        assert_eq!(
+            state.read_with(cx, |s, _| s.startup.step),
+            Some(OnboardingStep::Done)
+        );
+        assert!(backend.called("initialize_enigo"));
+        assert!(backend.called("initialize_shortcuts"));
+        assert!(backend.called("get_available_microphones"));
+    }
+
+    /// PARITY F-01 (one check per session, not per window open)
+    #[gpui_kit::test]
+    fn reopening_the_window_keeps_the_session_state(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        setup(cx, backend.clone());
+        let (_w, _) = open(cx, MainWindow::new);
+        let (_w2, main) = open(cx, MainWindow::new);
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Done)
+        );
+        let inits = backend
+            .calls()
+            .iter()
+            .filter(|c| *c == "initialize_shortcuts")
+            .count();
+        assert_eq!(inits, 1, "{:?}", backend.calls());
+    }
+
+    /// PARITY F-03 (a failed download unlocks the picker)
+    #[gpui_kit::test]
+    fn picker_unlocks_after_a_failed_download(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        backend.data.lock().models = vec![rec];
+        backend.data.lock().fail_download = true;
+        backend.with_settings(|s| s.onboarding_completed = false);
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.executor().advance_clock(Duration::from_millis(400));
+        cx.run_until_parked();
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Model)
+        );
+        with_window(cx, w, |window, cx| window.click("model-card-rec", cx));
+        with_window(cx, w, |window, cx| window.click("model-card-rec", cx));
+        let attempts = backend
+            .calls()
+            .iter()
+            .filter(|c| *c == "download_model rec")
+            .count();
+        assert_eq!(attempts, 2, "cards are clickable again after the failure");
+    }
+
+    /// PARITY F-04 (a failed replacement download offers retry)
+    #[gpui_kit::test]
+    fn migration_failed_download_offers_retry(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().models = vec![model("new")];
+        backend.data.lock().retired = vec![RetiredModel {
+            id: "old".into(),
+            name: "Old".into(),
+            size_mb: 300,
+            replacement_repo: "org/new".into(),
+        }];
+        backend.data.lock().fail_download = true;
+        backend.with_settings(|s| s.selected_model = "old".into());
+        setup(cx, backend.clone());
+        let (w, _) = open(cx, MainWindow::new);
+        with_window(cx, w, |window, cx| window.click("migration-start", cx));
+        assert!(
+            backend.called("download_model new"),
+            "{:?}",
+            backend.calls()
+        );
+        assert!(exists(cx, w, "retry-old"), "failed row shows Retry");
+        assert!(exists(cx, w, "migration-choose-another-failed"));
+        assert!(!backend.called("delete_retired_model"));
+    }
+
+    /// PARITY E-08, M-08 (auto-select belongs to the footer selector)
+    #[gpui_kit::test]
+    fn download_auto_select_waits_for_onboarding(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.onboarding_completed = false);
+        let state = setup(cx, backend.clone());
+        dispatch(cx, &state, "model-download-complete", json!("m"));
+        cx.executor().advance_clock(Duration::from_millis(600));
+        cx.run_until_parked();
+        assert!(!backend.called("set_active_model"), "{:?}", backend.calls());
+    }
+
+    /// PARITY F-05 (never over onboarding)
+    #[gpui_kit::test]
+    fn whats_new_waits_for_onboarding(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| {
+            s.onboarding_completed = false;
+            s.show_whats_new_on_update = true;
+            s.whats_new_last_seen_version = "0.0.1".into();
+        });
+        setup(cx, backend.clone());
+        let (w, _) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "dialog"));
+    }
+
+    /// PARITY A-13 (device, then accelerator; stop at a failure)
+    #[gpui_kit::test]
+    fn accelerator_writes_run_in_order(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        let writes = || {
+            vec![
+                ("transcribe_gpu_device", json!(1)),
+                ("transcribe_accelerator", json!("gpu")),
+            ]
+        };
+        state.update(cx, |s, cx| s.update_settings_in_order(writes(), cx));
+        cx.run_until_parked();
+        assert!(
+            index_of(&backend, "update_setting transcribe_gpu_device")
+                < index_of(&backend, "update_setting transcribe_accelerator")
+        );
+        backend.calls.lock().clear();
+        backend.data.lock().fail_settings = vec!["transcribe_gpu_device".into()];
+        state.update(cx, |s, cx| s.update_settings_in_order(writes(), cx));
+        cx.run_until_parked();
+        assert!(!backend.called("update_setting transcribe_accelerator"));
+    }
+
+    /// PARITY A-08 (key first, then enable)
+    #[gpui_kit::test]
+    fn auto_submit_writes_run_in_order(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        let writes = crate::logic::flows::auto_submit_writes("ctrl_enter", false);
+        state.update(cx, |s, cx| s.update_settings_in_order(writes, cx));
+        cx.run_until_parked();
+        assert!(
+            index_of(&backend, "update_setting auto_submit_key")
+                < index_of(&backend, "update_setting auto_submit true")
+        );
+        let s = backend.settings();
+        assert!(s.auto_submit);
+    }
+
+    /// PARITY P-04 (a new endpoint clears the stored model)
+    #[gpui_kit::test]
+    fn base_url_change_clears_the_model(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        state.update(cx, |s, cx| {
+            s.update_post_process("base_url", "custom", "http://localhost:1234".into(), cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            index_of(&backend, "change_post_process_base_url custom")
+                < index_of(&backend, "change_post_process_model custom ")
+        );
+    }
+
+    /// PARITY P-07 (the new prompt stays selected)
+    #[gpui_kit::test]
+    fn created_prompt_stays_selected(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        let (w, page) = open(
+            cx,
+            crate::ui::pages::post_processing::PostProcessingPage::new,
+        );
+        with_window(cx, w, |window, cx| window.click("pp-create-new", cx));
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| {
+                p.set_prompt_draft("Tidy", "Tidy: ${output}", window, cx)
+            });
+        })
+        .unwrap();
+        with_window(cx, w, |window, cx| window.click("pp-create-prompt", cx));
+        let selected = state.read_with(cx, |s, _| {
+            s.app_settings()
+                .and_then(|s| s.post_process_selected_prompt_id.clone())
+        });
+        assert_eq!(selected.as_deref(), Some("prompt_Tidy"));
+    }
+
+    /// PARITY K-03 (resume only after the binding write)
+    #[gpui_kit::test]
+    fn system_recorder_resumes_after_the_binding_write(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| {
+            s.keyboard_implementation = guidy_core::settings::KeyboardImplementation::Tauri
+        });
+        setup(cx, backend.clone());
+        let (w, _) = open(cx, |window, cx| {
+            ShortcutInput::new("transcribe", window, cx)
+        });
+        with_window(cx, w, |window, cx| {
+            window.click("shortcut-chip-transcribe", cx)
+        });
+        with_window(cx, w, |window, cx| window.press("ctrl-j", cx));
+        assert!(
+            index_of(&backend, "change_binding transcribe")
+                < index_of(&backend, "resume_all_bindings")
+        );
+    }
+
+    /// PARITY K-03 (closing mid-recording gives the shortcuts back)
+    #[gpui_kit::test]
+    fn closing_while_recording_resumes_bindings(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| {
+            s.keyboard_implementation = guidy_core::settings::KeyboardImplementation::Tauri
+        });
+        setup(cx, backend.clone());
+        let (w, _) = open(cx, |window, cx| {
+            ShortcutInput::new("transcribe", window, cx)
+        });
+        with_window(cx, w, |window, cx| {
+            window.click("shortcut-chip-transcribe", cx)
+        });
+        assert!(backend.called("suspend_all_bindings"));
+        cx.update_window(w, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            backend.called("resume_all_bindings"),
+            "{:?}",
+            backend.calls()
+        );
+    }
+
+    /// PARITY M-08 (status follows the current model; load errors shown)
+    #[gpui_kit::test]
+    fn selector_status_follows_the_current_model(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        assert_eq!(
+            state.read_with(cx, |s, _| s.selector_status),
+            SelectorStatus::Ready
+        );
+        // The active model was deleted.
+        backend.data.lock().current_model = String::new();
+        state.update(cx, |s, cx| s.load_current_model(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            state.read_with(cx, |s, _| s.selector_status),
+            SelectorStatus::None
+        );
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_failed", "error": "bad gguf"}),
+        );
+        assert_eq!(
+            state.read_with(cx, |s, _| s.selector_error.clone()),
+            Some("bad gguf".into())
+        );
+    }
+
+    /// PARITY G-07 (device list failure keeps "Default" usable)
+    #[gpui_kit::test]
+    fn device_list_failure_falls_back_to_default(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().fail_devices = true;
+        let state = setup(cx, backend.clone());
+        let names: Vec<String> = state.read_with(cx, |s, _| {
+            s.audio_devices.iter().map(|d| d.name.clone()).collect()
+        });
+        assert_eq!(names, vec!["Default".to_string()]);
     }
 }

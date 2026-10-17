@@ -97,10 +97,7 @@ fn schedule_cancel_reconcile(app: &AppHandle) {
 fn reconcile_cancel_shortcut(app: &AppHandle) {
     // Cancel shortcut is disabled on Linux due to instability with dynamic shortcut registration
     #[cfg(target_os = "linux")]
-    {
-        let _ = app;
-        return;
-    }
+    let _ = app;
 
     #[cfg(not(target_os = "linux"))]
     {

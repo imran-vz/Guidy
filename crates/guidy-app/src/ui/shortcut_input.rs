@@ -41,7 +41,7 @@ impl ShortcutInput {
         cx: &mut Context<Self>,
     ) -> Self {
         let state = AppState::global(cx);
-        let subs = vec![
+        let mut subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| {
                 if let AppEvent::HandyKeys(k) = event {
@@ -60,6 +60,12 @@ impl ShortcutInput {
                 }
             }),
         ];
+        // Closing the window mid-recording must not leave every shortcut
+        // suspended (or the handy-keys recorder running).
+        subs.push(cx.on_release(|this: &mut Self, cx: &mut App| {
+            let backend = this.state.read(cx).backend.clone();
+            release(this.mode, backend, cx);
+        }));
         Self {
             binding_id: binding_id.into(),
             state,
@@ -144,97 +150,101 @@ impl ShortcutInput {
         cx.notify();
     }
 
-    fn stop(&mut self, cx: &mut Context<Self>) {
-        let backend = self.state.read(cx).backend.clone();
-        match self.mode {
-            Mode::HandyKeys => {
-                cx.background_spawn(async move {
-                    let _ = backend.stop_handy_keys_recording();
-                })
-                .detach();
-            }
-            Mode::System => {
-                cx.background_spawn(async move {
-                    let _ = backend.resume_all_bindings();
-                })
-                .detach();
-            }
-            Mode::Idle => {}
-        }
+    /// End recording locally; returns the mode whose backend side still
+    /// needs releasing.
+    fn reset(&mut self, cx: &mut Context<Self>) -> Mode {
+        let mode = self.mode;
         self.mode = Mode::Idle;
         self.system = SystemRecorder::default();
         self.handy = HandyKeysRecorder::default();
         self.held_modifiers.clear();
         self.original.clear();
         cx.notify();
+        mode
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        let backend = self.state.read(cx).backend.clone();
+        let mode = self.reset(cx);
+        release(mode, backend, cx);
+    }
+
+    /// Write `binding`, then release the recorder, so resuming bindings
+    /// can't race the change and leave the old shortcut registered. On
+    /// failure (and when `rollback` is set) the original is restored first.
+    fn write_then_release(
+        &mut self,
+        binding: String,
+        rollback: Option<String>,
+        error_key: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.binding_id.to_string();
+        let window_handle = window.window_handle();
+        let backend = self.state.read(cx).backend.clone();
+        let mode = self.reset(cx);
+        let id_cb = id.clone();
+        self.state.update(cx, |s, cx| {
+            s.update_binding(&id, &binding, cx, move |s, result, cx| {
+                let id = id_cb;
+                let Err(e) = result else {
+                    release(mode, backend, cx);
+                    return;
+                };
+                let message = if error_key == "settings.general.shortcut.errors.set" {
+                    t_args(error_key, &[("error", &e)])
+                } else {
+                    t(error_key)
+                };
+                notify_error(window_handle, message, cx);
+                let Some(original) = rollback.filter(|o| !o.is_empty()) else {
+                    release(mode, backend, cx);
+                    return;
+                };
+                let id_cb = id.clone();
+                s.update_binding(&id, &original, cx, move |_, r, cx| {
+                    if r.is_err() {
+                        log::error!("Failed to reset binding {id_cb}");
+                        notify_error(
+                            window_handle,
+                            t("settings.general.shortcut.errors.reset"),
+                            cx,
+                        );
+                    }
+                    release(mode, backend, cx);
+                });
+            });
+        });
     }
 
     fn commit(&mut self, binding: String, window: &mut Window, cx: &mut Context<Self>) {
-        let id = self.binding_id.to_string();
         let original = self.original.clone();
-        let window_handle = window.window_handle();
-        let id_for_cb = id.clone();
-        self.state.update(cx, |s, cx| {
-            s.update_binding(&id, &binding, cx, move |s, result, cx| {
-                let id = id_for_cb;
-                if let Err(e) = result {
-                    let _ = cx.update_window(window_handle, |_, window, cx| {
-                        window.push_notification(
-                            (
-                                NotificationType::Error,
-                                t_args("settings.general.shortcut.errors.set", &[("error", &e)]),
-                            ),
-                            cx,
-                        );
-                    });
-                    if !original.is_empty() {
-                        let id2 = id.clone();
-                        s.update_binding(&id, &original, cx, move |_, r, cx| {
-                            if r.is_err() {
-                                log::error!("Failed to reset binding {id2}");
-                                let _ = cx.update_window(window_handle, |_, window, cx| {
-                                    window.push_notification(
-                                        (
-                                            NotificationType::Error,
-                                            t("settings.general.shortcut.errors.reset"),
-                                        ),
-                                        cx,
-                                    );
-                                });
-                            }
-                        });
-                    }
-                }
-            });
-        });
-        self.stop(cx);
+        self.write_then_release(
+            binding,
+            Some(original),
+            "settings.general.shortcut.errors.set",
+            window,
+            cx,
+        );
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_recording() {
             return;
         }
-        let id = self.binding_id.to_string();
         let original = self.original.clone();
-        let window_handle = window.window_handle();
-        if !original.is_empty() {
-            self.state.update(cx, |s, cx| {
-                s.update_binding(&id, &original, cx, move |_, r, cx| {
-                    if r.is_err() {
-                        let _ = cx.update_window(window_handle, |_, window, cx| {
-                            window.push_notification(
-                                (
-                                    NotificationType::Error,
-                                    t("settings.general.shortcut.errors.restore"),
-                                ),
-                                cx,
-                            );
-                        });
-                    }
-                });
-            });
+        if original.is_empty() {
+            self.stop(cx);
+            return;
         }
-        self.stop(cx);
+        self.write_then_release(
+            original,
+            None,
+            "settings.general.shortcut.errors.restore",
+            window,
+            cx,
+        );
     }
 
     fn on_key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -408,4 +418,28 @@ impl Render for ShortcutInput {
             )))
             .into_any_element()
     }
+}
+
+/// Give the keyboard back: resume suspended bindings (system recorder) or
+/// stop the handy-keys recorder.
+fn release(mode: Mode, backend: crate::backend::SharedBackend, cx: &mut App) {
+    match mode {
+        Mode::HandyKeys => cx
+            .background_spawn(async move {
+                let _ = backend.stop_handy_keys_recording();
+            })
+            .detach(),
+        Mode::System => cx
+            .background_spawn(async move {
+                let _ = backend.resume_all_bindings();
+            })
+            .detach(),
+        Mode::Idle => {}
+    }
+}
+
+fn notify_error(window: AnyWindowHandle, message: SharedString, cx: &mut App) {
+    let _ = cx.update_window(window, |_, window, cx| {
+        window.push_notification((NotificationType::Error, message), cx);
+    });
 }

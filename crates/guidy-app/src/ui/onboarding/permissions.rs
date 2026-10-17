@@ -4,7 +4,7 @@
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
-use crate::ui::kit::{icon, t};
+use crate::ui::kit::{icon, spinner, t};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -301,7 +301,7 @@ impl PermissionsOnboarding {
                 .gap_2()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child(icon("loader-circle").small())
+                .child(spinner("permission-wait", icon("loader-circle").small()))
                 .child(t("onboarding.permissions.waiting"))
                 .into_any_element(),
             _ => Button::new(SharedString::from(format!("grant-{id}")))
@@ -363,11 +363,12 @@ impl Render for PermissionsOnboarding {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .child(
+                .child(spinner(
+                    "permissions-loading",
                     icon("loader-circle")
                         .large()
                         .text_color(theme.muted_foreground),
-                )
+                ))
                 .into_any_element();
         }
         if self.all_granted() && !self.preview {

@@ -127,6 +127,20 @@ fn json_string(key: &str, value: &Value) -> BackendResult<String> {
         .ok_or_else(|| format!("Invalid value for {key}: expected a string"))
 }
 
+/// A device setting value: `null` (the reset default) and `"Default"` both
+/// mean the system default device, stored as `"default"`.
+fn device_name(key: &str, value: &Value) -> BackendResult<String> {
+    if value.is_null() {
+        return Ok("default".into());
+    }
+    let name = json_string(key, value)?;
+    Ok(if name == "Default" {
+        "default".into()
+    } else {
+        name
+    })
+}
+
 /// The live backend.
 pub struct CoreBackend {
     app: AppHandle,
@@ -194,33 +208,18 @@ impl Backend for CoreBackend {
             }
             "hold_threshold_ms" => s::change_hold_threshold_ms_setting(app, u(&value)?),
             "selected_microphone" => {
-                let name = json_string(key, &value)?;
-                let name = if name == "Default" {
-                    "default".to_string()
-                } else {
-                    name
-                };
+                let name = device_name(key, &value)?;
                 block_on(audio::set_selected_microphone(app, name))
             }
             "selected_channel" => {
                 block_on(audio::set_selected_channel(app, from_json(key, value)?))
             }
             "clamshell_microphone" => {
-                let name = json_string(key, &value)?;
-                let name = if name == "Default" {
-                    "default".to_string()
-                } else {
-                    name
-                };
+                let name = device_name(key, &value)?;
                 audio::set_clamshell_microphone(app, name)
             }
             "selected_output_device" => {
-                let name = json_string(key, &value)?;
-                let name = if name == "Default" {
-                    "default".to_string()
-                } else {
-                    name
-                };
+                let name = device_name(key, &value)?;
                 audio::set_selected_output_device(app, name)
             }
             "recording_retention_period" => {
@@ -422,7 +421,9 @@ impl Backend for CoreBackend {
     }
 
     fn is_update_checks_locked(&self) -> bool {
-        guidy_core::commands::is_update_checks_locked()
+        // A build without an update endpoint can't check: show it as locked
+        // rather than reporting "up to date".
+        guidy_core::commands::is_update_checks_locked() || !crate::updater::configured()
     }
 
     fn get_app_dir_path(&self) -> BackendResult<String> {
@@ -858,16 +859,37 @@ mod tests {
     }
 
     #[test]
+    fn device_reset_means_the_system_default() {
+        assert_eq!(device_name("k", &Value::Null).unwrap(), "default");
+        assert_eq!(device_name("k", &json!("Default")).unwrap(), "default");
+        assert_eq!(device_name("k", &json!("USB Mic")).unwrap(), "USB Mic");
+        assert!(device_name("k", &json!(3)).is_err());
+    }
+
+    #[test]
+    fn builds_without_an_update_endpoint_are_locked() {
+        let t = TestApp::new();
+        let backend = CoreBackend::new(t.app.clone());
+        if !crate::updater::configured() {
+            assert!(backend.is_update_checks_locked());
+        }
+    }
+
+    #[test]
     fn every_updatable_key_has_a_handler() {
         // Unknown keys fall through to a warning; every listed key must be
         // matched explicitly. Exercising with null values must error (a
         // handler parsed it) rather than silently succeed (no handler).
         let t = TestApp::new();
         let backend = CoreBackend::new(t.app.clone());
+        // Device selections take null as "reset to the system default".
         let nullable = [
             "selected_channel",
             "external_script_path",
             "transcribe_gpu_device",
+            "selected_microphone",
+            "selected_output_device",
+            "clamshell_microphone",
         ];
         for key in UPDATABLE_SETTINGS {
             if nullable.contains(key) {

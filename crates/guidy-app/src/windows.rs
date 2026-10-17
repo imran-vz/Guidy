@@ -126,8 +126,8 @@ pub fn hide_main(cx: &mut App) {
     set_main_visible(false, cx);
 }
 
-fn overlay_options(p: &OverlayPlacement) -> WindowOptions {
-    WindowOptions {
+fn overlay_options(p: &OverlayPlacement, cx: &App) -> WindowOptions {
+    let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(p.x as f32), px(p.y as f32)),
             size: size(px(p.width as f32), px(p.height as f32)),
@@ -142,7 +142,60 @@ fn overlay_options(p: &OverlayPlacement) -> WindowOptions {
         window_background: WindowBackgroundAppearance::Transparent,
         app_id: Some(format!("{}.overlay", guidy_core::host::APP_IDENTIFIER)),
         ..Default::default()
+    };
+    layer_shell_options(options, p, cx)
+}
+
+/// Wayland: clients can't place their own windows, so the overlay is a
+/// layer-shell surface anchored to the chosen edge (Handy used
+/// gtk-layer-shell with the same offsets). `GUIDY_NO_LAYER_SHELL=1` opts out.
+#[cfg(target_os = "linux")]
+fn layer_shell_options(
+    mut options: WindowOptions,
+    p: &OverlayPlacement,
+    cx: &App,
+) -> WindowOptions {
+    use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
+    use guidy_core::overlay::{OVERLAY_BOTTOM_OFFSET, OVERLAY_TOP_OFFSET};
+    if !guidy_core::utils::is_wayland() || guidy_core::env_flag_enabled("GUIDY_NO_LAYER_SHELL") {
+        return options;
     }
+    let top = cx
+        .try_global::<ShellGlobal>()
+        .map(|g| guidy_core::settings::get_settings(&g.app).overlay_position)
+        .is_some_and(|pos| pos == guidy_core::settings::OverlayPosition::Top);
+    let zero = px(0.);
+    let (anchor, margin) = if top {
+        (
+            Anchor::TOP,
+            (px(OVERLAY_TOP_OFFSET as f32), zero, zero, zero),
+        )
+    } else {
+        (
+            Anchor::BOTTOM,
+            (zero, zero, px(OVERLAY_BOTTOM_OFFSET as f32), zero),
+        )
+    };
+    options.kind = WindowKind::LayerShell(LayerShellOptions {
+        namespace: format!("{}.overlay", guidy_core::host::APP_IDENTIFIER),
+        layer: Layer::Overlay,
+        anchor,
+        exclusive_zone: None,
+        exclusive_edge: None,
+        margin: Some(margin),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    // Size only: the compositor positions the surface from the anchor.
+    options.window_bounds = Some(WindowBounds::Windowed(Bounds {
+        origin: Point::default(),
+        size: size(px(p.width as f32), px(p.height as f32)),
+    }));
+    options
+}
+
+#[cfg(not(target_os = "linux"))]
+fn layer_shell_options(options: WindowOptions, _: &OverlayPlacement, _: &App) -> WindowOptions {
+    options
 }
 
 pub fn show_overlay(p: OverlayPlacement, cx: &mut App) {
@@ -162,7 +215,7 @@ pub fn show_overlay(p: OverlayPlacement, cx: &mut App) {
         let _ = cx.update_window(handle, |_, window, _| window.remove_window());
         windows(cx).overlay = None;
     }
-    match cx.open_window(overlay_options(&p), |window, cx| {
+    match cx.open_window(overlay_options(&p, cx), |window, cx| {
         cx.new(|cx| OverlayView::new(window, cx))
     }) {
         Ok(handle) => {
@@ -287,6 +340,45 @@ pub fn handle_shell_msg(msg: ShellMsg, cx: &mut App) {
             }
         }
     }
+}
+
+/// The OS switched light/dark: refresh the shell's cached appearance first
+/// (the tray reads it), then re-theme the UI when following the system and
+/// swap the tray icon variant.
+pub fn sync_system_appearance(cx: &mut App) {
+    let Some((shell, app)) = cx
+        .try_global::<ShellGlobal>()
+        .map(|g| (g.shell.clone(), g.app.clone()))
+    else {
+        return;
+    };
+    refresh_cache(&shell, cx);
+    let setting = crate::state::AppState::global(cx)
+        .read(cx)
+        .app_settings()
+        .map(|s| s.theme)
+        .unwrap_or(guidy_core::settings::Theme::System);
+    crate::theme::apply_setting(setting, cx);
+    guidy_core::tray::refresh_tray_icon(&app);
+}
+
+/// Handy followed `WindowEvent::ThemeChanged` even with every window hidden;
+/// GPUI only reports appearance per open window, so watch it app-wide.
+pub fn spawn_appearance_watch(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut last = cx.update(|cx| cx.window_appearance());
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let now = cx.update(|cx| cx.window_appearance());
+            if now != last {
+                last = now;
+                cx.update(sync_system_appearance);
+            }
+        }
+    })
+    .detach();
 }
 
 /// Drain shell messages on the main thread for the app's lifetime.

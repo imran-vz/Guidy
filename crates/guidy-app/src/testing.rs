@@ -29,6 +29,9 @@ pub struct FakeData {
     pub accessibility: bool,
     pub microphone: bool,
     pub pp_models: Vec<String>,
+    pub fail_download: bool,
+    pub fail_devices: bool,
+    pub loaded_model: Option<String>,
 }
 
 /// Records calls as `"name arg1 arg2"` strings.
@@ -324,6 +327,9 @@ impl Backend for FakeBackend {
     }
     fn get_available_microphones(&self) -> BackendResult<Vec<AudioDevice>> {
         self.rec("get_available_microphones");
+        if self.data.lock().fail_devices {
+            return Err("no audio host".into());
+        }
         Ok(self.data.lock().microphones.clone())
     }
     fn get_available_output_devices(&self) -> BackendResult<Vec<AudioDevice>> {
@@ -357,6 +363,9 @@ impl Backend for FakeBackend {
     }
     fn download_model(&self, model_id: &str) -> BackendResult<()> {
         self.rec(format!("download_model {model_id}"));
+        if self.data.lock().fail_download {
+            return Err("network down".into());
+        }
         Ok(())
     }
     fn cancel_download(&self, model_id: &str) -> BackendResult<()> {
@@ -373,7 +382,7 @@ impl Backend for FakeBackend {
         Ok(())
     }
     fn get_transcription_model_status(&self) -> BackendResult<Option<String>> {
-        Ok(None)
+        Ok(self.data.lock().loaded_model.clone())
     }
     fn get_retired_models(&self) -> Vec<RetiredModel> {
         self.data.lock().retired.clone()

@@ -97,6 +97,9 @@ objc2-service-management = "0.3.2"
 block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# tray-icon's Linux backend (libappindicator) needs a GTK main loop on the
+# thread that owns the tray; GPUI doesn't run one, so the tray gets its own.
+gtk = "0.18"
 transcribe-cpp = { version = "0.4.0", default-features = false, features = ["dynamic-backends", "vulkan"] }
 
 [dev-dependencies]

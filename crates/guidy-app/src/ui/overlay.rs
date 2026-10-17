@@ -97,6 +97,23 @@ impl OverlayView {
     }
 }
 
+impl OverlayView {
+    fn sync_pinned(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.state.clone() else {
+            return;
+        };
+        let scrolled = f32::from(-self.scroll.offset().y);
+        let max = f32::from(self.scroll.max_offset().y);
+        let pinned = crate::logic::overlay::is_pinned(max, scrolled, 0.0);
+        state.update(cx, |s, cx| {
+            if s.model.pinned != pinned {
+                s.model.pinned = pinned;
+                cx.notify();
+            }
+        });
+    }
+}
+
 fn cancel_button(cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let hover = cx.theme().accent;
@@ -280,6 +297,11 @@ impl Render for OverlayView {
                 .max_h(px(64.))
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
+                .on_scroll_wheel(cx.listener(|_, _, window, cx| {
+                    // Measure after the wheel has moved the content: scrolling
+                    // up unpins, coming back near the bottom re-pins.
+                    cx.defer_in(window, |this, _, cx| this.sync_pinned(cx));
+                }))
                 .px_3()
                 .pt_2()
                 .text_size(px(15.))

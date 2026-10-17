@@ -65,13 +65,12 @@ impl ModelPicker {
             return;
         }
         self.selecting = true;
-        let main = self.main.clone();
         let weak = cx.entity().downgrade();
         let window_handle = window.window_handle();
         self.state.update(cx, |s, cx| {
-            s.select_model(&id, cx, move |_, ok, cx| {
+            s.select_model(&id, cx, move |s, ok, cx| {
                 if ok {
-                    main.update(cx, |m, cx| m.on_model_selected(cx)).ok();
+                    s.on_model_selected(cx);
                 } else {
                     let _ = cx.update_window(window_handle, |_, window, cx| {
                         window.push_notification(
@@ -95,7 +94,23 @@ impl ModelPicker {
             return;
         }
         self.selected = Some(id.to_string());
-        self.state.update(cx, |s, cx| s.download_model(id, cx));
+        let weak = cx.entity().downgrade();
+        let failed_id = id.to_string();
+        self.state.update(cx, |s, cx| {
+            s.download_model_then(id, cx, move |_, result, cx| {
+                // Unlock the cards so the user can pick again (the failure
+                // itself is toasted from the download-failed event).
+                if result.is_err() {
+                    weak.update(cx, |this, cx| {
+                        if this.selected.as_deref() == Some(failed_id.as_str()) {
+                            this.selected = None;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+            })
+        });
         self.maybe_select(window, cx);
         cx.notify();
     }
@@ -132,7 +147,7 @@ impl Render for ModelPicker {
         let from_migration = self
             .main
             .upgrade()
-            .is_some_and(|main| main.read(cx).has_migration());
+            .is_some_and(|main| main.read(cx).has_migration(cx));
 
         let download_card = |model: &guidy_core::managers::model::ModelInfo, featured: bool| {
             let status = if m.verifying.contains(&model.id) {

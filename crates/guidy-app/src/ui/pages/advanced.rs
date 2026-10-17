@@ -434,9 +434,9 @@ impl AdvancedPage {
                         .selected(Some(auto_submit_value(s.auto_submit, s.auto_submit_key)))
                         .disabled(up("auto_submit") || up("auto_submit_key"))
                         .on_select(move |v, _, cx| {
-                            for (key, value) in auto_submit_writes(v, enabled) {
-                                set(key, value, cx);
-                            }
+                            let writes = auto_submit_writes(v, enabled);
+                            AppState::global(cx)
+                                .update(cx, |s, cx| s.update_settings_in_order(writes, cx));
                         }),
                 )
                 .into_any_element(),
@@ -711,8 +711,12 @@ impl AdvancedPage {
                     .on_select(|v, _, cx| {
                         let (accelerator, device) = decode_accelerator(v);
                         // Device first so `gpu + null` isn't normalized to Auto.
-                        set("transcribe_gpu_device", json!(device), cx);
-                        set("transcribe_accelerator", json!(accelerator), cx);
+                        let writes = vec![
+                            ("transcribe_gpu_device", json!(device)),
+                            ("transcribe_accelerator", json!(accelerator)),
+                        ];
+                        AppState::global(cx)
+                            .update(cx, |s, cx| s.update_settings_in_order(writes, cx));
                     }),
             )
             .into_any_element(),

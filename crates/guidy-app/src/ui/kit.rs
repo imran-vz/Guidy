@@ -25,6 +25,16 @@ pub fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/{name}.svg")))
 }
 
+/// A spinning loader icon (Handy's `animate-spin`). `id` must be unique
+/// among siblings that animate.
+pub fn spinner(id: impl Into<ElementId>, icon: Icon) -> AnimationElement<Icon> {
+    icon.with_animation(
+        id,
+        Animation::new(std::time::Duration::from_millis(800)).repeat(),
+        |el, delta| el.transform(Transformation::rotate(percentage(delta))),
+    )
+}
+
 pub fn muted(cx: &App) -> Hsla {
     cx.theme().muted_foreground
 }
@@ -417,6 +427,7 @@ pub fn page_header(title: SharedString, description: Option<SharedString>, cx: &
 pub fn path_display(
     id: impl Into<ElementId>,
     path: SharedString,
+    enabled: bool,
     on_open: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
 ) -> Div {
@@ -441,6 +452,7 @@ pub fn path_display(
                 .outline()
                 .small()
                 .label(t("common.open"))
+                .disabled(!enabled)
                 .on_click(move |_, window, cx| on_open(window, cx)),
         )
 }

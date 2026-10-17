@@ -1,8 +1,7 @@
 //! The settings window (Handy's `App.tsx`): startup step machine, onboarding,
 //! sidebar navigation, banners, status bar, and global toasts.
 
-use crate::logic::flows::{after_permissions, initial_step, OnboardingStep, StartupFacts};
-use crate::logic::keyboard::OsType;
+use crate::logic::flows::OnboardingStep;
 use crate::logic::settings_store::ToastKind;
 use crate::state::{AppEvent, AppState};
 use crate::ui::banners::{AccessibilityBanner, SecureInputBanner};
@@ -16,7 +15,7 @@ use crate::ui::pages::{
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
-use crate::ui::{CloseWindow, Quit, ToggleDebugMode};
+use crate::ui::{CloseWindow, ToggleDebugMode};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::{Notification, NotificationType};
@@ -86,6 +85,11 @@ impl Section {
     }
 }
 
+/// The section survives the window being closed (GPUI destroys it; Handy's
+/// webview was only hidden).
+struct LastSection(Section);
+impl Global for LastSection {}
+
 #[derive(Default)]
 struct Pages {
     general: Option<Entity<GeneralPage>>,
@@ -100,13 +104,8 @@ struct Pages {
 pub struct MainWindow {
     state: Entity<AppState>,
     pub section: Section,
-    /// `None` while the startup check runs.
-    pub step: Option<OnboardingStep>,
-    returning_user: bool,
-    migration_model_id: Option<String>,
     /// Debug: render an onboarding step with no side effects.
     pub preview: Option<OnboardingStep>,
-    initialized_after_onboarding: bool,
     pages: Pages,
     permissions: Option<Entity<PermissionsOnboarding>>,
     picker: Option<Entity<ModelPicker>>,
@@ -125,7 +124,7 @@ impl MainWindow {
         let state = AppState::global(cx);
         let mut subs = vec![cx.observe(&state, |this, _, cx| this.on_state_changed(cx))];
         subs.push(
-            cx.subscribe_in(&state, window, |_, _, event: &AppEvent, window, cx| {
+            cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| {
                 if let AppEvent::Toast(spec) = event {
                     let kind = match spec.kind {
                         ToastKind::Error => NotificationType::Error,
@@ -142,6 +141,9 @@ impl MainWindow {
                     window.push_notification(n, cx);
                 }
                 if let AppEvent::LanguageChanged = event {
+                    // Pages cache translated strings (slider titles, input
+                    // placeholders): rebuild them in the new language.
+                    this.pages = Pages::default();
                     cx.notify();
                 }
             }),
@@ -157,24 +159,21 @@ impl MainWindow {
                 Some(window),
                 cx,
             );
-            if let Some(g) = cx.try_global::<crate::windows::ShellGlobal>() {
-                guidy_core::tray::refresh_tray_icon(&g.app);
-            }
+            crate::windows::sync_system_appearance(cx);
         }));
 
         let mut this = Self {
             state: state.clone(),
-            section: Section::General,
-            step: None,
-            returning_user: false,
-            migration_model_id: None,
+            section: cx
+                .try_global::<LastSection>()
+                .map(|s| s.0)
+                .unwrap_or(Section::General),
             preview: None,
-            initialized_after_onboarding: false,
             pages: Pages::default(),
             permissions: None,
             picker: None,
             migration: None,
-            status_bar: cx.new(|cx| StatusBar::new(window, cx)),
+            status_bar: StatusBar::global(cx),
             whats_new: cx.new(|cx| WhatsNewGate::new(window, cx)),
             accessibility_banner: cx.new(AccessibilityBanner::new),
             secure_banner: cx.new(SecureInputBanner::new),
@@ -191,8 +190,14 @@ impl MainWindow {
         {
             this.section = section;
         }
-        this.check_onboarding(cx);
+        // No-op once it has run for this session (normally from startup).
+        state.update(cx, |s, cx| s.check_onboarding(cx));
         this
+    }
+
+    /// The startup step (`None` while the startup check runs).
+    pub fn step(&self, cx: &App) -> Option<OnboardingStep> {
+        self.state.read(cx).startup.step
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
@@ -204,117 +209,22 @@ impl MainWindow {
         cx.notify();
     }
 
-    fn check_onboarding(&mut self, cx: &mut Context<Self>) {
-        let backend = self.state.read(cx).backend.clone();
-        let os = OsType::current();
-        cx.spawn(async move |this, cx| {
-            let facts = cx
-                .background_spawn(async move {
-                    let settings = backend.get_app_settings().ok();
-                    let mut facts = StartupFacts {
-                        onboarding_completed: settings.as_ref().map(|s| s.onboarding_completed),
-                        ..Default::default()
-                    };
-                    if facts.onboarding_completed == Some(true) {
-                        let selected = settings.map(|s| s.selected_model).unwrap_or_default();
-                        facts.migration_model_id = backend
-                            .get_retired_models()
-                            .into_iter()
-                            .any(|m| m.id == selected)
-                            .then_some(selected);
-                        let dev_skip = cfg!(debug_assertions)
-                            && std::env::var_os("GUIDY_DEV_SKIP_PERMISSIONS").is_some();
-                        match os {
-                            _ if dev_skip => facts.mac_permissions_ok = Some(true),
-                            OsType::MacOs => {
-                                facts.mac_permissions_ok = Some(
-                                    backend.check_accessibility_permission()
-                                        && backend.check_microphone_permission(),
-                                )
-                            }
-                            OsType::Windows => {
-                                facts.windows_mic =
-                                    Some(backend.get_windows_microphone_permission_status())
-                            }
-                            _ => {}
-                        }
-                    }
-                    facts
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                let outcome = initial_step(&facts, os);
-                this.returning_user = outcome.returning_user;
-                this.migration_model_id = facts.migration_model_id.clone();
-                if outcome.reveal_window {
-                    this.state.read(cx).backend.show_main_window();
-                }
-                this.set_step(outcome.step, cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     pub fn set_step(&mut self, step: OnboardingStep, cx: &mut Context<Self>) {
-        self.step = Some(step);
-        if step == OnboardingStep::Done && !self.initialized_after_onboarding {
-            self.initialized_after_onboarding = true;
-            // Enigo + shortcuts only after onboarding (avoids early macOS
-            // permission prompts), then load devices. Deferred: this can run
-            // from inside an AppState callback.
-            let state = self.state.clone();
-            cx.defer(move |cx| {
-                state.update(cx, |s, cx| {
-                    s.call(
-                        cx,
-                        |b| {
-                            let enigo = b.initialize_enigo();
-                            let shortcuts = b.initialize_shortcuts();
-                            (enigo, shortcuts)
-                        },
-                        |s, (enigo, shortcuts), cx| {
-                            if let Err(e) = enigo {
-                                log::warn!("Failed to initialize input: {e}");
-                            }
-                            if let Err(e) = shortcuts {
-                                log::warn!("Failed to initialize shortcuts: {e}");
-                            }
-                            s.refresh_audio_devices(cx);
-                            s.refresh_output_devices(cx);
-                        },
-                    );
-                })
-            });
-        }
-        cx.notify();
+        // Deferred: callers may be inside an AppState callback.
+        let state = self.state.clone();
+        cx.defer(move |cx| state.update(cx, |s, cx| s.set_step(step, cx)));
     }
 
     pub fn on_permissions_complete(&mut self, cx: &mut Context<Self>) {
-        let o = after_permissions(self.returning_user, self.migration_model_id.as_deref());
-        self.set_step(o.step, cx);
+        // Deferred: callers may be inside an AppState callback.
+        let state = self.state.clone();
+        cx.defer(move |cx| state.update(cx, |s, cx| s.on_permissions_complete(cx)));
     }
 
     pub fn on_model_selected(&mut self, cx: &mut Context<Self>) {
-        if self.migration_model_id.is_some() {
-            // Picked a different model instead of updating: retired models
-            // left on disk can't run anymore.
-            let state = self.state.clone();
-            cx.defer(move |cx| {
-                state.update(cx, |s, cx| {
-                    s.call(
-                        cx,
-                        |b| {
-                            for m in b.get_retired_models() {
-                                let _ = b.delete_retired_model(&m.id);
-                            }
-                        },
-                        |_, _, _| {},
-                    );
-                })
-            });
-        }
-        self.set_step(OnboardingStep::Done, cx);
+        // Deferred: callers may be inside an AppState callback.
+        let state = self.state.clone();
+        cx.defer(move |cx| state.update(cx, |s, cx| s.on_model_selected(cx)));
     }
 
     pub fn open_model_picker_from_migration(&mut self, cx: &mut Context<Self>) {
@@ -325,13 +235,14 @@ impl MainWindow {
         self.set_step(OnboardingStep::Migration, cx);
     }
 
-    pub fn has_migration(&self) -> bool {
-        self.migration_model_id.is_some()
+    pub fn has_migration(&self, cx: &App) -> bool {
+        self.state.read(cx).startup.migration_model_id.is_some()
     }
 
     pub fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         if self.section != section {
             self.section = section;
+            cx.set_global(LastSection(section));
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
         cx.notify();
@@ -493,7 +404,7 @@ impl Render for MainWindow {
                 )
                 .into_any_element()
         } else {
-            match self.step {
+            match self.step(cx) {
                 None => div().size_full().into_any_element(),
                 Some(OnboardingStep::Done) => {
                     let page = self.render_page(window, cx);
@@ -541,11 +452,10 @@ impl Render for MainWindow {
                 crate::windows::on_main_closed(cx);
                 window.remove_window();
             })
-            .on_action(|_: &Quit, _, cx| cx.quit())
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(content))
             .when(
-                self.step == Some(OnboardingStep::Done) && self.preview.is_none(),
+                self.step(cx) == Some(OnboardingStep::Done) && self.preview.is_none(),
                 |d| {
                     d.child(self.status_bar.clone())
                         .child(self.whats_new.clone())

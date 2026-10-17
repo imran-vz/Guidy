@@ -24,17 +24,32 @@ pub struct StatusBar {
     _subs: Vec<Subscription>,
 }
 
+struct GlobalStatusBar(Entity<StatusBar>);
+impl Global for GlobalStatusBar {}
+
 impl StatusBar {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// The session's status bar. Update state (and the once-per-session
+    /// automatic check) outlives the settings window, which is destroyed on
+    /// close; it also has to hear the tray's "check for updates" while closed.
+    pub fn global(cx: &mut App) -> Entity<StatusBar> {
+        if let Some(g) = cx.try_global::<GlobalStatusBar>() {
+            return g.0.clone();
+        }
+        let bar = cx.new(StatusBar::new);
+        cx.set_global(GlobalStatusBar(bar.clone()));
+        bar
+    }
+
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let subs = vec![
             cx.observe(&state, |this, _, cx| {
                 this.sync_enabled(cx);
                 cx.notify();
             }),
-            cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, window, cx| {
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
                 if let AppEvent::CheckForUpdates = ev {
-                    this.manual_check(window, cx);
+                    this.manual_check(cx);
                 }
             }),
         ];
@@ -52,6 +67,10 @@ impl StatusBar {
     /// Effective updater state = setting && !locked (waits for both).
     fn sync_enabled(&mut self, cx: &mut Context<Self>) {
         let st = self.state.read(cx);
+        // Handy's footer (and its automatic check) mounts after onboarding.
+        if !st.onboarding_done() {
+            return;
+        }
         let (Some(settings), Some(locked)) = (st.app_settings(), st.update_checks_locked) else {
             return;
         };
@@ -117,10 +136,12 @@ impl StatusBar {
         .detach();
     }
 
-    fn manual_check(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn manual_check(&mut self, cx: &mut Context<Self>) {
         if !self.update.enabled {
             return;
         }
+        // A check already running (e.g. the automatic one) still reports
+        // "up to date" when the user asked.
         self.update.manual = true;
         self.check(cx);
     }
@@ -156,7 +177,10 @@ impl StatusBar {
                 .background_spawn(async move { updater::download_and_install(progress) })
                 .await;
             match result {
-                Ok(()) => updater::relaunch(),
+                Ok(()) => {
+                    cx.update(crate::release_single_instance);
+                    updater::relaunch()
+                }
                 Err(e) => {
                     log::error!("Failed to install update: {e}");
                     this.update(cx, |this, cx| {
@@ -267,7 +291,11 @@ impl StatusBar {
                     t_args("modelSelector.loading", &[("modelName", &model_name(c))])
                 }
                 (SelectorStatus::Loading, None) => t("modelSelector.loadingGeneric"),
-                (SelectorStatus::Error, _) => t("modelSelector.modelError"),
+                (SelectorStatus::Error, _) => st
+                    .selector_error
+                    .clone()
+                    .map(SharedString::from)
+                    .unwrap_or_else(|| t("modelSelector.modelError")),
                 (SelectorStatus::None, _) => t("modelSelector.noModelDownloadRequired"),
                 (_, Some(c)) => model_name(c).into(),
                 (_, None) => t("modelSelector.modelUnloaded"),
@@ -404,7 +432,7 @@ impl StatusBar {
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| match action {
                         Some(UpdateAction::Install) => this.install(window, cx),
-                        Some(UpdateAction::Check) => this.manual_check(window, cx),
+                        Some(UpdateAction::Check) => this.manual_check(cx),
                         None => {}
                     }))
                     .test_support()

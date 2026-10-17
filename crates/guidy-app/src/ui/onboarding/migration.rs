@@ -4,7 +4,7 @@ use crate::logic::migration::{format_time_left, Action, Migration, Phase, RowSta
 use crate::logic::models::format_model_size;
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
-use crate::ui::kit::{icon, t, t_args};
+use crate::ui::kit::{icon, spinner, t, t_args};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::NotificationType;
@@ -69,11 +69,9 @@ impl ModelMigration {
             return;
         };
         let downloads = m.start(&models);
-        self.state.update(cx, |s, cx| {
-            for id in &downloads {
-                s.download_model(id, cx);
-            }
-        });
+        for id in &downloads {
+            self.download(id, cx);
+        }
         self.drive(window, cx);
         cx.notify();
     }
@@ -86,10 +84,31 @@ impl ModelMigration {
             return;
         };
         if let Some(id) = m.retry(&retired_id, &models, &store) {
-            self.state.update(cx, |s, cx| s.download_model(&id, cx));
+            self.download(&id, cx);
         }
         self.drive(window, cx);
         cx.notify();
+    }
+
+    /// Download a replacement; a failure marks its row failed (Retry /
+    /// Choose another) instead of leaving it spinning.
+    fn download(&mut self, id: &str, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let failed_id = id.to_string();
+        self.state.update(cx, |s, cx| {
+            s.download_model_then(id, cx, move |s, result, cx| {
+                if result.is_err() {
+                    let models = s.models.models.clone();
+                    weak.update(cx, |this, cx| {
+                        if let Some(m) = this.migration.as_mut() {
+                            m.download_failed(&failed_id, &models);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            })
+        });
     }
 
     /// Run whatever the state machine says is next.
@@ -187,11 +206,12 @@ impl Render for ModelMigration {
                 .size_full()
                 .items_center()
                 .justify_center()
-                .child(
+                .child(spinner(
+                    "migration-loading",
                     icon("loader-circle")
                         .large()
                         .text_color(theme.muted_foreground),
-                )
+                ))
                 .into_any_element();
         };
         let st = self.state.read(cx);
@@ -388,7 +408,10 @@ impl Render for ModelMigration {
                 .gap_2()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child(icon("loader-circle").small())
+                .child(spinner(
+                    "migration-footer-spin",
+                    icon("loader-circle").small(),
+                ))
                 .when_some(target.filter(|_| loading_target), |d, p| {
                     d.child(t_args(
                         "modelSelector.loading",

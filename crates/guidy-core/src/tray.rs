@@ -341,9 +341,24 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
     }
 }
 
+/// Run `f` on the thread that owns the native tray: the app's main thread,
+/// or on Linux the tray's own GTK thread (see [`build_tray`]).
+fn on_tray_thread(app: &AppHandle, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        gtk::glib::MainContext::default().invoke(f);
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app.run_on_main_thread(f).map_err(|e| e.to_string())
+    }
+}
+
 fn post_apply(app: &AppHandle) {
     let handle = app.clone();
-    if let Err(err) = app.run_on_main_thread(move || apply_on_main(&handle)) {
+    if let Err(err) = on_tray_thread(app, move || apply_on_main(&handle)) {
         // Event loop is gone (shutdown). Clear `pending` so a later call, if
         // any, doesn't wait forever for an apply that will never run.
         error!("Failed to dispatch tray update to the main thread: {err}");
@@ -353,7 +368,7 @@ fn post_apply(app: &AppHandle) {
     }
 }
 
-/// The single writer to the native tray. Runs on the main thread.
+/// The single writer to the native tray. Runs on the tray thread.
 fn apply_on_main(app: &AppHandle) {
     let Some(state) = app.try_state::<TrayState>() else {
         return;
@@ -685,7 +700,7 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
 }
 
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
-    let _ = app.run_on_main_thread(move || {
+    let _ = on_tray_thread(app, move || {
         NATIVE.with(|native| {
             if let Some(tray) = native.borrow().as_ref() {
                 if let Err(e) = tray.set_visible(visible) {
@@ -759,7 +774,43 @@ pub fn copy_last_transcript(app: &AppHandle) {
 
 /// Build the native tray icon. Must run on the main thread, after the
 /// managers and [`TrayState`] are managed.
+#[cfg(not(target_os = "linux"))]
 pub fn build_tray(app: &AppHandle) -> Result<(), String> {
+    build_native_tray(app)?;
+    app.manage(TrayIcon);
+    Ok(())
+}
+
+/// Linux: libappindicator needs GTK initialized, and its main loop running,
+/// on the thread that owns the tray (Tauri ran GTK on the main thread; GPUI
+/// doesn't use GTK). The tray lives on a dedicated GTK thread and every
+/// native tray call is sent there ([`on_tray_thread`]).
+#[cfg(target_os = "linux")]
+pub fn build_tray(app: &AppHandle) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tray_app = app.clone();
+    std::thread::Builder::new()
+        .name("tray-gtk".into())
+        .spawn(move || {
+            if let Err(e) = gtk::init() {
+                let _ = tx.send(Err(format!("GTK init failed: {e}")));
+                return;
+            }
+            let built = build_native_tray(&tray_app);
+            let ok = built.is_ok();
+            let _ = tx.send(built);
+            if ok {
+                gtk::main();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())??;
+    app.manage(TrayIcon);
+    Ok(())
+}
+
+/// Create the native tray on the current thread (which then owns it).
+fn build_native_tray(app: &AppHandle) -> Result<(), String> {
     let initial_theme = get_current_theme(app);
     let initial_icon_path = get_icon_path(initial_theme, TrayIconState::Idle, false);
     let icon = load_tray_icon(app.path().resolve(
@@ -780,7 +831,6 @@ pub fn build_tray(app: &AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     NATIVE.with(|native| *native.borrow_mut() = Some(tray));
-    app.manage(TrayIcon);
 
     let menu_app = app.clone();
     tray_icon::menu::MenuEvent::set_event_handler(Some(
