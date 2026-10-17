@@ -206,20 +206,9 @@ impl AnthropicMessagesResponse {
     }
 }
 
-/// Refuse to call a base URL that still has a `{placeholder}` (Cloudflare's
-/// `{account_id}` / `{gateway_id}`), with an error that says what to fill in.
-pub fn reject_url_placeholders(provider: &PostProcessProvider) -> Result<(), String> {
-    let url = provider.base_url.trim();
-    if let (Some(a), Some(b)) = (url.find('{'), url.find('}')) {
-        if a < b {
-            return Err(format!(
-                "Set the {} part of the {} base URL in the provider settings",
-                &url[a..=b],
-                provider.label
-            ));
-        }
-    }
-    Ok(())
+/// [`crate::llm::validate_base_url`] with this module's `String` errors.
+fn check_base_url(provider: &PostProcessProvider) -> Result<(), String> {
+    crate::llm::validate_base_url(provider).map_err(|e| e.to_string())
 }
 
 /// Build headers for API requests based on provider type.
@@ -532,7 +521,7 @@ async fn send_openai_chat(
     temperature: Option<f32>,
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
-    reject_url_placeholders(provider)?;
+    check_base_url(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
 
@@ -667,7 +656,7 @@ async fn send_anthropic_message(
     max_tokens: u32,
     temperature: Option<f32>,
 ) -> Result<Option<String>, String> {
-    reject_url_placeholders(provider)?;
+    check_base_url(provider)?;
     let url = format!("{}/messages", provider.base_url.trim_end_matches('/'));
 
     debug!(
@@ -752,7 +741,7 @@ pub async fn fetch_models_with_info(
     provider: &PostProcessProvider,
     api_key: String,
 ) -> Result<Vec<ModelInfo>, String> {
-    reject_url_placeholders(provider)?;
+    check_base_url(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/models", base_url);
 
@@ -1072,9 +1061,9 @@ mod tests {
             "cloudflare_ai_gateway",
             "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat",
         );
-        let err = reject_url_placeholders(&p).unwrap_err();
+        let err = check_base_url(&p).unwrap_err();
         assert!(err.contains("{account_id}"), "{err}");
-        assert!(reject_url_placeholders(&provider("custom", "http://localhost:1/v1")).is_ok());
+        assert!(check_base_url(&provider("custom", "http://localhost:1/v1")).is_ok());
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt

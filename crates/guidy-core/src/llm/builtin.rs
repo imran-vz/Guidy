@@ -359,6 +359,10 @@ pub struct BuiltinChat<'a> {
     pub json_schema: Option<&'a Value>,
 }
 
+/// How long a queued request waits for the worker before re-checking its
+/// cancel flag.
+const LOCK_POLL: Duration = Duration::from_millis(50);
+
 /// The process-wide `guidy-llm` supervisor.
 pub struct BuiltinLlm {
     worker: Mutex<Option<Worker>>,
@@ -477,8 +481,13 @@ impl BuiltinLlm {
     }
 
     /// Run one chat. `cancel` kills the helper and returns [`CANCELLED`].
+    ///
+    /// Requests are serialized: there is one helper process, and a chat holds
+    /// it for the whole generation. A request waiting for its turn still
+    /// honors `cancel` (it returns [`CANCELLED`] without touching the helper
+    /// or the running request).
     pub fn chat(&self, req: &BuiltinChat<'_>, cancel: Option<&AtomicBool>) -> Result<String> {
-        let mut guard = self.worker.lock();
+        let mut guard = self.lock_worker(cancel)?;
         *self.last_used.lock() = Instant::now();
         let result = self.chat_locked(&mut guard, req, cancel);
         *self.last_used.lock() = Instant::now();
@@ -493,6 +502,27 @@ impl BuiltinLlm {
             }
         }
         result
+    }
+
+    /// Wait for the worker lock, giving up with [`CANCELLED`] as soon as
+    /// `cancel` is set (checked between short timed waits and once more
+    /// after acquiring).
+    fn lock_worker(
+        &self,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<parking_lot::MutexGuard<'_, Option<Worker>>> {
+        let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+        loop {
+            if cancelled() {
+                bail!(CANCELLED);
+            }
+            if let Some(guard) = self.worker.try_lock_for(LOCK_POLL) {
+                if cancelled() {
+                    bail!(CANCELLED);
+                }
+                return Ok(guard);
+            }
+        }
     }
 
     fn chat_locked(
@@ -741,6 +771,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(back, Request::Chat { id: 1, .. }));
+    }
+
+    #[test]
+    fn a_queued_chat_can_be_cancelled_while_waiting_for_the_worker() {
+        let llm = std::sync::Arc::new(BuiltinLlm::new(Duration::from_secs(60)));
+        // Another request holds the worker (a long generation).
+        let held = llm.worker.lock();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let waiter = {
+            let (llm, cancel) = (llm.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                let req = BuiltinChat {
+                    model_path: Path::new("/nonexistent.gguf"),
+                    n_ctx: 512,
+                    messages: &[],
+                    max_tokens: 1,
+                    temperature: 0.0,
+                    json_schema: None,
+                };
+                let _ = tx.send(llm.chat(&req, Some(&cancel)));
+            })
+        };
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        cancel.store(true, Ordering::SeqCst);
+        let err = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("cancel must end the wait for the lock")
+            .unwrap_err();
+        assert!(super::super::is_cancelled_error(&err), "{err:#}");
+        waiter.join().unwrap();
+        drop(held);
+        // Already cancelled: refused right away even when the lock is free.
+        assert!(llm.lock_worker(Some(&AtomicBool::new(true))).is_err());
+        assert!(llm.lock_worker(None).is_ok());
     }
 
     #[test]

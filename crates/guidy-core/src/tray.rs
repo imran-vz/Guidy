@@ -372,12 +372,12 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
     let meeting = meeting_menu(app, &settings);
-    let icon_state = effective_icon_state(icon_state, meeting.recording);
 
-    TrayDesired {
-        icon_path: get_icon_path(theme, icon_state, warning),
-        menu: MenuInputs {
-            busy: icon_state.is_busy(),
+    desired_from(
+        icon_state,
+        theme,
+        MenuInputs {
+            busy: false, // set from the dictation state by `desired_from`
             warning,
             model_loaded,
             selected_model: settings.selected_model,
@@ -386,6 +386,19 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
             update_checks_enabled: settings.update_checks_enabled,
             meeting,
         },
+    )
+}
+
+/// The pure part of [`compute_desired`]. `busy` (the dictation "Cancel" item
+/// instead of the model submenu and "Unload model") follows the *dictation*
+/// state only; a meeting recording changes the icon and the meeting items,
+/// never the dictation items.
+fn desired_from(dictation: TrayIconState, theme: AppTheme, mut menu: MenuInputs) -> TrayDesired {
+    menu.busy = dictation.is_busy();
+    let icon_state = effective_icon_state(dictation, menu.meeting.recording);
+    TrayDesired {
+        icon_path: get_icon_path(theme, icon_state, menu.warning),
+        menu,
     }
 }
 
@@ -1031,8 +1044,8 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, effective_icon_state, last_transcript_text, load_tray_icon, MeetingMenu,
-        MenuEntry, MenuInputs, TrayDesired, TrayIconState,
+        build_menu, desired_from, effective_icon_state, get_icon_path, last_transcript_text,
+        load_tray_icon, AppTheme, MeetingMenu, MenuEntry, MenuInputs, TrayDesired, TrayIconState,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -1255,6 +1268,39 @@ mod tests {
         assert_eq!(
             effective_icon_state(TrayIconState::Idle, false),
             TrayIconState::Idle
+        );
+    }
+
+    #[test]
+    fn meeting_recording_keeps_the_idle_dictation_menu() {
+        // Regression: the meeting's Recording icon state used to make the
+        // menu "busy" (dictation Cancel, no model submenu / Unload model).
+        let mut i = inputs(true);
+        i.meeting = MeetingMenu {
+            available: true,
+            recording: true,
+            title: Some("Weekly sync".into()),
+        };
+        let desired = desired_from(TrayIconState::Idle, AppTheme::Dark, i);
+        assert!(!desired.menu.busy);
+        assert_eq!(
+            desired.icon_path,
+            get_icon_path(AppTheme::Dark, TrayIconState::Recording, false)
+        );
+        let ids = ids(&build_menu(&desired.menu).entries);
+        assert!(ids.contains(&"meeting_stop".to_string()));
+        assert!(ids.contains(&"model_submenu".to_string()));
+        assert!(ids.contains(&"unload_model".to_string()));
+        assert!(!ids.contains(&"cancel".to_string()));
+
+        // Dictation busy during a meeting: Cancel shows, dictation's icon wins.
+        let mut i = inputs(false);
+        i.meeting.recording = true;
+        let desired = desired_from(TrayIconState::Transcribing, AppTheme::Dark, i);
+        assert!(desired.menu.busy);
+        assert_eq!(
+            desired.icon_path,
+            get_icon_path(AppTheme::Dark, TrayIconState::Transcribing, false)
         );
     }
 }

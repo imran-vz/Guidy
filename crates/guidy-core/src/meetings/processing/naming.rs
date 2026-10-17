@@ -17,7 +17,9 @@ use crate::meetings::types::*;
 /// longest segments win).
 pub const MAX_PRINTS_PER_MEETING: usize = 20;
 
-fn known_voices(store: &MeetingsStore) -> Result<Vec<KnownVoice>> {
+/// Every named person's voiceprints, grouped per person (sorted by id, so
+/// matching is deterministic).
+pub(crate) fn known_voices(store: &MeetingsStore) -> Result<Vec<KnownVoice>> {
     let mut by_person: HashMap<PersonId, Vec<Vec<f32>>> = HashMap::new();
     for vp in store.voiceprints()? {
         by_person
@@ -25,10 +27,12 @@ fn known_voices(store: &MeetingsStore) -> Result<Vec<KnownVoice>> {
             .or_default()
             .push(vp.embedding);
     }
-    Ok(by_person
+    let mut voices: Vec<KnownVoice> = by_person
         .into_iter()
         .map(|(person_id, prints)| KnownVoice { person_id, prints })
-        .collect())
+        .collect();
+    voices.sort_by_key(|v| v.person_id);
+    Ok(voices)
 }
 
 fn same_text(a: &str, b: &str) -> bool {

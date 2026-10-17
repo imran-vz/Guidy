@@ -411,24 +411,12 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
-    fn known_voices(&self) -> Result<Vec<KnownVoice>> {
-        let mut by_person: HashMap<PersonId, Vec<Vec<f32>>> = HashMap::new();
-        for vp in self.store.voiceprints()? {
-            by_person
-                .entry(vp.person_id)
-                .or_default()
-                .push(vp.embedding);
-        }
-        let mut voices: Vec<KnownVoice> = by_person
-            .into_iter()
-            .map(|(person_id, prints)| KnownVoice { person_id, prints })
-            .collect();
-        voices.sort_by_key(|v| v.person_id);
-        Ok(voices)
-    }
-
     fn cluster(&mut self, cache: &mut ProcessingCache) -> Result<()> {
-        cache.clustering = Some(cluster_units(cache, &self.config, &self.known_voices()?));
+        cache.clustering = Some(cluster_units(
+            cache,
+            &self.config,
+            &super::naming::known_voices(self.store)?,
+        ));
         Ok(())
     }
 

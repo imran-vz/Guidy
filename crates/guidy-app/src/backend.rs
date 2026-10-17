@@ -149,16 +149,20 @@ fn update_meetings_settings(app: &AppHandle, patch: Value) -> BackendResult<()> 
     if !patch.is_object() {
         return Err("Invalid value for meetings: expected an object".into());
     }
-    let mut settings = guidy_core::settings::get_settings(app);
-    let before = settings.meetings.clone();
-    let mut json = serde_json::to_value(&before).map_err(|e| e.to_string())?;
-    if let (Value::Object(current), Value::Object(patch)) = (&mut json, patch) {
-        current.extend(patch);
-    }
-    let meetings: MeetingSettings = from_json("meetings", json)?;
-    let retention_changed = meetings.audio_retention_days != before.audio_retention_days;
-    settings.meetings = meetings.clone();
-    guidy_core::settings::write_settings(app, settings);
+    // Under the settings lock: a concurrent patch (or core write) can't be
+    // lost between the read and the write.
+    let (meetings, retention_changed) =
+        guidy_core::settings::update_settings(app, |settings| -> BackendResult<_> {
+            let before = &settings.meetings;
+            let mut json = serde_json::to_value(before).map_err(|e| e.to_string())?;
+            if let (Value::Object(current), Value::Object(patch)) = (&mut json, patch) {
+                current.extend(patch);
+            }
+            let meetings: MeetingSettings = from_json("meetings", json)?;
+            let retention_changed = meetings.audio_retention_days != before.audio_retention_days;
+            settings.meetings = meetings.clone();
+            Ok((meetings, retention_changed))
+        })?;
     let _ = app.emit(
         "settings-changed",
         serde_json::json!({ "setting": "meetings", "value": meetings }),

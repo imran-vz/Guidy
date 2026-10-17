@@ -305,7 +305,7 @@ async fn post_process_transcription(
 
     // Cloudflare's URLs ship with `{account_id}` / `{gateway_id}`: say what to
     // fill in instead of sending a request that can only fail.
-    if let Err(e) = crate::llm_client::reject_url_placeholders(&provider) {
+    if let Err(e) = crate::llm::validate_base_url(&provider) {
         error!("Post-processing skipped: {e}");
         return None;
     }

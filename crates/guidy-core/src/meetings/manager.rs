@@ -369,12 +369,10 @@ impl MeetingsManager {
             log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
         }
         self.store.delete_meeting(id)?;
-        let audio_dir = self.audio_dir();
-        for rel in [&meeting.mic_audio_path, &meeting.system_audio_path]
-            .into_iter()
-            .flatten()
+        if let Err(e) =
+            crate::meetings::audio_store::delete_track_files(&self.audio_dir(), &meeting)
         {
-            delete_audio_file(&audio_dir, rel);
+            log::warn!("meetings: deleting the audio of meeting {id} failed: {e:#}");
         }
         self.emit_meeting_changed(id);
         Ok(())
@@ -456,7 +454,8 @@ impl MeetingsManager {
     /// Queue (or resume) processing. Progress arrives as
     /// [`events::PROCESSING_PROGRESS`]. One meeting processes at a time; the
     /// rest wait in a queue. A processed meeting is processed again from
-    /// scratch (naming is redone by voice matching).
+    /// scratch (naming is redone by voice matching). Refused, with the
+    /// meeting left as it is, when retention has deleted its audio.
     pub fn process_meeting(&self, id: MeetingId) -> Result<()> {
         self.processing.enqueue(id)
     }
@@ -821,15 +820,11 @@ impl MeetingsManager {
         }
         let outcome = outcome?;
         if let Some((team, project)) = outcome.used_team_project {
-            let mut settings = crate::settings::get_settings(&self.app);
-            let m = &mut settings.meetings;
-            if m.linear_default_team_id.as_deref() != Some(team.as_str())
-                || m.linear_default_project_id != project
-            {
+            crate::settings::update_settings(&self.app, |settings| {
+                let m = &mut settings.meetings;
                 m.linear_default_team_id = Some(team);
                 m.linear_default_project_id = project;
-                crate::settings::write_settings(&self.app, settings);
-            }
+            });
         }
         Ok(outcome.results)
     }
@@ -880,27 +875,6 @@ impl Drop for TicketCreationClaim<'_> {
     }
 }
 
-/// Remove one meeting audio file. `rel` must stay inside `audio_dir` (no
-/// absolute paths or `..`), so a corrupt row can't delete anything else.
-fn delete_audio_file(audio_dir: &std::path::Path, rel: &str) {
-    use std::path::Component;
-    let rel_path = std::path::Path::new(rel);
-    if rel.is_empty()
-        || !rel_path
-            .components()
-            .all(|c| matches!(c, Component::Normal(_)))
-    {
-        log::warn!("Not deleting meeting audio with unexpected path {rel:?}");
-        return;
-    }
-    let path = audio_dir.join(rel_path);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => log::warn!("Failed to delete meeting audio {}: {e}", path.display()),
-    }
-}
-
 #[cfg(test)]
 mod store_section_tests {
     use super::*;
@@ -943,10 +917,23 @@ mod store_section_tests {
         mgr.rename_meeting(id, "  New name ").unwrap();
         assert_eq!(mgr.get_meeting(id).unwrap().unwrap().title, "New name");
 
+        // A bad path on one track doesn't keep the other from being deleted.
+        let sys_audio = mgr.audio_dir().join("3-system.gopus");
+        std::fs::write(&sys_audio, b"x").unwrap();
+        let mixed = mgr
+            .store()
+            .insert_meeting(&Meeting {
+                system_audio_path: Some("3-system.gopus".into()),
+                ..meeting(Some("../keep.txt"))
+            })
+            .unwrap();
+
         mgr.delete_meeting(id).unwrap();
         mgr.delete_meeting(evil).unwrap();
+        mgr.delete_meeting(mixed).unwrap();
         assert!(mgr.get_meeting(id).unwrap().is_none());
         assert!(!audio.exists());
+        assert!(!sys_audio.exists());
         assert!(outside.exists(), "path traversal must not delete files");
         // Deleting a missing meeting is a no-op.
         mgr.delete_meeting(id).unwrap();

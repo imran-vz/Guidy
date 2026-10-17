@@ -424,7 +424,8 @@
         "apiKey": {
           "title": "API Key",
           "description": "API key for the selected provider.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Couldn't save the API key"
         },
         "model": {
           "title": "Model",
