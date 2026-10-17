@@ -1,4 +1,4 @@
-//! Guidy's wordmark (replaces Handy's logo): a waveform glyph and the name.
+//! Guidy's wordmark: a waveform glyph and the name.
 
 use crate::ui::kit::icon;
 use gpui_kit::component::{h_flex, ActiveTheme, Sizable, StyledExt};

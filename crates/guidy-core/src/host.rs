@@ -1,13 +1,13 @@
 //! The application host: what the backend needs from its surrounding app.
 //!
-//! Handy's backend was written against `tauri::AppHandle`. This module is the
+//! The backend was written against `tauri::AppHandle`. This module is the
 //! Tauri-free replacement: a cheap-to-clone handle that carries managed state
 //! (a typed service locator), an event bus the UI subscribes to, resolved
 //! filesystem paths, the settings store, and a [`Shell`] the UI implements for
 //! window and main-thread operations. The method names deliberately mirror the
 //! Tauri API that the ported code calls (`state`, `try_state`, `manage`,
-//! `emit`, `emit_to`, `listen`, `path`, `run_on_main_thread`, ...), so the port
-//! stays a faithful, reviewable diff against Handy.
+//! `emit`, `emit_to`, `listen`, `path`, `run_on_main_thread`, ...), so the
+//! ported code stays close to its Tauri original.
 
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
@@ -85,8 +85,8 @@ pub enum Theme {
 // Events
 // ---------------------------------------------------------------------------
 
-/// A backend → UI event. `name` and the JSON `payload` are exactly what Handy
-/// emitted to its webviews, so consumers decode the same shapes.
+/// A backend → UI event. `name` and the JSON `payload` keep the webview-era
+/// event shapes, so consumers decode the same structures.
 #[derive(Clone, Debug)]
 pub struct Event {
     pub name: String,
@@ -275,7 +275,7 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// Platform default locations for [`APP_IDENTIFIER`], matching what
-    /// Tauri's path resolver produced for Handy.
+    /// Tauri's path resolver produces.
     pub fn platform_default() -> Self {
         let data = dirs::data_dir()
             .unwrap_or_else(std::env::temp_dir)

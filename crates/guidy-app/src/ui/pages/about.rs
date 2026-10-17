@@ -1,5 +1,5 @@
 //! About page: language, theme, version, what's-new toggle, data/log dirs,
-//! acknowledgments. (Handy's donate/source links are branding and omitted.)
+//! acknowledgments.
 
 use crate::state::AppState;
 use crate::ui::kit::{
@@ -46,7 +46,7 @@ impl AboutPage {
     }
 }
 
-/// The path, "Loading…", or Handy's "Error loading directory: …".
+/// The path, "Loading…", or "Error loading directory: …".
 fn dir_label(dir: &Option<Result<String, String>>) -> SharedString {
     match dir {
         None => t("common.loading"),

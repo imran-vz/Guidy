@@ -1,6 +1,6 @@
 //! Guidy backend.
 //!
-//! Ported from Handy's Tauri backend. The UI layer (the `guidy` app crate)
+//! The UI layer (the `guidy` app crate)
 //! creates an [`host::AppHandle`], installs its [`host::Shell`], and drives
 //! startup through [`initialize_app`] / [`run_headless`].
 
@@ -230,8 +230,8 @@ pub fn startup_decision(
     }
 }
 
-/// Full interactive startup (Handy's `setup` closure, minus window creation,
-/// which the UI owns). Must run on the main thread.
+/// Full interactive startup (everything but window creation, which the UI
+/// owns). Must run on the main thread.
 pub fn initialize_app(
     app_handle: &AppHandle,
     cli_args: &CliArgs,

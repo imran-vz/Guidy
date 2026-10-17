@@ -1,6 +1,6 @@
 //! Self-update through `cargo-packager-updater` (same minisign-signed
 //! `latest.json` manifest shape Tauri's updater used), plus the footer
-//! status state machine from Handy's `UpdateChecker`.
+//! update status state machine.
 //!
 //! Endpoint and public key are build-time settings (`GUIDY_UPDATE_ENDPOINT`,
 //! `GUIDY_UPDATE_PUBKEY`); without them checks report "no update".

@@ -1,4 +1,4 @@
-//! Model list state machine (port of Handy's zustand `modelStore`).
+//! Model list state machine.
 //! Pure: events in, effects out; the GPUI layer runs the effects.
 
 use super::models::{update_download_stats, DownloadStats};

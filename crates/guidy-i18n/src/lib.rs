@@ -1,7 +1,6 @@
 //! Translations for Guidy.
 //!
-//! Reads the same i18next `translation.json` files Handy's React UI used,
-//! with i18next semantics: dotted keys, `{{var}}` interpolation, `_one` /
+//! Reads i18next `translation.json` files with i18next semantics: dotted keys, `{{var}}` interpolation, `_one` /
 //! `_other` plural suffixes selected by a `count` argument, fallback to
 //! English, and the key itself when nothing matches.
 
@@ -13,7 +12,7 @@ include!(concat!(env!("OUT_DIR"), "/locales.rs"));
 
 pub const FALLBACK_LANGUAGE: &str = "en";
 
-/// Display metadata per locale (Handy's `LANGUAGE_METADATA`).
+/// Display metadata per locale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LanguageMeta {
     pub code: &'static str,
@@ -279,8 +278,7 @@ pub fn supported_languages() -> Vec<LanguageMeta> {
     langs
 }
 
-/// Map an arbitrary locale tag onto a supported locale (Handy's
-/// `getSupportedLanguage`): exact match, then the base language, with
+/// Map an arbitrary locale tag onto a supported locale: exact match, then the base language, with
 /// Traditional Chinese for zh-Hant / TW / HK / MO and Cantonese.
 pub fn get_supported_language(tag: &str) -> Option<&'static str> {
     if tag.is_empty() {

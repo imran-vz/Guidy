@@ -1,4 +1,4 @@
-//! Application state shared by every view (the zustand stores of Handy's UI):
+//! Application state shared by every view:
 //! settings, models, devices, secure input, live logs. Backend calls run on
 //! the background executor; results land back on the entity.
 
@@ -34,7 +34,7 @@ pub enum AppEvent {
     LanguageChanged,
 }
 
-/// The startup step machine (Handy's `App.tsx` onboarding state). Lives on
+/// The startup step machine (onboarding state). Lives on
 /// the app, not the window: it must run when Guidy starts hidden, and survive
 /// the settings window being closed and reopened.
 #[derive(Default)]
@@ -416,7 +416,7 @@ impl AppState {
         );
     }
 
-    /// Apply writes one after another (Handy awaited each), stopping at the
+    /// Apply writes one after another, awaiting each, stopping at the
     /// first failure. Pairs like gpu device + accelerator, or auto-submit key
     /// + flag, would otherwise race and one write could undo the other.
     pub fn update_settings_in_order(
@@ -494,7 +494,7 @@ impl AppState {
             |s, r, _| match r {
                 Ok(d) => s.audio_devices = device_with_default(d),
                 Err(e) => {
-                    // Like Handy: fall back to "Default" so the select stays usable.
+                    // Fall back to "Default" so the select stays usable.
                     log::error!("Failed to load microphones: {e}");
                     s.audio_devices = device_with_default(Vec::new());
                 }
@@ -509,7 +509,7 @@ impl AppState {
             |s, r, _| match r {
                 Ok(d) => s.output_devices = device_with_default(d),
                 Err(e) => {
-                    // Like Handy: fall back to "Default" so the select stays usable.
+                    // Fall back to "Default" so the select stays usable.
                     log::error!("Failed to load output devices: {e}");
                     s.output_devices = device_with_default(Vec::new());
                 }

@@ -454,7 +454,7 @@
       "updateChecks": {
         "label": "التحقق من وجود تحديثات",
         "description": "التحقق تلقائياً من وجود إصدارات جديدة من Guidy",
-        "lockedDescription": "معطّل بواسطة إعدادات النظام (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "معطّل بواسطة إعدادات النظام (GUIDY_DISABLE_UPDATER)"
       },
       "soundTheme": {
         "label": "سمة الصوت",

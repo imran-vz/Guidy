@@ -1,4 +1,4 @@
-//! What's New (Handy's `WhatsNewGate` + `WhatsNewModal`): after an update,
+//! What's New gate and modal: after an update,
 //! show the newest bundled release note the user hasn't seen.
 
 use crate::logic::flows::{
@@ -39,7 +39,7 @@ impl WhatsNewGate {
 
     fn evaluate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let st = self.state.read(cx);
-        // Handy mounts the gate only in the main app view, never over
+        // The gate mounts only in the main app view, never over
         // onboarding or the model update screen.
         if !st.onboarding_done() {
             return;

@@ -25,7 +25,7 @@ pub fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/{name}.svg")))
 }
 
-/// A spinning loader icon (Handy's `animate-spin`). `id` must be unique
+/// A spinning loader icon. `id` must be unique
 /// among siblings that animate.
 pub fn spinner(id: impl Into<ElementId>, icon: Icon) -> AnimationElement<Icon> {
     icon.with_animation(
@@ -223,7 +223,7 @@ impl DropdownOption {
 type SelectHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 type OpenHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// A select-like button with a popup menu (Handy's `Dropdown`).
+/// A select-like button with a popup menu.
 #[derive(IntoElement)]
 pub struct Dropdown {
     id: ElementId,
@@ -423,7 +423,7 @@ pub fn page_header(title: SharedString, description: Option<SharedString>, cx: &
         })
 }
 
-/// Monospace path display with an Open button (Handy's `PathDisplay`).
+/// Monospace path display with an Open button.
 pub fn path_display(
     id: impl Into<ElementId>,
     path: SharedString,

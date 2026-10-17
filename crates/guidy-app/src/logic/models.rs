@@ -1,5 +1,5 @@
-//! Model list logic (ports of Handy's ModelsSettings / modelStore / ModelCard
-//! / ModelSelector helpers).
+//! Model list logic (helpers for the Models page, model store, model card and
+//! model selector).
 
 use super::languages::supports_language_code;
 use guidy_core::managers::model::{ModelInfo, ModelSource};

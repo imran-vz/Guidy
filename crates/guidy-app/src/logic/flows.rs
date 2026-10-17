@@ -1,4 +1,4 @@
-//! Small UI rules ported from Handy's React components: startup step
+//! Small UI rules: startup step
 //! machine, option matrices, banners, release notes, updater fallbacks.
 
 use guidy_core::commands::audio::{PermissionAccess, WindowsMicrophonePermissionStatus};

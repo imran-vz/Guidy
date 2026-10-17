@@ -76,8 +76,7 @@ fn missing_wav_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2));
 }
 
-/// Same fixture, same model as Handy → same transcript (golden file captured
-/// from Handy 0.9.8's CLI).
+/// Same fixture, same model → same transcript as the recorded golden output.
 #[test]
 // IGNORE-REASON: needs the Nemotron streaming model in the HF cache; run by `cargo xtask test --full`.
 #[ignore]
@@ -101,6 +100,9 @@ fn transcription_matches_handy_golden_output() {
     );
     let got: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     for key in ["text", "model", "audio_secs", "requested_device"] {
-        assert_eq!(got[key], golden[key], "{key} differs from Handy");
+        assert_eq!(
+            got[key], golden[key],
+            "{key} differs from the golden output"
+        );
     }
 }

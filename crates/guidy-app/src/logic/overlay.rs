@@ -1,4 +1,4 @@
-//! Recording overlay state machine (port of Handy's `RecordingOverlay.tsx`).
+//! Recording overlay state machine.
 //! Pure: driven by backend events plus a millisecond clock.
 
 use serde_json::Value;

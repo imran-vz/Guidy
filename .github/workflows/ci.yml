@@ -42,7 +42,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
             libfontconfig-dev libvulkan-dev glslc spirv-headers
       - uses: swatinem/rust-cache@v2
-      # Unit, UI (headless GPUI test platform) and CLI tests, then the Handy
+      # Unit, UI (headless GPUI test platform) and CLI tests, then the
       # parity check (tests, commands, events, PARITY.md rows).
       - run: cargo xtask gate
 

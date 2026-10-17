@@ -1,4 +1,4 @@
-//! History page (Handy's `HistorySettings`): infinite list of transcriptions
+//! History page: infinite list of transcriptions
 //! with copy / star / re-transcribe / delete and an inline audio player.
 
 use crate::logic::flows::format_history_date;
@@ -145,7 +145,7 @@ impl HistoryPage {
     }
 
     fn delete(&mut self, id: i64, cx: &mut Context<Self>) {
-        // The entry's player goes away with it (Handy unmounted the <audio>).
+        // The entry's player goes away with it.
         if let Some(path) = self.audio_paths.remove(&id) {
             let player = Playback::global();
             if player.state().path.as_ref() == Some(&path) {
@@ -318,7 +318,7 @@ impl HistoryPage {
                             }
                         }
                     })
-                    // Drag to scrub, like the HTML range input Handy used.
+                    // Drag to scrub, like an HTML range input.
                     .on_mouse_move(move |ev, _, _| {
                         if active && ev.pressed_button == Some(MouseButton::Left) {
                             seek_to(ev.position, &bounds, duration);

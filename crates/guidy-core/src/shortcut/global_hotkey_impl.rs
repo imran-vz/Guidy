@@ -1,8 +1,7 @@
 //! System global-shortcut implementation (the `"tauri"` keyboard
 //! implementation setting, kept under that wire name for compatibility).
 //!
-//! Handy used tauri-plugin-global-shortcut, which wraps the `global-hotkey`
-//! crate. Guidy drives `global-hotkey` directly with the same accelerator
+//! tauri-plugin-global-shortcut wraps the `global-hotkey` crate. Guidy drives `global-hotkey` directly with the same accelerator
 //! syntax, so stored bindings keep working unchanged.
 
 use global_hotkey::hotkey::HotKey as Shortcut;

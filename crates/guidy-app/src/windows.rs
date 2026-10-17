@@ -147,8 +147,8 @@ fn overlay_options(p: &OverlayPlacement, cx: &App) -> WindowOptions {
 }
 
 /// Wayland: clients can't place their own windows, so the overlay is a
-/// layer-shell surface anchored to the chosen edge (Handy used
-/// gtk-layer-shell with the same offsets). `GUIDY_NO_LAYER_SHELL=1` opts out.
+/// layer-shell surface anchored to the chosen edge, with the same offsets
+/// as the other platforms. `GUIDY_NO_LAYER_SHELL=1` opts out.
 #[cfg(target_os = "linux")]
 fn layer_shell_options(
     mut options: WindowOptions,
@@ -231,8 +231,7 @@ pub fn show_overlay(p: OverlayPlacement, cx: &mut App) {
 ///
 /// The overlay must stay visible while Guidy is in the background (the user
 /// is dictating into another app). GPUI's PopUp windows are NSPanels, which
-/// hide on app deactivation by default — turn that off, as Handy's overlay
-/// panel did.
+/// hide on app deactivation by default — turn that off.
 ///
 /// GPUI also creates title-less windows with a titled style mask and keeps
 /// the system shadow on transparent windows, so macOS outlines the whole
@@ -372,8 +371,8 @@ pub fn sync_system_appearance(cx: &mut App) {
     guidy_core::tray::refresh_tray_icon(&app);
 }
 
-/// Handy followed `WindowEvent::ThemeChanged` even with every window hidden;
-/// GPUI only reports appearance per open window, so watch it app-wide.
+/// Follow OS theme changes even with every window hidden; GPUI only reports
+/// appearance per open window, so watch it app-wide.
 pub fn spawn_appearance_watch(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last = cx.update(|cx| cx.window_appearance());

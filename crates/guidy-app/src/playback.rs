@@ -1,6 +1,5 @@
-//! History audio playback (replaces Handy's HTML5 `<audio>` elements). One
-//! player for the whole app, so starting one recording stops any other —
-//! Handy's `AudioPlayerGroup` semantics. rodio's output stream isn't `Send`,
+//! History audio playback. One player for the whole app, so starting one
+//! recording stops any other. rodio's output stream isn't `Send`,
 //! so a dedicated thread owns it and takes commands over a channel.
 
 use parking_lot::Mutex;

@@ -1,4 +1,4 @@
-//! Shortcut key naming and display (port of Handy's `lib/utils/keyboard.ts`).
+//! Shortcut key naming and display.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OsType {
@@ -52,7 +52,7 @@ fn modifier_name(base: &str, os: OsType) -> &'static str {
     }
 }
 
-/// Extract a consistent key name (Handy's `getKeyName`).
+/// Extract a consistent key name.
 pub fn get_key_name(e: KeyInput<'_>, os: OsType) -> String {
     if let Some(code) = e.code.filter(|c| !c.is_empty()) {
         // Function keys (F1-F24)
@@ -150,7 +150,7 @@ pub fn get_key_name(e: KeyInput<'_>, os: OsType) -> String {
     "unknown-0".to_string()
 }
 
-/// Map a GPUI keystroke key name onto Handy's shortcut token.
+/// Map a GPUI keystroke key name onto the stored shortcut token.
 pub fn gpui_key_name(key: &str, os: OsType) -> String {
     match key {
         "escape" => "esc".into(),
@@ -257,7 +257,7 @@ pub fn is_modifier(key: &str) -> bool {
 }
 
 /// Join recorded keys into a binding string: modifiers first (in recording
-/// order), then the rest (Handy's GlobalShortcutInput).
+/// order), then the rest.
 pub fn combine_recorded_keys(keys: &[String]) -> String {
     let mut modifiers: Vec<&str> = Vec::new();
     let mut others: Vec<&str> = Vec::new();

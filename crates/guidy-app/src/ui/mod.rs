@@ -20,7 +20,7 @@ gpui_kit::actions!(guidy, [ToggleDebugMode, CloseWindow, Quit, HideApp]);
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        // Handy's Ctrl/Cmd+Shift+D debug toggle.
+        // Ctrl/Cmd+Shift+D debug toggle.
         KeyBinding::new("cmd-shift-d", ToggleDebugMode, None),
         KeyBinding::new("ctrl-shift-d", ToggleDebugMode, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
@@ -32,7 +32,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &HideApp, cx| cx.hide());
 }
 
-/// The macOS menu bar (Tauri installed an equivalent default for Handy):
+/// The macOS menu bar:
 /// app menu with Hide/Quit, and an Edit menu so the system clipboard
 /// shortcuts reach text fields.
 pub fn set_app_menus(cx: &mut App) {

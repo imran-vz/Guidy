@@ -1,4 +1,4 @@
-//! Retired-model migration (Handy's `ModelMigration`): replace retired ONNX
+//! Retired-model migration: replace retired ONNX
 //! models with their catalog GGUF successors. Pure state machine; the view
 //! runs the resulting actions.
 

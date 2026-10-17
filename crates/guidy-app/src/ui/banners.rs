@@ -18,7 +18,7 @@ enum AxState {
     Granted,
 }
 
-/// Handy's `AccessibilityPermissions`: shown on macOS until granted.
+/// Accessibility permission banner: shown on macOS until granted.
 pub struct AccessibilityBanner {
     state: AxState,
     checked: bool,
@@ -135,7 +135,7 @@ impl Render for AccessibilityBanner {
     }
 }
 
-/// Handy's `SecureInputWarning`.
+/// Warning shown while macOS Secure Input is active.
 pub struct SecureInputBanner {
     dismissed: bool,
     _sub: Subscription,
