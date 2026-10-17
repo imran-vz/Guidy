@@ -276,8 +276,13 @@ pub trait MeetingsBackend: Send + Sync + 'static {
 
     // LLM providers (meetings model, BYOK).
     /// Check a provider's URL + key with a small request. Returns a short
-    /// human-readable success message (e.g. the number of models).
-    fn llm_test_connection(&self, _provider_id: &str) -> MeetingsResult<String> {
+    /// human-readable success message (e.g. the number of models). `feature`
+    /// picks which configured model is probed.
+    fn llm_test_connection(
+        &self,
+        _provider_id: &str,
+        _feature: guidy_core::llm::Feature,
+    ) -> MeetingsResult<String> {
         Err(unavailable())
     }
     /// Model ids the provider offers (local: downloaded built-in models).
@@ -533,8 +538,12 @@ impl MeetingsBackend for CoreMeetingsBackend {
         self.m()?.create_tickets(ids).map_err(err)
     }
 
-    fn llm_test_connection(&self, provider_id: &str) -> MeetingsResult<String> {
-        g2_core::test_connection(&self.app, provider_id)
+    fn llm_test_connection(
+        &self,
+        provider_id: &str,
+        feature: guidy_core::llm::Feature,
+    ) -> MeetingsResult<String> {
+        g2_core::test_connection(&self.app, provider_id, feature)
     }
     fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
         g2_core::list_models(&self.app, provider_id)
@@ -570,8 +579,12 @@ mod g2_core {
         super::err(e)
     }
 
-    pub fn test_connection(app: &AppHandle, provider_id: &str) -> MeetingsResult<String> {
-        guidy_core::llm::test_connection(app, provider_id).map_err(err)
+    pub fn test_connection(
+        app: &AppHandle,
+        provider_id: &str,
+        feature: guidy_core::llm::Feature,
+    ) -> MeetingsResult<String> {
+        guidy_core::llm::test_connection(app, provider_id, feature).map_err(err)
     }
 
     pub fn list_models(app: &AppHandle, provider_id: &str) -> MeetingsResult<Vec<String>> {
@@ -1260,8 +1273,12 @@ pub mod fake {
             Ok(out)
         }
 
-        fn llm_test_connection(&self, provider_id: &str) -> MeetingsResult<String> {
-            self.rec(format!("llm_test_connection {provider_id}"));
+        fn llm_test_connection(
+            &self,
+            provider_id: &str,
+            feature: guidy_core::llm::Feature,
+        ) -> MeetingsResult<String> {
+            self.rec(format!("llm_test_connection {provider_id} {feature:?}"));
             Ok("Connected".into())
         }
         fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {

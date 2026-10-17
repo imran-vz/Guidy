@@ -75,6 +75,8 @@ pub mod fakes {
         next: Mutex<MeetingId>,
         /// Make `set_audio_paths` fail.
         pub fail_set_audio_paths: Mutex<bool>,
+        /// Make `delete_meeting` fail.
+        pub fail_delete: Mutex<bool>,
     }
 
     impl MeetingRepo for MemRepo {
@@ -93,6 +95,9 @@ pub mod fakes {
             Ok(self.rows.lock().clone())
         }
         fn delete_meeting(&self, id: MeetingId) -> Result<()> {
+            if *self.fail_delete.lock() {
+                anyhow::bail!("database is locked");
+            }
             self.rows.lock().retain(|m| m.id != id);
             Ok(())
         }

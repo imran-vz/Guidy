@@ -359,7 +359,7 @@ impl AiSettingsView {
         self.test_result = None;
         self.run(
             cx,
-            move |b| b.llm_test_connection(&pid),
+            move |b| b.llm_test_connection(&pid, guidy_core::llm::Feature::Meetings),
             |this, r, _| {
                 this.testing = false;
                 this.test_result = Some(r.map_err(|e| error_message(&e)));
@@ -1009,7 +1009,7 @@ mod ui {
         with_window(cx, w, |window, cx| {
             window.click("meetings-llm-test-button", cx)
         });
-        assert!(mb.called("llm_test_connection guidy_local"));
+        assert!(mb.called("llm_test_connection guidy_local Meetings"));
         assert!(exists(cx, w, "meetings-llm-test-result"));
     }
 
@@ -1031,7 +1031,7 @@ mod ui {
             window.click("pp-test-connection-button", cx)
         });
         assert!(
-            mb.called(&format!("llm_test_connection {pid}")),
+            mb.called(&format!("llm_test_connection {pid} PostProcess")),
             "{:?}",
             mb.calls()
         );

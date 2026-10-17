@@ -456,7 +456,9 @@ impl PostProcessingPage {
         cx.spawn(async move |this, cx| {
             let pid = provider_id.clone();
             let r = cx
-                .background_spawn(async move { backend.llm_test_connection(&pid) })
+                .background_spawn(async move {
+                    backend.llm_test_connection(&pid, guidy_core::llm::Feature::PostProcess)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.testing = false;

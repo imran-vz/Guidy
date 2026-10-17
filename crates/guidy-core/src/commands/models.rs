@@ -1,7 +1,7 @@
 use crate::host::{AppHandle, State};
 use crate::managers::model::{ModelInfo, ModelManager, RetiredModel};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use crate::settings::{get_settings, update_settings, ModelUnloadTimeout};
 use log::error;
 use std::sync::Arc;
 pub async fn get_available_models(
@@ -78,9 +78,7 @@ pub async fn delete_model(
             .map_err(|e| format!("Failed to unload model: {}", e))?
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
-        let mut settings = get_settings(&app_handle);
-        settings.selected_model = String::new();
-        write_settings(&app_handle, settings);
+        update_settings(&app_handle, |s| s.selected_model = String::new());
     }
 
     model_manager.delete_model(&model_id).map_err(|e| {
@@ -116,18 +114,13 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
         return Err(format!("Model not downloaded: {}", model_id));
     }
 
-    let settings = get_settings(app);
-    let unload_timeout = settings.model_unload_timeout;
-    let old_model = settings.selected_model.clone();
-    let old_onboarding_completed = settings.onboarding_completed;
-
     // Persist the new selection early so the frontend sees the correct model
     // when it reacts to events emitted by load_model.
-    let mut settings = settings;
-    settings.selected_model = model_id.to_string();
-    settings.onboarding_completed = true;
-
-    write_settings(app, settings);
+    let (unload_timeout, old_model, old_onboarding_completed) = update_settings(app, |s| {
+        let old_model = std::mem::replace(&mut s.selected_model, model_id.to_string());
+        let old_onboarding_completed = std::mem::replace(&mut s.onboarding_completed, true);
+        (s.model_unload_timeout, old_model, old_onboarding_completed)
+    });
 
     // Skip eager loading if unload is set to "Immediately" — the model
     // will be loaded on-demand during the next transcription.
@@ -152,10 +145,13 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
 
     // Load the model. On failure, revert the persisted selection.
     if let Err(e) = transcription_manager.load_model(model_id) {
-        let mut settings = get_settings(app);
-        settings.selected_model = old_model;
-        settings.onboarding_completed = old_onboarding_completed;
-        write_settings(app, settings);
+        update_settings(app, |s| {
+            // Unless another selection has landed since.
+            if s.selected_model == model_id {
+                s.selected_model = old_model;
+                s.onboarding_completed = old_onboarding_completed;
+            }
+        });
         return Err(e.to_string());
     }
 

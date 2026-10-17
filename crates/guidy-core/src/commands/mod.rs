@@ -5,7 +5,7 @@ pub mod transcription;
 
 use crate::host::AppHandle;
 use crate::settings::{
-    get_settings, update_checks_forced_disabled, write_settings, AppSettings, LogLevel,
+    get_settings, update_checks_forced_disabled, update_settings, AppSettings, LogLevel,
 };
 use crate::utils::cancel_current_operation;
 pub fn cancel_operation(app: AppHandle) {
@@ -43,9 +43,7 @@ pub fn set_log_level(app: AppHandle, level: LogLevel) -> Result<(), String> {
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    let mut settings = get_settings(&app);
-    settings.log_level = level;
-    write_settings(&app, settings);
+    update_settings(&app, |s| s.log_level = level);
 
     Ok(())
 }
@@ -199,9 +197,7 @@ mod app_command_tests {
             t.event_names().contains(&"check-for-updates".to_string()),
             enabled
         );
-        let mut s = crate::settings::get_settings(&t.app);
-        s.update_checks_enabled = false;
-        crate::settings::write_settings(&t.app, s);
+        crate::settings::update_settings(&t.app, |s| s.update_checks_enabled = false);
         t.take_events();
         crate::trigger_update_check(t.app.clone()).unwrap();
         assert!(!t.event_names().contains(&"check-for-updates".to_string()));

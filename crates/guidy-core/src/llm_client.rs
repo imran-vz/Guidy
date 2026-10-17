@@ -3,8 +3,9 @@ use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Serialize, Clone)]
@@ -31,6 +32,42 @@ pub struct ChatParams {
     pub temperature: Option<f32>,
     /// Ask the endpoint to skip reasoning (see `reasoning_disable_params`).
     pub disable_reasoning: bool,
+}
+
+/// Why [`send_chat`] produced no reply. The Display text is the user-facing
+/// message.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatError {
+    /// The reply was cut off at the output token limit.
+    Truncated(String),
+    /// A successful response with an empty `choices` array.
+    NoChoices,
+    /// Anything else (HTTP, transport, parse errors).
+    Failed(String),
+}
+
+impl fmt::Display for ChatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated(m) | Self::Failed(m) => f.write_str(m),
+            Self::NoChoices => f.write_str("The response contained no choices"),
+        }
+    }
+}
+
+impl From<String> for ChatError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+/// The `String`-error API dictation post-processing uses, where a response
+/// without choices counts as an empty reply.
+fn into_string_result(result: Result<Option<String>, ChatError>) -> Result<Option<String>, String> {
+    match result {
+        Err(ChatError::NoChoices) => Ok(None),
+        other => other.map_err(|e| e.to_string()),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -104,28 +141,85 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
     }
 }
 
-/// Endpoints (base_url|model) that rejected the reasoning-disable fields with a
-/// 4xx. Remembered for the lifetime of the process so every dictation after the
-/// first skips the doomed attempt and goes straight to a plain request.
-fn reasoning_rejections() -> &'static Mutex<HashSet<String>> {
-    static REJECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    REJECTED.get_or_init(|| Mutex::new(HashSet::new()))
+/// What an endpoint (base_url|model) taught us by rejecting a request with a
+/// 400/422 that then succeeded once adjusted. Applied up-front to later
+/// requests so they skip the doomed attempts.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct LearnedParams {
+    /// The endpoint rejects the reasoning-disable fields.
+    drop_reasoning: bool,
+    /// The endpoint rejects a non-default `temperature`.
+    drop_temperature: bool,
+    /// `Some(true)`: the output budget goes in `max_completion_tokens`;
+    /// `Some(false)`: in `max_tokens` (overriding the model-name guess).
+    use_max_completion_tokens: Option<bool>,
+}
+
+impl LearnedParams {
+    /// What changed between the first request sent (`before`) and the one
+    /// that succeeded (`after`).
+    fn from_change(before: ParamShape, after: ParamShape) -> Self {
+        let use_max_completion_tokens = if before.max_tokens && after.max_completion_tokens {
+            Some(true)
+        } else if before.max_completion_tokens && after.max_tokens {
+            Some(false)
+        } else {
+            None
+        };
+        Self {
+            drop_reasoning: before.reasoning && !after.reasoning,
+            drop_temperature: before.temperature && !after.temperature,
+            use_max_completion_tokens,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.drop_reasoning |= other.drop_reasoning;
+        self.drop_temperature |= other.drop_temperature;
+        if other.use_max_completion_tokens.is_some() {
+            self.use_max_completion_tokens = other.use_max_completion_tokens;
+        }
+    }
+}
+
+/// Which optional fields a request carries (see [`LearnedParams::from_change`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ParamShape {
+    max_tokens: bool,
+    max_completion_tokens: bool,
+    temperature: bool,
+    reasoning: bool,
+}
+
+/// [`LearnedParams`] per endpoint (base_url|model), remembered for the
+/// lifetime of the process.
+fn learned_params_cache() -> &'static Mutex<HashMap<String, LearnedParams>> {
+    static LEARNED: OnceLock<Mutex<HashMap<String, LearnedParams>>> = OnceLock::new();
+    LEARNED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn endpoint_key(provider: &PostProcessProvider, model: &str) -> String {
     format!("{}|{}", provider.base_url.trim_end_matches('/'), model)
 }
 
-fn is_known_rejected(key: &str) -> bool {
-    reasoning_rejections()
+fn learned_params(key: &str) -> LearnedParams {
+    learned_params_cache()
         .lock()
-        .map(|set| set.contains(key))
-        .unwrap_or(false)
+        .ok()
+        .and_then(|map| map.get(key).copied())
+        .unwrap_or_default()
 }
 
-fn remember_rejection(key: String) {
-    if let Ok(mut set) = reasoning_rejections().lock() {
-        set.insert(key);
+fn remember_learned(key: String, learned: LearnedParams) {
+    if learned.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = learned_params_cache().lock() {
+        map.entry(key).or_default().merge(learned);
     }
 }
 
@@ -138,10 +232,178 @@ struct ChatCompletionRequest {
     response_format: Option<ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    /// The output budget for OpenAI reasoning models, which reject
+    /// `max_tokens` (see [`is_openai_reasoning_model`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(flatten)]
     reasoning: ReasoningParams,
+}
+
+/// OpenAI reasoning models (`gpt-5*`, `o1*`, `o3*`, `o4*`) reject
+/// `max_tokens` (they take `max_completion_tokens`) and any non-default
+/// `temperature`. Matched on the bare model name, as sent to OpenAI itself;
+/// gateways that prefix it (`openai/gpt-5`) translate the fields themselves.
+/// The `-chat` variants (`gpt-5-chat-latest`) are not reasoning models and
+/// take both fields.
+pub fn is_openai_reasoning_model(model: &str) -> bool {
+    let name = model.trim().to_ascii_lowercase();
+    ["gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        && !name.contains("-chat")
+}
+
+/// Characters around a parameter name in an error message, incl. the
+/// backslashes of a JSON-escaped one (`\"max_tokens\"`).
+const NAME_QUOTES: [char; 6] = [':', ' ', '\'', '"', '`', '\\'];
+
+/// The parameter name at the start of `rest` (after any quotes).
+fn leading_param_name(rest: &str) -> Option<String> {
+    let rest = rest.trim_start_matches(NAME_QUOTES);
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(rest.len());
+    Some(rest[..end].to_string()).filter(|n| !n.is_empty())
+}
+
+/// The parameter a 400/422 error body names as the rejected one, if any.
+/// `lower` is the lowercased error text.
+fn rejected_param_name(lower: &str) -> Option<String> {
+    // OpenAI: "Unsupported parameter: 'max_tokens' is not supported with
+    // this model. Use 'max_completion_tokens' instead." /
+    // "Unsupported value: 'temperature' does not support 0.2 ...".
+    let named = ["unsupported parameter", "unsupported value"]
+        .iter()
+        .find_map(|marker| leading_param_name(&lower[lower.find(marker)? + marker.len()..]));
+    if named.is_some() {
+        return named;
+    }
+    // Structured fields, possibly JSON-escaped inside a string: OpenAI's
+    // `"param": "temperature"` and pydantic's `"loc": ["body", "temperature"]`.
+    let unescaped = lower.replace('\\', "");
+    let field = |name: &str| {
+        let marker = format!("\"{name}\"");
+        let at = unescaped.find(&marker)? + marker.len();
+        Some(unescaped[at..].trim_start_matches([' ', ':']))
+    };
+    if let Some(name) = field("param")
+        .and_then(leading_param_name)
+        .filter(|n| n != "null")
+    {
+        return Some(name);
+    }
+    let loc = field("loc")?.strip_prefix('[')?;
+    let loc = &loc[..loc.find(']')?];
+    loc.rsplit(',').next().and_then(leading_param_name)
+}
+
+/// Whether error text says `temperature` itself is the problem ("temperature
+/// must be 1", "'temperature' is not supported", "Invalid value for
+/// temperature"), as opposed to merely mentioning it (an echoed request body).
+fn names_temperature_as_problem(lower: &str) -> bool {
+    const AFTER: [&str; 6] = [
+        "not supported",
+        "unsupported",
+        "does not support",
+        "invalid",
+        "must",
+        "only",
+    ];
+    const BEFORE: [&str; 2] = ["unsupported", "invalid"];
+    // Look only within the clause around each mention.
+    let is_break = |c: char| matches!(c, '.' | ',' | ';' | '\n' | '{' | '}' | '[' | ']');
+    lower.match_indices("temperature").any(|(at, word)| {
+        let after = &lower[at + word.len()..];
+        let after = &after[..after.find(is_break).unwrap_or(after.len())];
+        let before = &lower[..at];
+        let before = &before[before.rfind(is_break).map_or(0, |i| i + 1)..];
+        AFTER.iter().any(|w| after.contains(w)) || BEFORE.iter().any(|w| before.contains(w))
+    })
+}
+
+impl ChatCompletionRequest {
+    /// Put the output budget and temperature in the fields `model` accepts.
+    fn fit_params_to_model(&mut self) {
+        if is_openai_reasoning_model(&self.model) {
+            if let Some(n) = self.max_tokens.take() {
+                self.max_completion_tokens = Some(n);
+            }
+            self.temperature = None;
+        }
+    }
+
+    /// Apply what earlier requests to this endpoint learned (after
+    /// [`Self::fit_params_to_model`], which it overrides).
+    fn apply_learned(&mut self, learned: LearnedParams) {
+        if learned.drop_reasoning {
+            self.reasoning = ReasoningParams::default();
+        }
+        if learned.drop_temperature {
+            self.temperature = None;
+        }
+        match learned.use_max_completion_tokens {
+            Some(true) if self.max_tokens.is_some() => {
+                self.max_completion_tokens = self.max_tokens.take();
+            }
+            Some(false) if self.max_completion_tokens.is_some() => {
+                self.max_tokens = self.max_completion_tokens.take();
+            }
+            _ => {}
+        }
+    }
+
+    fn shape(&self) -> ParamShape {
+        ParamShape {
+            max_tokens: self.max_tokens.is_some(),
+            max_completion_tokens: self.max_completion_tokens.is_some(),
+            temperature: self.temperature.is_some(),
+            reasoning: !self.reasoning.is_empty(),
+        }
+    }
+
+    /// After a 400/422 with `error_text`, drop or rename the parameter the
+    /// endpoint rejected. Returns false when nothing could be changed (the
+    /// error is then reported as is).
+    fn adjust_after_rejection(&mut self, error_text: &str) -> bool {
+        let lower = error_text.to_ascii_lowercase();
+        let rejected = match rejected_param_name(&lower) {
+            Some(n) => n,
+            None if names_temperature_as_problem(&lower) && self.temperature.is_some() => {
+                "temperature".to_string()
+            }
+            None if !self.reasoning.is_empty()
+                && ["unsupported parameter", "reasoning", "thinking"]
+                    .iter()
+                    .any(|w| lower.contains(w)) =>
+            {
+                "reasoning".to_string()
+            }
+            None => return false,
+        };
+        match rejected.as_str() {
+            "temperature" if self.temperature.is_some() => {
+                self.temperature = None;
+                true
+            }
+            "max_tokens" if self.max_tokens.is_some() => {
+                self.max_completion_tokens = self.max_tokens.take();
+                true
+            }
+            "max_completion_tokens" if self.max_completion_tokens.is_some() => {
+                self.max_tokens = self.max_completion_tokens.take();
+                true
+            }
+            r if r.starts_with("reasoning") || r.starts_with("thinking") => {
+                let had = !self.reasoning.is_empty();
+                self.reasoning = ReasoningParams::default();
+                had
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,19 +646,21 @@ pub async fn send_chat_completion(
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
     if provider.api_format == PostProcessApiFormat::Anthropic {
-        return send_anthropic_message(
-            provider,
-            api_key,
-            model,
-            None,
-            vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt,
-            }],
-            ANTHROPIC_MAX_TOKENS,
-            None,
-        )
-        .await;
+        return into_string_result(
+            send_anthropic_message(
+                provider,
+                api_key,
+                model,
+                None,
+                vec![ChatMessage {
+                    role: "user".to_string(),
+                    content: prompt,
+                }],
+                ANTHROPIC_MAX_TOKENS,
+                None,
+            )
+            .await,
+        );
     }
 
     send_chat_completion_with_schema(
@@ -447,29 +711,32 @@ pub async fn send_chat_completion_with_schema(
         content: user_content,
     });
 
-    send_openai_chat(
-        provider,
-        api_key,
-        model,
-        messages,
-        json_schema.map(|schema| ("transcription_output".to_string(), schema)),
-        None,
-        None,
-        disable_reasoning,
+    into_string_result(
+        send_openai_chat(
+            provider,
+            api_key,
+            model,
+            messages,
+            json_schema.map(|schema| ("transcription_output".to_string(), schema)),
+            None,
+            None,
+            disable_reasoning,
+        )
+        .await,
     )
-    .await
 }
 
 /// Send a multi-message chat request in the provider's format (OpenAI-
 /// compatible Chat Completions or Anthropic Messages). Returns the reply text,
-/// `Ok(None)` when the reply has no content, and an error for HTTP failures and
-/// truncated replies.
+/// `Ok(None)` when the reply's message has no content, and an error for HTTP
+/// failures, truncated replies ([`ChatError::Truncated`]) and responses
+/// without choices ([`ChatError::NoChoices`]).
 pub async fn send_chat(
     provider: &PostProcessProvider,
     api_key: String,
     model: &str,
     params: ChatParams,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ChatError> {
     if provider.api_format == PostProcessApiFormat::Anthropic {
         let mut system = Vec::new();
         let mut messages = Vec::new();
@@ -520,7 +787,7 @@ async fn send_openai_chat(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     disable_reasoning: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ChatError> {
     check_base_url(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -543,7 +810,8 @@ async fn send_openai_chat(
     });
 
     let key = endpoint_key(provider, model);
-    let reasoning = if disable_reasoning && !is_known_rejected(&key) {
+    let learned = learned_params(&key);
+    let reasoning = if disable_reasoning {
         reasoning_disable_params(provider)
     } else {
         ReasoningParams::default()
@@ -555,72 +823,80 @@ async fn send_openai_chat(
         stream: false,
         response_format,
         max_tokens,
+        max_completion_tokens: None,
         temperature,
         reasoning,
     };
+    request_body.fit_params_to_model();
+    request_body.apply_learned(learned);
+    let first_shape = request_body.shape();
 
-    let mut response = client
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| report_reqwest_error("HTTP request failed", &e))?;
-    let mut status = response.status();
-    debug!(
-        "Chat completion response received with status {} over {:?} from {}",
-        status,
-        response.version(),
-        sanitized_url(response.url())
-    );
-
-    // A 400/422 on a request carrying reasoning-disable fields is almost always
-    // the endpoint rejecting those fields — retry once without them.
-    if !status.is_success()
-        && matches!(status.as_u16(), 400 | 422)
-        && !request_body.reasoning.is_empty()
-    {
-        let error_text = response.text().await.unwrap_or_else(|e| {
-            report_reqwest_error("Failed to read reasoning rejection response", &e)
-        });
-        info!(
-            "Endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
-            status, error_text
-        );
-
-        request_body.reasoning = ReasoningParams::default();
-        response = client
+    // A 400/422 is usually the endpoint rejecting one optional field: an
+    // unsupported parameter (OpenAI reasoning models and `max_tokens` /
+    // `temperature`) or the reasoning-disable fields (DeepSeek, Gemini's
+    // compat layer, some OpenRouter upstreams). Each retry drops or renames
+    // the rejected field, so an endpoint that rejects them one at a time
+    // needs one retry per adjustable field (output budget, temperature,
+    // reasoning), plus one spare.
+    const MAX_RETRIES: usize = 4;
+    let mut retries = 0;
+    let response = loop {
+        let response = client
             .post(&url)
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| report_reqwest_error("HTTP retry failed", &e))?;
-        status = response.status();
+            .map_err(|e| report_reqwest_error("HTTP request failed", &e))?;
+        let status = response.status();
         debug!(
-            "Chat completion retry response received with status {} over {:?} from {}",
+            "Chat completion response received with status {} over {:?} from {}",
             status,
             response.version(),
             sanitized_url(response.url())
         );
-
         if status.is_success() {
-            info!(
-                "Retry without reasoning fields succeeded; '{}' (model '{}') will skip them from now on",
-                sanitized_url_for_log(base_url),
-                model
-            );
-            remember_rejection(key);
+            break response;
         }
-    }
-
-    if !status.is_success() {
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
-        return Err(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        ));
+        let fail = || {
+            Err(ChatError::Failed(format!(
+                "API request failed with status {}: {}",
+                status, error_text
+            )))
+        };
+        if !matches!(status.as_u16(), 400 | 422) || retries >= MAX_RETRIES {
+            return fail();
+        }
+        let had_reasoning = !request_body.reasoning.is_empty();
+        if request_body.adjust_after_rejection(&error_text) {
+            info!(
+                "Endpoint rejected a request parameter (status {}): {}. Retrying without it",
+                status, error_text
+            );
+        } else if had_reasoning {
+            info!(
+                "Endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
+                status, error_text
+            );
+            request_body.reasoning = ReasoningParams::default();
+        } else {
+            return fail();
+        }
+        retries += 1;
+    };
+
+    let newly_learned = LearnedParams::from_change(first_shape, request_body.shape());
+    if !newly_learned.is_empty() {
+        info!(
+            "Retry with adjusted parameters succeeded; '{}' (model '{}') will use them from now on: {:?}",
+            sanitized_url_for_log(base_url),
+            model,
+            newly_learned
+        );
+        remember_learned(key, newly_learned);
     }
 
     let completion: ChatCompletionResponse = response
@@ -629,14 +905,16 @@ async fn send_openai_chat(
         .map_err(|e| report_reqwest_error("Failed to parse API response", &e))?;
 
     let Some(choice) = completion.choices.into_iter().next() else {
-        return Ok(None);
+        return Err(ChatError::NoChoices);
     };
 
     // A response cut off at the provider's output limit is incomplete; pasting
     // it would silently drop the end of the dictation (or, for structured
     // output, paste unparseable JSON).
     if choice.finish_reason.as_deref() == Some("length") {
-        return Err("Response was truncated at the provider's output token limit".to_string());
+        return Err(ChatError::Truncated(
+            "Response was truncated at the provider's output token limit".to_string(),
+        ));
     }
 
     Ok(choice.message.content)
@@ -655,7 +933,7 @@ async fn send_anthropic_message(
     messages: Vec<ChatMessage>,
     max_tokens: u32,
     temperature: Option<f32>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, ChatError> {
     check_base_url(provider)?;
     let url = format!("{}/messages", provider.base_url.trim_end_matches('/'));
 
@@ -691,10 +969,10 @@ async fn send_anthropic_message(
             .text()
             .await
             .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
-        return Err(format!(
+        return Err(ChatError::Failed(format!(
             "API request failed with status {}: {}",
             status, error_text
-        ));
+        )));
     }
 
     let message: AnthropicMessagesResponse = response
@@ -705,10 +983,10 @@ async fn send_anthropic_message(
     // A response cut off at the token budget is incomplete; pasting it would
     // silently drop the end of the dictation.
     if message.stop_reason.as_deref() == Some("max_tokens") {
-        return Err(format!(
+        return Err(ChatError::Truncated(format!(
             "Response was truncated at the {} token limit",
             max_tokens
-        ));
+        )));
     }
 
     Ok(message.into_text())
@@ -895,6 +1173,7 @@ mod tests {
             stream: false,
             response_format: None,
             max_tokens: None,
+            max_completion_tokens: None,
             temperature: None,
             reasoning,
         };
@@ -1044,15 +1323,95 @@ mod tests {
     }
 
     #[test]
-    fn rejection_memo_is_keyed_by_base_url_and_model() {
+    fn learned_params_are_keyed_by_base_url_and_model() {
         let deepseek = provider("custom", "https://api.deepseek.com/");
         let key = endpoint_key(&deepseek, "deepseek-chat");
         assert_eq!(key, "https://api.deepseek.com|deepseek-chat");
-        assert!(!is_known_rejected(&key));
-        remember_rejection(key.clone());
-        assert!(is_known_rejected(&key));
+        assert!(learned_params(&key).is_empty());
+        remember_learned(
+            key.clone(),
+            LearnedParams {
+                drop_reasoning: true,
+                ..Default::default()
+            },
+        );
+        remember_learned(
+            key.clone(),
+            LearnedParams {
+                use_max_completion_tokens: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            learned_params(&key),
+            LearnedParams {
+                drop_reasoning: true,
+                drop_temperature: false,
+                use_max_completion_tokens: Some(true),
+            }
+        );
         // A different model on the same endpoint is tracked separately
-        assert!(!is_known_rejected(&endpoint_key(&deepseek, "other-model")));
+        assert!(learned_params(&endpoint_key(&deepseek, "other-model")).is_empty());
+    }
+
+    #[test]
+    fn learned_params_come_from_what_changed_and_apply_up_front() {
+        let shape = |max_tokens, max_completion_tokens, temperature, reasoning| ParamShape {
+            max_tokens,
+            max_completion_tokens,
+            temperature,
+            reasoning,
+        };
+        let learned = LearnedParams::from_change(
+            shape(true, false, true, true),
+            shape(false, true, false, false),
+        );
+        assert_eq!(
+            learned,
+            LearnedParams {
+                drop_reasoning: true,
+                drop_temperature: true,
+                use_max_completion_tokens: Some(true),
+            }
+        );
+        // Nothing changed, nothing learned (a field the caller didn't send is
+        // not a rejection).
+        assert!(LearnedParams::from_change(
+            shape(false, false, false, false),
+            shape(false, false, false, false)
+        )
+        .is_empty());
+
+        let mut r = ChatCompletionRequest {
+            model: "my-gpt5".to_string(),
+            messages: vec![],
+            stream: false,
+            response_format: None,
+            max_tokens: Some(100),
+            max_completion_tokens: None,
+            temperature: Some(0.2),
+            reasoning: ReasoningParams {
+                reasoning_effort: Some("none".into()),
+                ..Default::default()
+            },
+        };
+        r.apply_learned(learned);
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
+        assert_eq!(r.temperature, None);
+        assert!(r.reasoning.is_empty());
+
+        // Learned `max_tokens` overrides the model-name guess.
+        let mut r = ChatCompletionRequest {
+            model: "o3".to_string(),
+            max_tokens: Some(100),
+            ..r
+        };
+        r.fit_params_to_model();
+        r.apply_learned(LearnedParams {
+            use_max_completion_tokens: Some(false),
+            ..Default::default()
+        });
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (Some(100), None));
     }
 
     #[test]
@@ -1197,41 +1556,58 @@ mod tests {
     async fn serve_and_capture(
         body: &'static str,
     ) -> (String, tokio::sync::oneshot::Receiver<String>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+        let (url, mut requests) = serve_sequence(vec![("200 OK", body)]).await;
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 4096];
-            // Read until the whole body (per Content-Length) has arrived.
-            loop {
-                let n = stream.read(&mut buf).await.unwrap();
-                request.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&request).to_string();
-                if let Some(split) = text.find("\r\n\r\n") {
-                    let len = text[..split]
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= split + 4 + len {
+            if let Some(r) = requests.recv().await {
+                let _ = tx.send(r);
+            }
+        });
+        (url, rx)
+    }
+
+    /// Answer one request per connection with each `(status, body)` in turn,
+    /// sending every raw request received on the channel.
+    async fn serve_sequence(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0_u8; 4096];
+                // Read until the whole body (per Content-Length) has arrived.
+                loop {
+                    let n = stream.read(&mut buf).await.unwrap();
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    if let Some(split) = text.find("\r\n\r\n") {
+                        let len = text[..split]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= split + 4 + len {
+                            break;
+                        }
+                    }
+                    if n == 0 {
                         break;
                     }
                 }
-                if n == 0 {
-                    break;
-                }
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                let _ = tx.send(String::from_utf8_lossy(&request).to_string());
             }
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.unwrap();
-            let _ = tx.send(String::from_utf8_lossy(&request).to_string());
         });
         (format!("http://{address}"), rx)
     }
@@ -1323,5 +1699,268 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().contains("truncated"));
+    }
+    #[test]
+    fn reasoning_models_get_max_completion_tokens_and_no_temperature() {
+        for model in ["gpt-5", "gpt-5-mini", "o1-mini", "o3", "O4-mini"] {
+            assert!(is_openai_reasoning_model(model), "{model}");
+        }
+        for model in [
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "openai/gpt-5",
+            "llama-3.3-70b",
+            "gpt-5-chat-latest",
+            "gpt-5.1-chat-latest",
+        ] {
+            assert!(!is_openai_reasoning_model(model), "{model}");
+        }
+        let body = |model: &str| {
+            let mut request = ChatCompletionRequest {
+                model: model.to_string(),
+                messages: vec![],
+                stream: false,
+                response_format: None,
+                max_tokens: Some(100),
+                max_completion_tokens: None,
+                temperature: Some(0.2),
+                reasoning: ReasoningParams::default(),
+            };
+            request.fit_params_to_model();
+            serde_json::to_value(&request).unwrap()
+        };
+        let json = body("gpt-5-mini");
+        assert_eq!(json["max_completion_tokens"], 100);
+        assert!(json.get("max_tokens").is_none());
+        assert!(json.get("temperature").is_none());
+        let json = body("gpt-4o");
+        assert_eq!(json["max_tokens"], 100);
+        assert!(json.get("max_completion_tokens").is_none());
+        assert!(json.get("temperature").is_some());
+    }
+
+    #[test]
+    fn rejected_parameters_are_dropped_or_renamed() {
+        let request = || ChatCompletionRequest {
+            model: "m".to_string(),
+            messages: vec![],
+            stream: false,
+            response_format: None,
+            max_tokens: Some(100),
+            max_completion_tokens: None,
+            temperature: Some(0.2),
+            reasoning: ReasoningParams {
+                reasoning_effort: Some("none".into()),
+                ..Default::default()
+            },
+        };
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","param":"max_tokens"}}"#
+        ));
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
+        assert_eq!(r.temperature, Some(0.2));
+        assert!(!r.reasoning.is_empty());
+
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported."}}"#
+        ));
+        assert_eq!(r.temperature, None);
+        assert_eq!(r.max_tokens, Some(100));
+
+        let mut r = request();
+        assert!(r.adjust_after_rejection("temperature must be 1 for this model"));
+        assert_eq!(r.temperature, None);
+
+        let mut r = request();
+        assert!(r.adjust_after_rejection("Unsupported parameter: 'reasoning_effort'"));
+        assert!(r.reasoning.is_empty());
+        assert_eq!(r.temperature, Some(0.2));
+
+        // A JSON-escaped name inside an error string.
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":"{\"message\":\"Unsupported parameter: \\\"max_tokens\\\" is not supported\"}"}"#
+        ));
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
+        let mut r = request();
+        assert!(r.adjust_after_rejection(r#"Unsupported parameter: \"max_tokens\""#));
+        assert_eq!(r.max_completion_tokens, Some(100));
+
+        // OpenAI's `param` field and pydantic's `loc` name the field.
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":{"message":"Invalid request","param":"temperature"}}"#
+        ));
+        assert_eq!(r.temperature, None);
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"detail":[{"loc":["body","temperature"],"msg":"Input should be 1"}]}"#
+        ));
+        assert_eq!(r.temperature, None);
+        assert!(!r.reasoning.is_empty());
+
+        // A pydantic 422 rejecting reasoning_effort while echoing the request
+        // body (temperature included) keeps the temperature.
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"detail":[{"type":"extra_forbidden","loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted","input":"none"}],"body":{"temperature":0.2,"max_tokens":100,"reasoning_effort":"none"}}"#
+        ));
+        assert!(r.reasoning.is_empty());
+        assert_eq!(r.temperature, Some(0.2));
+        // Same without a `loc`: temperature is only mentioned, not blamed.
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":"Extra inputs are not permitted","body":{"temperature":0.2,"reasoning_effort":"none"}}"#
+        ));
+        assert!(r.reasoning.is_empty());
+        assert_eq!(r.temperature, Some(0.2));
+        // `"param": null` names nothing.
+        let mut r = request();
+        assert!(r.adjust_after_rejection(
+            r#"{"error":{"message":"temperature is not supported for this model","param":null}}"#
+        ));
+        assert_eq!(r.temperature, None);
+        let mut r = request();
+        assert!(r.adjust_after_rejection("Invalid value for temperature: 0.2"));
+        assert_eq!(r.temperature, None);
+
+        // Nothing identifiable: left to the caller.
+        let mut r = request();
+        assert!(!r.adjust_after_rejection("model not found"));
+        assert!(!r.adjust_after_rejection(r#"{"error":"bad request","temperature":0.2}"#));
+        r.temperature = None;
+        assert!(!r.adjust_after_rejection("Unsupported value: 'temperature'"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_parameter_is_retried_without_it() {
+        let (base_url, mut requests) = serve_sequence(vec![
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model."}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+            ),
+        ])
+        .await;
+        let result = send_chat(
+            &provider("custom", &base_url),
+            "key".to_string(),
+            "some-reasoning-model",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                max_tokens: Some(50),
+                temperature: Some(0.2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        let first = request_body(&requests.recv().await.unwrap());
+        assert!(first.get("temperature").is_some());
+        let second = request_body(&requests.recv().await.unwrap());
+        assert!(second.get("temperature").is_none());
+        assert_eq!(second["max_tokens"], 50);
+    }
+
+    #[tokio::test]
+    async fn rejections_one_field_at_a_time_are_all_retried_and_remembered() {
+        const OK: &str = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let (base_url, mut requests) = serve_sequence(vec![
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}}"#,
+            ),
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model."}}"#,
+            ),
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported parameter: 'reasoning_effort'"}}"#,
+            ),
+            ("200 OK", OK),
+            ("200 OK", OK),
+        ])
+        .await;
+        // An undetected OpenAI reasoning model (Azure deployment name).
+        let params = || ChatParams {
+            messages: vec![("user".into(), "hi".into())],
+            max_tokens: Some(50),
+            temperature: Some(0.2),
+            disable_reasoning: true,
+            ..Default::default()
+        };
+        let p = provider("custom", &base_url);
+        let result = send_chat(&p, "key".to_string(), "my-gpt5", params()).await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        for _ in 0..3 {
+            requests.recv().await.unwrap();
+        }
+        let fourth = request_body(&requests.recv().await.unwrap());
+        assert!(fourth.get("max_tokens").is_none());
+        assert_eq!(fourth["max_completion_tokens"], 50);
+        assert!(fourth.get("temperature").is_none());
+        assert!(fourth.get("reasoning_effort").is_none());
+
+        // The next request goes straight to the adjusted form.
+        let result = send_chat(&p, "key".to_string(), "my-gpt5", params()).await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        assert_eq!(request_body(&requests.recv().await.unwrap()), fourth);
+    }
+
+    #[tokio::test]
+    async fn chat_without_choices_is_distinguished_from_an_empty_message() {
+        let (base_url, _requests) = serve_sequence(vec![
+            ("200 OK", r#"{"choices":[]}"#),
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":null},"finish_reason":"stop"}]}"#,
+            ),
+            ("200 OK", r#"{"choices":[]}"#),
+        ])
+        .await;
+        let p = provider("custom", &base_url);
+        let params = || ChatParams {
+            messages: vec![("user".into(), "hi".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            send_chat(&p, "key".to_string(), "m", params()).await,
+            Err(ChatError::NoChoices)
+        );
+        assert_eq!(
+            send_chat(&p, "key".to_string(), "m", params()).await,
+            Ok(None)
+        );
+        // Dictation post-processing still treats it as an empty reply.
+        assert_eq!(
+            send_chat_completion(&p, "key".to_string(), "m", "hi".into(), false).await,
+            Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unidentified_rejection_is_reported_without_retrying() {
+        let (base_url, mut requests) =
+            serve_sequence(vec![("400 Bad Request", "invalid model")]).await;
+        let result = send_chat(
+            &provider("custom", &base_url),
+            "key".to_string(),
+            "m",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                temperature: Some(0.2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("invalid model"));
+        assert!(requests.recv().await.is_some());
+        assert!(requests.recv().await.is_none());
     }
 }

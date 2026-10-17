@@ -254,6 +254,20 @@ fn failed_audio_path_update_removes_the_created_files() {
 }
 
 #[test]
+fn a_failed_start_that_cant_be_cleaned_up_is_not_recovered() {
+    let r = rig();
+    *r.capture.fail.lock() = true;
+    *r.repo.fail_delete.lock() = true;
+    assert!(r.rec.start(None, T0).is_err());
+    // The row survives, ended with the error: not a crash leftover.
+    let rows = r.repo.list_meetings().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, MeetingStatus::Recorded);
+    assert!(rows[0].error.as_deref().unwrap().contains("no permission"));
+    assert!(r.rec.recover_interrupted().unwrap().is_empty());
+}
+
+#[test]
 fn missing_key_fails_before_creating_a_meeting() {
     let mut r = rig();
     r.rec.deps.data_key = Arc::new(|| anyhow::bail!("keychain locked"));
@@ -416,6 +430,40 @@ fn interrupted_recordings_are_recovered() {
     let ended = m.ended_at.unwrap();
     assert!(ended > T0 && ended <= now_ms(), "{ended}");
     assert_eq!(r.repo.get_meeting(done).unwrap().unwrap().ended_at, Some(5));
+}
+
+#[test]
+fn recovery_waits_for_a_start_or_stop_in_progress() {
+    let r = rig();
+    let id = r
+        .repo
+        .insert_meeting(&Meeting {
+            id: 0,
+            title: "x".into(),
+            calendar_event_id: None,
+            calendar_event: None,
+            started_at: T0,
+            ended_at: None,
+            mic_audio_path: None,
+            system_audio_path: None,
+            status: MeetingStatus::Recording,
+            error: None,
+            processing_stage: None,
+        })
+        .unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let op = r.rec.op.lock();
+        let recovery = scope.spawn(|| {
+            let ids = r.rec.recover_interrupted().unwrap();
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            ids
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!done.load(std::sync::atomic::Ordering::SeqCst));
+        drop(op);
+        assert_eq!(recovery.join().unwrap(), vec![id]);
+    });
 }
 
 #[test]
