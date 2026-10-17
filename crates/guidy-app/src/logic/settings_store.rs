@@ -1,4 +1,4 @@
-//! Settings state (port of Handy's zustand `settingsStore`): optimistic
+//! Settings state: optimistic
 //! updates with rollback, per-key "updating" flags, defaults for reset.
 //! Pure; the GPUI layer runs the backend calls.
 
@@ -134,7 +134,7 @@ pub fn platform_key() -> &'static str {
     }
 }
 
-/// Global error toasts (Handy's App.tsx listeners).
+/// Global error toasts for backend error events.
 pub fn toast_for_event(name: &str, payload: &Value) -> Option<ToastSpec> {
     use guidy_i18n::{exists, t, t_args};
     match name {

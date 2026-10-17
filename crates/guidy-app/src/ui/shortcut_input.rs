@@ -1,4 +1,4 @@
-//! Shortcut recorder row (Handy's `ShortcutInput`, picking the system or
+//! Shortcut recorder row (picking the system or
 //! handy-keys implementation from the `keyboard_implementation` setting).
 
 use crate::logic::flows::SECURE_INPUT_HELP_URL;
@@ -28,7 +28,7 @@ pub struct ShortcutInput {
     mode: Mode,
     original: String,
     system: SystemRecorder,
-    handy: HandyKeysRecorder,
+    handy_keys: HandyKeysRecorder,
     held_modifiers: Vec<&'static str>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -52,7 +52,7 @@ impl ShortcutInput {
                             is_key_down: k.is_key_down,
                             hotkey_string: &k.hotkey_string,
                         };
-                        if let Some(commit) = this.handy.on_event(&input) {
+                        if let Some(commit) = this.handy_keys.on_event(&input) {
                             this.commit(commit, window, cx);
                         }
                         cx.notify();
@@ -72,7 +72,7 @@ impl ShortcutInput {
             mode: Mode::Idle,
             original: String::new(),
             system: SystemRecorder::default(),
-            handy: HandyKeysRecorder::default(),
+            handy_keys: HandyKeysRecorder::default(),
             held_modifiers: Vec::new(),
             focus: cx.focus_handle(),
             _subs: subs,
@@ -103,7 +103,7 @@ impl ShortcutInput {
             .and_then(|s| s.bindings.get(&id).map(|b| b.current_binding.clone()))
             .unwrap_or_default();
         self.system = SystemRecorder::default();
-        self.handy = HandyKeysRecorder::default();
+        self.handy_keys = HandyKeysRecorder::default();
         self.held_modifiers.clear();
         match self.implementation(cx) {
             KeyboardImplementation::HandyKeys => {
@@ -156,7 +156,7 @@ impl ShortcutInput {
         let mode = self.mode;
         self.mode = Mode::Idle;
         self.system = SystemRecorder::default();
-        self.handy = HandyKeysRecorder::default();
+        self.handy_keys = HandyKeysRecorder::default();
         self.held_modifiers.clear();
         self.original.clear();
         cx.notify();
@@ -364,8 +364,8 @@ impl Render for ShortcutInput {
         let display: SharedString = if recording {
             let current = match self.mode {
                 Mode::System => self.system.display(),
-                Mode::HandyKeys => (!self.handy.current.is_empty())
-                    .then(|| format_key_combination(&self.handy.current)),
+                Mode::HandyKeys => (!self.handy_keys.current.is_empty())
+                    .then(|| format_key_combination(&self.handy_keys.current)),
                 Mode::Idle => None,
             };
             current

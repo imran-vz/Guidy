@@ -85,7 +85,7 @@ pub fn run(cli_args: CliArgs) {
         .with_quit_mode(QuitMode::Explicit);
     // macOS: a start-hidden launch with a tray must *launch* as Accessory.
     // Demoting a running Regular app later is unreliable and can leave a
-    // Dock icon behind (Handy #1787). Showing the window promotes it.
+    // Dock icon behind. Showing the window promotes it.
     #[cfg(target_os = "macos")]
     let application = {
         let settings = guidy_core::settings::get_settings(&app);

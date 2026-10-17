@@ -417,8 +417,8 @@ fn init_logger() {
 }
 
 /// SIGUSR2 toggles transcription in the app (and WebKitGTK uses SIGUSR1).
-/// Aimed at Handy by name, e.g. the README's `pkill -USR2 -n handy`, one
-/// can reach this worker instead, and its default action would kill it.
+/// Aimed at the app by name, e.g. `pkill -USR2 -n guidy`, one can reach
+/// this worker instead, and its default action would kill it.
 #[cfg(unix)]
 fn ignore_app_signals() {
     // SAFETY: setting a signal's disposition to SIG_IGN has no preconditions.
@@ -429,8 +429,8 @@ fn ignore_app_signals() {
 }
 
 /// Started from /proc/self/exe, the kernel names this process "exe". Name it
-/// as Handy's, but not `handy`: `pkill`/`killall` match names case-sensitively,
-/// so `pkill -USR2 -n handy` keeps reaching the app, never this newer process.
+/// after the app, but not `guidy`: `pkill`/`killall` match names
+/// case-sensitively, so `pkill -USR2 -n guidy` keeps reaching the app, never this newer process.
 #[cfg(target_os = "linux")]
 fn set_process_name() {
     // SAFETY: PR_SET_NAME copies a NUL-terminated name of up to 16 bytes.

@@ -1,4 +1,4 @@
-//! First-run model picker (Handy's `Onboarding`).
+//! First-run model picker.
 
 use crate::logic::models::{picked_model_ready, picker_groups, ModelCardStatus};
 use crate::state::AppState;

@@ -484,7 +484,7 @@
       "updateChecks": {
         "label": "Sprawdzaj aktualizacje",
         "description": "Automatycznie sprawdzaj nowe wersje Guidy",
-        "lockedDescription": "Wyłączone przez konfigurację systemową (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "Wyłączone przez konfigurację systemową (GUIDY_DISABLE_UPDATER)"
       },
       "soundTheme": {
         "label": "Motyw dźwiękowy",

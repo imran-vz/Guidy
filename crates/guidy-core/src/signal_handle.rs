@@ -24,9 +24,9 @@ pub fn send_transcription_input(app: &AppHandle, binding_id: &str, source: &str)
 /// Listen for Unix signals that remotely toggle transcription.
 ///
 /// SIGUSR2 toggles plain transcription and SIGUSR1 transcription with
-/// post-processing, on every Unix platform. Handy skipped SIGUSR1 on Linux
-/// because WebKitGTK's JavaScriptCore GC uses it to suspend its threads
-/// (phantom recordings, Handy #1660); Guidy has no webview, so it's free.
+/// post-processing, on every Unix platform. WebKitGTK's JavaScriptCore GC uses
+/// SIGUSR1 to suspend its threads, which would cause phantom recordings in a
+/// webview app; Guidy has no webview, so it's free.
 #[cfg(unix)]
 pub fn setup_signal_handler(app_handle: AppHandle) {
     let mut signals =

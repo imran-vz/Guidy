@@ -1,4 +1,4 @@
-//! Model card (Handy's `ModelCard`), shared by onboarding and the Models page.
+//! Model card, shared by onboarding and the Models page.
 
 use crate::logic::languages::{language_label, unique_capability_languages};
 use crate::logic::models::{

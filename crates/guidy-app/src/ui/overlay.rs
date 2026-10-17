@@ -1,4 +1,4 @@
-//! The recording overlay (Handy's `RecordingOverlay`), drawn as a floating
+//! The recording overlay, drawn as a floating
 //! Zed-style panel: compact pill for recording/working, and the Live card
 //! that opens into a transcript panel while streaming.
 
@@ -331,15 +331,11 @@ impl Render for OverlayView {
                                         .child(SharedString::from(w.to_string()))
                                 }))
                                 .when(l.show_caret, |d| {
-                                    d.child(
-                                        div().w(px(1.5)).h(px(16.)).bg(fg).with_animation(
-                                            "caret",
-                                            Animation::new(Duration::from_millis(1050)).repeat(),
-                                            |el, delta| {
-                                                el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                            },
-                                        ),
-                                    )
+                                    d.child(div().w(px(1.5)).h(px(16.)).bg(fg).with_animation(
+                                        "caret",
+                                        Animation::new(Duration::from_millis(1050)).repeat(),
+                                        |el, delta| el.opacity(if delta < 0.5 { 1.0 } else { 0.0 }),
+                                    ))
                                 }),
                         ),
                 );

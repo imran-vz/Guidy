@@ -484,7 +484,7 @@
       "updateChecks": {
         "label": "Tjek for opdateringer",
         "description": "Tjek automatisk for nye versioner af Guidy",
-        "lockedDescription": "Deaktiveret af systemkonfiguration (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "Deaktiveret af systemkonfiguration (GUIDY_DISABLE_UPDATER)"
       },
       "whatsNewPreview": {
         "title": "Forhåndsvisning af nyheder",

@@ -4,7 +4,7 @@
 //! *when* it shows, in which state, and *where* (cursor monitor, top/bottom
 //! offsets), then asks the [`crate::host::Shell`] to place it and emits the
 //! same `show-overlay` / `hide-overlay` / `recording-ready` / `mic-level`
-//! events Handy's overlay webview consumed.
+//! events the overlay view consumes.
 
 use crate::host::{AppHandle, Monitor, OverlayPlacement, PhysicalPosition, PhysicalSize};
 use crate::input;

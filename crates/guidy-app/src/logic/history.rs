@@ -1,4 +1,4 @@
-//! History list behavior (Handy's `HistorySettings`): cursor pages, live
+//! History list behavior: cursor pages, live
 //! updates, optimistic toggles/deletes.
 
 use guidy_core::managers::history::{HistoryEntry, HistoryUpdatePayload};

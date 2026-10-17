@@ -484,7 +484,7 @@
       "updateChecks": {
         "label": "Vérifier les mises à jour",
         "description": "Vérifier automatiquement les nouvelles versions de Guidy",
-        "lockedDescription": "Désactivé par la configuration système (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "Désactivé par la configuration système (GUIDY_DISABLE_UPDATER)"
       },
       "soundTheme": {
         "label": "Thème sonore",

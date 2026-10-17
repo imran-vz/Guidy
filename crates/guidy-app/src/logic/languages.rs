@@ -1,4 +1,4 @@
-//! Recognition languages (port of Handy's `lib/constants/languages.ts`).
+//! Recognition languages.
 
 /// `(code, English label)`; `auto` first.
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn has_all_handy_languages() {
+    fn has_all_languages() {
         assert_eq!(LANGUAGES.len(), 102);
         assert_eq!(LANGUAGES[0], ("auto", "Auto Detect"));
         assert_eq!(capability_languages().count(), 101);

@@ -1132,7 +1132,7 @@ impl Worker {
         let mut command = ProcessCommand::new(exe);
         #[cfg(target_os = "linux")]
         if let Some(arg0) = std::env::args_os().next() {
-            // Keep `ps` showing Handy's own path rather than /proc/self/exe.
+            // Keep `ps` showing the app's own path rather than /proc/self/exe.
             use std::os::unix::process::CommandExt;
             command.arg0(arg0);
         }
@@ -1346,7 +1346,7 @@ fn wait_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
 #[cfg(test)]
 static LIVE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The file Handy was started from, with its identity (device and inode),
+/// The file the app was started from, with its identity (device and inode),
 /// recorded at startup; see [`worker_exe`]. `None` if either couldn't be
 /// read, which skips the check.
 #[cfg(all(unix, not(test)))]
@@ -1369,14 +1369,14 @@ fn record_launched_exe() {
                 let id = file_id(&path)?;
                 Ok((path, id))
             })
-            .inspect_err(|e| warn!("Could not identify Handy's executable: {}", e))
+            .inspect_err(|e| warn!("Could not identify Guidy's executable: {}", e))
             .ok()
     });
 }
 
 /// The executable a worker runs: always this very binary, so the two agree
 /// on the protocol and on transcribe.cpp's backend libraries. Upgrading or
-/// moving Handy while it runs replaces or removes the file it started from,
+/// moving the app while it runs replaces or removes the file it started from,
 /// and a worker started from there would be the new version (macOS), or this
 /// binary loading the new version's backend libraries (Linux). Only a
 /// restart fixes that, so refuse to start one and say so. Windows locks a

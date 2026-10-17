@@ -1,4 +1,4 @@
-//! Permission onboarding (Handy's `AccessibilityOnboarding`): microphone and
+//! Permission onboarding: microphone and
 //! (macOS) accessibility, with 1 s polling after the user acts.
 
 use crate::logic::keyboard::OsType;

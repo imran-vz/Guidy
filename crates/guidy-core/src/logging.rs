@@ -1,6 +1,6 @@
 //! Logging (replacement for tauri-plugin-log).
 //!
-//! Three sinks, matching Handy's targets:
+//! Three sinks:
 //! - console (stdout, or stderr in headless mode so stdout stays parseable),
 //!   filtered by `RUST_LOG` (default info);
 //! - a rotating file `guidy.log` in the log dir (500 KB, keep one), filtered by

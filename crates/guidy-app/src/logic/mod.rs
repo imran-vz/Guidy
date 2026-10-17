@@ -1,5 +1,5 @@
-//! UI logic with no GPUI dependency (ported from Handy's React helpers and
-//! stores), kept pure so it is unit-testable.
+//! UI logic with no GPUI dependency (helpers and stores), kept pure so it
+//! is unit-testable.
 
 pub mod flows;
 pub mod history;

@@ -1,6 +1,6 @@
 //! The UI's view of the backend.
 //!
-//! Every Tauri command Handy's React UI invoked is a method here. Production
+//! Every command the settings UI invokes is a method here. Production
 //! uses [`CoreBackend`] (calls into `guidy-core` with the live app handle);
 //! UI tests use a recording fake. Methods are synchronous and may block, so
 //! views call them from background tasks.
@@ -22,8 +22,8 @@ pub trait Backend: Send + Sync + 'static {
     // -- settings ---------------------------------------------------------
     fn get_app_settings(&self) -> BackendResult<AppSettings>;
     fn get_default_settings(&self) -> BackendResult<AppSettings>;
-    /// Persist one setting through its dedicated command (Handy's
-    /// `settingsStore` updater table). `value` is the setting's JSON value.
+    /// Persist one setting through its dedicated command (the settings
+    /// store's updater table). `value` is the setting's JSON value.
     fn update_setting(&self, key: &str, value: Value) -> BackendResult<()>;
     fn set_model_unload_timeout(&self, timeout: Value) -> BackendResult<()>;
 
@@ -707,7 +707,7 @@ impl Backend for CoreBackend {
     }
 }
 
-/// Every key Handy's settings store could update (its updater table).
+/// Every key the settings store can update (its updater table).
 pub const UPDATABLE_SETTINGS: &[&str] = &[
     "always_on_microphone",
     "audio_feedback",

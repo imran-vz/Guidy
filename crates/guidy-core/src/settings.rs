@@ -299,7 +299,7 @@ impl SoundTheme {
 }
 
 /// UI appearance mode. `System` follows the OS `prefers-color-scheme`; `Light`
-/// and `Dark` force one of the two palettes Handy already ships.
+/// and `Dark` force one of the two bundled palettes.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
@@ -365,7 +365,7 @@ impl std::ops::DerefMut for SecretMap {
     }
 }
 
-/* still handy for composing the initial JSON in the store ------------- */
+/* still useful for composing the initial JSON in the store ------------- */
 /// The container-level `serde(default)` (backed by the `Default` impl below)
 /// guarantees every field — including ones added in the future — falls back to
 /// its `get_default_settings()` value when missing from a stored settings
@@ -1406,7 +1406,7 @@ mod tests {
             "overlay_position": "bottom",
             "debug_mode": false,
             "log_level": 2,
-            "custom_words": ["Handy", "cjpais"],
+            "custom_words": ["Guidy", "GPUI"],
             "model_unload_timeout": "min5",
             "word_correction_threshold": 0.18,
             "history_limit": 5,
@@ -1516,14 +1516,14 @@ mod tests {
         let map = stored.as_object_mut().unwrap();
         map.insert("paste_delay_ms".into(), serde_json::json!("sixty"));
         map.insert("sound_theme".into(), serde_json::json!(42));
-        map.insert("custom_words".into(), serde_json::json!(["handy"]));
+        map.insert("custom_words".into(), serde_json::json!(["guidy"]));
 
         assert!(serde_json::from_value::<AppSettings>(stored.clone()).is_err());
 
         let salvaged = salvage_settings(&stored);
         assert_eq!(salvaged.paste_delay_ms, default_paste_delay_ms());
         assert_eq!(salvaged.sound_theme, default_sound_theme());
-        assert_eq!(salvaged.custom_words, vec!["handy".to_string()]);
+        assert_eq!(salvaged.custom_words, vec!["guidy".to_string()]);
     }
 
     #[test]
@@ -1841,7 +1841,7 @@ mod tests {
     }
 }
 
-/// A store file written by Handy (tauri-plugin-store) loads through Guidy's
+/// A legacy tauri-plugin-store settings file loads through Guidy's
 /// JSON store unchanged, and every one-time migration applies (PARITY S-09).
 #[cfg(test)]
 mod store_compat_tests {
@@ -1881,7 +1881,7 @@ mod store_compat_tests {
         // Bindings added since the file was written are merged in.
         assert!(s.bindings.contains_key("cancel"));
 
-        // Migrated settings were written back in Handy's `{"settings": …}` shape.
+        // Migrated settings were written back in the store's `{"settings": …}` shape.
         let written: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&dest).unwrap()).unwrap();
         assert_eq!(written["settings"]["shortcut_activation"], "push_to_talk");

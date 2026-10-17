@@ -49,9 +49,9 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[name = "GuidyPasteProvider"]
     #[ivars = ProviderIvars]
-    pub struct HandyPasteProvider;
+    pub struct GuidyPasteProvider;
 
-    impl HandyPasteProvider {
+    impl GuidyPasteProvider {
         // NSPasteboardOwner informal protocol: the pasteboard is asking for the
         // promised data — our receipt that a consumer read the clipboard.
         #[unsafe(method(pasteboard:provideDataForType:))]
@@ -85,7 +85,7 @@ define_class!(
     }
 );
 
-impl HandyPasteProvider {
+impl GuidyPasteProvider {
     fn new(state: Arc<Mutex<TxState>>, text: String) -> Retained<Self> {
         let this = Self::alloc().set_ivars(ProviderIvars { state, text });
         unsafe { msg_send![super(this), init] }
@@ -97,7 +97,7 @@ struct MacPending {
     saved_text: Option<String>,
     saved_image: Option<crate::host::image::Image<'static>>,
     change_count: NSInteger,
-    provider: Option<Retained<HandyPasteProvider>>,
+    provider: Option<Retained<GuidyPasteProvider>>,
     auto_submit: bool,
     auto_submit_key: AutoSubmitKey,
     /// ClipboardHandling::CopyToClipboard — instead of restoring, settle by
@@ -276,7 +276,7 @@ pub(super) fn run(
     };
 
     let state = Arc::new(Mutex::new(TxState::new()));
-    let provider = HandyPasteProvider::new(state.clone(), text.to_string());
+    let provider = GuidyPasteProvider::new(state.clone(), text.to_string());
     let pasteboard = NSPasteboard::generalPasteboard();
 
     let mut types: Vec<Retained<NSString>> = Vec::with_capacity(1 + CONCEALMENT_TYPES.len());

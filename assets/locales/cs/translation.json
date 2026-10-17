@@ -484,7 +484,7 @@
       "updateChecks": {
         "label": "Kontrolovat aktualizace",
         "description": "Automaticky kontrolovat nové verze Guidy",
-        "lockedDescription": "Zakázáno systémovou konfigurací (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "Zakázáno systémovou konfigurací (GUIDY_DISABLE_UPDATER)"
       },
       "soundTheme": {
         "label": "Zvukový motiv",

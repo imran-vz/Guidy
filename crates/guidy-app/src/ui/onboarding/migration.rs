@@ -1,4 +1,4 @@
-//! Retired-model update screen (Handy's `ModelMigration`).
+//! Retired-model update screen.
 
 use crate::logic::migration::{format_time_left, Action, Migration, Phase, RowState};
 use crate::logic::models::format_model_size;

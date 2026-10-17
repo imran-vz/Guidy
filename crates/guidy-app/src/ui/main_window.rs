@@ -1,4 +1,4 @@
-//! The settings window (Handy's `App.tsx`): startup step machine, onboarding,
+//! The settings window: startup step machine, onboarding,
 //! sidebar navigation, banners, status bar, and global toasts.
 
 use crate::logic::flows::OnboardingStep;
@@ -85,8 +85,8 @@ impl Section {
     }
 }
 
-/// The section survives the window being closed (GPUI destroys it; Handy's
-/// webview was only hidden).
+/// The section survives the window being closed (GPUI destroys the window
+/// rather than hiding it).
 struct LastSection(Section);
 impl Global for LastSection {}
 

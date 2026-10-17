@@ -484,7 +484,7 @@
       "updateChecks": {
         "label": "Проверять наличие обновлений",
         "description": "Автоматически проверять наличие новых версий Guidy",
-        "lockedDescription": "Отключено системной конфигурацией (HANDY_DISABLE_UPDATER)"
+        "lockedDescription": "Отключено системной конфигурацией (GUIDY_DISABLE_UPDATER)"
       },
       "soundTheme": {
         "label": "Звуковая тема",

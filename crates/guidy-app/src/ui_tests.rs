@@ -1171,9 +1171,9 @@ mod banners_and_events {
     }
 }
 
-/// Gaps found comparing the running app with Handy (startup without a
+/// Regressions found in the running app (startup without a
 /// window, failed downloads, write ordering, recorder cleanup, footer status).
-mod handy_gap_regressions {
+mod gap_regressions {
     use super::*;
     use crate::logic::flows::OnboardingStep;
     use crate::logic::models::SelectorStatus;

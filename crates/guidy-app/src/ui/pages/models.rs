@@ -1,5 +1,5 @@
 //! Models page: search, filters, your models / available sections, retired
-//! model cleanup (Handy's `ModelsSettings` + `RetiredModelsNotice`).
+//! model cleanup.
 
 use crate::logic::languages::{capability_languages, filter_languages, language_label};
 use crate::logic::models::{
@@ -389,7 +389,7 @@ impl Render for ModelsPage {
         let available: Vec<_> = available.into_iter().cloned().collect();
         let rescanning = m.rescanning;
 
-        // Handy hides the "recommended" badge on models you already have.
+        // Hide the "recommended" badge on models you already have.
         let make_cards = |models: &[guidy_core::managers::model::ModelInfo],
                           show_recommended: bool,
                           cx: &mut Context<Self>|

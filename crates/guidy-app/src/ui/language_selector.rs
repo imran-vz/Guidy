@@ -1,4 +1,4 @@
-//! Searchable recognition-language picker (Handy's `LanguageSelector`).
+//! Searchable recognition-language picker.
 
 use crate::logic::languages::{
     available_languages, effective_language, filter_languages, language_label,

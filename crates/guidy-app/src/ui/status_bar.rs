@@ -1,4 +1,4 @@
-//! Zed-style status bar (Handy's footer): model status + switcher on the
+//! Zed-style status bar: model status + switcher on the
 //! left, update status and version on the right.
 
 use crate::logic::models::SelectorStatus;
@@ -67,7 +67,7 @@ impl StatusBar {
     /// Effective updater state = setting && !locked (waits for both).
     fn sync_enabled(&mut self, cx: &mut Context<Self>) {
         let st = self.state.read(cx);
-        // Handy's footer (and its automatic check) mounts after onboarding.
+        // The footer (and its automatic check) mounts after onboarding.
         if !st.onboarding_done() {
             return;
         }
