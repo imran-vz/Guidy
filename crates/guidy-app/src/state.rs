@@ -8,9 +8,11 @@ use crate::logic::flows::{
     LOG_FLUSH_MS,
 };
 use crate::logic::keyboard::OsType;
+use crate::logic::meetings::MeetingsEvent;
 use crate::logic::models::{initial_selector_status, selector_status_after_event, SelectorStatus};
 use crate::logic::models_store::{ModelsEffect, ModelsStore};
 use crate::logic::settings_store::{toast_for_event, SettingsStore, ToastKind, ToastSpec};
+use crate::meetings_backend::{NoMeetings, SharedMeetingsBackend};
 use gpui_kit::{App, AppContext, Context, Entity, EventEmitter, Global};
 use guidy_core::commands::audio::{AudioDevice, CustomSounds};
 use guidy_core::host::Event as CoreEvent;
@@ -32,6 +34,8 @@ pub enum AppEvent {
     /// Auto-select candidate (ModelSelector), already delayed 500 ms.
     ModelDownloadCompleted(String),
     LanguageChanged,
+    /// A meeting-notes core event (recorder state, progress, changes).
+    Meetings(MeetingsEvent),
 }
 
 /// The startup step machine (onboarding state). Lives on
@@ -49,6 +53,10 @@ pub struct Startup {
 
 pub struct AppState {
     pub backend: SharedBackend,
+    /// Meeting notes ([`NoMeetings`] when unavailable).
+    pub meetings: SharedMeetingsBackend,
+    /// Cached `meetings.is_supported()`: shows the Meetings section.
+    pub meetings_supported: bool,
     pub startup: Startup,
     pub settings: SettingsStore,
     pub models: ModelsStore,
@@ -100,6 +108,8 @@ impl AppState {
     pub fn new(backend: SharedBackend) -> Self {
         Self {
             backend,
+            meetings: std::sync::Arc::new(NoMeetings),
+            meetings_supported: false,
             startup: Startup::default(),
             settings: SettingsStore::default(),
             models: ModelsStore::default(),
@@ -129,8 +139,18 @@ impl AppState {
     }
 
     pub fn install(backend: SharedBackend, cx: &mut App) -> Entity<AppState> {
+        Self::install_with_meetings(backend, std::sync::Arc::new(NoMeetings), cx)
+    }
+
+    pub fn install_with_meetings(
+        backend: SharedBackend,
+        meetings: SharedMeetingsBackend,
+        cx: &mut App,
+    ) -> Entity<AppState> {
         let entity = cx.new(|cx| {
             let mut s = AppState::new(backend);
+            s.meetings_supported = meetings.is_supported();
+            s.meetings = meetings;
             s.initialize(cx);
             s.check_onboarding(cx);
             s
@@ -906,6 +926,11 @@ impl AppState {
                 }
             }
             "check-for-updates" => cx.emit(AppEvent::CheckForUpdates),
+            name if name.starts_with("meetings://") => {
+                if let Some(ev) = crate::logic::meetings::decode_event(name, payload) {
+                    cx.emit(AppEvent::Meetings(ev));
+                }
+            }
             "theme-changed" => {
                 if let Some(t) = event.decode::<guidy_core::settings::Theme>() {
                     crate::theme::apply_setting(t, cx);

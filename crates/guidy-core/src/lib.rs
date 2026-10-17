@@ -199,12 +199,58 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool) {
         tray::update_tray_menu(&app_handle_for_listener);
     });
 
+    // Meeting notes (macOS 14.2+).
+    init_meetings(app_handle);
+
     // Apply the autostart preference (SMAppService login item on macOS 13+,
     // auto-launch elsewhere)
     autostart::apply_autostart(app_handle, settings.autostart_enabled);
 
     // The recording overlay window is created by the UI at startup (hidden).
     utils::create_recording_overlay(app_handle);
+}
+
+/// Register [`meetings::manager::MeetingsManager`] when meeting notes are
+/// supported. Opening the encrypted store touches the Keychain, so it runs
+/// off the main thread; the UI treats a missing manager as "not available
+/// yet". The manager then starts the scheduler (if enabled), recovers
+/// recordings interrupted by a crash, and applies audio retention daily.
+fn init_meetings(app_handle: &AppHandle) {
+    if !meetings::is_supported() {
+        return;
+    }
+
+    // Tray icon/menu follow the recorder.
+    let tray_app = app_handle.clone();
+    app_handle.listen(meetings::types::events::RECORDER_STATE, move |_| {
+        tray::update_tray_menu(&tray_app);
+    });
+    // The `meetings.enabled` switch starts/stops the scheduler and shows or
+    // hides the tray items.
+    let settings_app = app_handle.clone();
+    app_handle.listen("settings-changed", move |_| {
+        if let Some(m) = settings_app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
+            m.sync_scheduler();
+        }
+        tray::update_tray_menu(&settings_app);
+    });
+
+    let app = app_handle.clone();
+    let spawned = std::thread::Builder::new()
+        .name("meetings-init".into())
+        .spawn(
+            move || match meetings::manager::MeetingsManager::new(&app) {
+                Ok(manager) => {
+                    app.manage(manager.clone());
+                    manager.start_background();
+                    tray::update_tray_menu(&app);
+                }
+                Err(e) => log::error!("Meeting notes unavailable: {e:#}"),
+            },
+        );
+    if let Err(e) = spawned {
+        log::error!("Failed to start meeting notes: {e}");
+    }
 }
 
 /// What the UI should do once the backend is initialized.

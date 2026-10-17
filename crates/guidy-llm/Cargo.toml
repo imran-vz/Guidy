@@ -16,7 +16,7 @@ anyhow = "1"
 log = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["metal"] }
+llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["metal", "common"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "0.1.160", default-features = false }
+llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }

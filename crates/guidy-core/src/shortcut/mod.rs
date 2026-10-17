@@ -972,7 +972,7 @@ pub fn change_post_process_base_url_setting(
         .post_process_provider_mut(&provider_id)
         .expect("Provider looked up above must exist");
 
-    if provider.id != "custom" {
+    if provider.id != "custom" && !provider.allow_base_url_edit {
         return Err(format!(
             "Provider '{}' does not allow editing the base URL",
             label
@@ -1026,8 +1026,13 @@ pub fn change_post_process_api_key_setting(
 ) -> Result<(), String> {
     let mut settings = settings::get_settings(&app);
     validate_provider_exists(&settings, &provider_id)?;
-    settings.post_process_api_keys.insert(provider_id, api_key);
-    settings::write_settings(&app, settings);
+    let had_legacy = settings.post_process_api_keys.contains_key(&provider_id);
+    // Keys live in the Keychain, never in settings_store.json (D14).
+    settings::set_provider_api_key(&mut settings, &provider_id, &api_key)
+        .map_err(|e| format!("Failed to save the API key: {e}"))?;
+    if had_legacy {
+        settings::write_settings(&app, settings);
+    }
     Ok(())
 }
 pub fn change_post_process_model_setting(
@@ -1143,11 +1148,7 @@ pub async fn fetch_post_process_models(
     }
 
     // Get API key
-    let api_key = settings
-        .post_process_api_keys
-        .get(&provider_id)
-        .cloned()
-        .unwrap_or_default();
+    let api_key = settings::provider_api_key(&settings, &provider_id);
 
     // Skip fetching if no API key for providers that typically need one
     if api_key.trim().is_empty() && provider.id != "custom" {

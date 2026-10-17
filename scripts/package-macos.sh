@@ -18,13 +18,33 @@ APP="$ROOT/target/packages/Guidy.app"
 cd "$ROOT"
 cargo packager --release -p guidy-app --formats app
 
+# The built-in llama.cpp helper must sit next to the main executable.
+HELPER="$APP/Contents/MacOS/guidy-llm"
+HELPER_COPIED=0
+if [[ ! -x "$HELPER" ]]; then
+  # cargo-packager didn't bundle it (non-main binary): copy it in.
+  echo "Copying guidy-llm into the bundle"
+  cp "$ROOT/target/release/guidy-llm" "$HELPER"
+  HELPER_COPIED=1
+fi
+
 if security find-identity -p codesigning | grep -q "\"$IDENTITY\""; then
   echo "Signing with \"$IDENTITY\""
+  # Nested executables are signed first (inside-out); the helper needs no
+  # entitlements of its own.
+  codesign --force --options runtime -s "$IDENTITY" "$HELPER"
   codesign --force --deep --options runtime \
     --entitlements "$ROOT/assets/Entitlements.plist" \
     -s "$IDENTITY" "$APP"
   codesign --verify --strict "$APP"
 else
+  if [[ "$HELPER_COPIED" == 1 ]]; then
+    # The copied helper isn't covered by the packager's ad-hoc signature:
+    # sign it and reseal the bundle.
+    codesign --force -s - "$HELPER"
+    codesign --force --deep -s - \
+      --entitlements "$ROOT/assets/Entitlements.plist" "$APP"
+  fi
   echo "No \"$IDENTITY\" identity found; keeping the ad-hoc signature." >&2
   echo "Privacy grants will reset on every rebuild." >&2
 fi

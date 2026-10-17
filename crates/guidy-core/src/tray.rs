@@ -69,6 +69,50 @@ struct MenuInputs {
     downloaded_models: Vec<(String, String)>,
     locale: String,
     update_checks_enabled: bool,
+    meeting: MeetingMenu,
+}
+
+/// The meeting-notes part of the tray menu.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+struct MeetingMenu {
+    /// Show "Start/Stop Meeting Notes" (supported macOS, meetings enabled,
+    /// or a recording in progress).
+    available: bool,
+    recording: bool,
+    /// Title of the meeting being recorded (the linked event's title).
+    title: Option<String>,
+}
+
+fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMenu {
+    let manager = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>();
+    let state = manager
+        .as_ref()
+        .map(|m| m.recorder_state())
+        .unwrap_or_default();
+    match state {
+        crate::meetings::types::RecorderState::Recording { title, .. } => MeetingMenu {
+            available: true,
+            recording: true,
+            title: Some(title),
+        },
+        crate::meetings::types::RecorderState::Idle => MeetingMenu {
+            available: manager.is_some()
+                && settings.meetings.enabled
+                && crate::meetings::is_supported(),
+            recording: false,
+            title: None,
+        },
+    }
+}
+
+/// A meeting recording shows the recording icon unless dictation is busy
+/// (which has its own icons).
+fn effective_icon_state(dictation: TrayIconState, meeting_recording: bool) -> TrayIconState {
+    if meeting_recording && dictation == TrayIconState::Idle {
+        TrayIconState::Recording
+    } else {
+        dictation
+    }
 }
 
 /// Complete description of what the tray should look like.
@@ -327,6 +371,9 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
         .collect();
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
+    let meeting = meeting_menu(app, &settings);
+    let icon_state = effective_icon_state(icon_state, meeting.recording);
+
     TrayDesired {
         icon_path: get_icon_path(theme, icon_state, warning),
         menu: MenuInputs {
@@ -337,6 +384,7 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
             downloaded_models,
             locale: settings.app_language,
             update_checks_enabled: settings.update_checks_enabled,
+            meeting,
         },
     }
 }
@@ -633,6 +681,44 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
     entries.push(MenuEntry::Separator);
     entries.push(quit_i);
 
+    // Meeting notes go right below the version line.
+    if inputs.meeting.available {
+        let en = get_tray_translations(Some("en".to_string()));
+        let or_en = |s: &str, e: &str| {
+            if s.is_empty() {
+                e.to_string()
+            } else {
+                s.to_string()
+            }
+        };
+        let mut items = Vec::new();
+        if inputs.meeting.recording {
+            if let Some(title) = inputs.meeting.title.as_deref().filter(|t| !t.is_empty()) {
+                items.push(MenuEntry::item(
+                    "meeting_title",
+                    &format!("● {title}"),
+                    false,
+                    None,
+                ));
+            }
+            items.push(MenuEntry::item(
+                "meeting_stop",
+                &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
+                true,
+                None,
+            ));
+        } else {
+            items.push(MenuEntry::item(
+                "meeting_start",
+                &or_en(&strings.start_meeting_notes, &en.start_meeting_notes),
+                true,
+                None,
+            ));
+        }
+        items.push(MenuEntry::Separator);
+        entries.splice(2..2, items);
+    }
+
     // Both layouts start with [version, separator, ...]; slot the warning in
     // right below the version line so it's the first actionable thing seen.
     let mut tooltip = version_label;
@@ -896,6 +982,30 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "cancel" => {
             crate::utils::cancel_current_operation(app);
         }
+        "meeting_start" | "meeting_stop" => {
+            let Some(manager) = app
+                .try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
+                .map(|m| m.inner().clone())
+            else {
+                return;
+            };
+            let start = id == "meeting_start";
+            // Capture start/stop and calendar lookups must not block the
+            // main thread.
+            std::thread::spawn(move || {
+                let result = if start {
+                    manager.start_recording(None).map(|_| ())
+                } else {
+                    manager.stop_recording().map(|_| ())
+                };
+                if let Err(e) = result {
+                    error!(
+                        "Meeting notes {} from tray failed: {e:#}",
+                        if start { "start" } else { "stop" }
+                    );
+                }
+            });
+        }
         "quit" => {
             app.exit(0);
         }
@@ -921,8 +1031,8 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, last_transcript_text, load_tray_icon, MenuEntry, MenuInputs, TrayDesired,
-        TrayIconState,
+        build_menu, effective_icon_state, last_transcript_text, load_tray_icon, MeetingMenu,
+        MenuEntry, MenuInputs, TrayDesired, TrayIconState,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -949,6 +1059,7 @@ mod tests {
             downloaded_models: vec![("small".to_string(), "Small".to_string())],
             locale: "en".to_string(),
             update_checks_enabled: true,
+            meeting: MeetingMenu::default(),
         }
     }
 
@@ -1071,5 +1182,79 @@ mod tests {
         let de = build_menu(&i);
         let en = build_menu(&inputs(false));
         assert_ne!(de.entries, en.entries);
+    }
+
+    #[test]
+    fn meeting_items_hidden_when_unavailable() {
+        let ids = ids(&build_menu(&inputs(false)).entries);
+        assert!(!ids.iter().any(|id| id.starts_with("meeting_")));
+    }
+
+    #[test]
+    fn meeting_start_item_when_idle() {
+        let mut i = inputs(false);
+        i.meeting.available = true;
+        let menu = build_menu(&i);
+        assert_eq!(menu.entries[2].id(), Some("meeting_start"));
+        assert_eq!(menu.entries[3], MenuEntry::Separator);
+        assert!(matches!(
+            &menu.entries[2],
+            MenuEntry::Item { label, enabled: true, .. } if label == "Start Meeting Notes"
+        ));
+        // The rest of the idle menu is unchanged.
+        assert!(ids(&menu.entries).contains(&"model_submenu".to_string()));
+    }
+
+    #[test]
+    fn meeting_recording_shows_title_and_stop() {
+        for busy in [false, true] {
+            let mut i = inputs(busy);
+            i.meeting = MeetingMenu {
+                available: true,
+                recording: true,
+                title: Some("Weekly sync".into()),
+            };
+            let menu = build_menu(&i);
+            assert_eq!(
+                menu.entries[2],
+                MenuEntry::Item {
+                    id: "meeting_title".into(),
+                    label: "● Weekly sync".into(),
+                    enabled: false,
+                    accelerator: None,
+                }
+            );
+            assert_eq!(menu.entries[3].id(), Some("meeting_stop"));
+            assert_eq!(menu.entries[4], MenuEntry::Separator);
+            assert!(!ids(&menu.entries).contains(&"meeting_start".to_string()));
+        }
+    }
+
+    #[test]
+    fn untranslated_meeting_labels_fall_back_to_english() {
+        let mut i = inputs(false);
+        i.locale = "de".to_string();
+        i.meeting.available = true;
+        let menu = build_menu(&i);
+        assert!(matches!(&menu.entries[2], MenuEntry::Item { label, .. } if !label.is_empty()));
+    }
+
+    #[test]
+    fn meeting_recording_changes_the_menu_and_icon() {
+        let mut rec = inputs(false);
+        rec.meeting.recording = true;
+        assert_ne!(rec, inputs(false));
+        assert_eq!(
+            effective_icon_state(TrayIconState::Idle, true),
+            TrayIconState::Recording
+        );
+        assert_eq!(
+            effective_icon_state(TrayIconState::Transcribing, true),
+            TrayIconState::Transcribing
+        );
+        assert_eq!(
+            effective_icon_state(TrayIconState::Idle, false),
+            TrayIconState::Idle
+        );
     }
 }

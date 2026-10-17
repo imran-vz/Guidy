@@ -30,6 +30,7 @@ use transcribe_cpp::{Backend, RunOptions, Task, Transcript};
 
 mod chunked;
 mod live;
+pub mod meeting;
 pub mod policy;
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);

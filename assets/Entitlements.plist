@@ -6,5 +6,10 @@
     <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- Hardened Runtime resource access (scripts/package-macos.sh signs with
+         `--options runtime`): without it EventKit access is refused. The app
+         is not sandboxed. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
   </dict>
 </plist>

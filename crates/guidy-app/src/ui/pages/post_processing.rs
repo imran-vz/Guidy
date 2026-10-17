@@ -25,6 +25,9 @@ pub struct PostProcessingPage {
     prompt_text: Entity<TextareaState>,
     creating: bool,
     apple_unavailable: bool,
+    /// BYOK "Test connection": running, and the last result per provider.
+    testing: bool,
+    test_result: Option<(String, Result<String, String>)>,
     /// (provider id, prompt id) the inputs were last synced for.
     synced: (String, Option<String>),
     _subs: Vec<Subscription>,
@@ -46,6 +49,25 @@ fn provider_of(s: &AppSettings) -> (String, Option<guidy_core::settings::PostPro
         .or(s.post_process_providers.first())
         .cloned();
     (id, provider)
+}
+
+/// BYOK "Test connection" outcome: a check or an alert with the message.
+fn test_result_line(r: &Result<String, String>, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let (name, color, text) = match r {
+        Ok(m) => ("check", theme.success, m.clone()),
+        Err(e) => ("circle-alert", theme.danger, e.clone()),
+    };
+    h_flex()
+        .id("pp-test-result")
+        .max_w(px(320.))
+        .gap_1()
+        .text_xs()
+        .text_color(color)
+        .child(icon(name).xsmall())
+        .child(div().min_w_0().truncate().child(text))
+        .test_support()
+        .into_any_element()
 }
 
 impl PostProcessingPage {
@@ -84,12 +106,7 @@ impl PostProcessingPage {
             cx.subscribe_in(&api_key, window, |this, input, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                     let v = input.read(cx).value().trim().to_string();
-                    this.save(
-                        "api_key",
-                        v,
-                        |s, id| s.post_process_api_keys.get(id).cloned().unwrap_or_default(),
-                        cx,
-                    );
+                    this.save("api_key", v, guidy_core::settings::provider_api_key, cx);
                 }
             }),
             cx.subscribe_in(&model, window, |this, input, ev: &InputEvent, _, cx| {
@@ -124,6 +141,8 @@ impl PostProcessingPage {
             prompt_text,
             creating: false,
             apple_unavailable: false,
+            testing: false,
+            test_result: None,
             synced: (String::new(), None),
             _subs: subs,
         };
@@ -158,10 +177,7 @@ impl PostProcessingPage {
             set_if(&self.base_url, base, window, cx);
             set_if(
                 &self.api_key,
-                s.post_process_api_keys
-                    .get(&pid)
-                    .cloned()
-                    .unwrap_or_default(),
+                guidy_core::settings::provider_api_key(&s, &pid),
                 window,
                 cx,
             );
@@ -237,10 +253,9 @@ impl PostProcessingPage {
             return;
         };
         let (pid, provider) = provider_of(&s);
-        if pid != CUSTOM_PROVIDER_ID
-            || value.is_empty()
-            || provider.is_some_and(|p| p.base_url == value)
-        {
+        let editable =
+            pid == CUSTOM_PROVIDER_ID || provider.as_ref().is_some_and(|p| p.allow_base_url_edit);
+        if !editable || value.is_empty() || provider.is_some_and(|p| p.base_url == value) {
             return;
         }
         self.state.update(cx, |st, cx| {
@@ -271,11 +286,7 @@ impl PostProcessingPage {
             .find(|p| p.id == id)
             .map(|p| p.base_url.clone())
             .unwrap_or_default();
-        let key = s
-            .post_process_api_keys
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
+        let key = guidy_core::settings::provider_api_key(&s, &id);
         let fetch = should_auto_fetch_models(&id, &base, &key);
         self.state.update(cx, |st, cx| {
             st.set_post_process_provider(&id, cx);
@@ -283,6 +294,30 @@ impl PostProcessingPage {
                 st.fetch_post_process_models(&id, cx);
             }
         });
+        cx.notify();
+    }
+
+    /// BYOK: check the provider's base URL, key and model.
+    fn test_connection(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        if self.testing {
+            return;
+        }
+        self.testing = true;
+        self.test_result = None;
+        let backend = self.state.read(cx).meetings.clone();
+        cx.spawn(async move |this, cx| {
+            let pid = provider_id.clone();
+            let r = cx
+                .background_spawn(async move { backend.llm_test_connection(&pid) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.testing = false;
+                this.test_result = Some((provider_id, r));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -362,6 +397,8 @@ impl PostProcessingPage {
         let (pid, provider) = provider_of(s);
         let is_apple = pid == APPLE_PROVIDER_ID;
         let is_custom = pid == CUSTOM_PROVIDER_ID;
+        let base_url_editable =
+            is_custom || provider.as_ref().is_some_and(|p| p.allow_base_url_edit);
         let up = |k: String| st.settings.is_updating(&k);
         let mut rows = vec![SettingRow::new(
             "pp-provider",
@@ -450,12 +487,18 @@ impl PostProcessingPage {
                 )
                 .into_any_element(),
             );
+        }
+        if base_url_editable {
             rows.push(
                 SettingRow::new(
                     "pp-base-url",
                     t("settings.postProcessing.api.baseUrl.title"),
                 )
-                .description(t("settings.postProcessing.api.baseUrl.description"))
+                .description(if is_custom {
+                    t("settings.postProcessing.api.baseUrl.description")
+                } else {
+                    t("meetingsAi.byok.baseUrlEditable")
+                })
                 .control(
                     div().w(px(320.)).child(
                         Input::new(&self.base_url)
@@ -544,6 +587,30 @@ impl PostProcessingPage {
                                         .update(cx, |s, cx| s.fetch_post_process_models(&pid, cx));
                                 }),
                         ),
+                )
+                .into_any_element(),
+        );
+        let result = self
+            .test_result
+            .as_ref()
+            .filter(|(p, _)| *p == pid)
+            .map(|(_, r)| test_result_line(r, cx));
+        let pid_test = pid.clone();
+        rows.push(
+            SettingRow::new("pp-test-connection", t("meetingsAi.byok.testConnection"))
+                .description(t("meetingsAi.byok.testDescription"))
+                .control(
+                    h_flex().gap_2().children(result).child(
+                        Button::new("pp-test-connection-button")
+                            .outline()
+                            .small()
+                            .label(t("meetingsAi.byok.testConnection"))
+                            .loading(self.testing)
+                            .disabled(self.testing)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.test_connection(pid_test.clone(), cx)
+                            })),
+                    ),
                 )
                 .into_any_element(),
         );

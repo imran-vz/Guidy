@@ -11,7 +11,8 @@ use crate::ui::onboarding::{
 };
 use crate::ui::pages::{
     about::AboutPage, advanced::AdvancedPage, debug::DebugPage, general::GeneralPage,
-    history::HistoryPage, models::ModelsPage, post_processing::PostProcessingPage,
+    history::HistoryPage, meetings::MeetingsPage, models::ModelsPage,
+    post_processing::PostProcessingPage,
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
@@ -27,6 +28,7 @@ use gpui_kit::*;
 pub enum Section {
     General,
     History,
+    Meetings,
     Models,
     Advanced,
     PostProcessing,
@@ -39,6 +41,7 @@ impl Section {
         match self {
             Section::General => "general",
             Section::History => "history",
+            Section::Meetings => "meetings",
             Section::Models => "models",
             Section::Advanced => "advanced",
             Section::PostProcessing => "postprocessing",
@@ -51,6 +54,7 @@ impl Section {
         Some(match id {
             "general" => Section::General,
             "history" => Section::History,
+            "meetings" => Section::Meetings,
             "models" => Section::Models,
             "advanced" => Section::Advanced,
             "postprocessing" => Section::PostProcessing,
@@ -64,6 +68,7 @@ impl Section {
         match self {
             Section::General => "sidebar.general",
             Section::History => "sidebar.history",
+            Section::Meetings => "meetings.title",
             Section::Models => "sidebar.models",
             Section::Advanced => "sidebar.advanced",
             Section::PostProcessing => "sidebar.postProcessing",
@@ -76,6 +81,7 @@ impl Section {
         match self {
             Section::General => "mic",
             Section::History => "clock",
+            Section::Meetings => "notebook-pen",
             Section::Models => "cpu",
             Section::Advanced => "cog",
             Section::PostProcessing => "sparkles",
@@ -94,6 +100,7 @@ impl Global for LastSection {}
 struct Pages {
     general: Option<Entity<GeneralPage>>,
     history: Option<Entity<HistoryPage>>,
+    meetings: Option<Entity<MeetingsPage>>,
     models: Option<Entity<ModelsPage>>,
     advanced: Option<Entity<AdvancedPage>>,
     post_processing: Option<Entity<PostProcessingPage>>,
@@ -194,6 +201,15 @@ impl MainWindow {
         this
     }
 
+    /// Sidebar sections in order; Meetings only where supported.
+    fn visible_sections(&self, cx: &App) -> Vec<&'static str> {
+        let state = self.state.read(cx);
+        crate::logic::meetings::with_meetings_section(
+            crate::logic::flows::sidebar_sections(state.app_settings()),
+            state.meetings_supported,
+        )
+    }
+
     /// The startup step (`None` while the startup check runs).
     pub fn step(&self, cx: &App) -> Option<OnboardingStep> {
         self.state.read(cx).startup.step
@@ -201,7 +217,7 @@ impl MainWindow {
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
         // Keep the selected section valid when it becomes hidden.
-        let visible = crate::logic::flows::sidebar_sections(self.state.read(cx).app_settings());
+        let visible = self.visible_sections(cx);
         if !visible.contains(&self.section.id()) {
             self.section = Section::General;
         }
@@ -256,7 +272,7 @@ impl MainWindow {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let visible = crate::logic::flows::sidebar_sections(self.state.read(cx).app_settings());
+        let visible = self.visible_sections(cx);
         let (selected_bg, hover_bg, muted, border, panel) = (
             theme.sidebar_accent,
             theme.accent,
@@ -317,6 +333,7 @@ impl MainWindow {
         match self.section {
             Section::General => page!(general, GeneralPage),
             Section::History => page!(history, HistoryPage),
+            Section::Meetings => page!(meetings, MeetingsPage),
             Section::Models => page!(models, ModelsPage),
             Section::Advanced => page!(advanced, AdvancedPage),
             Section::PostProcessing => page!(post_processing, PostProcessingPage),

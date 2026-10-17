@@ -1,0 +1,1133 @@
+//! The UI's view of meeting notes.
+//!
+//! Every meeting command the UI invokes is a method here, one per
+//! [`MeetingsManager`] method, in the same style as [`crate::backend::Backend`]:
+//! synchronous (may block, so views call them from background tasks) and
+//! returning `Result<_, String>`. Production uses [`CoreMeetingsBackend`]
+//! (the `Arc<MeetingsManager>` registered in the app handle's state); UI tests
+//! use [`fake::FakeMeetingsBackend`]. [`NoMeetings`] stands in when meeting
+//! notes are not available at all (and in tests that don't need them).
+//!
+//! Ownership (docs/MEETING_NOTES_ARCH.md): G1 owns everything except the
+//! `// -- AI + Linear (G2)` sections, which G2 fills. New trait methods need a
+//! body in `CoreMeetingsBackend`, `NoMeetings` and the fake; a default body on
+//! the trait (returning [`unavailable`]) keeps the others compiling.
+
+use guidy_core::meetings::manager::{
+    MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult,
+};
+use guidy_core::meetings::types::*;
+use guidy_core::AppHandle;
+use std::sync::Arc;
+
+pub type MeetingsResult<T> = Result<T, String>;
+
+pub fn unavailable() -> String {
+    "Meeting notes are not available on this system".to_string()
+}
+
+pub trait MeetingsBackend: Send + Sync + 'static {
+    // -- support & permissions --------------------------------------------
+    /// Meeting features exist on this system (macOS 14.2+). When false the
+    /// Meetings section is hidden.
+    fn is_supported(&self) -> bool;
+    fn request_permissions(&self) -> MeetingsResult<PermissionReport>;
+    fn permission_status(&self) -> PermissionReport;
+
+    // -- calendar -----------------------------------------------------------
+    fn upcoming_events(&self) -> MeetingsResult<Vec<CalendarEvent>>;
+
+    // -- recording ----------------------------------------------------------
+    fn recorder_state(&self) -> RecorderState;
+    fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId>;
+    fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>>;
+    /// 16 kHz mono f32 samples of one track between `t0_ms` and `t1_ms`.
+    fn segment_audio(
+        &self,
+        meeting_id: MeetingId,
+        track: Track,
+        t0_ms: i64,
+        t1_ms: i64,
+    ) -> MeetingsResult<Vec<f32>>;
+
+    // -- meetings & people ------------------------------------------------
+    fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>>;
+    fn get_meeting(&self, id: MeetingId) -> MeetingsResult<Option<Meeting>>;
+    fn rename_meeting(&self, id: MeetingId, title: &str) -> MeetingsResult<()>;
+    fn delete_meeting(&self, id: MeetingId) -> MeetingsResult<()>;
+    fn segments(&self, id: MeetingId) -> MeetingsResult<Vec<Segment>>;
+    fn speakers(&self, id: MeetingId) -> MeetingsResult<Vec<MeetingSpeaker>>;
+    fn list_people(&self) -> MeetingsResult<Vec<Person>>;
+    fn rename_person(
+        &self,
+        id: PersonId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> MeetingsResult<()>;
+    fn merge_people(&self, from: PersonId, into: PersonId) -> MeetingsResult<()>;
+    fn delete_person(&self, id: PersonId) -> MeetingsResult<()>;
+
+    // -- processing & speakers --------------------------------------------
+    fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()>;
+    fn cancel_processing(&self, id: MeetingId) -> MeetingsResult<()>;
+    fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress>;
+    fn speaker_suggestions(&self, speaker_id: SpeakerId) -> MeetingsResult<Vec<NameSuggestion>>;
+    fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId>;
+    fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()>;
+
+    // -- AI + Linear (G2) ---------------------------------------------------
+    // Default bodies keep `NoMeetings` (and any other impl) compiling.
+
+    // Summaries & action items.
+    fn summary(&self, _id: MeetingId) -> MeetingsResult<Option<StoredSummary>> {
+        Ok(None)
+    }
+    /// `provider_override`: `(provider_id, model)`, else the meetings model
+    /// from settings.
+    fn summarize(
+        &self,
+        _id: MeetingId,
+        _provider_override: Option<(String, String)>,
+    ) -> MeetingsResult<StoredSummary> {
+        Err(unavailable())
+    }
+    fn update_summary(&self, _summary: &StoredSummary) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn action_items(&self, _id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+        Ok(Vec::new())
+    }
+    fn update_action_item(&self, _item: &ActionItem) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn add_action_item(&self, _meeting_id: MeetingId, _text: &str) -> MeetingsResult<ActionItem> {
+        Err(unavailable())
+    }
+    fn delete_action_item(&self, _id: ActionItemId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+
+    // Linear.
+    fn set_linear_api_key(&self, _key: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn has_linear_api_key(&self) -> bool {
+        false
+    }
+    /// The authenticated Linear user's name.
+    fn test_linear(&self) -> MeetingsResult<String> {
+        Err(unavailable())
+    }
+    fn linear_teams(&self) -> MeetingsResult<Vec<guidy_core::linear::Team>> {
+        Ok(Vec::new())
+    }
+    fn linear_projects(&self, _team_id: &str) -> MeetingsResult<Vec<guidy_core::linear::Project>> {
+        Ok(Vec::new())
+    }
+    fn linear_users(&self) -> MeetingsResult<Vec<guidy_core::linear::User>> {
+        Ok(Vec::new())
+    }
+    fn linear_labels(&self, _team_id: &str) -> MeetingsResult<Vec<guidy_core::linear::Label>> {
+        Ok(Vec::new())
+    }
+    fn draft_tickets(&self, _meeting_id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+        Err(unavailable())
+    }
+    fn create_tickets(&self, _ids: &[ActionItemId]) -> MeetingsResult<Vec<TicketResult>> {
+        Err(unavailable())
+    }
+
+    // LLM providers (meetings model, BYOK).
+    /// Check a provider's URL + key with a small request. Returns a short
+    /// human-readable success message (e.g. the number of models).
+    fn llm_test_connection(&self, _provider_id: &str) -> MeetingsResult<String> {
+        Err(unavailable())
+    }
+    /// Model ids the provider offers (local: downloaded built-in models).
+    fn llm_models(&self, _provider_id: &str) -> MeetingsResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    /// Built-in llama.cpp models (catalog + download state).
+    fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
+        Ok(Vec::new())
+    }
+    fn download_local_llm_model(&self, _id: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn cancel_local_llm_download(&self, _id: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn delete_local_llm_model(&self, _id: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// Open a URL in the default browser (Linear issue links, API key page).
+    fn open_url(&self, _url: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+}
+
+/// A built-in llama.cpp model as the meetings AI settings show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalLlmModel {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub size_mb: u64,
+    /// The default model (~4B).
+    pub is_default: bool,
+    /// Recommended minimum RAM in GB (16 for the 8B model).
+    pub recommended_ram_gb: Option<u32>,
+    /// This Mac has the recommended RAM (or there is no minimum).
+    pub fits_this_mac: bool,
+    pub downloaded: bool,
+    /// 0.0..=1.0 while downloading.
+    pub download_progress: Option<f32>,
+}
+
+pub type SharedMeetingsBackend = Arc<dyn MeetingsBackend>;
+
+/// The live backend: forwards to the `Arc<MeetingsManager>` in app state.
+/// The manager may be absent (unsupported system, startup failure): reads
+/// then return empty values and commands return an error.
+pub struct CoreMeetingsBackend {
+    app: AppHandle,
+}
+
+impl CoreMeetingsBackend {
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
+
+    pub fn manager(&self) -> Option<Arc<MeetingsManager>> {
+        self.app
+            .try_state::<Arc<MeetingsManager>>()
+            .map(|s| Arc::clone(&*s))
+    }
+
+    fn m(&self) -> MeetingsResult<Arc<MeetingsManager>> {
+        self.manager().ok_or_else(unavailable)
+    }
+}
+
+fn err(e: anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+impl MeetingsBackend for CoreMeetingsBackend {
+    fn is_supported(&self) -> bool {
+        guidy_core::meetings::is_supported()
+    }
+    fn request_permissions(&self) -> MeetingsResult<PermissionReport> {
+        self.m()?.request_permissions().map_err(err)
+    }
+    fn permission_status(&self) -> PermissionReport {
+        self.manager()
+            .map(|m| m.permission_status())
+            .unwrap_or_default()
+    }
+
+    fn upcoming_events(&self) -> MeetingsResult<Vec<CalendarEvent>> {
+        match self.manager() {
+            Some(m) => m.upcoming_events().map_err(err),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn recorder_state(&self) -> RecorderState {
+        self.manager()
+            .map(|m| m.recorder_state())
+            .unwrap_or_default()
+    }
+    fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId> {
+        self.m()?.start_recording(calendar_event_id).map_err(err)
+    }
+    fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
+        self.m()?.stop_recording().map_err(err)
+    }
+    fn segment_audio(
+        &self,
+        meeting_id: MeetingId,
+        track: Track,
+        t0_ms: i64,
+        t1_ms: i64,
+    ) -> MeetingsResult<Vec<f32>> {
+        self.m()?
+            .segment_audio(meeting_id, track, t0_ms, t1_ms)
+            .map_err(err)
+    }
+
+    fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>> {
+        match self.manager() {
+            Some(m) => m.list_meetings().map_err(err),
+            None => Ok(Vec::new()),
+        }
+    }
+    fn get_meeting(&self, id: MeetingId) -> MeetingsResult<Option<Meeting>> {
+        self.m()?.get_meeting(id).map_err(err)
+    }
+    fn rename_meeting(&self, id: MeetingId, title: &str) -> MeetingsResult<()> {
+        self.m()?.rename_meeting(id, title).map_err(err)
+    }
+    fn delete_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
+        self.m()?.delete_meeting(id).map_err(err)
+    }
+    fn segments(&self, id: MeetingId) -> MeetingsResult<Vec<Segment>> {
+        self.m()?.segments(id).map_err(err)
+    }
+    fn speakers(&self, id: MeetingId) -> MeetingsResult<Vec<MeetingSpeaker>> {
+        self.m()?.speakers(id).map_err(err)
+    }
+    fn list_people(&self) -> MeetingsResult<Vec<Person>> {
+        match self.manager() {
+            Some(m) => m.list_people().map_err(err),
+            None => Ok(Vec::new()),
+        }
+    }
+    fn rename_person(
+        &self,
+        id: PersonId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> MeetingsResult<()> {
+        self.m()?
+            .rename_person(id, display_name, email)
+            .map_err(err)
+    }
+    fn merge_people(&self, from: PersonId, into: PersonId) -> MeetingsResult<()> {
+        self.m()?.merge_people(from, into).map_err(err)
+    }
+    fn delete_person(&self, id: PersonId) -> MeetingsResult<()> {
+        self.m()?.delete_person(id).map_err(err)
+    }
+
+    fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
+        self.m()?.process_meeting(id).map_err(err)
+    }
+    fn cancel_processing(&self, id: MeetingId) -> MeetingsResult<()> {
+        self.m()?.cancel_processing(id).map_err(err)
+    }
+    fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
+        self.manager()?.processing_progress(id)
+    }
+    fn speaker_suggestions(&self, speaker_id: SpeakerId) -> MeetingsResult<Vec<NameSuggestion>> {
+        self.m()?.speaker_suggestions(speaker_id).map_err(err)
+    }
+    fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId> {
+        self.m()?.assign_speaker(speaker_id, person).map_err(err)
+    }
+    fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()> {
+        self.m()?.confirm_speaker(speaker_id).map_err(err)
+    }
+
+    // -- AI + Linear (G2) ---------------------------------------------------
+    fn summary(&self, id: MeetingId) -> MeetingsResult<Option<StoredSummary>> {
+        self.m()?.summary(id).map_err(err)
+    }
+    fn summarize(
+        &self,
+        id: MeetingId,
+        provider_override: Option<(String, String)>,
+    ) -> MeetingsResult<StoredSummary> {
+        self.m()?.summarize(id, provider_override).map_err(err)
+    }
+    fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
+        self.m()?.update_summary(summary).map_err(err)
+    }
+    fn action_items(&self, id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+        self.m()?.action_items(id).map_err(err)
+    }
+    fn update_action_item(&self, item: &ActionItem) -> MeetingsResult<()> {
+        self.m()?.update_action_item(item).map_err(err)
+    }
+    fn add_action_item(&self, meeting_id: MeetingId, text: &str) -> MeetingsResult<ActionItem> {
+        self.m()?.add_action_item(meeting_id, text).map_err(err)
+    }
+    fn delete_action_item(&self, id: ActionItemId) -> MeetingsResult<()> {
+        self.m()?.delete_action_item(id).map_err(err)
+    }
+
+    fn set_linear_api_key(&self, key: &str) -> MeetingsResult<()> {
+        self.m()?.set_linear_api_key(key).map_err(err)
+    }
+    fn has_linear_api_key(&self) -> bool {
+        self.manager().is_some_and(|m| m.has_linear_api_key())
+    }
+    fn test_linear(&self) -> MeetingsResult<String> {
+        self.m()?.test_linear().map_err(err)
+    }
+    fn linear_teams(&self) -> MeetingsResult<Vec<guidy_core::linear::Team>> {
+        self.m()?.linear_teams().map_err(err)
+    }
+    fn linear_projects(&self, team_id: &str) -> MeetingsResult<Vec<guidy_core::linear::Project>> {
+        self.m()?.linear_projects(team_id).map_err(err)
+    }
+    fn linear_users(&self) -> MeetingsResult<Vec<guidy_core::linear::User>> {
+        self.m()?.linear_users().map_err(err)
+    }
+    fn linear_labels(&self, team_id: &str) -> MeetingsResult<Vec<guidy_core::linear::Label>> {
+        self.m()?.linear_labels(team_id).map_err(err)
+    }
+    fn draft_tickets(&self, meeting_id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+        self.m()?.draft_tickets(meeting_id).map_err(err)
+    }
+    fn create_tickets(&self, ids: &[ActionItemId]) -> MeetingsResult<Vec<TicketResult>> {
+        self.m()?.create_tickets(ids).map_err(err)
+    }
+
+    fn llm_test_connection(&self, provider_id: &str) -> MeetingsResult<String> {
+        g2_core::test_connection(&self.app, provider_id)
+    }
+    fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
+        g2_core::list_models(&self.app, provider_id)
+    }
+    fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
+        g2_core::local_models(&self.app)
+    }
+    fn download_local_llm_model(&self, id: &str) -> MeetingsResult<()> {
+        g2_core::download_local(&self.app, id)
+    }
+    fn cancel_local_llm_download(&self, id: &str) -> MeetingsResult<()> {
+        g2_core::cancel_local(&self.app, id)
+    }
+    fn delete_local_llm_model(&self, id: &str) -> MeetingsResult<()> {
+        g2_core::delete_local(&self.app, id)
+    }
+    fn open_url(&self, url: &str) -> MeetingsResult<()> {
+        self.app.opener().open_url(url, None)
+    }
+}
+
+/// G2: the `CoreMeetingsBackend` LLM methods, over `guidy_core::llm`.
+mod g2_core {
+    use super::{LocalLlmModel, MeetingsResult};
+    use guidy_core::llm::local_models::{LocalModel, LocalModels};
+    use guidy_core::AppHandle;
+
+    fn err(e: anyhow::Error) -> String {
+        format!("{e:#}")
+    }
+
+    pub fn test_connection(app: &AppHandle, provider_id: &str) -> MeetingsResult<String> {
+        guidy_core::llm::test_connection(app, provider_id).map_err(err)
+    }
+
+    pub fn list_models(app: &AppHandle, provider_id: &str) -> MeetingsResult<Vec<String>> {
+        guidy_core::llm::list_models(app, provider_id).map_err(err)
+    }
+
+    pub fn to_view(m: LocalModel) -> LocalLlmModel {
+        let download_progress = m.downloading.then(|| {
+            if m.size_bytes == 0 {
+                0.0
+            } else {
+                (m.partial_bytes as f64 / m.size_bytes as f64).clamp(0.0, 1.0) as f32
+            }
+        });
+        LocalLlmModel {
+            id: m.id,
+            name: m.name,
+            description: m.description,
+            size_mb: m.size_bytes / (1024 * 1024),
+            is_default: m.is_default,
+            recommended_ram_gb: m.recommended_min_ram_gb,
+            fits_this_mac: m.fits_this_mac,
+            downloaded: m.downloaded,
+            download_progress,
+        }
+    }
+
+    pub fn local_models(app: &AppHandle) -> MeetingsResult<Vec<LocalLlmModel>> {
+        Ok(LocalModels::new(app)
+            .map_err(err)?
+            .list()
+            .into_iter()
+            .map(to_view)
+            .collect())
+    }
+
+    pub fn download_local(app: &AppHandle, id: &str) -> MeetingsResult<()> {
+        LocalModels::new(app)
+            .map_err(err)?
+            .start_download(id)
+            .map_err(err)
+    }
+
+    pub fn cancel_local(app: &AppHandle, id: &str) -> MeetingsResult<()> {
+        LocalModels::new(app).map_err(err)?.cancel_download(id);
+        Ok(())
+    }
+
+    pub fn delete_local(app: &AppHandle, id: &str) -> MeetingsResult<()> {
+        LocalModels::new(app).map_err(err)?.delete(id).map_err(err)
+    }
+}
+
+/// Meeting notes are unavailable: hidden section, empty reads, failing
+/// commands.
+pub struct NoMeetings;
+
+impl MeetingsBackend for NoMeetings {
+    fn is_supported(&self) -> bool {
+        false
+    }
+    fn request_permissions(&self) -> MeetingsResult<PermissionReport> {
+        Err(unavailable())
+    }
+    fn permission_status(&self) -> PermissionReport {
+        PermissionReport::default()
+    }
+    fn upcoming_events(&self) -> MeetingsResult<Vec<CalendarEvent>> {
+        Ok(Vec::new())
+    }
+    fn recorder_state(&self) -> RecorderState {
+        RecorderState::Idle
+    }
+    fn start_recording(&self, _: Option<String>) -> MeetingsResult<MeetingId> {
+        Err(unavailable())
+    }
+    fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
+        Err(unavailable())
+    }
+    fn segment_audio(&self, _: MeetingId, _: Track, _: i64, _: i64) -> MeetingsResult<Vec<f32>> {
+        Err(unavailable())
+    }
+    fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>> {
+        Ok(Vec::new())
+    }
+    fn get_meeting(&self, _: MeetingId) -> MeetingsResult<Option<Meeting>> {
+        Ok(None)
+    }
+    fn rename_meeting(&self, _: MeetingId, _: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn delete_meeting(&self, _: MeetingId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn segments(&self, _: MeetingId) -> MeetingsResult<Vec<Segment>> {
+        Ok(Vec::new())
+    }
+    fn speakers(&self, _: MeetingId) -> MeetingsResult<Vec<MeetingSpeaker>> {
+        Ok(Vec::new())
+    }
+    fn list_people(&self) -> MeetingsResult<Vec<Person>> {
+        Ok(Vec::new())
+    }
+    fn rename_person(&self, _: PersonId, _: &str, _: Option<&str>) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn merge_people(&self, _: PersonId, _: PersonId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn delete_person(&self, _: PersonId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn process_meeting(&self, _: MeetingId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn cancel_processing(&self, _: MeetingId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn processing_progress(&self, _: MeetingId) -> Option<ProcessingProgress> {
+        None
+    }
+    fn speaker_suggestions(&self, _: SpeakerId) -> MeetingsResult<Vec<NameSuggestion>> {
+        Ok(Vec::new())
+    }
+    fn assign_speaker(&self, _: SpeakerId, _: PersonRef) -> MeetingsResult<PersonId> {
+        Err(unavailable())
+    }
+    fn confirm_speaker(&self, _: SpeakerId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+
+    // -- AI + Linear (G2) ---------------------------------------------------
+}
+
+/// Recording fake for UI tests (same style as `testing::FakeBackend`).
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+    use guidy_core::meetings::manager::SuggestionSource;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+
+    pub struct FakeMeetingsData {
+        pub supported: bool,
+        pub permissions: PermissionReport,
+        pub recorder: RecorderState,
+        pub upcoming: Vec<CalendarEvent>,
+        pub meetings: Vec<Meeting>,
+        pub segments: HashMap<MeetingId, Vec<Segment>>,
+        pub speakers: HashMap<MeetingId, Vec<MeetingSpeaker>>,
+        pub people: Vec<Person>,
+        /// Extra suggestions returned before the known people.
+        pub attendees: Vec<NameSuggestion>,
+        pub progress: HashMap<MeetingId, ProcessingProgress>,
+        pub next_id: i64,
+        /// G2: summaries, action items, Linear, LLM.
+        pub ai: FakeAiData,
+    }
+
+    impl Default for FakeMeetingsData {
+        fn default() -> Self {
+            Self {
+                supported: true,
+                permissions: PermissionReport::default(),
+                recorder: RecorderState::Idle,
+                upcoming: Vec::new(),
+                meetings: Vec::new(),
+                segments: HashMap::new(),
+                speakers: HashMap::new(),
+                people: Vec::new(),
+                attendees: Vec::new(),
+                progress: HashMap::new(),
+                next_id: 1000,
+                ai: FakeAiData::default(),
+            }
+        }
+    }
+
+    /// Records calls as `"name arg1 arg2"` strings.
+    pub struct FakeMeetingsBackend {
+        pub calls: Mutex<Vec<String>>,
+        pub data: Mutex<FakeMeetingsData>,
+    }
+
+    impl FakeMeetingsBackend {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                data: Mutex::new(FakeMeetingsData::default()),
+            })
+        }
+
+        fn rec(&self, call: impl Into<String>) {
+            self.calls.lock().push(call.into());
+        }
+
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+
+        pub fn called(&self, prefix: &str) -> bool {
+            self.calls.lock().iter().any(|c| c.starts_with(prefix))
+        }
+
+        fn speaker_mut<R>(
+            &self,
+            speaker_id: SpeakerId,
+            f: impl FnOnce(&mut MeetingSpeaker) -> R,
+        ) -> MeetingsResult<R> {
+            let mut d = self.data.lock();
+            d.speakers
+                .values_mut()
+                .flat_map(|v| v.iter_mut())
+                .find(|s| s.id == speaker_id)
+                .map(f)
+                .ok_or_else(|| format!("no speaker {speaker_id}"))
+        }
+    }
+
+    impl MeetingsBackend for FakeMeetingsBackend {
+        fn is_supported(&self) -> bool {
+            self.data.lock().supported
+        }
+        fn request_permissions(&self) -> MeetingsResult<PermissionReport> {
+            self.rec("request_permissions");
+            Ok(self.data.lock().permissions.clone())
+        }
+        fn permission_status(&self) -> PermissionReport {
+            self.data.lock().permissions.clone()
+        }
+        fn upcoming_events(&self) -> MeetingsResult<Vec<CalendarEvent>> {
+            Ok(self.data.lock().upcoming.clone())
+        }
+        fn recorder_state(&self) -> RecorderState {
+            self.data.lock().recorder.clone()
+        }
+        fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId> {
+            self.rec(format!(
+                "start_recording {}",
+                calendar_event_id.as_deref().unwrap_or("none")
+            ));
+            let mut d = self.data.lock();
+            d.next_id += 1;
+            let id = d.next_id;
+            let title = calendar_event_id
+                .as_ref()
+                .and_then(|e| d.upcoming.iter().find(|u| &u.id == e))
+                .map(|e| e.title.clone())
+                .unwrap_or_else(|| "Meeting".into());
+            d.recorder = RecorderState::Recording {
+                meeting_id: id,
+                title,
+                started_at: 0,
+                scheduled_end_at: None,
+            };
+            Ok(id)
+        }
+        fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
+            self.rec("stop_recording");
+            let mut d = self.data.lock();
+            let id = match &d.recorder {
+                RecorderState::Recording { meeting_id, .. } => Some(*meeting_id),
+                RecorderState::Idle => None,
+            };
+            d.recorder = RecorderState::Idle;
+            Ok(id)
+        }
+        fn segment_audio(
+            &self,
+            meeting_id: MeetingId,
+            track: Track,
+            t0_ms: i64,
+            t1_ms: i64,
+        ) -> MeetingsResult<Vec<f32>> {
+            self.rec(format!(
+                "segment_audio {meeting_id} {} {t0_ms} {t1_ms}",
+                track.as_str()
+            ));
+            Ok(vec![0.0; ((t1_ms - t0_ms).max(0) * 16) as usize])
+        }
+        fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>> {
+            self.rec("list_meetings");
+            Ok(self.data.lock().meetings.clone())
+        }
+        fn get_meeting(&self, id: MeetingId) -> MeetingsResult<Option<Meeting>> {
+            Ok(self
+                .data
+                .lock()
+                .meetings
+                .iter()
+                .find(|m| m.id == id)
+                .cloned())
+        }
+        fn rename_meeting(&self, id: MeetingId, title: &str) -> MeetingsResult<()> {
+            self.rec(format!("rename_meeting {id} {title}"));
+            if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
+                m.title = title.to_string();
+            }
+            Ok(())
+        }
+        fn delete_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
+            self.rec(format!("delete_meeting {id}"));
+            self.data.lock().meetings.retain(|m| m.id != id);
+            Ok(())
+        }
+        fn segments(&self, id: MeetingId) -> MeetingsResult<Vec<Segment>> {
+            Ok(self
+                .data
+                .lock()
+                .segments
+                .get(&id)
+                .cloned()
+                .unwrap_or_default())
+        }
+        fn speakers(&self, id: MeetingId) -> MeetingsResult<Vec<MeetingSpeaker>> {
+            Ok(self
+                .data
+                .lock()
+                .speakers
+                .get(&id)
+                .cloned()
+                .unwrap_or_default())
+        }
+        fn list_people(&self) -> MeetingsResult<Vec<Person>> {
+            Ok(self.data.lock().people.clone())
+        }
+        fn rename_person(
+            &self,
+            id: PersonId,
+            display_name: &str,
+            email: Option<&str>,
+        ) -> MeetingsResult<()> {
+            self.rec(format!(
+                "rename_person {id} {display_name} {}",
+                email.unwrap_or("-")
+            ));
+            if let Some(p) = self.data.lock().people.iter_mut().find(|p| p.id == id) {
+                p.display_name = display_name.to_string();
+                p.email = email.map(str::to_string);
+            }
+            Ok(())
+        }
+        fn merge_people(&self, from: PersonId, into: PersonId) -> MeetingsResult<()> {
+            self.rec(format!("merge_people {from} {into}"));
+            let mut d = self.data.lock();
+            let moved = d
+                .people
+                .iter()
+                .find(|p| p.id == from)
+                .map(|p| p.voiceprint_count)
+                .unwrap_or(0);
+            d.people.retain(|p| p.id != from);
+            if let Some(p) = d.people.iter_mut().find(|p| p.id == into) {
+                p.voiceprint_count += moved;
+            }
+            Ok(())
+        }
+        fn delete_person(&self, id: PersonId) -> MeetingsResult<()> {
+            self.rec(format!("delete_person {id}"));
+            self.data.lock().people.retain(|p| p.id != id);
+            Ok(())
+        }
+        fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
+            self.rec(format!("process_meeting {id}"));
+            if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
+                m.status = MeetingStatus::Processing;
+            }
+            Ok(())
+        }
+        fn cancel_processing(&self, id: MeetingId) -> MeetingsResult<()> {
+            self.rec(format!("cancel_processing {id}"));
+            Ok(())
+        }
+        fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
+            self.data.lock().progress.get(&id).cloned()
+        }
+        fn speaker_suggestions(
+            &self,
+            speaker_id: SpeakerId,
+        ) -> MeetingsResult<Vec<NameSuggestion>> {
+            self.rec(format!("speaker_suggestions {speaker_id}"));
+            let d = self.data.lock();
+            let mut v = d.attendees.clone();
+            v.extend(d.people.iter().map(|p| NameSuggestion {
+                display_name: p.display_name.clone(),
+                email: p.email.clone(),
+                person_id: Some(p.id),
+                source: SuggestionSource::KnownPerson,
+                similarity: None,
+            }));
+            Ok(v)
+        }
+        fn assign_speaker(
+            &self,
+            speaker_id: SpeakerId,
+            person: PersonRef,
+        ) -> MeetingsResult<PersonId> {
+            let pid = match &person {
+                PersonRef::Existing(pid) => {
+                    self.rec(format!("assign_speaker {speaker_id} existing {pid}"));
+                    *pid
+                }
+                PersonRef::New {
+                    display_name,
+                    email,
+                } => {
+                    self.rec(format!(
+                        "assign_speaker {speaker_id} new {display_name} {}",
+                        email.as_deref().unwrap_or("-")
+                    ));
+                    let mut d = self.data.lock();
+                    d.next_id += 1;
+                    let id = d.next_id;
+                    d.people
+                        .push(person_fixture(id, display_name, email.as_deref()));
+                    id
+                }
+            };
+            self.speaker_mut(speaker_id, |s| {
+                s.person_id = Some(pid);
+                s.confirmed = true;
+            })?;
+            Ok(pid)
+        }
+        fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()> {
+            self.rec(format!("confirm_speaker {speaker_id}"));
+            self.speaker_mut(speaker_id, |s| s.confirmed = true)
+        }
+
+        // -- AI + Linear (G2) -----------------------------------------------
+        fn summary(&self, id: MeetingId) -> MeetingsResult<Option<StoredSummary>> {
+            Ok(self.data.lock().ai.summaries.get(&id).cloned())
+        }
+        fn summarize(
+            &self,
+            id: MeetingId,
+            provider_override: Option<(String, String)>,
+        ) -> MeetingsResult<StoredSummary> {
+            let by = provider_override
+                .map(|(p, m)| format!("{p}/{m}"))
+                .unwrap_or_else(|| "default".into());
+            self.rec(format!("summarize {id} {by}"));
+            let mut d = self.data.lock();
+            if let Some(e) = d.ai.fail_summarize.clone() {
+                return Err(e);
+            }
+            let s = StoredSummary {
+                meeting_id: id,
+                title: "Generated".into(),
+                short_summary: "A short summary.".into(),
+                decisions: vec!["Ship it".into()],
+                topics: vec!["Release".into()],
+                generated_by: by,
+                generated_at: 1,
+            };
+            d.ai.summaries.insert(id, s.clone());
+            Ok(s)
+        }
+        fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
+            self.rec(format!(
+                "update_summary {} {} decisions={}",
+                summary.meeting_id,
+                summary.title,
+                summary.decisions.join("|")
+            ));
+            self.data
+                .lock()
+                .ai
+                .summaries
+                .insert(summary.meeting_id, summary.clone());
+            Ok(())
+        }
+        fn action_items(&self, id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+            Ok(self
+                .data
+                .lock()
+                .ai
+                .items
+                .iter()
+                .filter(|i| i.meeting_id == id)
+                .cloned()
+                .collect())
+        }
+        fn update_action_item(&self, item: &ActionItem) -> MeetingsResult<()> {
+            self.rec(format!(
+                "update_action_item {} {} {}",
+                item.id,
+                item.ticket_state.as_str(),
+                item.text
+            ));
+            let mut d = self.data.lock();
+            if let Some(i) = d.ai.items.iter_mut().find(|i| i.id == item.id) {
+                *i = item.clone();
+            }
+            Ok(())
+        }
+        fn add_action_item(&self, meeting_id: MeetingId, text: &str) -> MeetingsResult<ActionItem> {
+            self.rec(format!("add_action_item {meeting_id} {text}"));
+            let mut d = self.data.lock();
+            d.next_id += 1;
+            let item = action_item_fixture(d.next_id, meeting_id, text);
+            d.ai.items.push(item.clone());
+            Ok(item)
+        }
+        fn delete_action_item(&self, id: ActionItemId) -> MeetingsResult<()> {
+            self.rec(format!("delete_action_item {id}"));
+            self.data.lock().ai.items.retain(|i| i.id != id);
+            Ok(())
+        }
+
+        fn set_linear_api_key(&self, key: &str) -> MeetingsResult<()> {
+            self.rec(format!("set_linear_api_key {key}"));
+            self.data.lock().ai.linear_key = (!key.is_empty()).then(|| key.to_string());
+            Ok(())
+        }
+        fn has_linear_api_key(&self) -> bool {
+            self.data.lock().ai.linear_key.is_some()
+        }
+        fn test_linear(&self) -> MeetingsResult<String> {
+            self.rec("test_linear");
+            match self.data.lock().ai.linear_key {
+                Some(_) => Ok("Ada Lovelace".into()),
+                None => Err("no key".into()),
+            }
+        }
+        fn linear_teams(&self) -> MeetingsResult<Vec<guidy_core::linear::Team>> {
+            Ok(vec![guidy_core::linear::Team {
+                id: "team-1".into(),
+                key: "ENG".into(),
+                name: "Engineering".into(),
+            }])
+        }
+        fn linear_projects(
+            &self,
+            _team_id: &str,
+        ) -> MeetingsResult<Vec<guidy_core::linear::Project>> {
+            Ok(vec![guidy_core::linear::Project {
+                id: "proj-1".into(),
+                name: "Launch".into(),
+            }])
+        }
+        fn linear_users(&self) -> MeetingsResult<Vec<guidy_core::linear::User>> {
+            Ok(vec![guidy_core::linear::User {
+                id: "user-1".into(),
+                name: "Ada Lovelace".into(),
+                display_name: "ada".into(),
+                email: Some("ada@example.com".into()),
+            }])
+        }
+        fn linear_labels(&self, _team_id: &str) -> MeetingsResult<Vec<guidy_core::linear::Label>> {
+            Ok(vec![guidy_core::linear::Label {
+                id: "label-1".into(),
+                name: "Bug".into(),
+            }])
+        }
+        fn draft_tickets(&self, meeting_id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
+            self.rec(format!("draft_tickets {meeting_id}"));
+            let mut d = self.data.lock();
+            for i in d.ai.items.iter_mut().filter(|i| i.meeting_id == meeting_id) {
+                if i.ticket.title.is_empty() {
+                    i.ticket.title = i.text.clone();
+                    i.ticket.description = format!("> {}", i.source_quote);
+                    i.ticket.team_id = Some("team-1".into());
+                }
+            }
+            Ok(d.ai
+                .items
+                .iter()
+                .filter(|i| i.meeting_id == meeting_id)
+                .cloned()
+                .collect())
+        }
+        fn create_tickets(&self, ids: &[ActionItemId]) -> MeetingsResult<Vec<TicketResult>> {
+            let list: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+            self.rec(format!("create_tickets {}", list.join(",")));
+            let mut d = self.data.lock();
+            let mut out = Vec::new();
+            for id in ids {
+                let Some(i) = d.ai.items.iter_mut().find(|i| i.id == *id) else {
+                    continue;
+                };
+                let already = i.linear_issue_id.is_some();
+                if !already {
+                    let ident = format!("ENG-{id}");
+                    i.linear_issue_id = Some(format!("issue-{id}"));
+                    i.linear_issue_url = Some(format!("https://linear.app/x/issue/{ident}"));
+                    i.linear_issue_identifier = Some(ident);
+                    i.ticket_state = TicketState::Created;
+                }
+                out.push(TicketResult {
+                    action_item_id: *id,
+                    result: Ok(i.linear_issue_identifier.clone().unwrap_or_default()),
+                    already_existed: already,
+                });
+            }
+            Ok(out)
+        }
+
+        fn llm_test_connection(&self, provider_id: &str) -> MeetingsResult<String> {
+            self.rec(format!("llm_test_connection {provider_id}"));
+            Ok("Connected".into())
+        }
+        fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
+            self.rec(format!("llm_models {provider_id}"));
+            Ok(self.data.lock().ai.llm_models.clone())
+        }
+        fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
+            Ok(self.data.lock().ai.local_models.clone())
+        }
+        fn download_local_llm_model(&self, id: &str) -> MeetingsResult<()> {
+            self.rec(format!("download_local_llm_model {id}"));
+            Ok(())
+        }
+        fn cancel_local_llm_download(&self, id: &str) -> MeetingsResult<()> {
+            self.rec(format!("cancel_local_llm_download {id}"));
+            Ok(())
+        }
+        fn delete_local_llm_model(&self, id: &str) -> MeetingsResult<()> {
+            self.rec(format!("delete_local_llm_model {id}"));
+            Ok(())
+        }
+        fn open_url(&self, url: &str) -> MeetingsResult<()> {
+            self.rec(format!("open_url {url}"));
+            Ok(())
+        }
+    }
+
+    /// G2 fake state: summaries, action items, Linear key, LLM models.
+    #[derive(Default)]
+    pub struct FakeAiData {
+        pub summaries: HashMap<MeetingId, StoredSummary>,
+        pub items: Vec<ActionItem>,
+        pub linear_key: Option<String>,
+        pub fail_summarize: Option<String>,
+        pub llm_models: Vec<String>,
+        pub local_models: Vec<LocalLlmModel>,
+    }
+
+    pub fn action_item_fixture(id: ActionItemId, meeting_id: MeetingId, text: &str) -> ActionItem {
+        ActionItem {
+            id,
+            meeting_id,
+            text: text.into(),
+            owner_person_id: None,
+            owner_name: None,
+            owner_is_user: false,
+            due: None,
+            source_quote: format!("I'll {text}"),
+            source_t_ms: Some(65_000),
+            ticket: TicketDraft::default(),
+            ticket_state: TicketState::Draft,
+            linear_issue_id: None,
+            linear_issue_identifier: None,
+            linear_issue_url: None,
+        }
+    }
+
+    // -- fixtures -------------------------------------------------------------
+
+    pub fn meeting_fixture(id: MeetingId, title: &str, status: MeetingStatus) -> Meeting {
+        Meeting {
+            id,
+            title: title.into(),
+            calendar_event_id: None,
+            calendar_event: None,
+            started_at: 1_700_000_000_000 + id * 3_600_000,
+            ended_at: Some(1_700_000_000_000 + id * 3_600_000 + 25 * 60_000),
+            mic_audio_path: Some(format!("{id}-mic.opus")),
+            system_audio_path: Some(format!("{id}-system.opus")),
+            status,
+            error: None,
+            processing_stage: None,
+        }
+    }
+
+    pub fn person_fixture(id: PersonId, name: &str, email: Option<&str>) -> Person {
+        Person {
+            id,
+            display_name: name.into(),
+            email: email.map(str::to_string),
+            created_at: 1_700_000_000_000,
+            voiceprint_count: 3,
+        }
+    }
+
+    pub fn speaker_fixture(
+        id: SpeakerId,
+        meeting_id: MeetingId,
+        label: &str,
+        person_id: Option<PersonId>,
+        confirmed: bool,
+    ) -> MeetingSpeaker {
+        MeetingSpeaker {
+            id,
+            meeting_id,
+            cluster_label: label.into(),
+            person_id,
+            match_confidence: person_id.map(|_| 0.55),
+            confirmed,
+            is_user: label == "me",
+        }
+    }
+
+    pub fn segment_fixture(
+        id: i64,
+        meeting_id: MeetingId,
+        speaker_id: SpeakerId,
+        t0_ms: i64,
+        text: &str,
+    ) -> Segment {
+        Segment {
+            id,
+            meeting_id,
+            track: Track::System,
+            t0_ms,
+            t1_ms: t0_ms + 2_000,
+            text: text.into(),
+            words: Vec::new(),
+            speaker_id: Some(speaker_id),
+        }
+    }
+}

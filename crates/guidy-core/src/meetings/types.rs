@@ -244,6 +244,9 @@ pub struct TicketDraft {
     pub priority: Option<u8>,
     pub label_ids: Vec<String>,
     pub assignee_id: Option<String>,
+    /// Linear `dueDate` (ISO `YYYY-MM-DD`), when the item's due date parses.
+    #[serde(default)]
+    pub due_date: Option<String>,
 }
 
 /// A stored action item (one row of `action_items`).

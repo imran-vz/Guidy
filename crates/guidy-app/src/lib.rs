@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod backend;
 pub mod logic;
+pub mod meetings_backend;
 pub mod playback;
 pub mod shell;
 pub mod state;
@@ -16,6 +17,7 @@ pub mod updater;
 pub mod windows;
 
 use crate::backend::CoreBackend;
+use crate::meetings_backend::CoreMeetingsBackend;
 use crate::shell::GpuiShell;
 use crate::state::AppState;
 use crate::ui::overlay::OverlayState;
@@ -143,7 +145,11 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
 
     // AppState runs the startup step machine (onboarding check, then input +
     // shortcut init) whether or not the settings window is ever opened.
-    let state = AppState::install(Arc::new(CoreBackend::new(app.clone())), cx);
+    let state = AppState::install_with_meetings(
+        Arc::new(CoreBackend::new(app.clone())),
+        Arc::new(CoreMeetingsBackend::new(app.clone())),
+        cx,
+    );
     let overlay = OverlayState::install(cx);
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
