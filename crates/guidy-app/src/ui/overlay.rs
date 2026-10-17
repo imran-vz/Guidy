@@ -312,18 +312,27 @@ impl Render for OverlayView {
                             d.child(div().text_color(muted).child(t("overlay.loadingModel")))
                         })
                         .child(
+                            // One flex item per word so the transcript wraps
+                            // inside the card and the caret follows the last
+                            // word; `max_w_full` lets an unspaced run (CJK)
+                            // wrap within its own item.
                             div()
                                 .flex()
                                 .flex_wrap()
-                                .child(div().child(if m.committed.is_empty() {
-                                    SharedString::default()
-                                } else {
-                                    format!("{} ", m.committed).into()
+                                .items_center()
+                                .gap_x(px(4.))
+                                .children(m.committed.split_whitespace().map(|w| {
+                                    div().max_w_full().child(SharedString::from(w.to_string()))
                                 }))
-                                .child(div().text_color(muted).child(m.tentative.clone()))
+                                .children(m.tentative.split_whitespace().map(|w| {
+                                    div()
+                                        .max_w_full()
+                                        .text_color(muted)
+                                        .child(SharedString::from(w.to_string()))
+                                }))
                                 .when(l.show_caret, |d| {
                                     d.child(
-                                        div().w(px(1.5)).h(px(16.)).ml_0p5().bg(fg).with_animation(
+                                        div().w(px(1.5)).h(px(16.)).bg(fg).with_animation(
                                             "caret",
                                             Animation::new(Duration::from_millis(1050)).repeat(),
                                             |el, delta| {

@@ -22,18 +22,36 @@ enum AxState {
 pub struct AccessibilityBanner {
     state: AxState,
     checked: bool,
+    _activation: Option<Subscription>,
 }
 
 impl AccessibilityBanner {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             state: AxState::Granted,
             checked: false,
+            _activation: None,
         };
         if OsType::current() == OsType::MacOs {
+            // The window is created before permission onboarding, and the
+            // user grants access in System Settings: re-check whenever the
+            // window comes back to the front.
+            this._activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.refresh(cx);
+                }
+            }));
             this.recheck(true, cx);
         }
         this
+    }
+
+    /// Re-check after the permission may have changed elsewhere (onboarding,
+    /// System Settings), keeping the current prompt if still missing.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if OsType::current() == OsType::MacOs && self.state != AxState::Granted {
+            self.recheck(self.state == AxState::Request, cx);
+        }
     }
 
     fn recheck(&mut self, initial: bool, cx: &mut Context<Self>) {
@@ -92,15 +110,21 @@ impl Render for AccessibilityBanner {
             .border_1()
             .border_color(theme.warning.opacity(0.4))
             .bg(theme.warning.opacity(0.1))
-            .child(icon("triangle-alert").text_color(theme.warning))
+            .child(
+                icon("triangle-alert")
+                    .flex_shrink_0()
+                    .text_color(theme.warning),
+            )
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .text_sm()
                     .child(t("accessibility.permissionsDescription")),
             )
             .child(
                 Button::new("accessibility-open-settings")
+                    .flex_shrink_0()
                     .outline()
                     .small()
                     .label(t("accessibility.openSettings"))
@@ -160,15 +184,21 @@ impl Render for SecureInputBanner {
             .border_1()
             .border_color(theme.warning.opacity(0.4))
             .bg(theme.warning.opacity(0.1))
-            .child(icon("triangle-alert").text_color(theme.warning))
+            .child(
+                icon("triangle-alert")
+                    .flex_shrink_0()
+                    .text_color(theme.warning),
+            )
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .text_sm()
                     .child(secure_input_message(&status)),
             )
             .child(
                 Button::new("secure-input-learn-more")
+                    .flex_shrink_0()
                     .ghost()
                     .small()
                     .label(t("secureInput.learnMore"))
@@ -177,6 +207,7 @@ impl Render for SecureInputBanner {
             )
             .child(
                 Button::new("secure-input-dismiss")
+                    .flex_shrink_0()
                     .ghost()
                     .xsmall()
                     .icon(icon("x"))

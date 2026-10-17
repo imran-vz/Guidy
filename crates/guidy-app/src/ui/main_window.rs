@@ -162,12 +162,18 @@ impl MainWindow {
             crate::windows::sync_system_appearance(cx);
         }));
 
-        let mut this = Self {
+        let section = cx
+            .try_global::<LastSection>()
+            .map(|s| s.0)
+            .unwrap_or(Section::General);
+        #[cfg(debug_assertions)]
+        let section = std::env::var("GUIDY_DEV_START_SECTION")
+            .ok()
+            .and_then(|s| Section::from_id(&s))
+            .unwrap_or(section);
+        let this = Self {
             state: state.clone(),
-            section: cx
-                .try_global::<LastSection>()
-                .map(|s| s.0)
-                .unwrap_or(Section::General),
+            section,
             preview: None,
             pages: Pages::default(),
             permissions: None,
@@ -175,7 +181,7 @@ impl MainWindow {
             migration: None,
             status_bar: StatusBar::global(cx),
             whats_new: cx.new(|cx| WhatsNewGate::new(window, cx)),
-            accessibility_banner: cx.new(AccessibilityBanner::new),
+            accessibility_banner: cx.new(|cx| AccessibilityBanner::new(window, cx)),
             secure_banner: cx.new(SecureInputBanner::new),
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -183,13 +189,6 @@ impl MainWindow {
         };
         // Window-level shortcuts (debug toggle, close) need a focused node.
         window.focus(&this.focus, cx);
-        #[cfg(debug_assertions)]
-        if let Some(section) = std::env::var("GUIDY_DEV_START_SECTION")
-            .ok()
-            .and_then(|s| Section::from_id(&s))
-        {
-            this.section = section;
-        }
         // No-op once it has run for this session (normally from startup).
         state.update(cx, |s, cx| s.check_onboarding(cx));
         this
@@ -216,6 +215,8 @@ impl MainWindow {
     }
 
     pub fn on_permissions_complete(&mut self, cx: &mut Context<Self>) {
+        self.accessibility_banner
+            .update(cx, |banner, cx| banner.refresh(cx));
         // Deferred: callers may be inside an AppState callback.
         let state = self.state.clone();
         cx.defer(move |cx| state.update(cx, |s, cx| s.on_permissions_complete(cx)));

@@ -220,18 +220,25 @@ pub fn show_overlay(p: OverlayPlacement, cx: &mut App) {
     }) {
         Ok(handle) => {
             let any: AnyWindowHandle = handle.into();
-            let _ = cx.update_window(any, |_, window, _| keep_visible_when_inactive(window));
+            let _ = cx.update_window(any, |_, window, _| configure_overlay_panel(window));
             windows(cx).overlay = Some((any, p))
         }
         Err(e) => log::error!("Failed to open overlay window: {e}"),
     }
 }
 
+/// macOS tweaks for the overlay panel.
+///
 /// The overlay must stay visible while Guidy is in the background (the user
-/// is dictating into another app). On macOS, GPUI's PopUp windows are
-/// NSPanels, which hide on app deactivation by default — turn that off, as
-/// Handy's overlay panel did.
-fn keep_visible_when_inactive(window: &Window) {
+/// is dictating into another app). GPUI's PopUp windows are NSPanels, which
+/// hide on app deactivation by default — turn that off, as Handy's overlay
+/// panel did.
+///
+/// GPUI also creates title-less windows with a titled style mask and keeps
+/// the system shadow on transparent windows, so macOS outlines the whole
+/// (mostly empty) overlay window around the pill. The pill draws its own
+/// border and shadow, so make the panel borderless and shadowless.
+fn configure_overlay_panel(window: &Window) {
     #[cfg(target_os = "macos")]
     {
         use objc2::msg_send;
@@ -246,6 +253,9 @@ fn keep_visible_when_inactive(window: &Window) {
             unsafe {
                 let ns_window: *mut AnyObject = msg_send![view, window];
                 if !ns_window.is_null() {
+                    // NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                    let _: () = msg_send![ns_window, setStyleMask: 1usize << 7];
+                    let _: () = msg_send![ns_window, setHasShadow: false];
                     let _: () = msg_send![ns_window, setHidesOnDeactivate: false];
                     let _: () = msg_send![ns_window, orderFrontRegardless];
                 }

@@ -1087,7 +1087,7 @@ mod banners_and_events {
         let backend = FakeBackend::new();
         backend.data.lock().accessibility = false;
         setup(cx, backend.clone());
-        let (w, _) = open(cx, |_, cx| AccessibilityBanner::new(cx));
+        let (w, _) = open(cx, |window, cx| AccessibilityBanner::new(window, cx));
         cx.run_until_parked();
         let mac = OsType::current() == OsType::MacOs;
         assert_eq!(exists(cx, w, "accessibility-banner"), mac);
