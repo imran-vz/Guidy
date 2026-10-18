@@ -153,6 +153,7 @@ mod tests {
             width: 400.0,
             height: 120.0,
             top: false,
+            ..Default::default()
         });
         assert_eq!(shell.overlay_size(), Some((400.0, 120.0)));
         shell.hide_overlay();
