@@ -36,9 +36,6 @@ struct JobState {
     queue: VecDeque<MeetingId>,
     current: Option<(MeetingId, Arc<AtomicBool>)>,
     progress: HashMap<MeetingId, ProcessingProgress>,
-    /// Status and error of each queued meeting before [`Processor::enqueue`]
-    /// marked it `Processing`, restored if it is cancelled before it runs.
-    prior: HashMap<MeetingId, (MeetingStatus, Option<String>)>,
     running: bool,
 }
 
@@ -76,7 +73,8 @@ impl Processor {
     /// The row is marked `Processing` before this returns (by a statement
     /// that also re-checks the audio is still there), so audio retention,
     /// which only clears meetings that aren't `Processing`, can never delete
-    /// the audio of a queued meeting.
+    /// the audio of a queued meeting. Its previous status and error are
+    /// saved in the row, so a cancel restores them even after a restart.
     pub fn enqueue(&self, id: MeetingId) -> Result<()> {
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
@@ -127,9 +125,6 @@ impl Processor {
                 Some(_) => bail!(AUDIO_DELETED),
             }
         }
-        state
-            .prior
-            .insert(id, (meeting.status, meeting.error.clone()));
         let queued = ProcessingProgress {
             meeting_id: id,
             stage: next,
@@ -149,14 +144,13 @@ impl Processor {
                 .name("meeting-processing".into())
                 .spawn(move || this.worker_loop())
             {
-                let prior = {
+                {
                     let mut state = self.inner.state.lock();
                     state.running = false;
                     state.queue.retain(|q| *q != id);
                     state.progress.remove(&id);
-                    state.prior.remove(&id)
-                };
-                if let Err(e2) = self.restore_status(id, prior) {
+                }
+                if let Err(e2) = self.restore_status(id) {
                     log::warn!("meeting {id}: {e2:#}");
                 }
                 bail!("could not start meeting processing: {e}");
@@ -166,18 +160,18 @@ impl Processor {
     }
 
     /// Cancel `id`: dropped from the queue, or stopped if it is running (its
-    /// completed stages are kept, so processing it again resumes). A queued
-    /// meeting gets back the status it had before it was queued; one left in
-    /// `Processing` (by a crash, waiting to resume) goes back to `Recorded`,
-    /// so the UI offers "Process" again instead of a spinner.
+    /// completed stages are kept, so processing it again resumes). Either
+    /// way it gets back the status (and error) it had before it was queued:
+    /// a reprocessed meeting stays `Processed`, a retry stays `Failed`. One
+    /// with nothing saved (a crash leftover from an older version) goes back
+    /// to `Recorded`, so the UI offers "Process" again instead of a spinner.
     pub fn cancel(&self, id: MeetingId) -> Result<()> {
         let mut state = self.inner.state.lock();
         if let Some(pos) = state.queue.iter().position(|q| *q == id) {
             state.queue.remove(pos);
             state.progress.remove(&id);
-            let prior = state.prior.remove(&id);
             drop(state);
-            if self.restore_status(id, prior)? {
+            if self.restore_status(id)? {
                 self.emit_changed(id);
             }
             return Ok(());
@@ -193,26 +187,14 @@ impl Processor {
         Ok(())
     }
 
-    /// Undo [`Self::enqueue`]'s `Processing` for a meeting that never ran:
-    /// back to `prior` (a crash leftover's `Processing` becomes `Recorded`).
-    /// Returns whether the meeting still exists.
-    fn restore_status(
-        &self,
-        id: MeetingId,
-        prior: Option<(MeetingStatus, Option<String>)>,
-    ) -> Result<bool> {
-        let Some(m) = self.inner.store.get_meeting(id)? else {
+    /// Undo [`Self::enqueue`]'s `Processing`: back to the status saved when
+    /// it was queued (`Recorded` when none was). Returns whether the meeting
+    /// still exists.
+    fn restore_status(&self, id: MeetingId) -> Result<bool> {
+        if self.inner.store.get_meeting(id)?.is_none() {
             return Ok(false);
-        };
-        if m.status == MeetingStatus::Processing {
-            let (status, error) = match prior {
-                Some((s, e)) if s != MeetingStatus::Processing => (s, e),
-                _ => (MeetingStatus::Recorded, None),
-            };
-            self.inner
-                .store
-                .set_meeting_status(id, status, error.as_deref())?;
         }
+        self.inner.store.restore_status_before_processing(id)?;
         Ok(true)
     }
 
@@ -250,10 +232,12 @@ impl Processor {
         Ok(true)
     }
 
-    /// Queue every meeting a crash left in `Processing`. A meeting that can't
-    /// be queued (e.g. the meeting model is missing) is logged and set to
-    /// `Failed` with the reason, so it never sits in `Processing` forever;
-    /// the others still resume. Returns how many were queued.
+    /// Queue every meeting left in `Processing` (queued or running when the
+    /// app quit or crashed). One that can't be queued (e.g. the meeting
+    /// model is missing) never sits in `Processing` forever: a meeting that
+    /// was `Processed` before it was queued keeps its notes (the reason is
+    /// logged); any other is set to `Failed` with the reason. The others
+    /// still resume. Returns how many were queued.
     pub fn resume_interrupted(&self) -> Result<usize> {
         self.resume_interrupted_with(|id| self.enqueue(id))
     }
@@ -269,11 +253,19 @@ impl Processor {
                 Ok(()) => queued += 1,
                 Err(e) => {
                     log::error!("meeting {}: could not resume processing: {e:#}", m.id);
-                    if let Err(e2) = self.inner.store.set_meeting_status(
-                        m.id,
-                        MeetingStatus::Failed,
-                        Some(&format!("{e:#}")),
-                    ) {
+                    let store = &self.inner.store;
+                    let result = match store.status_before_processing(m.id) {
+                        // Its notes are still good: only the rerun is lost.
+                        Ok(Some(MeetingStatus::Processed)) => {
+                            store.restore_status_before_processing(m.id).map(|_| ())
+                        }
+                        _ => store.finish_processing(
+                            m.id,
+                            MeetingStatus::Failed,
+                            Some(&format!("{e:#}")),
+                        ),
+                    };
+                    if let Err(e2) = result {
                         log::warn!("meeting {}: {e2:#}", m.id);
                     }
                     self.emit_changed(m.id);
@@ -305,7 +297,6 @@ impl Processor {
                 let mut state = self.inner.state.lock();
                 match state.queue.pop_front() {
                     Some(id) => {
-                        state.prior.remove(&id);
                         let flag = Arc::new(AtomicBool::new(false));
                         state.current = Some((id, flag.clone()));
                         Some((id, flag))
@@ -356,14 +347,14 @@ impl Processor {
             return;
         }
         let result = match &outcome {
-            Ok(()) => store.set_meeting_status(id, MeetingStatus::Processed, None),
+            Ok(()) => store.finish_processing(id, MeetingStatus::Processed, None),
             Err(e) if is_cancelled(e) => {
                 log::info!("meeting {id}: processing cancelled");
-                store.set_meeting_status(id, MeetingStatus::Recorded, None)
+                store.restore_status_before_processing(id).map(|_| ())
             }
             Err(e) => {
                 log::error!("meeting {id}: processing failed: {e:#}");
-                store.set_meeting_status(id, MeetingStatus::Failed, Some(&format!("{e:#}")))
+                store.finish_processing(id, MeetingStatus::Failed, Some(&format!("{e:#}")))
             }
         };
         if let Err(e) = result {
@@ -786,6 +777,111 @@ mod tests {
         assert_eq!(m.status, MeetingStatus::Failed);
         assert!(m.error.unwrap().contains("not downloaded"));
         assert!(p.is_busy(good));
+    }
+
+    /// The status before queueing is in the database: after a restart, a
+    /// failed resume or a cancel still gives it back.
+    #[test]
+    fn the_status_before_queueing_survives_a_restart() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let before = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let done = store
+            .insert_meeting(&meeting(MeetingStatus::Processed))
+            .unwrap();
+        let failed = store
+            .insert_meeting(&Meeting {
+                error: Some("boom".into()),
+                ..meeting(MeetingStatus::Failed)
+            })
+            .unwrap();
+        let recorded = store
+            .insert_meeting(&meeting(MeetingStatus::Recorded))
+            .unwrap();
+        before.inner.state.lock().running = true;
+        for id in [done, failed, recorded] {
+            before.enqueue(id).unwrap();
+        }
+        drop(before);
+
+        // Restarted: nothing in memory. The meeting model is gone, so the
+        // reprocessed and the new meeting can't be queued again.
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        p.inner.state.lock().running = true;
+        let n = p
+            .resume_interrupted_with(|id| {
+                if id != failed {
+                    anyhow::bail!("the meeting model is not downloaded")
+                }
+                p.enqueue(id)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        // A good meeting keeps its notes.
+        let m = store.get_meeting(done).unwrap().unwrap();
+        assert_eq!((m.status, m.error), (MeetingStatus::Processed, None));
+        // One that never got processed says why.
+        let m = store.get_meeting(recorded).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Failed);
+        assert!(m.error.unwrap().contains("not downloaded"));
+        // The queued retry, cancelled, is back to its failure.
+        assert!(p.is_busy(failed));
+        p.cancel(failed).unwrap();
+        let m = store.get_meeting(failed).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Failed);
+        assert_eq!(m.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn cancelling_a_running_job_restores_the_status_before_queueing() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        p.inner.state.lock().running = true;
+        let cancelled = || anyhow::Error::new(super::super::Cancelled);
+        let done = store
+            .insert_meeting(&meeting(MeetingStatus::Processed))
+            .unwrap();
+        let failed = store
+            .insert_meeting(&Meeting {
+                error: Some("boom".into()),
+                ..meeting(MeetingStatus::Failed)
+            })
+            .unwrap();
+        let recorded = store
+            .insert_meeting(&meeting(MeetingStatus::Recorded))
+            .unwrap();
+        let leftover = store
+            .insert_meeting(&meeting(MeetingStatus::Processing))
+            .unwrap();
+        for id in [done, failed, recorded, leftover] {
+            p.enqueue(id).unwrap();
+            // What the worker does when it takes the job.
+            p.inner.state.lock().queue.retain(|q| *q != id);
+            store
+                .set_meeting_status(id, MeetingStatus::Processing, None)
+                .unwrap();
+            p.finish(id, Err(cancelled()));
+        }
+        let status = |id| {
+            let m = store.get_meeting(id).unwrap().unwrap();
+            (m.status, m.error)
+        };
+        assert_eq!(status(done), (MeetingStatus::Processed, None));
+        assert_eq!(
+            status(failed),
+            (MeetingStatus::Failed, Some("boom".to_string()))
+        );
+        assert_eq!(status(recorded), (MeetingStatus::Recorded, None));
+        assert_eq!(status(leftover), (MeetingStatus::Recorded, None));
+
+        // A finished run drops the saved status: a later cancel of a crash
+        // leftover can't bring back a stale one.
+        p.enqueue(failed).unwrap();
+        p.inner.state.lock().queue.clear();
+        p.finish(failed, Ok(()));
+        assert_eq!(status(failed), (MeetingStatus::Processed, None));
+        assert_eq!(store.status_before_processing(failed).unwrap(), None);
     }
 
     #[test]

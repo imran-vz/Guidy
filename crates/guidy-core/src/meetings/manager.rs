@@ -191,8 +191,12 @@ impl MeetingsManager {
         })
     }
 
-    /// Start recording. `calendar_event_id: None` links to whichever calendar
-    /// event is happening now, if there is one.
+    /// Start recording. `calendar_event_id: None` (or an event that has
+    /// ended or can't be found) links to whichever calendar event is
+    /// happening now, if there is one.
+    ///
+    /// Notifications made moot (calendar prompts) are withdrawn by the
+    /// [`events::RECORDER_STATE`] listener (see [`Self::start_background`]).
     pub fn start_recording(&self, calendar_event_id: Option<String>) -> Result<MeetingId> {
         if !crate::meetings::is_supported() {
             anyhow::bail!("meeting notes need macOS 14.2 or later");
@@ -200,26 +204,42 @@ impl MeetingsManager {
         let id = self
             .recorder()
             .start(calendar_event_id, crate::meetings::recorder::now_ms())?;
-        withdraw_notifications(true);
         // Reminders need the scheduler even if calendar prompts are off.
         self.sync_scheduler();
         Ok(id)
     }
 
     /// Stop recording, finalize the track files, and queue processing.
+    /// Reminders and prompts are withdrawn by the [`events::RECORDER_STATE`]
+    /// listener.
     pub fn stop_recording(&self) -> Result<Option<MeetingId>> {
         let Some(recorder) = self.capture.recorder.get() else {
             return Ok(None);
         };
-        let stopped = recorder.stop(crate::meetings::recorder::now_ms())?;
-        withdraw_notifications(false);
-        if let Some(id) = stopped {
-            if let Err(e) = self.process_meeting(id) {
-                log::info!("meetings: processing of meeting {id} not queued: {e:#}");
-            }
-        }
+        let result = recorder.stop(crate::meetings::recorder::now_ms());
+        // Even on error: a failed finish is retried by the scheduler.
         self.sync_scheduler();
+        let stopped = result?;
+        if let Some(id) = stopped {
+            self.queue_processing(id);
+        }
         Ok(stopped)
+    }
+
+    /// A stopped recording whose finish failed at stop, finished by a later
+    /// retry (the recorder's `on_recording_finished`): processed like a
+    /// normal stop.
+    pub fn recording_finished(&self, id: MeetingId) {
+        self.queue_processing(id);
+        self.sync_scheduler();
+    }
+
+    /// Queue a just-recorded meeting. If that fails (e.g. no meeting model)
+    /// it stays `Recorded` and the UI offers "Process".
+    fn queue_processing(&self, id: MeetingId) {
+        if let Err(e) = self.process_meeting(id) {
+            log::info!("meetings: processing of meeting {id} not queued: {e:#}");
+        }
     }
 
     /// Decode a stretch of one track for playback (16 kHz mono f32).
@@ -249,12 +269,18 @@ impl MeetingsManager {
     }
 
     /// Run the reminder / calendar-prompt scheduler when meeting notes are
-    /// supported and enabled (or a recording needs reminders); stop it
-    /// otherwise. Call after the `meetings` settings change.
+    /// supported and enabled (or a recording needs reminders, or a stopped
+    /// one's finish is to be retried); stop it otherwise. Call after the
+    /// `meetings` settings change.
     pub fn sync_scheduler(&self) {
         let enabled = crate::settings::get_settings(&self.app).meetings.enabled;
+        let pending = self
+            .capture
+            .recorder
+            .get()
+            .is_some_and(|r| r.has_pending_finish());
         let want = crate::meetings::is_supported()
-            && (enabled || self.recorder_state() != RecorderState::Idle);
+            && (enabled || pending || self.recorder_state() != RecorderState::Idle);
         let mut scheduler = self.capture.scheduler.lock();
         match (want, scheduler.is_some()) {
             (true, false) => {
@@ -284,28 +310,17 @@ impl MeetingsManager {
                 .recorder()
                 .snooze(id, crate::meetings::recorder::now_ms()),
             NotificationCommand::Start(event_id) => {
-                crate::meetings::native::remove_notification(
-                    &crate::meetings::recorder::prompt_notification_id(&event_id),
-                );
-                // The prompt may be clicked long after it was posted: only
-                // link the recording to its event while that is still on.
-                let now = crate::meetings::recorder::now_ms();
-                let event = crate::meetings::native::events_between(
-                    now - PROMPT_LOOKUP_MS,
-                    now + PROMPT_LOOKUP_MS,
-                )
-                .map_err(|e| log::warn!("meetings: calendar lookup failed: {e:#}"))
-                .ok()
-                .and_then(|events| events.into_iter().find(|e| e.id == event_id));
-                let link = prompt_start_link(&event_id, event.as_ref(), now);
-                if link.is_none() {
-                    log::info!(
-                        "meetings: \"Start\" for calendar event {event_id}, which has ended or \
-                         can't be found: starting without linking to it"
-                    );
-                }
-                if let Err(e) = self.start_recording(link) {
+                // The prompt may be clicked long after it was posted: the
+                // recorder links the recording to its event only while that
+                // is still on. Starting withdraws the prompts (the
+                // `RECORDER_STATE` listener).
+                if let Err(e) = self.start_recording(Some(event_id.clone())) {
                     log::error!("meetings: start from notification failed: {e:#}");
+                    // No state change, so nothing else removes the prompt
+                    // that was just acted on.
+                    crate::meetings::native::remove_notification(
+                        &crate::meetings::recorder::prompt_notification_id(&event_id),
+                    );
                 }
             }
             NotificationCommand::Ignore => {}
@@ -317,8 +332,11 @@ impl MeetingsManager {
     /// and once a day on a background thread.
     pub fn start_background(self: &Arc<Self>) {
         crate::meetings::recorder::adapters::install_notification_handler(&self.app);
-        // Every start/stop (UI, tray, notification, scheduled end) withdraws
-        // the notifications it makes moot.
+        // The one place notifications made moot are withdrawn: every start
+        // and stop (UI, tray, notification "Start"/"Stop") goes through the
+        // recorder, which emits a state change (also when a stop's finish
+        // fails). Recordings never end by themselves: past the scheduled end
+        // there are only reminders.
         self.app.listen(events::RECORDER_STATE, |e| {
             if let Ok(state) = serde_json::from_value::<RecorderState>(e.payload) {
                 withdraw_notifications(state != RecorderState::Idle);
@@ -955,22 +973,8 @@ pub fn move_meeting_data_aside(
     Ok(Some(dest))
 }
 
-/// How far around now a clicked calendar prompt's event is looked up.
+/// How far around now the prompt sweeper looks up the prompts' events.
 const PROMPT_LOOKUP_MS: i64 = 24 * 60 * 60 * 1000;
-
-/// How long after its event ends a calendar prompt's "Start" still links the
-/// recording to that event.
-pub const PROMPT_START_GRACE_MS: i64 = 10 * 60 * 1000;
-
-/// The calendar event a prompt's "Start" links to: `event_id` while the
-/// event (looked up as `event`) hasn't ended more than
-/// [`PROMPT_START_GRACE_MS`] ago; `None` (a normal manual start) once it has
-/// or when it can't be found.
-fn prompt_start_link(event_id: &str, event: Option<&CalendarEvent>, now: i64) -> Option<String> {
-    event
-        .filter(|e| e.id == event_id && now <= e.end_at + PROMPT_START_GRACE_MS)
-        .map(|e| e.id.clone())
-}
 
 /// Posted calendar prompts: `(notification id, event id)`.
 fn posted_prompts() -> Vec<(String, String)> {
@@ -1365,25 +1369,6 @@ mod store_section_tests {
             meeting_url: None,
             attendees: vec![],
         }
-    }
-
-    #[test]
-    fn a_stale_prompt_start_is_not_linked_to_its_event() {
-        let end = 1_000_000_000;
-        let e = event("ev", end);
-        // During the event and within the grace period: linked.
-        assert_eq!(
-            prompt_start_link("ev", Some(&e), end - 1).as_deref(),
-            Some("ev")
-        );
-        assert_eq!(
-            prompt_start_link("ev", Some(&e), end + PROMPT_START_GRACE_MS).as_deref(),
-            Some("ev")
-        );
-        // Hours later, or the event can't be found: a plain start.
-        assert_eq!(prompt_start_link("ev", Some(&e), end + 3 * 3_600_000), None);
-        assert_eq!(prompt_start_link("ev", None, end), None);
-        assert_eq!(prompt_start_link("other", Some(&e), end), None);
     }
 
     #[test]

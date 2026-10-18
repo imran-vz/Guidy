@@ -2000,6 +2000,9 @@ mod meetings_fixes {
         let (w, _) = open(cx, MeetingsPage::new);
         assert!(exists(cx, w, "meetings-init-failed"));
         assert!(!exists(cx, w, "meeting-1"));
+        // Not a key problem: the notes may be readable, so no reset.
+        assert!(exists(cx, w, "meetings-init-retry"));
+        assert!(!exists(cx, w, "meetings-init-reset"));
         // Retry while the manager still can't start: still failed.
         with_window(cx, w, |window, cx| window.click("meetings-init-retry", cx));
         assert!(meetings.called("retry_init"));
@@ -2044,6 +2047,7 @@ mod meetings_fixes {
             serde_json::json!("key gone"),
         );
         assert!(exists(cx, w, "meetings-init-key-missing"));
+        assert!(exists(cx, w, "meetings-init-retry"));
         with_window(cx, w, |window, cx| window.click("meetings-init-reset", cx));
         // Nothing happens until the dialog is confirmed.
         assert!(!meetings.called("reset_data"));

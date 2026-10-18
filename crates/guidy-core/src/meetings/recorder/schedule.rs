@@ -57,6 +57,16 @@ pub fn current_event(events: &[CalendarEvent], now: i64) -> Option<&CalendarEven
         .max_by_key(|e| (e.meeting_url.is_some(), e.start_at))
 }
 
+/// How long after its event ends a start for that event (e.g. a calendar
+/// prompt's "Start", clicked late) still links the recording to it.
+pub const START_LINK_GRACE_MS: i64 = 10 * MINUTE_MS;
+
+/// Whether a start for `e` at `now` links to it: not once it ended more than
+/// [`START_LINK_GRACE_MS`] ago.
+pub fn links_to_event(e: &CalendarEvent, now: i64) -> bool {
+    now <= e.end_at + START_LINK_GRACE_MS
+}
+
 /// Events whose start time has just arrived and that should get a
 /// "Take notes for …?" prompt: they have a meeting link, aren't all-day, and
 /// started within the last [`PROMPT_WINDOW_MS`].
@@ -163,6 +173,15 @@ mod tests {
         // Among link-less events, the most recently started.
         let events = vec![ev("a", 0, 60 * M, false), ev("b", 10 * M, 40 * M, false)];
         assert_eq!(current_event(&events, 20 * M).unwrap().id, "b");
+    }
+
+    #[test]
+    fn starts_link_to_an_event_until_its_grace_period_is_over() {
+        let e = ev("ev", 0, 30 * M, true);
+        assert!(links_to_event(&e, 29 * M));
+        assert!(links_to_event(&e, 30 * M + START_LINK_GRACE_MS));
+        assert!(!links_to_event(&e, 30 * M + START_LINK_GRACE_MS + 1));
+        assert!(!links_to_event(&e, 30 * M + 3 * 60 * M));
     }
 
     #[test]

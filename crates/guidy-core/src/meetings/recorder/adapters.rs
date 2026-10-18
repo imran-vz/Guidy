@@ -205,6 +205,7 @@ pub fn app_recorder(
     let strings_app = app.clone();
     let state_app = app.clone();
     let changed_app = app.clone();
+    let finished_app = app.clone();
     MeetingRecorder::new(RecorderDeps {
         repo: Arc::new(StoreRepo(store)),
         capture: Arc::new(NativeCapture),
@@ -224,6 +225,23 @@ pub fn app_recorder(
         on_meeting_changed: Arc::new(move |id| {
             if let Err(e) = changed_app.emit(events::MEETING_CHANGED, id) {
                 log::warn!("emit {}: {e}", events::MEETING_CHANGED);
+            }
+        }),
+        on_recording_finished: Arc::new(move |id| {
+            let app = finished_app.clone();
+            // Off the caller's thread: it may hold the recorder's lock, or be
+            // the scheduler thread that `sync_scheduler` would join.
+            let spawned = std::thread::Builder::new()
+                .name("meetings-finished".into())
+                .spawn(move || {
+                    if let Some(m) =
+                        app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
+                    {
+                        m.recording_finished(id);
+                    }
+                });
+            if let Err(e) = spawned {
+                log::error!("meetings: meeting {id} not queued for processing: {e}");
             }
         }),
     })

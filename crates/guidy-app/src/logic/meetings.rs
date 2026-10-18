@@ -31,8 +31,9 @@ pub enum MeetingsEvent {
     Ready,
     /// The meetings manager failed to start (the error text).
     InitFailed(String),
-    /// The meetings manager can't start: the data key is gone but meeting
-    /// data exists (the error text). Offers a reset.
+    /// The meetings manager can't start because of the data key: it is gone
+    /// but meeting data exists, or it doesn't decrypt it (the error text).
+    /// Offers a reset.
     DataKeyMissing(String),
     /// LLM calls of a running summary: `done` of `total`.
     SummaryProgress {
@@ -119,8 +120,10 @@ pub enum MeetingsInit {
     NotStarted,
     Starting,
     Ready,
+    /// Any other start failure: Retry only (the notes may be readable).
     Failed(String),
-    /// The data key is gone but meeting data exists: Retry or reset.
+    /// The data key is gone (or doesn't decrypt the meeting data) but
+    /// meeting data exists: Retry or reset.
     DataKeyMissing(String),
 }
 

@@ -7,7 +7,8 @@
 //!   [`TrackWriter`]s and start capture. Capture callbacks only push samples
 //!   into a channel; a writer thread encodes and writes them.
 //! - **stop**: stop capture, finish both files, set `ended_at` and status
-//!   `Recorded`. (The manager then queues processing.)
+//!   `Recorded`. (The manager then queues processing; a finish that only a
+//!   later retry manages is reported through `on_recording_finished`.)
 //! - **tick** (driven by the [`Scheduler`] thread): "still recording"
 //!   reminders and "Take notes for …?" calendar prompts.
 //!
@@ -76,6 +77,11 @@ pub struct RecorderDeps {
     pub on_state: Shared<dyn Fn(&RecorderState) + Send + Sync>,
     /// Called when a meeting row changed (emit `MEETING_CHANGED`).
     pub on_meeting_changed: Shared<dyn Fn(MeetingId) + Send + Sync>,
+    /// Called when a stopped recording whose row update failed at stop is
+    /// finished by a later retry (start, tick, idle stop), so it gets queued
+    /// for processing like a normal stop. May be called with `op` held: it
+    /// must not call back into the recorder synchronously.
+    pub on_recording_finished: Shared<dyn Fn(MeetingId) + Send + Sync>,
 }
 
 enum WriterMsg {
@@ -101,6 +107,7 @@ struct Session {
 /// A stopped recording whose row is still `Recording` because the database
 /// update failed at stop. Retried by the next stop, start, tick and
 /// [`MeetingRecorder::recover_interrupted`], so it never waits for a restart.
+/// Each one is kept (and retried) on its own: recording goes on meanwhile.
 #[derive(Debug, Clone)]
 struct PendingFinish {
     meeting_id: MeetingId,
@@ -171,7 +178,7 @@ pub struct MeetingRecorder {
     /// Serializes start/stop/crash recovery.
     op: Mutex<()>,
     session: Mutex<Option<Session>>,
-    pending: Mutex<Option<PendingFinish>>,
+    pending: Mutex<Vec<PendingFinish>>,
     state: Mutex<RecorderState>,
     prompts: Mutex<Prompts>,
 }
@@ -191,7 +198,7 @@ impl MeetingRecorder {
             deps,
             op: Mutex::new(()),
             session: Mutex::new(None),
-            pending: Mutex::new(None),
+            pending: Mutex::new(Vec::new()),
             state: Mutex::new(RecorderState::Idle),
             prompts: Mutex::new(Prompts::default()),
         }
@@ -211,21 +218,32 @@ impl MeetingRecorder {
         (self.deps.on_state)(&state);
     }
 
+    /// The event a start for `event_id` links to: from the last poll, else
+    /// the calendar. `None` when it can't be found or ended more than
+    /// [`schedule::START_LINK_GRACE_MS`] ago (a calendar prompt's "Start" may
+    /// be clicked hours later).
     fn find_event(&self, event_id: &str, now: i64) -> Option<CalendarEvent> {
-        if let Some(e) = self.prompts.lock().seen.iter().find(|e| e.id == event_id) {
-            return Some(e.clone());
-        }
-        match self
-            .deps
-            .calendar
-            .events_between(now - 24 * 60 * MINUTE_MS, now + 24 * 60 * MINUTE_MS)
-        {
-            Ok(events) => events.into_iter().find(|e| e.id == event_id),
-            Err(e) => {
-                log::warn!("meetings: calendar lookup failed: {e:#}");
-                None
+        let cached = self
+            .prompts
+            .lock()
+            .seen
+            .iter()
+            .find(|e| e.id == event_id)
+            .cloned();
+        let event = cached.or_else(|| {
+            match self
+                .deps
+                .calendar
+                .events_between(now - 24 * 60 * MINUTE_MS, now + 24 * 60 * MINUTE_MS)
+            {
+                Ok(events) => events.into_iter().find(|e| e.id == event_id),
+                Err(e) => {
+                    log::warn!("meetings: calendar lookup failed: {e:#}");
+                    None
+                }
             }
-        }
+        });
+        event.filter(|e| schedule::links_to_event(e, now))
     }
 
     fn current_event(&self, now: i64) -> Option<CalendarEvent> {
@@ -240,22 +258,34 @@ impl MeetingRecorder {
         }
     }
 
-    /// Start recording at `now`. `calendar_event_id: None` links to the event
-    /// happening now, if any.
+    /// Start recording at `now`, linked to the calendar event
+    /// `calendar_event_id`. When that is `None`, or the event has ended or
+    /// can't be found ([`Self::find_event`]), it links to the event happening
+    /// now, if any.
     pub fn start(&self, calendar_event_id: Option<String>, now: i64) -> Result<MeetingId> {
         let _op = self.op.lock();
         if self.session.lock().is_some() {
             bail!("a meeting is already being recorded");
         }
-        if let Err(e) = self.finish_pending() {
-            log::warn!("meetings: finishing the previous recording failed again: {e:#}");
+        // Failing ones stay pending: recording a new meeting isn't blocked.
+        if let Err(e) = self.retry_pending() {
+            log::warn!("meetings: finishing a previous recording failed again: {e:#}");
         }
         let key = (self.deps.data_key)().context("meetings data key")?;
 
-        let event = match calendar_event_id.as_deref() {
-            Some(id) => self.find_event(id, now),
-            None => self.current_event(now),
-        };
+        let event = calendar_event_id
+            .as_deref()
+            .and_then(|id| {
+                let event = self.find_event(id, now);
+                if event.is_none() {
+                    log::info!(
+                        "meetings: calendar event {id} has ended or can't be found: \
+                         starting without linking to it"
+                    );
+                }
+                event
+            })
+            .or_else(|| self.current_event(now));
         let title = match &event {
             Some(e) if !e.title.trim().is_empty() => e.title.clone(),
             _ => format!(
@@ -267,7 +297,7 @@ impl MeetingRecorder {
         let meeting = Meeting {
             id: 0,
             title: title.clone(),
-            calendar_event_id: event.as_ref().map(|e| e.id.clone()).or(calendar_event_id),
+            calendar_event_id: event.as_ref().map(|e| e.id.clone()),
             calendar_event: event.clone(),
             started_at: now,
             ended_at: None,
@@ -406,11 +436,13 @@ impl MeetingRecorder {
     /// The row is finished (with retries) before the state goes `Idle`. If it
     /// still can't be, capture stays stopped and the finish is kept pending:
     /// the next `stop` (even when idle), `start`, tick or recovery retries
-    /// it, so the meeting isn't stuck `Recording` until a restart.
+    /// it, so the meeting isn't stuck `Recording` until a restart. A finish
+    /// done by such a retry is reported through
+    /// [`RecorderDeps::on_recording_finished`], not returned.
     pub fn stop(&self, now: i64) -> Result<Option<MeetingId>> {
         let _op = self.op.lock();
         let Some(mut session) = self.session.lock().take() else {
-            return self.finish_pending();
+            return self.retry_pending().map(|()| None);
         };
         let id = session.meeting_id;
         if let Some(capture) = session.capture.take() {
@@ -440,40 +472,51 @@ impl MeetingRecorder {
         if let Some(e) = &error {
             log::error!("meetings: meeting {id}: {e}");
         }
-        *self.pending.lock() = Some(PendingFinish {
+        let pending = PendingFinish {
             meeting_id: id,
             ended_at: now,
             error,
-        });
-        let mut result = self.finish_pending();
+        };
+        self.pending.lock().push(pending.clone());
+        let mut result = self.finish_one(&pending);
         for delay in FINISH_RETRY_DELAYS {
             // Stop once it worked, or there's nothing left to retry.
             let Err(e) = &result else { break };
-            if self.pending.lock().is_none() {
+            if !self.is_pending(id) {
                 break;
             }
             log::warn!("meetings: finishing meeting {id} failed, retrying: {e:#}");
             std::thread::sleep(delay);
-            result = self.finish_pending();
+            result = self.finish_one(&pending);
+        }
+        // Earlier stops whose finish failed.
+        if let Err(e) = self.retry_pending() {
+            log::warn!("meetings: finishing a previous recording failed again: {e:#}");
         }
         // Capture is stopped either way.
         self.set_state(RecorderState::Idle);
         if result.is_ok() {
             log::info!("meetings: stopped recording meeting {id}");
         }
-        result.with_context(|| format!("finish recording meeting {id}"))
+        result
+            .map(|()| Some(id))
+            .with_context(|| format!("finish recording meeting {id}"))
     }
 
-    /// Finish the row of a stopped recording ([`PendingFinish`]), if any.
-    /// Returns its id once finished; on error it stays pending (unless the
-    /// meeting is gone). Callers hold `op`.
-    fn finish_pending(&self) -> Result<Option<MeetingId>> {
-        let Some(p) = self.pending.lock().clone() else {
-            return Ok(None);
-        };
+    fn is_pending(&self, id: MeetingId) -> bool {
+        self.pending.lock().iter().any(|p| p.meeting_id == id)
+    }
+
+    fn forget_pending(&self, id: MeetingId) {
+        self.pending.lock().retain(|p| p.meeting_id != id);
+    }
+
+    /// Finish the row of one stopped recording ([`PendingFinish`]). On error
+    /// it stays pending (unless the meeting is gone). Callers hold `op`.
+    fn finish_one(&self, p: &PendingFinish) -> Result<()> {
         let id = p.meeting_id;
         let Some(meeting) = self.deps.repo.get_meeting(id)? else {
-            *self.pending.lock() = None;
+            self.forget_pending(id);
             bail!("meeting {id} disappeared while recording");
         };
         // Targeted update: the title (renamed while recording) is untouched.
@@ -484,9 +527,49 @@ impl MeetingRecorder {
         )? {
             log::warn!("meetings: meeting {id} was no longer recording at stop");
         }
-        *self.pending.lock() = None;
+        self.forget_pending(id);
         (self.deps.on_meeting_changed)(id);
-        Ok(Some(id))
+        Ok(())
+    }
+
+    /// Retry every pending finish, each on its own. Returns the ids finished
+    /// now and the first error (the others are logged). Callers hold `op`.
+    fn finish_pending(&self) -> (Vec<MeetingId>, Option<anyhow::Error>) {
+        let pending = self.pending.lock().clone();
+        let mut finished = Vec::new();
+        let mut first_error = None;
+        for p in pending {
+            match self.finish_one(&p) {
+                Ok(()) => finished.push(p.meeting_id),
+                Err(e) => {
+                    let e = e.context(format!("finish recording meeting {}", p.meeting_id));
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    } else {
+                        log::warn!("meetings: {e:#}");
+                    }
+                }
+            }
+        }
+        (finished, first_error)
+    }
+
+    /// [`Self::finish_pending`], reporting each meeting finished through
+    /// [`RecorderDeps::on_recording_finished`] (queued for processing like
+    /// a normal stop). Callers hold `op`.
+    fn retry_pending(&self) -> Result<()> {
+        let (finished, error) = self.finish_pending();
+        for id in finished {
+            log::info!("meetings: finished stopped recording {id} on retry");
+            (self.deps.on_recording_finished)(id);
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    /// Whether a stopped recording still waits for its row to be finished
+    /// (the scheduler keeps ticking to retry it).
+    pub fn has_pending_finish(&self) -> bool {
+        !self.pending.lock().is_empty()
     }
 
     pub fn is_recording(&self) -> bool {
@@ -515,49 +598,20 @@ impl MeetingRecorder {
             .map(|s| schedule::next_reminder_at(&reminder_state(s, interval)))
     }
 
-    /// One scheduler step: post a due reminder, and (at most once a minute)
-    /// poll the calendar for events starting now.
+    /// One scheduler step: retry pending finishes, post a due reminder, and
+    /// (at most once a minute) poll the calendar for events starting now.
     pub fn tick(&self, now: i64) {
-        // Retry a stop whose row update failed (never waits on start/stop).
-        if self.pending.lock().is_some() {
-            if let Some(_op) = self.op.try_lock() {
-                if let Err(e) = self.finish_pending() {
-                    log::warn!("meetings: finishing a stopped recording failed: {e:#}");
-                }
-            }
-        }
         let settings = (self.deps.settings)();
         let strings = (self.deps.strings)();
-
-        let due = {
-            let mut session = self.session.lock();
-            session.as_mut().and_then(|s| {
-                let st = reminder_state(s, settings.reminder_interval_minutes);
-                schedule::reminder_due(now, &st).then(|| {
-                    s.last_reminder_at = Some(now);
-                    (s.meeting_id, s.title.clone())
-                })
-            })
-        };
-        if let Some((id, title)) = due {
-            let actions = [
-                NotificationAction {
-                    id: ACTION_STOP.into(),
-                    title: strings.stop.clone(),
-                },
-                NotificationAction {
-                    id: ACTION_KEEP_GOING.into(),
-                    title: strings.keep_going.clone(),
-                },
-            ];
-            if let Err(e) = self.deps.notifier.post(
-                &reminder_notification_id(id),
-                &strings.still_recording,
-                &title,
-                &actions,
-            ) {
-                log::warn!("meetings: reminder notification failed: {e:#}");
+        {
+            let _op = self.op.lock();
+            // Retry stops whose row update failed.
+            if let Err(e) = self.retry_pending() {
+                log::warn!("meetings: finishing a stopped recording failed: {e:#}");
             }
+            // Decided and posted under `op`: a stop can't withdraw the
+            // reminders before a stale one is posted.
+            self.post_due_reminder(now, &settings, &strings);
         }
 
         if !(settings.enabled && settings.calendar_notifications) || self.is_recording() {
@@ -570,6 +624,8 @@ impl MeetingRecorder {
             }
             p.last_poll = Some(now);
         }
+        // The (slow) lookup runs without `op`, so it never holds up a start
+        // or stop.
         let events = match self
             .deps
             .calendar
@@ -581,6 +637,12 @@ impl MeetingRecorder {
                 return;
             }
         };
+        // Re-checked, decided and posted under `op`: a recording started
+        // meanwhile gets no prompt (and one starting now withdraws it after).
+        let _op = self.op.lock();
+        if self.is_recording() {
+            return;
+        }
         let to_post: Vec<CalendarEvent> = {
             let mut p = self.prompts.lock();
             let list: Vec<CalendarEvent> =
@@ -617,6 +679,45 @@ impl MeetingRecorder {
         }
     }
 
+    /// Post the "still recording" reminder if one is due. Callers hold `op`.
+    fn post_due_reminder(
+        &self,
+        now: i64,
+        settings: &MeetingSettings,
+        strings: &NotificationStrings,
+    ) {
+        let due = {
+            let mut session = self.session.lock();
+            session.as_mut().and_then(|s| {
+                let st = reminder_state(s, settings.reminder_interval_minutes);
+                schedule::reminder_due(now, &st).then(|| {
+                    s.last_reminder_at = Some(now);
+                    (s.meeting_id, s.title.clone())
+                })
+            })
+        };
+        if let Some((id, title)) = due {
+            let actions = [
+                NotificationAction {
+                    id: ACTION_STOP.into(),
+                    title: strings.stop.clone(),
+                },
+                NotificationAction {
+                    id: ACTION_KEEP_GOING.into(),
+                    title: strings.keep_going.clone(),
+                },
+            ];
+            if let Err(e) = self.deps.notifier.post(
+                &reminder_notification_id(id),
+                &strings.still_recording,
+                &title,
+                &actions,
+            ) {
+                log::warn!("meetings: reminder notification failed: {e:#}");
+            }
+        }
+    }
+
     /// Meetings left in `Recording` by a crash: mark them `Recorded`, with
     /// `ended_at` = the newest track file's last-write time. A stop whose row
     /// update failed is finished with its own end time and error instead.
@@ -633,14 +734,15 @@ impl MeetingRecorder {
         let _op = self.op.lock();
         let active = self.current_meeting_id();
         let mut ids = Vec::new();
-        match self.finish_pending() {
-            Ok(Some(id)) => ids.push(id),
-            Ok(None) => {}
-            Err(e) => log::warn!("meetings: finishing a stopped recording failed: {e:#}"),
+        // Returned (not reported through `on_recording_finished`): the
+        // caller queues them with the rest.
+        let (finished, error) = self.finish_pending();
+        ids.extend(finished);
+        if let Some(e) = error {
+            log::warn!("meetings: finishing a stopped recording failed: {e:#}");
         }
-        let pending = self.pending.lock().as_ref().map(|p| p.meeting_id);
         for m in self.deps.repo.list_meetings()? {
-            if m.status != MeetingStatus::Recording || Some(m.id) == active || Some(m.id) == pending
+            if m.status != MeetingStatus::Recording || Some(m.id) == active || self.is_pending(m.id)
             {
                 continue;
             }

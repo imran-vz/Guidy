@@ -125,6 +125,14 @@ static MIGRATIONS: &[M] = &[
     ALTER TABLE action_items ADD COLUMN linear_client_id TEXT;
     UPDATE action_items SET manual = 1 WHERE trim(source_quote) = '';",
     ),
+    // 3: the status and error a meeting had before it was queued for
+    // processing, so a cancel (or a failed resume after a restart) can put
+    // them back. NULL while not processing, and for a meeting a crash left
+    // in `processing` before this column existed.
+    M::up(
+        "ALTER TABLE meetings ADD COLUMN status_before_processing TEXT;
+    ALTER TABLE meetings ADD COLUMN error_before_processing TEXT;",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -382,6 +390,20 @@ impl std::fmt::Display for TicketEditError {
 
 impl std::error::Error for TicketEditError {}
 
+/// `meetings.db` exists but the data key doesn't decrypt it (SQLite reads
+/// it as "not a database"): the key is wrong. Other open failures (a busy
+/// or locked file, I/O, a migration error) are not this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingsDbUndecryptable;
+
+impl std::fmt::Display for MeetingsDbUndecryptable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("meetings.db could not be decrypted (wrong key?)")
+    }
+}
+
+impl std::error::Error for MeetingsDbUndecryptable {}
+
 /// The encrypted meetings database. Cheap to share as `Arc<MeetingsStore>`;
 /// every call takes the connection lock for its duration.
 pub struct MeetingsStore {
@@ -390,7 +412,8 @@ pub struct MeetingsStore {
 
 impl MeetingsStore {
     /// Open (creating if needed) the database at `path`, keyed with `key`,
-    /// and migrate it. Fails if the file exists but `key` is wrong.
+    /// and migrate it. Fails with [`MeetingsDbUndecryptable`] (in the error
+    /// chain) if the file exists but `key` is wrong.
     pub fn open(path: &Path, key: &[u8; 32]) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -411,10 +434,17 @@ impl MeetingsStore {
         apply_key(&conn, key)?;
         // Reading the schema is the first access that decrypts a page; a wrong
         // key fails here with "file is not a database".
-        conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
+        if let Err(e) = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
             r.get::<_, i64>(0)
-        })
-        .context("meetings.db could not be decrypted (wrong key?)")?;
+        }) {
+            let undecryptable = e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase);
+            let e = anyhow::Error::new(e);
+            return Err(if undecryptable {
+                e.context(MeetingsDbUndecryptable)
+            } else {
+                e.context("read meetings.db")
+            });
+        }
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let migrations = Migrations::new(MIGRATIONS.to_vec());
@@ -635,13 +665,74 @@ impl MeetingsStore {
     /// is atomic with [`Self::clear_audio_paths_if_processed`]: retention
     /// either sees the meeting `Processing` and keeps its audio, or clears
     /// the audio first and this refuses.
+    ///
+    /// The previous status and error are kept for
+    /// [`Self::restore_status_before_processing`]; a meeting already
+    /// `Processing` (resumed after a crash) keeps the ones saved before.
     pub fn mark_processing(&self, id: MeetingId, needs_audio: bool) -> Result<bool> {
         Ok(self.conn.lock().execute(
-            "UPDATE meetings SET status = 'processing', error = NULL
+            "UPDATE meetings SET
+                status_before_processing = CASE WHEN status = 'processing'
+                    THEN status_before_processing ELSE status END,
+                error_before_processing = CASE WHEN status = 'processing'
+                    THEN error_before_processing ELSE error END,
+                status = 'processing', error = NULL
              WHERE id = ?1 AND status != 'recording'
                AND (NOT ?2 OR mic_audio_path IS NOT NULL OR system_audio_path IS NOT NULL)",
             params![id, needs_audio],
         )? > 0)
+    }
+
+    /// The status a `Processing` meeting had before [`Self::mark_processing`]
+    /// (`None` when not processing, or for a crash leftover from before it
+    /// was recorded).
+    pub fn status_before_processing(&self, id: MeetingId) -> Result<Option<MeetingStatus>> {
+        let v: Option<String> = self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT status_before_processing FROM meetings
+                 WHERE id = ?1 AND status = 'processing'",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(v.as_deref().and_then(MeetingStatus::parse))
+    }
+
+    /// Undo [`Self::mark_processing`] (processing cancelled, or it could not
+    /// be resumed): back to the saved status and error, or `Recorded` (no
+    /// error) when none was saved. Only while the meeting is `Processing`;
+    /// returns whether it changed.
+    pub fn restore_status_before_processing(&self, id: MeetingId) -> Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE meetings SET
+                status = CASE WHEN status_before_processing IN ('recorded', 'processed', 'failed')
+                    THEN status_before_processing ELSE 'recorded' END,
+                error = CASE WHEN status_before_processing IN ('recorded', 'processed', 'failed')
+                    THEN error_before_processing END,
+                status_before_processing = NULL, error_before_processing = NULL
+             WHERE id = ?1 AND status = 'processing'",
+            [id],
+        )? > 0)
+    }
+
+    /// Record a processing outcome: status and error, dropping the status
+    /// saved by [`Self::mark_processing`].
+    pub fn finish_processing(
+        &self,
+        id: MeetingId,
+        status: MeetingStatus,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let n = self.conn.lock().execute(
+            "UPDATE meetings SET status = ?2, error = ?3,
+                status_before_processing = NULL, error_before_processing = NULL
+             WHERE id = ?1",
+            params![id, status.as_str(), error],
+        )?;
+        expect_one(n, "meeting", id)
     }
 
     /// Audio retention: clear both track paths only when the meeting is fully
@@ -2095,6 +2186,76 @@ mod tests {
         );
         assert!(s.mark_processing(id, false).unwrap());
         assert!(!s.mark_processing(999, false).unwrap());
+    }
+
+    #[test]
+    fn the_status_before_processing_is_kept_until_it_ends() {
+        let s = store();
+        let mut done = meeting("p", 0);
+        done.status = MeetingStatus::Processed;
+        let id = s.insert_meeting(&done).unwrap();
+        assert_eq!(s.status_before_processing(id).unwrap(), None);
+        assert!(s.mark_processing(id, false).unwrap());
+        assert_eq!(
+            s.status_before_processing(id).unwrap(),
+            Some(MeetingStatus::Processed)
+        );
+        // Marked again (a resume): the saved status stays.
+        assert!(s.mark_processing(id, false).unwrap());
+        assert_eq!(
+            s.status_before_processing(id).unwrap(),
+            Some(MeetingStatus::Processed)
+        );
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!((got.status, got.error), (MeetingStatus::Processed, None));
+        // Not processing: nothing to restore.
+        assert!(!s.restore_status_before_processing(id).unwrap());
+
+        // A failure keeps its error.
+        s.set_meeting_status(id, MeetingStatus::Failed, Some("boom"))
+            .unwrap();
+        assert!(s.mark_processing(id, false).unwrap());
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.status, MeetingStatus::Failed);
+        assert_eq!(got.error.as_deref(), Some("boom"));
+
+        // An outcome drops the saved status.
+        assert!(s.mark_processing(id, false).unwrap());
+        s.finish_processing(id, MeetingStatus::Processed, None)
+            .unwrap();
+        s.set_meeting_status(id, MeetingStatus::Processing, None)
+            .unwrap();
+        assert_eq!(s.status_before_processing(id).unwrap(), None);
+        // Nothing saved (a crash leftover): back to `Recorded`.
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!((got.status, got.error), (MeetingStatus::Recorded, None));
+    }
+
+    #[test]
+    fn only_a_wrong_key_is_reported_as_undecryptable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        drop(MeetingsStore::open(&path, &KEY).unwrap());
+        let e = MeetingsStore::open(&path, &[8u8; 32]).err().unwrap();
+        assert!(
+            e.downcast_ref::<MeetingsDbUndecryptable>().is_some(),
+            "{e:#}"
+        );
+
+        // Locked by another connection: an error, but not a key problem.
+        let other = Connection::open(&path).unwrap();
+        apply_key(&other, &KEY).unwrap();
+        other.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let e = MeetingsStore::open(&path, &KEY).err().unwrap();
+        assert!(
+            e.downcast_ref::<MeetingsDbUndecryptable>().is_none(),
+            "{e:#}"
+        );
+        other.execute_batch("ROLLBACK").unwrap();
+        assert!(MeetingsStore::open(&path, &KEY).is_ok());
     }
 
     #[test]

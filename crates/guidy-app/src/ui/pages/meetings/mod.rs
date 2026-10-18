@@ -335,6 +335,7 @@ impl MeetingsPage {
                 t("meetings.init.failed"),
                 None,
                 e,
+                false,
                 cx,
             )),
             MeetingsInit::DataKeyMissing(e) => Some(self.render_init_error(
@@ -342,19 +343,23 @@ impl MeetingsPage {
                 t("meetings.init.keyMissing.title"),
                 Some(t("meetings.init.keyMissing.description")),
                 e,
+                true,
                 cx,
             )),
         }
     }
 
-    /// A failed start: what happened, the error, Retry, and a reset that
-    /// moves the unreadable meeting data aside (after a confirmation).
+    /// A failed start: what happened, the error, Retry and, with
+    /// `resettable` (only for a key problem: other failures leave the notes
+    /// readable), a reset that moves the unreadable meeting data aside
+    /// (after a confirmation).
     fn render_init_error(
         &self,
         id: &'static str,
         title: SharedString,
         description: Option<SharedString>,
         error: &str,
+        resettable: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
@@ -389,16 +394,18 @@ impl MeetingsPage {
                                 this.state.update(cx, |s, cx| s.retry_meetings_init(cx))
                             })),
                     )
-                    .child(
-                        Button::new("meetings-init-reset")
-                            .outline()
-                            .small()
-                            .icon(icon("archive"))
-                            .label(t("meetings.init.reset.action"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.confirm_reset(window, cx)),
-                            ),
-                    ),
+                    .when(resettable, |row| {
+                        row.child(
+                            Button::new("meetings-init-reset")
+                                .outline()
+                                .small()
+                                .icon(icon("archive"))
+                                .label(t("meetings.init.reset.action"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.confirm_reset(window, cx)
+                                })),
+                        )
+                    }),
             )
             .test_support()
             .into_any_element()
