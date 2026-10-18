@@ -12,36 +12,41 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Jobs run on the self-hosted mac-mini runner: an ephemeral Tart VM
+# (macos-tahoe-xcode) that sand boots per job, labelled `guidy`. Pull requests
+# from forks run on GitHub's macos-latest instead, so code from outside the
+# repo never runs on the mac-mini. macOS only for now: Windows and Linux come
+# back once there are machines to test them on.
+
 jobs:
-  lint:
-    runs-on: macos-latest
+  # fmt, clippy, tests and the parity check in one VM, so the dependency
+  # build is shared.
+  check:
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","guidy"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # transcribe-cpp, llama.cpp and opus build with CMake; the Tart image
+      # doesn't ship it (GitHub's runner image does).
+      - name: Install CMake
+        run: command -v cmake || brew install cmake
       - uses: swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-
-  # macOS only for now: Windows and Linux builds come back once there are
-  # machines to test them on (CI alone isn't enough to fix platform code).
-  gate:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
       # Unit, UI (headless GPUI test platform) and CLI tests, then the
       # parity check (tests, commands, events, PARITY.md rows).
       - run: cargo xtask gate
 
   package:
-    needs: gate
-    runs-on: macos-latest
+    needs: check
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","guidy"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install CMake
+        run: command -v cmake || brew install cmake
       - uses: swatinem/rust-cache@v2
       - run: cargo install cargo-packager --locked
       # Unsigned packages. Code signing and notarization are not set up.
