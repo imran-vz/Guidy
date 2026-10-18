@@ -125,13 +125,14 @@ static MIGRATIONS: &[M] = &[
     ALTER TABLE action_items ADD COLUMN linear_client_id TEXT;
     UPDATE action_items SET manual = 1 WHERE trim(source_quote) = '';",
     ),
-    // 3: the status and error a meeting had before it was queued for
-    // processing, so a cancel (or a failed resume after a restart) can put
-    // them back. NULL while not processing, and for a meeting a crash left
-    // in `processing` before this column existed.
+    // 3: the status, error and processing stage a meeting had before it was
+    // queued for processing, so a cancel (or a failed resume after a
+    // restart) can put them back. NULL while not processing, and for a
+    // meeting a crash left in `processing` before these columns existed.
     M::up(
         "ALTER TABLE meetings ADD COLUMN status_before_processing TEXT;
-    ALTER TABLE meetings ADD COLUMN error_before_processing TEXT;",
+    ALTER TABLE meetings ADD COLUMN error_before_processing TEXT;
+    ALTER TABLE meetings ADD COLUMN stage_before_processing TEXT;",
     ),
 ];
 
@@ -666,7 +667,7 @@ impl MeetingsStore {
     /// either sees the meeting `Processing` and keeps its audio, or clears
     /// the audio first and this refuses.
     ///
-    /// The previous status and error are kept for
+    /// The previous status, error and stage are kept for
     /// [`Self::restore_status_before_processing`]; a meeting already
     /// `Processing` (resumed after a crash) keeps the ones saved before.
     pub fn mark_processing(&self, id: MeetingId, needs_audio: bool) -> Result<bool> {
@@ -676,6 +677,8 @@ impl MeetingsStore {
                     THEN status_before_processing ELSE status END,
                 error_before_processing = CASE WHEN status = 'processing'
                     THEN error_before_processing ELSE error END,
+                stage_before_processing = CASE WHEN status = 'processing'
+                    THEN stage_before_processing ELSE processing_stage END,
                 status = 'processing', error = NULL
              WHERE id = ?1 AND status != 'recording'
                AND (NOT ?2 OR mic_audio_path IS NOT NULL OR system_audio_path IS NOT NULL)",
@@ -705,6 +708,12 @@ impl MeetingsStore {
     /// be resumed): back to the saved status and error, or `Recorded` (no
     /// error) when none was saved. Only while the meeting is `Processing`;
     /// returns whether it changed.
+    ///
+    /// A meeting that was `Processed` also gets its stage back (`done`), so
+    /// a cancelled reprocess leaves it complete: retention can delete its
+    /// audio, and processing it again starts over instead of resuming the
+    /// cancelled run's partial checkpoint. Any other keeps the stage the run
+    /// reached, so processing it again resumes.
     pub fn restore_status_before_processing(&self, id: MeetingId) -> Result<bool> {
         Ok(self.conn.lock().execute(
             "UPDATE meetings SET
@@ -712,7 +721,10 @@ impl MeetingsStore {
                     THEN status_before_processing ELSE 'recorded' END,
                 error = CASE WHEN status_before_processing IN ('recorded', 'processed', 'failed')
                     THEN error_before_processing END,
-                status_before_processing = NULL, error_before_processing = NULL
+                processing_stage = CASE WHEN status_before_processing = 'processed'
+                    THEN stage_before_processing ELSE processing_stage END,
+                status_before_processing = NULL, error_before_processing = NULL,
+                stage_before_processing = NULL
              WHERE id = ?1 AND status = 'processing'",
             [id],
         )? > 0)
@@ -728,7 +740,8 @@ impl MeetingsStore {
     ) -> Result<()> {
         let n = self.conn.lock().execute(
             "UPDATE meetings SET status = ?2, error = ?3,
-                status_before_processing = NULL, error_before_processing = NULL
+                status_before_processing = NULL, error_before_processing = NULL,
+                stage_before_processing = NULL
              WHERE id = ?1",
             params![id, status.as_str(), error],
         )?;
@@ -2232,6 +2245,57 @@ mod tests {
         assert!(s.restore_status_before_processing(id).unwrap());
         let got = s.get_meeting(id).unwrap().unwrap();
         assert_eq!((got.status, got.error), (MeetingStatus::Recorded, None));
+    }
+
+    /// A cancelled reprocess gets its `done` stage back (so retention still
+    /// applies); a cancelled first run keeps the stage it reached.
+    #[test]
+    fn a_cancel_restores_the_stage_of_a_processed_meeting_only() {
+        let s = store();
+        let mut done = meeting("p", 0);
+        done.status = MeetingStatus::Processed;
+        done.processing_stage = Some(ProcessingStage::Done.as_str().into());
+        done.ended_at = Some(1);
+        done.mic_audio_path = Some("1-mic.gopus".into());
+        let id = s.insert_meeting(&done).unwrap();
+        assert!(s.mark_processing(id, true).unwrap());
+        // The new run starts over and gets part-way.
+        s.set_processing_stage(id, None).unwrap();
+        s.set_processing_stage(id, Some(ProcessingStage::Vad))
+            .unwrap();
+        // Resumed after a crash: the saved stage stays.
+        assert!(s.mark_processing(id, true).unwrap());
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.status, MeetingStatus::Processed);
+        assert_eq!(got.processing_stage.as_deref(), Some("done"));
+        assert!(s.clear_audio_paths_if_processed(id).unwrap());
+
+        let mut failed = meeting("f", 0);
+        failed.status = MeetingStatus::Failed;
+        failed.processing_stage = Some(ProcessingStage::Decode.as_str().into());
+        let id = s.insert_meeting(&failed).unwrap();
+        assert!(s.mark_processing(id, false).unwrap());
+        s.set_processing_stage(id, Some(ProcessingStage::Transcribe))
+            .unwrap();
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.status, MeetingStatus::Failed);
+        assert_eq!(got.processing_stage.as_deref(), Some("transcribe"));
+
+        // An outcome drops the saved stage: a later crash leftover can't
+        // bring back a stale one.
+        assert!(s.mark_processing(id, false).unwrap());
+        s.finish_processing(id, MeetingStatus::Processed, None)
+            .unwrap();
+        s.set_meeting_status(id, MeetingStatus::Processing, None)
+            .unwrap();
+        s.set_processing_stage(id, Some(ProcessingStage::Vad))
+            .unwrap();
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.status, MeetingStatus::Recorded);
+        assert_eq!(got.processing_stage.as_deref(), Some("vad"));
     }
 
     #[test]

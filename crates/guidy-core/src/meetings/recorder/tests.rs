@@ -648,6 +648,27 @@ fn a_failed_finish_at_stop_is_retried_by_tick_start_and_recovery() {
 }
 
 #[test]
+fn a_stop_finished_by_its_trailing_retry_is_returned_not_reported() {
+    let r = rig();
+    let a = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    let b = r.rec.start(None, T0 + 2_000).unwrap();
+    // b's own attempt and both retries fail; the pending retry after them
+    // (a, then b) works.
+    *r.repo.fail_finish.lock() = 1 + FINISH_RETRY_DELAYS.len();
+    assert_eq!(r.rec.stop(T0 + 3_000).unwrap(), Some(b));
+    assert!(!r.rec.has_pending_finish());
+    for (id, end) in [(a, T0 + 1_000), (b, T0 + 3_000)] {
+        let m = r.repo.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Recorded);
+        assert_eq!(m.ended_at, Some(end), "meeting {id}");
+    }
+    // Only the earlier stop is reported; b is returned (queued once).
+    assert_eq!(*r.finished.lock(), vec![a]);
+}
+
+#[test]
 fn every_failed_finish_is_kept_and_retried_on_its_own() {
     let r = rig();
     let a = r.rec.start(None, T0).unwrap();

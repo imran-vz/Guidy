@@ -86,6 +86,9 @@ pub struct MeetingsManager {
     /// Meetings with a `create_tickets` call running (count per meeting).
     /// `summarize` refuses to start or to store while its meeting is here.
     ticket_creations: parking_lot::Mutex<std::collections::HashMap<MeetingId, usize>>,
+    /// Meetings whose summary is being stored: past the point a cancel can
+    /// stop it, so `cancel_summarize` reports false for them.
+    summary_commits: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -111,6 +114,7 @@ impl MeetingsManager {
             linear: Default::default(),
             processing,
             ticket_creations: Default::default(),
+            summary_commits: Default::default(),
         }))
     }
 
@@ -704,7 +708,7 @@ impl MeetingsManager {
                 },
             );
         })?;
-        let stored = {
+        let stored = self.commit_summary(id, &job.cancel, || {
             // Held while storing: `create_tickets` claims its meetings under
             // this lock, so the two can't interleave.
             let creating = self.ticket_creations.lock();
@@ -717,16 +721,48 @@ impl MeetingsManager {
                 &output,
                 &provider.name(),
                 &self.linear.in_flight_ids(),
-            )?
-        };
+            )
+        })?;
         drop(job);
         self.emit_meeting_changed(id);
         Ok(stored)
     }
 
+    /// Run `store` for `id`'s summary unless it was cancelled. The cancel
+    /// check and the claim are one step under `summary_commits`, which
+    /// [`Self::cancel_summarize`] holds too: a cancel either lands first
+    /// (a "cancelled" error, nothing stored) or reports false.
+    fn commit_summary<T>(
+        &self,
+        id: MeetingId,
+        cancel: &crate::llm::CancelFlag,
+        store: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        struct Claim<'a>(&'a MeetingsManager, MeetingId);
+        impl Drop for Claim<'_> {
+            fn drop(&mut self) {
+                self.0.summary_commits.lock().remove(&self.1);
+            }
+        }
+        let _claim = {
+            let mut committing = self.summary_commits.lock();
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!(crate::llm::CANCELLED);
+            }
+            committing.insert(id);
+            Claim(self, id)
+        };
+        store()
+    }
+
     /// Stop a running [`Self::summarize`] (it returns a "cancelled" error and
-    /// stores nothing). Returns false when none is running.
+    /// stores nothing). Returns false when none is running, or when it is
+    /// already storing its result (too late to stop).
     pub fn cancel_summarize(&self, id: MeetingId) -> bool {
+        let committing = self.summary_commits.lock();
+        if committing.contains(&id) {
+            return false;
+        }
         crate::meetings::summarize::cancel_job(id)
     }
 
@@ -1289,6 +1325,44 @@ mod store_section_tests {
         assert!(e.to_string().contains("being created"), "{e}");
         drop(claim);
         assert!(!mgr.creating_tickets_for(m));
+    }
+
+    /// A cancel after the summarizer returned still stores nothing; one
+    /// once storing has begun reports false.
+    #[test]
+    fn a_cancelled_summary_is_never_stored() {
+        use crate::meetings::summarize as sum;
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        // Job ids are process-wide: one no other test uses.
+        let id: MeetingId = 0x5_0e55;
+        let stored = std::cell::Cell::new(0);
+
+        let job = sum::begin_job(id).unwrap();
+        assert!(mgr.cancel_summarize(id));
+        let e = mgr
+            .commit_summary(id, &job.cancel, || {
+                stored.set(stored.get() + 1);
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(crate::llm::is_cancelled_error(&e), "{e:#}");
+        assert_eq!(stored.get(), 0);
+        drop(job);
+
+        let job = sum::begin_job(id).unwrap();
+        mgr.commit_summary(id, &job.cancel, || {
+            assert!(!mgr.cancel_summarize(id));
+            stored.set(stored.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(stored.get(), 1);
+        assert!(!job.cancel.load(std::sync::atomic::Ordering::SeqCst));
+        // Stored: a cancel reaches the job again.
+        assert!(mgr.cancel_summarize(id));
+        drop(job);
+        assert!(!mgr.cancel_summarize(id));
     }
 
     #[test]
