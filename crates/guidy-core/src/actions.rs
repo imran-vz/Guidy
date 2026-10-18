@@ -315,7 +315,7 @@ async fn post_process_transcription(
         provider.id, model
     );
 
-    let api_key = crate::settings::provider_api_key(settings, &provider.id);
+    let api_key = crate::settings::provider_api_key(&provider.id);
 
     // Ask these providers to skip reasoning/thinking — post-processing rarely
     // benefits from it and it adds seconds of latency. llm_client picks the

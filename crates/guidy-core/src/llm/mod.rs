@@ -204,7 +204,7 @@ pub fn provider_by_id(
     if model.trim().is_empty() {
         bail!("no model selected for {}", provider.label);
     }
-    let api_key = crate::settings::provider_api_key(settings, provider_id);
+    let api_key = crate::settings::provider_api_key(provider_id);
     if api_key.trim().is_empty() && provider.id != "custom" {
         bail!("no API key set for {}", provider.label);
     }
@@ -266,7 +266,7 @@ pub fn test_connection(app: &AppHandle, provider_id: &str, feature: Feature) -> 
         .cloned()
         .ok_or_else(|| anyhow!("unknown LLM provider '{provider_id}'"))?;
     validate_base_url(&provider)?;
-    let api_key = crate::settings::provider_api_key(&settings, provider_id);
+    let api_key = crate::settings::provider_api_key(provider_id);
     if api_key.trim().is_empty() && provider.id != "custom" {
         bail!("no API key set for {}", provider.label);
     }
@@ -339,7 +339,7 @@ pub fn list_models(app: &AppHandle, provider_id: &str) -> Result<Vec<String>> {
         .cloned()
         .ok_or_else(|| anyhow!("unknown LLM provider '{provider_id}'"))?;
     validate_base_url(&provider)?;
-    let api_key = crate::settings::provider_api_key(&settings, provider_id);
+    let api_key = crate::settings::provider_api_key(provider_id);
     block_on(http::list_models(&provider, api_key))
 }
 

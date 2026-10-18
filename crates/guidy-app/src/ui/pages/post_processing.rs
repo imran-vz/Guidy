@@ -197,7 +197,7 @@ impl PostProcessingPage {
                         // Don't show the previous provider's key meanwhile.
                         set_if(&self.api_key, String::new(), window, cx);
                     }
-                    self.load_api_key(pid.clone(), s.clone(), cx, |_, _, _| {});
+                    self.load_api_key(pid.clone(), cx, |_, _, _| {});
                 }
             }
             set_if(
@@ -254,7 +254,6 @@ impl PostProcessingPage {
     fn load_api_key(
         &mut self,
         provider_id: String,
-        settings: AppSettings,
         cx: &mut Context<Self>,
         done: impl FnOnce(&mut Self, String, &mut Context<Self>) + 'static,
     ) {
@@ -266,7 +265,7 @@ impl PostProcessingPage {
             let pid = provider_id.clone();
             let key = cx
                 .background_spawn(
-                    async move { guidy_core::settings::provider_api_key(&settings, &pid) },
+                    async move { guidy_core::settings::provider_api_key(&pid) },
                 )
                 .await;
             this.update(cx, |this, cx| {
@@ -440,7 +439,7 @@ impl PostProcessingPage {
         };
         match cached {
             Some(key) => fetch_if(self, key, cx),
-            None => self.load_api_key(pid, s, cx, fetch_if),
+            None => self.load_api_key(pid, cx, fetch_if),
         }
         cx.notify();
     }

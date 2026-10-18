@@ -42,7 +42,7 @@ contracts between the workstreams.
 
 | WS | Owner of | Files |
 |---|---|---|
-| A: secrets + store | Keychain module, provider-key migration, `meetings.db` | `src/secrets.rs`, `src/meetings/store.rs` (or `store/`), the key-migration edits in `settings.rs`/`actions.rs`/`shortcut/mod.rs`/`llm_client.rs`, plus the app-side reads of `post_process_api_keys` |
+| A: secrets + store | Keychain module, `meetings.db` | `src/secrets.rs`, `src/meetings/store.rs` (or `store/`) |
 | B: native macOS | Swift bridge: EventKit, VPIO mic, process tap, notifications; Info.plist | `swift/meeting_bridge*.swift`, `swift/meeting_bridge.h`, the new fn in `build.rs`, `src/meetings/native.rs` (or `native/`), `assets/Info.plist`, `assets/Entitlements.plist` |
 | C: capture | Recording session, audio files, retention, reminders, calendar prompts, tray | `src/meetings/audio_store.rs`, `src/meetings/recorder.rs` (or `recorder/`), the meeting items in `src/tray.rs` and `tray_i18n`, registering `MeetingsManager` in `lib.rs` startup |
 | D: processing | VAD, batch transcription with words, voiceprints, clustering, matching, timeline merge, resumable jobs | `src/meetings/processing.rs` (or `processing/`), the speaker-embedding model download, word-timestamp support in `managers/transcription*` / `engine_supervisor` |
