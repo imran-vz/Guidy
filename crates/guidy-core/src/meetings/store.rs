@@ -1330,6 +1330,9 @@ impl MeetingsStore {
     /// generating and persisting one first if needed. Persisting it before
     /// the create call is the "creating" state: a crash or timeout after it
     /// leaves an id that a retry reuses, so Linear rejects the duplicate.
+    /// Call it only right before sending, with a draft that passed
+    /// validation; if the request then never reaches Linear, undo it with
+    /// [`Self::drop_unsent_linear_client_id`].
     ///
     /// Also returns what an earlier attempt with this id sent. Without an
     /// earlier attempt, `draft` (what this attempt sends) is recorded as
@@ -1374,6 +1377,20 @@ impl MeetingsStore {
             )?;
             Ok((client_id, SentDraft::First))
         })
+    }
+
+    /// Undo an [`Self::ensure_linear_client_id`] that generated `client_id`
+    /// when the request it was for never reached Linear: drop the client id
+    /// and the recorded sent draft, so the item isn't kept as "creating" and
+    /// the unsent draft isn't a baseline. A no-op if the item has another
+    /// client id or an issue by now.
+    pub fn drop_unsent_linear_client_id(&self, id: ActionItemId, client_id: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE action_items SET linear_client_id = NULL, linear_sent_ticket = NULL
+             WHERE id = ?1 AND linear_client_id = ?2 AND linear_issue_id IS NULL",
+            params![id, client_id],
+        )?;
+        Ok(())
     }
 
     /// Test hook: drop the item's sent draft, as an attempt made before
@@ -2224,6 +2241,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sent, None);
+    }
+
+    #[test]
+    fn unsent_client_id_is_dropped_with_its_sent_ticket() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_action_item(&item(m, "x")).unwrap();
+        let first = TicketDraft {
+            title: "Never sent".into(),
+            ..Default::default()
+        };
+        let (id, _) = s.ensure_linear_client_id(a.id, &first).unwrap();
+        // Another id (or an issue) by now: left alone.
+        s.drop_unsent_linear_client_id(a.id, "other").unwrap();
+        assert_eq!(s.linear_client_id(a.id).unwrap().as_deref(), Some(&*id));
+        s.drop_unsent_linear_client_id(a.id, &id).unwrap();
+        assert_eq!(s.linear_client_id(a.id).unwrap(), None);
+        // The next attempt starts over: its draft is the baseline.
+        let next = TicketDraft {
+            title: "Sent".into(),
+            ..Default::default()
+        };
+        let (id2, sent) = s.ensure_linear_client_id(a.id, &next).unwrap();
+        assert_ne!(id2, id);
+        assert_eq!(sent, SentDraft::First);
+        assert_eq!(
+            s.ensure_linear_client_id(a.id, &first).unwrap().1,
+            SentDraft::Earlier(next)
+        );
+        s.set_linear_issue(a.id, "iss", "ENG-1", "u").unwrap();
+        s.drop_unsent_linear_client_id(a.id, &id2).unwrap();
+        assert_eq!(s.linear_client_id(a.id).unwrap().as_deref(), Some(&*id2));
     }
 
     #[test]

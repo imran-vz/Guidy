@@ -230,15 +230,47 @@ fn init_meetings(app_handle: &AppHandle) {
     // turned on, starts/stops the scheduler, and shows or hides the tray
     // items.
     let settings_app = app_handle.clone();
-    app_handle.listen("settings-changed", move |_| {
-        match settings_app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
-            Some(m) => m.sync_scheduler(),
-            None => start_meetings_if_wanted(&settings_app),
-        }
+    app_handle.listen("settings-changed", move |e| {
+        on_settings_changed(&settings_app, e.payload());
         tray::update_tray_menu(&settings_app);
     });
 
     start_meetings_if_wanted(app_handle);
+}
+
+/// Whether a `settings-changed` payload (`{"setting": name, ...}`) may
+/// concern meeting notes. A payload without a setting name is assumed to.
+fn is_meetings_setting_change(payload: &serde_json::Value) -> bool {
+    payload
+        .get("setting")
+        .and_then(|s| s.as_str())
+        .is_none_or(|s| s == "meetings")
+}
+
+/// React to a settings change on the emitting thread (often the UI thread),
+/// so nothing here may block: only meetings settings matter; the scheduler
+/// sync is cheap (stopping one never joins its thread), and the check
+/// whether to start the manager, which may scan the data directory, runs on
+/// its own thread.
+fn on_settings_changed(app: &AppHandle, payload: &serde_json::Value) {
+    if !is_meetings_setting_change(payload) {
+        return;
+    }
+    if let Some(m) = app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
+        m.sync_scheduler();
+        return;
+    }
+    // Only a never-started manager can start here.
+    if *meetings_init_cell(app).0.lock() != MeetingsInitStatus::Off {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("meetings-start".into())
+        .spawn(move || start_meetings_if_wanted(&app));
+    if let Err(e) = spawned {
+        log::error!("meetings: couldn't check whether to start: {e}");
+    }
 }
 
 /// Meeting notes are used: turned on, or turned off after use (meeting data
@@ -979,6 +1011,48 @@ mod meetings_init_tests {
             .app
             .try_state::<Arc<meetings::manager::MeetingsManager>>()
             .is_none());
+    }
+
+    #[test]
+    fn only_meetings_settings_changes_concern_meetings() {
+        assert!(is_meetings_setting_change(&serde_json::json!({
+            "setting": "meetings",
+            "value": {}
+        })));
+        assert!(is_meetings_setting_change(&serde_json::Value::Null));
+        assert!(!is_meetings_setting_change(&serde_json::json!({
+            "setting": "debug_mode",
+            "value": true
+        })));
+    }
+
+    #[test]
+    fn only_a_meetings_change_starts_the_manager_off_thread() {
+        if !meetings::is_supported() {
+            return;
+        }
+        let t = TestApp::new();
+        init_meetings(&t.app);
+        settings::update_settings(&t.app, |s| s.meetings.enabled = true);
+        // Another setting: no settings read, no data-dir scan, no start.
+        let _ = t.app.emit(
+            "settings-changed",
+            serde_json::json!({ "setting": "debug_mode", "value": true }),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(status(&t), MeetingsInitStatus::Off);
+
+        let _ = t.app.emit(
+            "settings-changed",
+            serde_json::json!({ "setting": "meetings", "value": {} }),
+        );
+        for _ in 0..200 {
+            if status(&t) != MeetingsInitStatus::Off {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_ne!(status(&t), MeetingsInitStatus::Off);
     }
 
     #[test]

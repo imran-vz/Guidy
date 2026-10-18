@@ -10,6 +10,9 @@
 //!   and is shut down after [`IDLE_TIMEOUT`] without requests (freeing the
 //!   model and its Metal buffers).
 //! - Cancelling a request kills the process; the next request respawns it.
+//!   So does a timeout (start, load, ping).
+//! - Deleting the loaded model stops the process, at the latest when the
+//!   request using it finishes ([`BuiltinLlm::forget_model`]).
 //! - One request at a time; concurrent callers queue on a mutex.
 //!
 //! Protocol: newline-delimited JSON, mirrored from
@@ -199,6 +202,26 @@ pub fn find_binary() -> Result<PathBuf> {
 
 // ----- supervisor ----------------------------------------------------------
 
+/// The helper didn't answer within the deadline. Fatal: the worker is killed
+/// (find it with [`is_timeout_error`]).
+#[derive(Debug)]
+pub struct WorkerTimeout;
+
+impl std::fmt::Display for WorkerTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the built-in model runtime did not answer in time")
+    }
+}
+
+impl std::error::Error for WorkerTimeout {}
+
+/// Whether `e` (or anything it wraps) is a [`WorkerTimeout`].
+pub fn is_timeout_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<WorkerTimeout>())
+}
+
+/// A running helper. Dropping it kills and reaps the process, so no error
+/// path (e.g. a failed start) leaves it running or as a zombie.
 struct Worker {
     child: Child,
     stdin: ChildStdin,
@@ -209,7 +232,8 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(binary: &Path) -> Result<Self> {
+    /// Start the helper and wait up to `startup_timeout` for `Ready`.
+    fn spawn(binary: &Path, startup_timeout: Duration) -> Result<Self> {
         let mut child = Command::new(binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -243,6 +267,7 @@ impl Worker {
                     log::debug!("guidy-llm: {line}");
                 }
             })?;
+        // From here on, any early return drops `worker`, which kills it.
         let mut worker = Self {
             child,
             stdin,
@@ -250,19 +275,15 @@ impl Worker {
             loaded: None,
             next_id: 1,
         };
-        match worker.recv(STARTUP_TIMEOUT, None)? {
+        match worker.recv(startup_timeout, None)? {
             Response::Ready { version } => {
                 log::info!("Started guidy-llm {version}");
                 Ok(worker)
             }
             Response::Error { message, .. } => {
-                worker.kill();
                 bail!("the built-in model runtime failed to start: {message}")
             }
-            other => {
-                worker.kill();
-                bail!("unexpected first message from guidy-llm: {other:?}")
-            }
+            other => bail!("unexpected first message from guidy-llm: {other:?}"),
         }
     }
 
@@ -298,7 +319,7 @@ impl Worker {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if start.elapsed() >= timeout {
-                        bail!("the built-in model runtime did not answer in time");
+                        return Err(WorkerTimeout.into());
                     }
                 }
             }
@@ -331,6 +352,7 @@ impl Worker {
         }
     }
 
+    /// Ask the helper to exit; kill it if it hasn't within 2 s.
     fn shutdown(mut self) {
         let _ = self.send(&Request::Shutdown);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -340,12 +362,19 @@ impl Worker {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        self.kill();
+        // Dropping `self` kills it.
     }
 
+    /// Kill and reap the process (idempotent; also done on drop).
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
@@ -370,6 +399,11 @@ pub struct BuiltinLlm {
     idle_timeout: Duration,
     reaper_started: AtomicBool,
     binary: Mutex<Option<PathBuf>>,
+    /// How long the helper may take to start, and to answer a ping.
+    startup_timeout: Duration,
+    /// Model files deleted while a request held the worker (see
+    /// [`Self::forget_model`]); consumed by the next lock holder.
+    forgotten: Mutex<Vec<PathBuf>>,
 }
 
 impl BuiltinLlm {
@@ -380,6 +414,8 @@ impl BuiltinLlm {
             idle_timeout,
             reaper_started: AtomicBool::new(false),
             binary: Mutex::new(None),
+            startup_timeout: STARTUP_TIMEOUT,
+            forgotten: Mutex::new(Vec::new()),
         }
     }
 
@@ -444,17 +480,52 @@ impl BuiltinLlm {
     }
 
     /// The model file is going away: stop the worker if it has it loaded.
+    ///
+    /// Doesn't wait for a running request: the path is recorded and whoever
+    /// holds the worker next (the running request as it finishes, or the
+    /// next request before it starts) stops the worker if that model is
+    /// still loaded, so it's neither kept in memory nor reused.
     pub fn forget_model(&self, path: &Path) {
+        // Record before trying the lock, so a holder releasing it right now
+        // still sees the path.
+        self.forgotten.lock().push(path.to_path_buf());
         if let Some(mut guard) = self.worker.try_lock() {
-            if guard
+            self.stop_if_forgotten(&mut guard);
+        }
+    }
+
+    /// Stop the worker if its loaded model was forgotten, and clear the
+    /// forgotten list. Call with the worker lock held.
+    fn stop_if_forgotten(&self, slot: &mut Option<Worker>) {
+        let forgotten = std::mem::take(&mut *self.forgotten.lock());
+        let stale = slot.as_ref().is_some_and(|w| {
+            w.loaded
                 .as_ref()
-                .is_some_and(|w| w.loaded.as_ref().is_some_and(|(p, _)| p == path))
-            {
-                if let Some(w) = guard.take() {
-                    w.shutdown();
+                .is_some_and(|(p, _)| forgotten.contains(p))
+        });
+        if stale {
+            log::info!("Stopping the built-in model runtime: its model was deleted");
+            if let Some(w) = slot.take() {
+                w.shutdown();
+            }
+        }
+    }
+
+    /// End of a request, with the worker lock still held: kill the worker if
+    /// the request failed in a way that leaves it unusable (cancelled, timed
+    /// out, or exited), then apply pending [`Self::forget_model`] calls.
+    fn finish_request(&self, slot: &mut Option<Worker>, error: Option<&anyhow::Error>) {
+        if let Some(e) = error {
+            let fatal = super::is_cancelled_error(e)
+                || is_timeout_error(e)
+                || slot.as_mut().is_some_and(|w| !w.alive());
+            if fatal {
+                if let Some(mut w) = slot.take() {
+                    w.kill();
                 }
             }
         }
+        self.stop_if_forgotten(slot);
     }
 
     fn ensure_worker<'a>(&self, slot: &'a mut Option<Worker>) -> Result<&'a mut Worker> {
@@ -463,18 +534,26 @@ impl BuiltinLlm {
             *slot = None;
         }
         if slot.is_none() {
-            *slot = Some(Worker::spawn(&self.binary()?)?);
+            *slot = Some(Worker::spawn(&self.binary()?, self.startup_timeout)?);
         }
         Ok(slot.as_mut().expect("worker just ensured"))
     }
 
-    /// Start the helper (if needed) and check it answers.
+    /// Start the helper (if needed) and check it answers. A helper that
+    /// doesn't answer in time is killed.
     pub fn ping(&self) -> Result<()> {
         let mut guard = self.worker.lock();
-        let worker = self.ensure_worker(&mut guard)?;
+        self.stop_if_forgotten(&mut guard);
+        let result = self.ping_locked(&mut guard);
+        self.finish_request(&mut guard, result.as_ref().err());
+        result
+    }
+
+    fn ping_locked(&self, slot: &mut Option<Worker>) -> Result<()> {
+        let worker = self.ensure_worker(slot)?;
         let id = worker.id();
         worker.send(&Request::Ping { id })?;
-        match worker.wait_for(id, STARTUP_TIMEOUT, None)? {
+        match worker.wait_for(id, self.startup_timeout, None)? {
             Response::Pong { .. } => Ok(()),
             other => bail!("unexpected reply to ping: {other:?}"),
         }
@@ -489,18 +568,11 @@ impl BuiltinLlm {
     pub fn chat(&self, req: &BuiltinChat<'_>, cancel: Option<&AtomicBool>) -> Result<String> {
         let mut guard = self.lock_worker(cancel)?;
         *self.last_used.lock() = Instant::now();
+        // A model deleted while we queued must not be reused.
+        self.stop_if_forgotten(&mut guard);
         let result = self.chat_locked(&mut guard, req, cancel);
         *self.last_used.lock() = Instant::now();
-        if let Err(e) = &result {
-            let fatal = super::is_cancelled_error(e)
-                || guard.as_mut().is_some_and(|w| !w.alive())
-                || e.to_string().contains("did not answer");
-            if fatal {
-                if let Some(mut w) = guard.take() {
-                    w.kill();
-                }
-            }
-        }
+        self.finish_request(&mut guard, result.as_ref().err());
         result
     }
 
@@ -880,6 +952,203 @@ mod tests {
         // Idle timeout zero: the reaper stops it.
         assert!(llm.reap_if_idle());
         assert!(!llm.reap_if_idle());
+    }
+
+    #[test]
+    fn timeouts_are_recognized_through_context() {
+        let e = anyhow::Error::from(WorkerTimeout).context("ping");
+        assert!(is_timeout_error(&e));
+        assert!(e.to_string() == "ping");
+        let other = anyhow!("the built-in model runtime did not answer in time");
+        assert!(!is_timeout_error(&other), "decided by type, not text");
+    }
+
+    /// A fake `guidy-llm` (shell script) that records its pid in `pid` and,
+    /// unless `body` replaces it, speaks enough of the protocol: `load`
+    /// succeeds, `chat` answers "ok" after `chat_delay` seconds, `ping`
+    /// runs `on_ping` (shell; empty = answer pong).
+    #[cfg(unix)]
+    struct FakeHelper {
+        _dir: tempfile::TempDir,
+        bin: PathBuf,
+        pid_file: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl FakeHelper {
+        fn script(body: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("fake-guidy-llm");
+            let pid_file = dir.path().join("pid");
+            let script = format!("#!/bin/sh\necho $$ > '{}'\n{body}\n", pid_file.display());
+            std::fs::write(&bin, script).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self {
+                _dir: dir,
+                bin,
+                pid_file,
+            }
+        }
+
+        fn protocol(chat_delay: &str, on_ping: &str) -> Self {
+            let pong = r#"echo "{\"type\":\"pong\",\"id\":$id}""#;
+            let on_ping = if on_ping.is_empty() { pong } else { on_ping };
+            Self::script(
+                &r#"echo '{"type":"ready","version":"fake"}'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"op":"[a-z]*","id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    '{"op":"load"'*) echo "{\"type\":\"loaded\",\"id\":$id,\"n_ctx\":512,\"n_ctx_train\":512}" ;;
+    '{"op":"chat"'*) sleep CHAT_DELAY; echo "{\"type\":\"done\",\"id\":$id,\"text\":\"ok\",\"finish_reason\":\"stop\",\"prompt_tokens\":1,\"completion_tokens\":1}" ;;
+    '{"op":"ping"'*) ON_PING ;;
+    '{"op":"shutdown"'*) exit 0 ;;
+  esac
+done"#
+                    .replace("CHAT_DELAY", chat_delay)
+                    .replace("ON_PING", on_ping),
+            )
+        }
+
+        /// Pid of the most recently started instance.
+        fn pid(&self) -> i32 {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Ok(s) = std::fs::read_to_string(&self.pid_file) {
+                    if let Ok(pid) = s.trim().parse() {
+                        return pid;
+                    }
+                }
+                assert!(Instant::now() < deadline, "fake helper never started");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    /// Whether `pid` exists, zombies included (so `false` means killed
+    /// *and* reaped).
+    #[cfg(unix)]
+    fn process_exists(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks for existence.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn fake_llm(helper: &FakeHelper, startup_timeout: Duration) -> BuiltinLlm {
+        let llm = BuiltinLlm {
+            startup_timeout,
+            ..BuiltinLlm::new(Duration::from_secs(60))
+        };
+        llm.set_binary(helper.bin.clone());
+        llm
+    }
+
+    #[cfg(unix)]
+    fn fake_chat(model: &Path) -> BuiltinChat<'_> {
+        BuiltinChat {
+            model_path: model,
+            n_ctx: 512,
+            messages: &[],
+            max_tokens: 1,
+            temperature: 0.0,
+            json_schema: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_never_gets_ready_is_killed_and_reaped() {
+        let helper = FakeHelper::script("exec sleep 60");
+        let err = Worker::spawn(&helper.bin, Duration::from_secs(2))
+            .err()
+            .expect("no Ready: spawn fails");
+        assert!(is_timeout_error(&err), "{err:#}");
+        assert!(!process_exists(helper.pid()));
+
+        // Exits before Ready (disconnected): reaped too.
+        let helper = FakeHelper::script("exit 3");
+        assert!(Worker::spawn(&helper.bin, Duration::from_secs(5)).is_err());
+        assert!(!process_exists(helper.pid()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_worker_kills_it() {
+        let helper = FakeHelper::protocol("0", "");
+        let mut worker = Worker::spawn(&helper.bin, Duration::from_secs(5)).unwrap();
+        let pid = helper.pid();
+        assert!(worker.alive());
+        worker.kill();
+        assert!(!process_exists(pid));
+        drop(worker); // idempotent after an explicit kill
+        let worker = Worker::spawn(&helper.bin, Duration::from_secs(5)).unwrap();
+        let pid = helper.pid();
+        drop(worker);
+        assert!(!process_exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unanswered_ping_kills_the_worker() {
+        let helper = FakeHelper::protocol("0", ":");
+        let llm = fake_llm(&helper, Duration::from_secs(2));
+        let err = llm.ping().unwrap_err();
+        assert!(is_timeout_error(&err), "{err:#}");
+        assert!(llm.worker.lock().is_none());
+        assert!(!process_exists(helper.pid()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgetting_the_model_mid_chat_stops_the_worker_when_the_chat_ends() {
+        let helper = FakeHelper::protocol("1", "");
+        let llm = std::sync::Arc::new(fake_llm(&helper, Duration::from_secs(5)));
+        let model = PathBuf::from("/models/a.gguf");
+        let chat = {
+            let (llm, model) = (llm.clone(), model.clone());
+            std::thread::spawn(move || llm.chat(&fake_chat(&model), None))
+        };
+        let pid = helper.pid();
+        // Wait until the chat holds the worker.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while llm.worker.try_lock().is_some() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        llm.forget_model(&model);
+        assert!(process_exists(pid), "the running chat isn't interrupted");
+        assert_eq!(chat.join().unwrap().unwrap(), "ok");
+        assert!(llm.worker.lock().is_none());
+        assert!(!process_exists(pid));
+        assert!(llm.forgotten.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_forgotten_model_is_not_reused_by_the_next_request() {
+        let helper = FakeHelper::protocol("0", "");
+        let llm = fake_llm(&helper, Duration::from_secs(5));
+        let (a, b) = (
+            PathBuf::from("/models/a.gguf"),
+            PathBuf::from("/models/b.gguf"),
+        );
+        llm.chat(&fake_chat(&a), None).unwrap();
+        let first = helper.pid();
+
+        // Another model forgotten: the worker stays.
+        llm.forget_model(&b);
+        assert!(llm.worker.lock().is_some());
+
+        // Forgotten while someone holds the lock: the next request drops it.
+        let held = llm.worker.lock();
+        llm.forget_model(&a);
+        drop(held);
+        assert!(process_exists(first));
+        llm.ping().unwrap();
+        assert!(!process_exists(first));
+        assert!(llm.worker.lock().as_ref().unwrap().loaded.is_none());
+        assert_ne!(helper.pid(), first);
+        llm.shutdown();
     }
 
     /// End-to-end with a real GGUF. Run with

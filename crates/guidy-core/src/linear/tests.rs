@@ -297,6 +297,46 @@ fn fill_input_sets_only_non_empty_fields_and_adds_labels() {
 }
 
 #[test]
+fn label_ids_are_trimmed_deduped_and_blanks_dropped_everywhere() {
+    let d = TicketDraft {
+        title: "T".into(),
+        team_id: Some("t".into()),
+        label_ids: vec![
+            " l1 ".into(),
+            "".into(),
+            "  ".into(),
+            "l2".into(),
+            "l1".into(),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        issue_create_input(&d).unwrap()["labelIds"],
+        json!(["l1", "l2"])
+    );
+    assert_eq!(
+        super::client::issue_fill_input(&d).unwrap()["addedLabelIds"],
+        json!(["l1", "l2"])
+    );
+    let sent = TicketDraft {
+        label_ids: vec!["l2".into(), "l3 ".into()],
+        ..d.clone()
+    };
+    assert_eq!(
+        super::client::issue_changes_input(&sent, &d).unwrap(),
+        json!({ "addedLabelIds": ["l1"], "removedLabelIds": ["l3"] })
+    );
+    let blank = TicketDraft {
+        label_ids: vec![" ".into()],
+        ..d
+    };
+    assert!(issue_create_input(&blank)
+        .unwrap()
+        .get("labelIds")
+        .is_none());
+}
+
+#[test]
 fn issue_input_omits_empty_fields_and_needs_team() {
     let mut d = TicketDraft {
         title: " T ".into(),
@@ -432,6 +472,9 @@ mod service {
             draft: &TicketDraft,
         ) -> anyhow::Result<(String, crate::linear::SentDraft)> {
             self.items.begin_create(id, draft)
+        }
+        fn abort_create(&self, id: ActionItemId, client_id: &str) -> anyhow::Result<()> {
+            self.items.abort_create(id, client_id)
         }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             self.items.set_linear_issue(id, issue)
@@ -874,6 +917,103 @@ mod idempotent {
             store.get_action_item(id).unwrap().unwrap().linear_issue_id,
             Some(before)
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_draft_gets_no_client_id() {
+        let m = mock(|_| (500, json!({}))).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let mut draft = store.get_action_item(id).unwrap().unwrap().ticket;
+        draft.team_id = Some(" ".into());
+        store.update_ticket_draft(id, &draft).unwrap();
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        let err = out.results[0].result.clone().unwrap_err();
+        assert!(err.contains("choose a Linear team"), "{err}");
+        assert!(m.requests().is_empty());
+        assert_eq!(store.linear_client_id(id).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn unreachable_linear_leaves_no_client_id_or_baseline() {
+        // Nothing listens on port 1: the connection is refused, so the
+        // request was never sent and nothing may be recorded as sent.
+        let s = LinearService::new(
+            "http://127.0.0.1:1/graphql",
+            KeySource::Fixed(Some("k".into())),
+        );
+        let (store, id) = store_with_approved();
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        let err = out.results[0].result.clone().unwrap_err();
+        assert!(err.contains("Could not reach Linear"), "{err}");
+        assert_eq!(store.linear_client_id(id).unwrap(), None);
+        let item = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(item.ticket_state, TicketState::Approved);
+
+        // The next attempt (edited draft) is the first one sent: it is the
+        // baseline, so the lost-response retry after it applies no edits.
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let mut edited = item.ticket;
+        edited.title = "Sent title".into();
+        store.update_ticket_draft(id, &edited).unwrap();
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        lookups_fail.store(false, Ordering::SeqCst);
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert_eq!(m.count("issueUpdate"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_timeout_after_sending_keeps_the_baseline() {
+        let (m, _lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let ticket = store.get_action_item(id).unwrap().unwrap().ticket;
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        let client_id = store.linear_client_id(id).unwrap().unwrap();
+        assert_eq!(
+            store
+                .ensure_linear_client_id(id, &TicketDraft::default())
+                .unwrap(),
+            (client_id, SentDraft::Earlier(ticket))
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_issue_remembers_its_team_in_linear() {
+        // The issue exists (an earlier attempt went through) and was moved to
+        // another team/project in Linear: those are remembered, not the
+        // draft's.
+        let m = mock(|r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "Entity already exists" }] }),
+                )
+            } else if q.contains("issue(id:") {
+                let mut issue = stored_issue("", "ENG-5", "u5");
+                issue["id"] = r.vars()["id"].clone();
+                issue["team"] = json!({ "id": "team-moved" });
+                issue["project"] = Value::Null;
+                ok(json!({ "issue": issue }))
+            } else {
+                (500, json!({}))
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert!(out.results[0].already_existed);
+        assert!(m.requests()[1].query().contains("team { id }"));
+        assert_eq!(out.used_team_project, Some(("team-moved".into(), None)));
     }
 
     #[tokio::test]

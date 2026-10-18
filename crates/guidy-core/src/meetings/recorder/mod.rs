@@ -177,6 +177,10 @@ pub struct MeetingRecorder {
     deps: RecorderDeps,
     /// Serializes start/stop/crash recovery.
     op: Mutex<()>,
+    /// Held by a [`Scheduler`] thread for a whole tick: a scheduler started
+    /// while a stopped one is still finishing its tick waits for it, so two
+    /// never tick at once (or post twice).
+    ticking: Mutex<()>,
     session: Mutex<Option<Session>>,
     pending: Mutex<Vec<PendingFinish>>,
     state: Mutex<RecorderState>,
@@ -197,6 +201,7 @@ impl MeetingRecorder {
         Self {
             deps,
             op: Mutex::new(()),
+            ticking: Mutex::new(()),
             session: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
             state: Mutex::new(RecorderState::Idle),
@@ -880,9 +885,14 @@ pub fn now_ms() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// Background thread calling [`MeetingRecorder::tick`] every 15 s.
+///
+/// Dropping it signals the thread to stop and returns without joining: a
+/// tick can wait on the recorder's op lock (a stop finishing) or a calendar
+/// lookup, and the drop may run on the UI thread. The thread exits after its
+/// current tick, never ticks again, and a scheduler started meanwhile waits
+/// for that tick to end (the recorder's `ticking` lock).
 pub struct Scheduler {
     stop: Arc<(Mutex<bool>, Condvar)>,
-    handle: Option<JoinHandle<()>>,
 }
 
 pub const TICK: Duration = Duration::from_secs(15);
@@ -891,23 +901,30 @@ impl Scheduler {
     pub fn start(recorder: Arc<MeetingRecorder>) -> Result<Self> {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_stop = stop.clone();
-        let handle = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("meetings-scheduler".into())
-            .spawn(move || loop {
-                recorder.tick(now_ms());
+            .spawn(move || {
                 let (lock, cv) = &*thread_stop;
-                let mut stopped = lock.lock();
-                if !*stopped {
-                    cv.wait_for(&mut stopped, TICK);
-                }
-                if *stopped {
-                    break;
+                loop {
+                    {
+                        let _ticking = recorder.ticking.lock();
+                        // Checked under `ticking`: once dropped, no tick
+                        // starts after the next scheduler's.
+                        if *lock.lock() {
+                            break;
+                        }
+                        recorder.tick(now_ms());
+                    }
+                    let mut stopped = lock.lock();
+                    if !*stopped {
+                        cv.wait_for(&mut stopped, TICK);
+                    }
+                    if *stopped {
+                        break;
+                    }
                 }
             })?;
-        Ok(Self {
-            stop,
-            handle: Some(handle),
-        })
+        Ok(Self { stop })
     }
 }
 
@@ -915,9 +932,6 @@ impl Drop for Scheduler {
     fn drop(&mut self) {
         *self.stop.0.lock() = true;
         self.stop.1.notify_all();
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
     }
 }
 
