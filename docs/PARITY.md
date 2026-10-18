@@ -1,6 +1,6 @@
 # Feature matrix
 
-Every row is covered by passing tests (`test: <name>`, a test function name) and/or a manual check (`manual: HW-xx`). `cargo xtask parity` verifies every referenced test exists, that all 300 baseline unit tests (`docs/baseline/`) survive, and that every baseline command and event has a counterpart.
+Every row is covered by passing tests (`test: <name>`, a test function name) and/or a manual check (`manual: HW-xx`). `cargo xtask parity` verifies every referenced test exists, that all 298 baseline unit tests (`docs/baseline/`) survive, and that every baseline command and event has a counterpart.
 
 Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to all platforms.
 

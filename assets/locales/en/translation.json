@@ -7,7 +7,15 @@
     "model": "Model",
     "quit": "Quit",
     "cancel": "Cancel",
-    "secureInputWarning": "⚠ Shortcuts blocked by Secure Input"
+    "secureInputWarning": "⚠ Shortcuts blocked by Secure Input",
+    "startMeetingNotes": "Start Meeting Notes",
+    "stopMeetingNotes": "Stop Meeting Notes",
+    "meetingStillRecording": "Guidy is still recording",
+    "meetingStop": "Stop",
+    "meetingKeepGoing": "Keep going",
+    "meetingTakeNotesFor": "Take notes for {{title}}?",
+    "meetingStart": "Start",
+    "meetingUntitled": "Meeting"
   },
   "sidebar": {
     "general": "General",
@@ -391,6 +399,11 @@
           "title": "Provider",
           "description": "Select an OpenAI-compatible or Anthropic-compatible provider."
         },
+        "builtin": {
+          "label": "Built-in model (on this Mac)",
+          "description": "Runs a local model on this Mac. Nothing leaves your computer.",
+          "manage": "Manage built-in models"
+        },
         "apiFormat": {
           "title": "API Format",
           "description": "Request format expected by your custom endpoint.",
@@ -411,7 +424,8 @@
         "apiKey": {
           "title": "API Key",
           "description": "API key for the selected provider.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Couldn't save the API key"
         },
         "model": {
           "title": "Model",
@@ -706,5 +720,354 @@
     "learnMore": "How to fix",
     "recorderBlocked": "Can't record shortcuts right now — macOS Secure Input is blocking key events. Resolve the Secure Input warning first.",
     "dismiss": "Dismiss"
+  },
+  "meetings": {
+    "title": "Meetings",
+    "description": "Record a meeting on this Mac, then read the transcript with named speakers.",
+    "init": {
+      "starting": "Starting meeting notes...",
+      "failed": "Meeting notes couldn't start",
+      "retry": "Retry",
+      "keyMissing": {
+        "title": "Meeting notes can't be decrypted",
+        "description": "The meeting notes encryption key is missing from the Keychain or doesn't match your existing meeting notes, so they can't be opened. If you can restore the key (for example from a Keychain backup), do that and choose Retry. Otherwise, reset to start fresh: your old meeting notes are moved aside, not deleted."
+      },
+      "reset": {
+        "action": "Reset meeting notes data",
+        "title": "Reset meeting notes data?",
+        "confirm": "Your current meeting notes and recordings will be moved to a \"meetings-unreadable\" folder in Guidy's data folder (nothing is deleted) and a new encryption key will be created. Guidy won't be able to show the old notes."
+      }
+    },
+    "errors": {
+      "unavailable": "Meeting notes aren't available on this Mac.",
+      "modelMissing": "The meeting transcription model ({{name}}) isn't downloaded yet.",
+      "modelUnknown": "The meeting model {{name}} isn't installed. Choose another meeting model in Settings.",
+      "noLinearKey": "Add a Linear API key in Settings first.",
+      "linearUnauthorized": "Linear rejected the API key. Check it in Settings."
+    },
+    "model": {
+      "download": "Download meeting model",
+      "downloadError": "Couldn't download the meeting model"
+    },
+    "tabs": {
+      "meetings": "Meetings",
+      "people": "People",
+      "settings": "Settings"
+    },
+    "recorder": {
+      "start": "Start meeting notes",
+      "stop": "Stop meeting notes",
+      "recording": "Recording",
+      "idle": "Not recording",
+      "startError": "Couldn't start recording",
+      "stopError": "Couldn't stop recording",
+      "disabled": "Turn on meeting notes in Settings to record."
+    },
+    "upcoming": {
+      "title": "Upcoming",
+      "empty": "No upcoming calendar meetings with a call link.",
+      "start": "Start"
+    },
+    "list": {
+      "title": "Recordings",
+      "empty": "No meetings yet. Start meeting notes to record one.",
+      "loading": "Loading meetings...",
+      "loadError": "Couldn't load meetings",
+      "minutes": "{{count}} min",
+      "open": "Open",
+      "rename": "Rename",
+      "delete": "Delete",
+      "process": "Process",
+      "retry": "Retry",
+      "cancelProcessing": "Cancel processing",
+      "save": "Save",
+      "cancel": "Cancel",
+      "titlePlaceholder": "Meeting title",
+      "deleteTitle": "Delete meeting?",
+      "deleteConfirm": "\"{{title}}\" will be deleted with its transcript and audio. Voiceprints are kept.",
+      "deleteError": "Couldn't delete the meeting",
+      "renameError": "Couldn't rename the meeting",
+      "processError": "Couldn't start processing",
+      "cancelError": "Couldn't cancel processing"
+    },
+    "status": {
+      "recording": "Recording",
+      "recorded": "Not processed",
+      "processing": "Processing",
+      "processed": "Ready",
+      "failed": "Failed"
+    },
+    "stage": {
+      "decode": "Decoding audio",
+      "vad": "Finding speech",
+      "transcribe": "Transcribing",
+      "voiceprints": "Computing voiceprints",
+      "cluster": "Grouping speakers",
+      "merge": "Merging tracks",
+      "done": "Done"
+    },
+    "detail": {
+      "back": "All meetings",
+      "transcript": "Transcript",
+      "empty": "No transcript yet. Process the meeting to create one.",
+      "loading": "Loading transcript...",
+      "loadError": "Couldn't load the meeting",
+      "playError": "Couldn't play this segment",
+      "play": "Play from here",
+      "you": "You",
+      "speakers": "Speakers",
+      "attendees": "Attendees"
+    },
+    "speaker": {
+      "rename": "Name this speaker",
+      "confirm": "Confirm?",
+      "confirmAction": "Confirm",
+      "change": "Change",
+      "suggestions": "Suggestions",
+      "attendee": "Attendee",
+      "knownPerson": "Known person",
+      "noSuggestions": "No suggestions",
+      "newPerson": "New person",
+      "namePlaceholder": "Name",
+      "emailPlaceholder": "Email (optional)",
+      "save": "Save",
+      "cancel": "Cancel",
+      "assignError": "Couldn't name the speaker",
+      "confirmError": "Couldn't confirm the speaker",
+      "unnamed": "Speaker {{n}}"
+    },
+    "people": {
+      "title": "People",
+      "description": "People you have named in meetings. Guidy recognizes their voices in later meetings.",
+      "empty": "No people yet. Name a speaker in a meeting to add one.",
+      "loadError": "Couldn't load people",
+      "voiceprints_one": "{{count}} voiceprint",
+      "voiceprints_other": "{{count}} voiceprints",
+      "edit": "Edit",
+      "merge": "Merge",
+      "mergeInto": "Merge into...",
+      "mergeHint": "Pick the person to keep. Voiceprints and speaker names move to them.",
+      "mergeTitle": "Merge people?",
+      "mergeConfirm": "{{from}} will be merged into {{into}}, then removed.",
+      "mergeError": "Couldn't merge people",
+      "delete": "Delete",
+      "deleteTitle": "Delete person?",
+      "deleteConfirm": "{{name}} and their {{count}} stored voiceprints will be deleted. Guidy won't recognize their voice in future meetings.",
+      "deleteError": "Couldn't delete the person",
+      "renameError": "Couldn't update the person",
+      "namePlaceholder": "Name",
+      "emailPlaceholder": "Email (optional)",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "settings": {
+      "general": "Meeting notes",
+      "enabled": {
+        "title": "Meeting notes",
+        "description": "Record meetings with your microphone and your computer's audio. Turning this on asks for calendar, system audio and notification access."
+      },
+      "permissions": {
+        "title": "Permissions",
+        "calendar": "Calendar",
+        "systemAudio": "System audio",
+        "microphone": "Microphone",
+        "notifications": "Notifications",
+        "granted": "Granted",
+        "denied": "Not granted",
+        "error": "Couldn't request permissions",
+        "requestAgain": "Request again",
+        "openSettings": "Open System Settings"
+      },
+      "you": "You",
+      "userName": {
+        "title": "Your name",
+        "description": "Your microphone track is always labeled with this name.",
+        "placeholder": "Your name"
+      },
+      "userEmail": {
+        "title": "Your email",
+        "description": "Used to recognize you among calendar attendees and in Linear.",
+        "placeholder": "you@example.com"
+      },
+      "recording": "Recording",
+      "meetingModel": {
+        "title": "Meeting model",
+        "description": "Transcription model used for meetings. Download more models on the Models page.",
+        "default": "Default (Parakeet V3)",
+        "notDownloaded": "{{name}} (not downloaded)"
+      },
+      "speakerModel": {
+        "title": "Speaker recognition model",
+        "description": "Recognizes who is speaking. Downloaded once (about 25 MB).",
+        "ready": "Downloaded",
+        "download": "Download",
+        "retry": "Retry download",
+        "failed": "Download failed: {{error}}"
+      },
+      "retention": {
+        "title": "Keep meeting audio",
+        "description": "Raw audio is deleted after this time. Transcripts and voiceprints are kept.",
+        "days3": "3 days",
+        "days7": "7 days",
+        "days30": "30 days",
+        "forever": "Forever"
+      },
+      "calendarNotifications": {
+        "title": "Calendar notifications",
+        "description": "Ask to take notes when a calendar meeting with a call link starts."
+      },
+      "reminderInterval": {
+        "title": "Reminder interval",
+        "description": "Minutes between \"still recording\" reminders after a meeting should have ended.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Advanced",
+        "show": "Show advanced settings",
+        "hide": "Hide advanced settings",
+        "matchThreshold": {
+          "title": "Automatic match threshold",
+          "description": "Voice similarity at or above which a speaker is named automatically. Below it, the match asks \"Confirm?\"."
+        },
+        "suggestThreshold": {
+          "title": "Suggestion threshold",
+          "description": "Voice similarity below which a known person is not suggested at all."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "loading": "Loading..."
+    },
+    "summary": {
+      "heading": "Summary",
+      "actionItems": "Action items",
+      "generate": "Generate summary",
+      "regenerate": "Regenerate",
+      "regenerateWith": "Regenerate with...",
+      "generating": "Summarizing the meeting. This can take a few minutes with a local model.",
+      "progress": "Summarizing ({{done}} of {{total}} steps)",
+      "empty": "No summary yet. Generate one from the transcript.",
+      "untitled": "Untitled meeting",
+      "edit": "Edit",
+      "title": "Title",
+      "shortSummary": "Short summary",
+      "shortSummaryPlaceholder": "What the meeting was about, in a few sentences",
+      "decisions": "Decisions",
+      "topics": "Topics",
+      "linesPlaceholder": "One per line",
+      "onePerLine": "Decisions and topics: one per line.",
+      "none": "None",
+      "generatedBy": "Generated with {{model}}",
+      "pickerTitle": "Model for this summary",
+      "pickerDescription": "Regenerate with a different provider and model. Your meetings model in settings stays unchanged. Action items that already have a Linear issue are kept.",
+      "run": "Generate",
+      "noItems": "No action items.",
+      "newItemPlaceholder": "Add an action item",
+      "addItem": "Add",
+      "deleteItem": "Delete action item",
+      "due": "Due",
+      "duePlaceholder": "e.g. 2026-10-31",
+      "jumpToMoment": "Play this moment in the transcript",
+      "owner": {
+        "title": "Owner",
+        "none": "No owner",
+        "me": "Me",
+        "meNamed": "Me ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear tickets",
+      "draft": "Draft tickets",
+      "approveSelected": "Approve selected ({{count}})",
+      "createApproved": "Create approved ({{count}})",
+      "noKey": "Connect Linear to turn action items into tickets.",
+      "openSettings": "Open settings",
+      "noItems": "No action items to turn into tickets.",
+      "notDrafted": "Draft tickets from the action items to review them here.",
+      "approve": "Approve",
+      "approveTip": "Mark this ticket for creation. Nothing is created until you click Create approved.",
+      "needsTeam": "Choose a team before approving",
+      "unapprove": "Unapprove",
+      "discard": "Discard",
+      "restore": "Restore",
+      "edit": "Edit title and description",
+      "approved": "Approved",
+      "draftState": "Draft",
+      "created": "Created in Linear",
+      "alreadyExisted": "Already in Linear: nothing new was created",
+      "createFailed": "Not created: {{error}}",
+      "issue": "Issue",
+      "team": "Team",
+      "pickTeam": "Choose a team",
+      "project": "Project",
+      "noProject": "No project",
+      "assignee": "Assignee",
+      "unassigned": "Unassigned",
+      "labels": "Labels",
+      "addLabel": "Add labels",
+      "labelCount": "{{count}} labels",
+      "priority": {
+        "title": "Priority",
+        "none": "No priority",
+        "urgent": "Urgent",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      }
+    },
+    "llm": {
+      "heading": "Summaries model",
+      "provider": "Provider",
+      "providerDescription": "Model used for meeting summaries and action items. Dictation post-processing keeps its own provider.",
+      "builtin": "Built-in (on this Mac)",
+      "builtinDescription": "Runs a local model with llama.cpp. Nothing leaves your Mac.",
+      "model": "Model",
+      "modelDescription": "Choose or type the model id. Cloud providers use the API key from Post Processing.",
+      "modelPlaceholder": "Model id",
+      "pickModel": "Select a model",
+      "noLocalModels": "Download a model below",
+      "usingPostProcessModel": "Using the post-processing model ({{model}})",
+      "refreshModels": "Refresh models",
+      "testConnection": "Test connection",
+      "testDescription": "Check that the provider, key and model work.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "On-device model on Apple silicon Macs with Apple Intelligence turned on.",
+      "appleAvailable": "Available",
+      "appleUnavailable": "Not available on this Mac"
+    },
+    "local": {
+      "heading": "Local models",
+      "empty": "No built-in models are available.",
+      "default": "Default",
+      "recommendedRam": "Recommended for {{gb}} GB+ RAM",
+      "notEnoughRam": "This Mac has less memory than recommended for this model.",
+      "downloaded": "Downloaded",
+      "download": "Download",
+      "downloading": "Downloading {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Personal API key",
+      "keyDescription": "Stored in your macOS Keychain. Used to draft and create tickets from action items.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "A key is saved in your Keychain.",
+      "noKey": "No key saved.",
+      "getKey": "Create a key at linear.app/settings/api",
+      "removeKey": "Remove key",
+      "test": "Test connection",
+      "testDescription": "Check the key with Linear.",
+      "connectedAs": "Connected as {{name}}"
+    },
+    "byok": {
+      "testConnection": "Test connection",
+      "testDescription": "Check the base URL, API key and model with a small request.",
+      "baseUrlEditable": "API base URL for this provider. Replace any {placeholder} (e.g. your Cloudflare account id).",
+      "cloudflareHint": "Cloudflare: put your account id (and gateway id for AI Gateway) into the base URL."
+    }
   }
 }

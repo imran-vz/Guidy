@@ -2,6 +2,13 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
+    // Meeting notes (EventKit, VPIO mic, process tap, notifications). Built for
+    // every macOS arch; it needs a host macOS SDK, so the host must be a Mac.
+    #[cfg(target_os = "macos")]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        build_meeting_bridge();
+    }
+
     generate_tray_translations();
 
     // Linux ships transcribe-cpp as a shared libtranscribe + loadable ggml
@@ -566,4 +573,123 @@ fn is_command_line_tools_only() -> bool {
         .and_then(|out| String::from_utf8(out.stdout).ok())
         .map(|path| path.trim().ends_with("CommandLineTools"))
         .unwrap_or(false)
+}
+
+/// Compile `swift/meeting_bridge.swift` into `libmeeting_bridge.a`.
+///
+/// The deployment target is the app's minimum (10.15; 11.0 is the arm64
+/// floor). Everything newer (process taps 14.2, `requestFullAccessToEvents` 14,
+/// VPIO ducking config 14) sits behind `#available`, and swiftc weak-imports
+/// those symbols, so the binary still launches on older systems. None of the
+/// frameworks themselves is newer than 10.15 (UserNotifications is 10.14).
+/// CoreAudio is already weak-linked in `main` for CPAL.
+#[cfg(target_os = "macos")]
+fn build_meeting_bridge() {
+    use std::env;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const SWIFT_FILE: &str = "swift/meeting_bridge.swift";
+    const BRIDGE_HEADER: &str = "swift/meeting_bridge.h";
+
+    println!("cargo:rerun-if-changed={SWIFT_FILE}");
+    println!("cargo:rerun-if-changed={BRIDGE_HEADER}");
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+    println!("cargo:rerun-if-env-changed=SWIFTC");
+
+    let swift_target = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("aarch64") => "arm64-apple-macosx11.0",
+        Ok("x86_64") => "x86_64-apple-macosx10.15",
+        other => panic!("meeting bridge: unsupported macOS arch {other:?}"),
+    };
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+    let object_path = out_dir.join("meeting_bridge.o");
+    let static_lib_path = out_dir.join("libmeeting_bridge.a");
+
+    let xcrun = |args: &[&str]| -> String {
+        let out = Command::new("xcrun")
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("meeting bridge: xcrun {args:?}: {e}"));
+        String::from_utf8(out.stdout)
+            .expect("xcrun output is not UTF-8")
+            .trim()
+            .to_string()
+    };
+    // Same SDKROOT/SWIFTC overrides as the Apple Intelligence bridge.
+    let sdk_path =
+        env::var("SDKROOT").unwrap_or_else(|_| xcrun(&["--sdk", "macosx", "--show-sdk-path"]));
+    let swiftc_path = env::var("SWIFTC").unwrap_or_else(|_| xcrun(&["--find", "swiftc"]));
+
+    let status = Command::new(&swiftc_path)
+        .args([
+            // Library mode: no `_main` symbol (see build_apple_intelligence_bridge).
+            "-parse-as-library",
+            // Swift 5 language mode: the bridge does its own locking instead of
+            // strict-concurrency annotations.
+            "-swift-version",
+            "5",
+            "-module-name",
+            "GuidyMeetingBridge",
+            "-target",
+            swift_target,
+            "-sdk",
+            &sdk_path,
+            "-O",
+            "-import-objc-header",
+            BRIDGE_HEADER,
+            "-c",
+            SWIFT_FILE,
+            "-o",
+        ])
+        .arg(&object_path)
+        .status()
+        .expect("Failed to invoke swiftc for the meeting bridge");
+    if !status.success() {
+        panic!("swiftc failed to compile {SWIFT_FILE}");
+    }
+
+    let status = Command::new("libtool")
+        .args(["-static", "-o"])
+        .arg(&static_lib_path)
+        .arg(&object_path)
+        .status()
+        .expect("Failed to create the meeting bridge static library");
+    if !status.success() {
+        panic!("libtool failed for the meeting bridge");
+    }
+
+    let toolchain_swift_lib = Path::new(&swiftc_path)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("lib/swift/macosx"))
+        .expect("Unable to determine Swift toolchain lib directory");
+    let sdk_swift_lib = Path::new(&sdk_path).join("usr/lib/swift");
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=meeting_bridge");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        toolchain_swift_lib.display()
+    );
+    println!("cargo:rustc-link-search=native={}", sdk_swift_lib.display());
+    for framework in [
+        "Foundation",
+        "EventKit",
+        "AVFoundation",
+        "AudioToolbox",
+        "UserNotifications",
+    ] {
+        println!("cargo:rustc-link-lib=framework={framework}");
+    }
+    // CoreAudio: weak, like the CPAL link in `main` (taps are 14.2+).
+    println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreAudio");
+    // build_apple_intelligence_bridge already adds this rpath on arm64 hosts;
+    // a second copy only draws a linker warning.
+    let ai_bridge_adds_rpath = cfg!(target_arch = "aarch64")
+        && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64");
+    if !ai_bridge_adds_rpath {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
 }

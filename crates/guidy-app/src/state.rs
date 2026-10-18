@@ -8,9 +8,11 @@ use crate::logic::flows::{
     LOG_FLUSH_MS,
 };
 use crate::logic::keyboard::OsType;
+use crate::logic::meetings::{MeetingsEvent, MeetingsInit};
 use crate::logic::models::{initial_selector_status, selector_status_after_event, SelectorStatus};
 use crate::logic::models_store::{ModelsEffect, ModelsStore};
 use crate::logic::settings_store::{toast_for_event, SettingsStore, ToastKind, ToastSpec};
+use crate::meetings_backend::{NoMeetings, SharedMeetingsBackend};
 use gpui_kit::{App, AppContext, Context, Entity, EventEmitter, Global};
 use guidy_core::commands::audio::{AudioDevice, CustomSounds};
 use guidy_core::host::Event as CoreEvent;
@@ -32,6 +34,8 @@ pub enum AppEvent {
     /// Auto-select candidate (ModelSelector), already delayed 500 ms.
     ModelDownloadCompleted(String),
     LanguageChanged,
+    /// A meeting-notes core event (recorder state, progress, changes).
+    Meetings(MeetingsEvent),
 }
 
 /// The startup step machine (onboarding state). Lives on
@@ -49,6 +53,15 @@ pub struct Startup {
 
 pub struct AppState {
     pub backend: SharedBackend,
+    /// Meeting notes ([`NoMeetings`] when unavailable).
+    pub meetings: SharedMeetingsBackend,
+    /// Cached `meetings.is_supported()`: shows the Meetings section.
+    pub meetings_supported: bool,
+    /// Meeting-notes startup (the manager opens its store off-thread).
+    pub meetings_init: MeetingsInit,
+    /// Meeting-model downloads started from the meetings UI: they must not
+    /// switch the dictation model when they finish.
+    pub meeting_model_downloads: std::collections::HashSet<String>,
     pub startup: Startup,
     pub settings: SettingsStore,
     pub models: ModelsStore,
@@ -100,6 +113,10 @@ impl AppState {
     pub fn new(backend: SharedBackend) -> Self {
         Self {
             backend,
+            meetings: std::sync::Arc::new(NoMeetings),
+            meetings_supported: false,
+            meetings_init: MeetingsInit::Ready,
+            meeting_model_downloads: Default::default(),
             startup: Startup::default(),
             settings: SettingsStore::default(),
             models: ModelsStore::default(),
@@ -129,8 +146,23 @@ impl AppState {
     }
 
     pub fn install(backend: SharedBackend, cx: &mut App) -> Entity<AppState> {
+        Self::install_with_meetings(backend, std::sync::Arc::new(NoMeetings), cx)
+    }
+
+    pub fn install_with_meetings(
+        backend: SharedBackend,
+        meetings: SharedMeetingsBackend,
+        cx: &mut App,
+    ) -> Entity<AppState> {
         let entity = cx.new(|cx| {
             let mut s = AppState::new(backend);
+            s.meetings_supported = meetings.is_supported();
+            s.meetings_init = if s.meetings_supported {
+                meetings.init_status()
+            } else {
+                MeetingsInit::Ready
+            };
+            s.meetings = meetings;
             s.initialize(cx);
             s.check_onboarding(cx);
             s
@@ -564,6 +596,19 @@ impl AppState {
         value: String,
         cx: &mut Context<Self>,
     ) {
+        self.update_post_process_then(what, provider_id, value, cx, |_, _, _| {});
+    }
+
+    /// [`Self::update_post_process`], then `done(result)` once the backend
+    /// call has finished.
+    pub fn update_post_process_then(
+        &mut self,
+        what: &'static str,
+        provider_id: &str,
+        value: String,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, &Result<(), String>, &mut Context<Self>) + 'static,
+    ) {
         let key = format!("post_process_{what}:{provider_id}");
         self.settings.updating.insert(key.clone());
         if matches!(what, "base_url" | "api_key" | "api_format") {
@@ -587,12 +632,13 @@ impl AppState {
                 _ => Ok(()),
             },
             move |s, r, cx| {
-                match r {
+                match &r {
                     // A new endpoint makes the stored model meaningless
                     // (settingsStore.updatePostProcessBaseUrl).
                     Ok(()) if what == "base_url" => {
                         s.settings.updating.remove(&key);
                         s.update_post_process("model", &pid_done, String::new(), cx);
+                        done(s, &r, cx);
                         return;
                     }
                     Ok(()) => {}
@@ -600,6 +646,7 @@ impl AppState {
                 }
                 s.settings.updating.remove(&key);
                 s.refresh_settings(cx);
+                done(s, &r, cx);
             },
         );
     }
@@ -751,6 +798,90 @@ impl AppState {
         );
     }
 
+    /// Download the meeting transcription model (the Models page download
+    /// path) without making it the dictation model afterwards.
+    pub fn download_meeting_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.models.downloading.contains(id) {
+            return;
+        }
+        self.meeting_model_downloads.insert(id.to_string());
+        let id_done = id.to_string();
+        self.download_model_then(id, cx, move |s, r, cx| {
+            if let Err(e) = r {
+                s.meeting_model_downloads.remove(&id_done);
+                let spec = ToastSpec::error(guidy_i18n::t("meetings.model.downloadError"), Some(e));
+                s.toast(spec, cx);
+            }
+        });
+    }
+
+    // -- meetings -------------------------------------------------------------
+
+    /// Emit a UI-side meetings event (e.g. the Linear key changed).
+    pub fn emit_meetings(&mut self, ev: MeetingsEvent, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::Meetings(ev));
+    }
+
+    /// Start the meetings manager again after a failed start.
+    pub fn retry_meetings_init(&mut self, cx: &mut Context<Self>) {
+        self.meetings_init = MeetingsInit::Starting;
+        cx.notify();
+        let meetings = self.meetings.clone();
+        cx.spawn(async move |this, cx| {
+            let status = cx
+                .background_spawn(async move {
+                    meetings.retry_init();
+                    meetings.init_status()
+                })
+                .await;
+            this.update(cx, |s, cx| {
+                // The ready / init-failed event may already have updated it.
+                if s.meetings_init == MeetingsInit::Starting && status != MeetingsInit::Starting {
+                    s.set_meetings_init(status, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Move unreadable meeting data aside, make a new data key and start the
+    /// meetings manager again (after a missing key or a failed start).
+    pub fn reset_meetings_data(&mut self, cx: &mut Context<Self>) {
+        self.meetings_init = MeetingsInit::Starting;
+        cx.notify();
+        let meetings = self.meetings.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, status) = cx
+                .background_spawn(async move {
+                    let result = meetings.reset_data();
+                    (result, meetings.init_status())
+                })
+                .await;
+            this.update(cx, |s, cx| {
+                if s.meetings_init != MeetingsInit::Starting {
+                    return; // the ready / failure event got here first
+                }
+                match result {
+                    Err(e) => s.set_meetings_init(MeetingsInit::after_failed_reset(status, e), cx),
+                    Ok(()) if status != MeetingsInit::Starting => s.set_meetings_init(status, cx),
+                    Ok(()) => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn set_meetings_init(&mut self, status: MeetingsInit, cx: &mut Context<Self>) {
+        let ready = status == MeetingsInit::Ready && self.meetings_init != MeetingsInit::Ready;
+        self.meetings_init = status;
+        if ready {
+            cx.emit(AppEvent::Meetings(MeetingsEvent::Ready));
+        }
+        cx.notify();
+    }
+
     pub fn cancel_download(&mut self, id: &str, cx: &mut Context<Self>) {
         let id_a = id.to_string();
         let id_b = id.to_string();
@@ -788,6 +919,9 @@ impl AppState {
             ModelsEffect::ReloadModels => self.load_models(cx),
             ModelsEffect::ReloadCurrentModel => self.load_current_model(cx),
             ModelsEffect::ToastError(e) => self.toast_error(e, cx),
+            // A meeting model: keep the dictation model as it is. Checked
+            // first so the set is cleaned up during onboarding too.
+            ModelsEffect::DownloadCompleted(id) if self.meeting_model_downloads.remove(&id) => {}
             // ModelSelector (mounted only once onboarding is done): during
             // onboarding and migration those screens pick the model.
             ModelsEffect::DownloadCompleted(_) if !self.onboarding_done() => {}
@@ -906,6 +1040,21 @@ impl AppState {
                 }
             }
             "check-for-updates" => cx.emit(AppEvent::CheckForUpdates),
+            name if crate::logic::meetings::is_meetings_event(name) => {
+                match crate::logic::meetings::decode_event(name, payload) {
+                    Some(MeetingsEvent::Ready) => self.set_meetings_init(MeetingsInit::Ready, cx),
+                    Some(MeetingsEvent::InitFailed(e)) => {
+                        self.set_meetings_init(MeetingsInit::Failed(e.clone()), cx);
+                        cx.emit(AppEvent::Meetings(MeetingsEvent::InitFailed(e)));
+                    }
+                    Some(MeetingsEvent::DataKeyMissing(e)) => {
+                        self.set_meetings_init(MeetingsInit::DataKeyMissing(e.clone()), cx);
+                        cx.emit(AppEvent::Meetings(MeetingsEvent::DataKeyMissing(e)));
+                    }
+                    Some(ev) => cx.emit(AppEvent::Meetings(ev)),
+                    None => {}
+                }
+            }
             "theme-changed" => {
                 if let Some(t) = event.decode::<guidy_core::settings::Theme>() {
                     crate::theme::apply_setting(t, cx);

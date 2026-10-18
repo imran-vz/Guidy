@@ -4,10 +4,12 @@ use log::{debug, warn};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 
 pub const APPLE_INTELLIGENCE_PROVIDER_ID: &str = "apple_intelligence";
 pub const APPLE_INTELLIGENCE_DEFAULT_MODEL_ID: &str = "Apple Intelligence";
+pub const VERCEL_AI_GATEWAY_PROVIDER_ID: &str = "vercel_ai_gateway";
+pub const CLOUDFLARE_WORKERS_AI_PROVIDER_ID: &str = "cloudflare_workers_ai";
+pub const CLOUDFLARE_AI_GATEWAY_PROVIDER_ID: &str = "cloudflare_ai_gateway";
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -76,7 +78,7 @@ impl From<LogLevel> for log::Level {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ShortcutBinding {
     pub id: String,
     pub name: String,
@@ -85,7 +87,7 @@ pub struct ShortcutBinding {
     pub current_binding: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LLMPrompt {
     pub id: String,
     pub name: String,
@@ -104,7 +106,7 @@ pub enum PostProcessApiFormat {
     Anthropic,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PostProcessProvider {
     pub id: String,
     pub label: String,
@@ -339,41 +341,13 @@ pub enum VadBackend {
     Earshot,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretMap(HashMap<String, String>);
-
-impl fmt::Debug for SecretMap {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let redacted: HashMap<&String, &str> = self
-            .0
-            .iter()
-            .map(|(k, v)| (k, if v.is_empty() { "" } else { "[REDACTED]" }))
-            .collect();
-        redacted.fmt(f)
-    }
-}
-
-impl std::ops::Deref for SecretMap {
-    type Target = HashMap<String, String>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for SecretMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 /* still useful for composing the initial JSON in the store ------------- */
 /// The container-level `serde(default)` (backed by the `Default` impl below)
 /// guarantees every field — including ones added in the future — falls back to
 /// its `get_default_settings()` value when missing from a stored settings
 /// object, so a partial store can never fail the whole load (#1619).
 /// Field-level defaults below take precedence where present.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
     /// Internal settings schema marker for one-time migrations. Fresh installs
@@ -463,8 +437,6 @@ pub struct AppSettings {
     pub post_process_provider_id: String,
     #[serde(default = "default_post_process_providers")]
     pub post_process_providers: Vec<PostProcessProvider>,
-    #[serde(default = "default_post_process_api_keys")]
-    pub post_process_api_keys: SecretMap,
     #[serde(default = "default_post_process_models")]
     pub post_process_models: HashMap<String, String>,
     #[serde(default = "default_post_process_prompts")]
@@ -520,6 +492,9 @@ pub struct AppSettings {
     pub transcribe_gpu_device: Option<String>,
     #[serde(default)]
     pub extra_recording_buffer_ms: u64,
+    /// Meeting notes (macOS 14.2+). See `docs/MEETING_NOTES_PLAN.md`.
+    #[serde(default)]
+    pub meetings: crate::meetings::settings::MeetingSettings,
     #[serde(default = "default_vad_enabled")]
     pub vad_enabled: bool,
     /// Experimental detector implementation. Silero remains the stable default.
@@ -753,6 +728,40 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         });
     }
 
+    // Bring-your-own-key gateways (plan task 4). All OpenAI-compatible.
+    providers.push(PostProcessProvider {
+        id: VERCEL_AI_GATEWAY_PROVIDER_ID.to_string(),
+        label: "Vercel AI Gateway".to_string(),
+        base_url: "https://ai-gateway.vercel.sh/v1".to_string(),
+        allow_base_url_edit: false,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: true,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+    // The account id is part of the URL, so the base URL is editable: the
+    // user replaces `{account_id}` (see `crate::llm::validate_base_url`).
+    providers.push(PostProcessProvider {
+        id: CLOUDFLARE_WORKERS_AI_PROVIDER_ID.to_string(),
+        label: "Cloudflare Workers AI".to_string(),
+        base_url: "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1".to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+    // Cloudflare AI Gateway's unified OpenAI-compatible endpoint; models are
+    // named `<provider>/<model>` (e.g. `openai/gpt-4o-mini`).
+    providers.push(PostProcessProvider {
+        id: CLOUDFLARE_AI_GATEWAY_PROVIDER_ID.to_string(),
+        label: "Cloudflare AI Gateway".to_string(),
+        base_url: "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat"
+            .to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAi,
+    });
+
     // AWS Bedrock via Mantle (OpenAI-compatible endpoint)
     providers.push(PostProcessProvider {
         id: "bedrock_mantle".to_string(),
@@ -778,12 +787,22 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
     providers
 }
 
-fn default_post_process_api_keys() -> SecretMap {
-    let mut map = HashMap::new();
-    for provider in default_post_process_providers() {
-        map.insert(provider.id, String::new());
+/// The API key for a post-processing / LLM provider, from the Keychain.
+/// Empty when there is none.
+pub fn provider_api_key(provider_id: &str) -> String {
+    match crate::secrets::get(&crate::secrets::provider_api_key(provider_id)) {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(e) => {
+            warn!("Failed to read the API key for provider '{provider_id}': {e}");
+            String::new()
+        }
     }
-    SecretMap(map)
+}
+
+/// Store (or, when empty, delete) a provider's API key in the Keychain.
+pub fn set_provider_api_key(provider_id: &str, api_key: &str) -> anyhow::Result<()> {
+    crate::secrets::set(&crate::secrets::provider_api_key(provider_id), api_key)
 }
 
 fn default_model_for_provider(provider_id: &str) -> String {
@@ -869,19 +888,37 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     existing.api_format = provider.api_format;
                     changed = true;
                 }
+
+                // Whether the base URL is editable comes from the defaults, not
+                // the store: a stale or hand-edited flag must not let a
+                // built-in provider (and its API key) point at another host.
+                if existing.allow_base_url_edit != provider.allow_base_url_edit {
+                    existing.allow_base_url_edit = provider.allow_base_url_edit;
+                    changed = true;
+                }
+                if !existing.allow_base_url_edit
+                    && existing.id != "custom"
+                    && existing.base_url != provider.base_url
+                {
+                    debug!(
+                        "Resetting the base URL of provider '{}' (not editable)",
+                        provider.id
+                    );
+                    existing.base_url = provider.base_url.clone();
+                    changed = true;
+                }
             }
             None => {
-                // Provider doesn't exist, add it
-                settings.post_process_providers.push(provider.clone());
+                // Provider doesn't exist (new in this release): add it, keeping
+                // Custom last.
+                let at = settings
+                    .post_process_providers
+                    .iter()
+                    .position(|p| p.id == "custom")
+                    .unwrap_or(settings.post_process_providers.len());
+                settings.post_process_providers.insert(at, provider.clone());
                 changed = true;
             }
-        }
-
-        if !settings.post_process_api_keys.contains_key(&provider.id) {
-            settings
-                .post_process_api_keys
-                .insert(provider.id.clone(), String::new());
-            changed = true;
         }
 
         let default_model = default_model_for_provider(&provider.id);
@@ -906,7 +943,8 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
-pub fn get_default_settings() -> AppSettings {
+/// The built-in shortcut bindings, keyed by binding id.
+fn default_bindings() -> HashMap<String, ShortcutBinding> {
     #[cfg(target_os = "windows")]
     let default_shortcut = "ctrl+space";
     #[cfg(target_os = "macos")]
@@ -957,10 +995,13 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: "escape".to_string(),
         },
     );
+    bindings
+}
 
+pub fn get_default_settings() -> AppSettings {
     AppSettings {
         settings_schema_version: default_settings_schema_version(),
-        bindings,
+        bindings: default_bindings(),
         shortcut_activation: ShortcutActivation::default(),
         hold_threshold_ms: default_hold_threshold_ms(),
         audio_feedback: false,
@@ -995,7 +1036,6 @@ pub fn get_default_settings() -> AppSettings {
         post_process_enabled: default_post_process_enabled(),
         post_process_provider_id: default_post_process_provider_id(),
         post_process_providers: default_post_process_providers(),
-        post_process_api_keys: default_post_process_api_keys(),
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
@@ -1018,6 +1058,7 @@ pub fn get_default_settings() -> AppSettings {
         transcribe_accelerator: TranscribeAcceleratorSetting::default(),
         transcribe_gpu_device: default_transcribe_gpu_device(),
         extra_recording_buffer_ms: 0,
+        meetings: Default::default(),
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
         long_form_chunking: default_long_form_chunking(),
@@ -1032,12 +1073,6 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    pub fn active_post_process_provider(&self) -> Option<&PostProcessProvider> {
-        self.post_process_providers
-            .iter()
-            .find(|provider| provider.id == self.post_process_provider_id)
-    }
-
     pub fn post_process_provider(&self, provider_id: &str) -> Option<&PostProcessProvider> {
         self.post_process_providers
             .iter()
@@ -1063,6 +1098,13 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
     settings
 }
 
+/// Serializes every settings write: whole replacements ([`write_settings`]),
+/// the migrations a read persists ([`get_settings`]) and read-modify-write
+/// sections ([`update_settings`], which holds it across its read and write;
+/// reentrant so those can nest). Plain reads don't take it. Nothing slow
+/// (Keychain, I/O beyond the store) may run under it.
+static SETTINGS_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+
 pub fn get_settings(app: &AppHandle) -> AppSettings {
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
@@ -1070,45 +1112,53 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
 
     // Settings reads also persist one-time migrations. Migration helpers are
     // idempotent, so this converges after the first read of an older store.
-    let mut settings = if let Some(settings_value) = store.get("settings") {
-        let (mut settings, mut updated) =
-            match serde_json::from_value::<AppSettings>(settings_value.clone()) {
-                Ok(settings) => (settings, false),
-                Err(e) => {
-                    warn!("Failed to parse stored settings ({e}); salvaging valid fields");
-                    (salvage_settings(&settings_value), true)
-                }
-            };
-
-        if apply_settings_migrations(&mut settings, &settings_value) {
-            updated = true;
-        }
-
-        // Merge in any bindings added since this store was written.
-        for (key, value) in get_default_settings().bindings {
-            if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
-                debug!("Adding missing binding: {}", entry.key());
-                entry.insert(value);
-                updated = true;
-            }
-        }
-
-        if updated {
-            store.set("settings", serde_json::to_value(&settings).unwrap());
-        }
-
-        settings
-    } else {
-        let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
-        default_settings
-    };
-
-    if ensure_post_process_defaults(&mut settings) {
+    let (settings, needs_write) = load_settings(&store);
+    if !needs_write {
+        return settings;
+    }
+    // Re-read under the lock so a migration computed from a value an
+    // `update_settings` replaced meanwhile never overwrites its change.
+    let _guard = SETTINGS_LOCK.lock();
+    let (settings, needs_write) = load_settings(&store);
+    if needs_write {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
-
     settings
+}
+
+/// The stored settings with salvage, migrations and defaults applied, and
+/// whether that changed them (so they need writing back).
+fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
+    let Some(settings_value) = store.get("settings") else {
+        return (get_default_settings(), true);
+    };
+    let (mut settings, mut updated) =
+        match serde_json::from_value::<AppSettings>(settings_value.clone()) {
+            Ok(settings) => (settings, false),
+            Err(e) => {
+                warn!("Failed to parse stored settings ({e}); salvaging valid fields");
+                (salvage_settings(&settings_value), true)
+            }
+        };
+
+    if apply_settings_migrations(&mut settings, &settings_value) {
+        updated = true;
+    }
+
+    // Merge in any bindings added since this store was written.
+    for (key, value) in default_bindings() {
+        if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
+            debug!("Adding missing binding: {}", entry.key());
+            entry.insert(value);
+            updated = true;
+        }
+    }
+
+    if ensure_post_process_defaults(&mut settings) {
+        updated = true;
+    }
+
+    (settings, updated)
 }
 
 /// Rebuilds settings from a store value that failed to deserialize as a whole.
@@ -1274,7 +1324,31 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
     settings.update_checks_enabled && !update_checks_forced_disabled()
 }
 
-pub fn write_settings(app: &AppHandle, settings: AppSettings) {
+/// Read-modify-write the settings atomically with respect to every other
+/// settings write: `f` runs on the current settings under the process-wide
+/// settings lock and the result is written before the lock is released.
+/// Every settings change goes through here, so UI setters and background
+/// tasks never revert each other's changes with a stale snapshot. Keep `f` to
+/// the mutation: do slow work and side effects (registering shortcuts,
+/// emitting events, Keychain calls) before or after it. The lock is
+/// reentrant, but a nested write inside `f` is overwritten by this one's:
+/// don't. Nothing is written when `f` leaves the settings unchanged.
+pub fn update_settings<R>(app: &AppHandle, f: impl FnOnce(&mut AppSettings) -> R) -> R {
+    let _guard = SETTINGS_LOCK.lock();
+    let mut settings = get_settings(app);
+    let before = settings.clone();
+    let result = f(&mut settings);
+    if settings != before {
+        write_settings(app, settings);
+    }
+    result
+}
+
+/// Replace the stored settings whole. Only [`update_settings`] calls this
+/// (with settings it read under the same lock); a write of an earlier
+/// snapshot would revert any change made since it was read.
+fn write_settings(app: &AppHandle, settings: AppSettings) {
+    let _guard = SETTINGS_LOCK.lock();
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
@@ -1309,6 +1383,67 @@ pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byok_providers_are_added_to_existing_stores_before_custom() {
+        let mut settings = get_default_settings();
+        let byok = [
+            VERCEL_AI_GATEWAY_PROVIDER_ID,
+            CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
+            CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
+        ];
+        // An older store: no BYOK gateways, a user-edited Cloudflare URL kept.
+        settings
+            .post_process_providers
+            .retain(|p| !byok.contains(&p.id.as_str()));
+        for id in byok {
+            settings.post_process_models.remove(id);
+        }
+        assert!(ensure_post_process_defaults(&mut settings));
+        for id in byok {
+            assert!(settings.post_process_provider(id).is_some(), "{id} missing");
+            assert!(settings.post_process_models.contains_key(id));
+        }
+        assert_eq!(settings.post_process_providers.last().unwrap().id, "custom");
+
+        let cf = settings
+            .post_process_provider_mut(CLOUDFLARE_WORKERS_AI_PROVIDER_ID)
+            .unwrap();
+        assert!(cf.allow_base_url_edit);
+        cf.base_url = "https://api.cloudflare.com/client/v4/accounts/abc/ai/v1".into();
+        assert!(!ensure_post_process_defaults(&mut settings));
+        assert!(settings
+            .post_process_provider(CLOUDFLARE_WORKERS_AI_PROVIDER_ID)
+            .unwrap()
+            .base_url
+            .contains("/accounts/abc/"));
+        let openrouter = settings.post_process_provider("openrouter").unwrap();
+        assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn base_url_editing_follows_the_defaults_not_the_store() {
+        let mut settings = get_default_settings();
+        // A hand-edited store: OpenAI marked editable and pointed elsewhere.
+        let openai = settings.post_process_provider_mut("openai").unwrap();
+        openai.allow_base_url_edit = true;
+        openai.base_url = "https://evil.example/v1".into();
+        assert!(ensure_post_process_defaults(&mut settings));
+        let openai = settings.post_process_provider("openai").unwrap();
+        assert!(!openai.allow_base_url_edit);
+        assert_eq!(openai.base_url, "https://api.openai.com/v1");
+
+        // The custom provider keeps its user-chosen URL.
+        settings
+            .post_process_provider_mut("custom")
+            .unwrap()
+            .base_url = "http://10.0.0.2:8080/v1".into();
+        assert!(!ensure_post_process_defaults(&mut settings));
+        assert_eq!(
+            settings.post_process_provider("custom").unwrap().base_url,
+            "http://10.0.0.2:8080/v1"
+        );
+    }
 
     #[test]
     fn stored_binding_returns_the_requested_binding() {
@@ -1436,7 +1571,6 @@ mod tests {
                     "supports_structured_output": true
                 }
             ],
-            "post_process_api_keys": { "openai": "" },
             "post_process_models": { "openai": "gpt-4o-mini" },
             "post_process_prompts": [
                 { "id": "default", "name": "Default", "prompt": "Clean up the transcript." }
@@ -1821,32 +1955,17 @@ mod tests {
     }
 
     #[test]
-    fn debug_output_redacts_api_keys() {
-        let mut settings = get_default_settings();
-        settings
-            .post_process_api_keys
-            .insert("openai".to_string(), "sk-proj-secret-key-12345".to_string());
-        settings.post_process_api_keys.insert(
-            "anthropic".to_string(),
-            "sk-ant-secret-key-67890".to_string(),
-        );
-        settings
-            .post_process_api_keys
-            .insert("empty_provider".to_string(), "".to_string());
+    fn set_provider_api_key_writes_secrets_not_settings() {
+        let provider = "set-key-test-provider";
+        let settings = get_default_settings();
+        set_provider_api_key(provider, "sk-set-1").unwrap();
+        assert_eq!(provider_api_key(provider), "sk-set-1");
+        assert!(!serde_json::to_string(&settings)
+            .unwrap()
+            .contains("sk-set-1"));
 
-        let debug_output = format!("{:?}", settings);
-
-        assert!(!debug_output.contains("sk-proj-secret-key-12345"));
-        assert!(!debug_output.contains("sk-ant-secret-key-67890"));
-        assert!(debug_output.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn secret_map_debug_redacts_values() {
-        let map = SecretMap(HashMap::from([("key".into(), "secret".into())]));
-        let out = format!("{:?}", map);
-        assert!(!out.contains("secret"));
-        assert!(out.contains("[REDACTED]"));
+        set_provider_api_key(provider, "").unwrap();
+        assert_eq!(provider_api_key(provider), "");
     }
 }
 
@@ -1913,9 +2032,79 @@ mod store_compat_tests {
     #[test]
     fn write_then_read_round_trips() {
         let t = TestApp::new();
-        let mut s = get_settings(&t.app);
-        s.history_limit = 42;
-        write_settings(&t.app, s);
+        update_settings(&t.app, |s| s.history_limit = 42);
         assert_eq!(get_settings(&t.app).history_limit, 42);
+    }
+
+    #[test]
+    fn a_setter_keeps_a_concurrent_background_change() {
+        let t = TestApp::new();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let app = &t.app;
+            // A background task (e.g. saving the Linear default team after
+            // creating tickets) mid read-modify-write...
+            let background = scope.spawn(move || {
+                update_settings(app, |s| {
+                    entered_tx.send(()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    s.meetings.linear_default_team_id = Some("team-1".into());
+                })
+            });
+            entered_rx.recv().unwrap();
+            // ...while the user changes an unrelated setting.
+            crate::shortcut::update_custom_words(app.clone(), vec!["setter".into()]).unwrap();
+            background.join().unwrap();
+        });
+        let s = get_settings(&t.app);
+        assert_eq!(s.custom_words, vec!["setter".to_string()]);
+        assert_eq!(s.meetings.linear_default_team_id.as_deref(), Some("team-1"));
+    }
+
+    #[test]
+    fn update_settings_skips_the_write_when_nothing_changed() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.history_limit = 42);
+        let path = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::remove_file(&path).unwrap();
+
+        // A no-op closure, and one that fails before changing anything.
+        update_settings(&t.app, |_| ());
+        let r: Result<(), &str> = update_settings(&t.app, |_| Err("invalid"));
+        assert!(r.is_err());
+        // A change that sets the current value again.
+        update_settings(&t.app, |s| s.history_limit = 42);
+        assert!(!path.exists(), "unchanged settings were written");
+
+        update_settings(&t.app, |s| s.history_limit = 43);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["settings"]["history_limit"], 43);
+    }
+
+    #[test]
+    fn reading_migrated_settings_writes_nothing() {
+        let t = TestApp::new();
+        get_settings(&t.app);
+        let path = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::remove_file(&path).unwrap();
+        get_settings(&t.app);
+        assert!(!path.exists(), "an up-to-date read wrote the store");
+    }
+
+    #[test]
+    fn concurrent_update_settings_lose_no_writes() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.history_limit = 0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        update_settings(&t.app, |s| s.history_limit += 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(get_settings(&t.app).history_limit, 80);
     }
 }

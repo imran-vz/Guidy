@@ -379,5 +379,36 @@ impl ModelManager {
     }
 }
 
+/// Resumable, size- and SHA256-verified HTTP download for other model kinds
+/// (the built-in LLM's GGUFs, `crate::llm::local_models`). Same transport and
+/// robustness as model downloads; leaves the verified bytes in
+/// `partial_path` (the caller renames it). Returns `false` when cancelled
+/// (the partial is kept for resume).
+pub(crate) async fn download_file(
+    id: &str,
+    url: &str,
+    partial_path: &Path,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+    cancel_token: &CancellationToken,
+    on_progress: &(dyn Fn(&DownloadProgress) + Send + Sync),
+) -> Result<bool> {
+    let outcome = ModelManager::download_http_resumable_with_events(
+        id,
+        url,
+        partial_path,
+        expected_size,
+        expected_sha256,
+        cancel_token,
+        &|event| {
+            if let HttpDownloadEvent::Progress(progress) = event {
+                on_progress(progress);
+            }
+        },
+    )
+    .await?;
+    Ok(matches!(outcome, HttpDownloadOutcome::Completed))
+}
+
 #[cfg(test)]
 mod tests;

@@ -15,6 +15,8 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::Arc;
 
+pub use crate::meetings_backend::fake::*;
+
 #[derive(Default)]
 pub struct FakeData {
     pub settings: Option<AppSettings>,
@@ -102,7 +104,7 @@ impl Backend for FakeBackend {
         }
         let s = d.settings.as_mut().unwrap();
         let mut json = serde_json::to_value(&*s).unwrap();
-        json[key] = value;
+        crate::logic::settings_store::apply_setting_value(&mut json, key, value);
         *s = serde_json::from_value(json).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -188,6 +190,15 @@ impl Backend for FakeBackend {
         self.rec(format!(
             "change_post_process_api_key {provider_id} {api_key}"
         ));
+        if self
+            .data
+            .lock()
+            .fail_settings
+            .iter()
+            .any(|k| k == "post_process_api_key")
+        {
+            return Err("keychain write failed".into());
+        }
         Ok(())
     }
     fn change_post_process_model(&self, provider_id: &str, model: &str) -> BackendResult<()> {
