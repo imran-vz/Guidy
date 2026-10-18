@@ -1,12 +1,13 @@
 //! Shared building blocks in Zed's visual language: settings rows and
 //! groups, dropdowns, toggles, reset buttons, icons, translated strings.
 
+use crate::ui::design::{self, Pill};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::rc::Rc;
@@ -39,37 +40,24 @@ pub fn muted(cx: &App) -> Hsla {
     cx.theme().muted_foreground
 }
 
-/// Zed-style group: small muted heading over a bordered surface whose rows
-/// are separated by hairlines.
+/// A settings group: mono eyebrow heading over a panel whose rows are
+/// separated by hairlines.
 pub fn group(title: Option<SharedString>, rows: Vec<AnyElement>, cx: &App) -> Div {
-    let theme = cx.theme();
+    let hairline = design::tone(cx).hairline;
     let count = rows.len();
     v_flex()
         .w_full()
-        .gap_1p5()
+        .gap(px(8.))
         .when_some(title, |this, title| {
-            this.child(
-                div()
-                    .px_1()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child(title.to_uppercase()),
-            )
+            this.child(div().px(px(2.)).child(design::eyebrow(title, cx)))
         })
         .child(
-            v_flex()
-                .w_full()
-                .rounded(theme.radius_lg)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.sidebar)
-                .children(rows.into_iter().enumerate().map(move |(i, row)| {
-                    div()
-                        .w_full()
-                        .when(i + 1 < count, |d| d.border_b_1().border_color(theme.border))
-                        .child(row)
-                })),
+            design::panel(cx).children(rows.into_iter().enumerate().map(move |(i, row)| {
+                div()
+                    .w_full()
+                    .when(i + 1 < count, |d| d.border_b_1().border_color(hairline))
+                    .child(row)
+            })),
         )
 }
 
@@ -132,11 +120,12 @@ impl SettingRow {
 
 impl RenderOnce for SettingRow {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
+        let tone = design::tone(cx);
+        let muted = tone.text_muted;
         let tooltip_text = self.description.clone();
         let title = h_flex()
             .gap_1()
-            .child(div().text_sm().child(self.title.clone()))
+            .child(div().text_size(design::TEXT_BODY).child(self.title.clone()))
             .when(
                 self.mode == DescriptionMode::Tooltip && tooltip_text.is_some(),
                 |this| {
@@ -145,7 +134,7 @@ impl RenderOnce for SettingRow {
                         div()
                             .id(SharedString::from(format!("{}-info", self.id)))
                             .cursor_pointer()
-                            .child(icon("info").xsmall().text_color(muted))
+                            .child(icon("info").xsmall().text_color(tone.text_faint))
                             .tooltip(move |window, cx| {
                                 Tooltip::new(text.clone()).build(window, cx)
                             }),
@@ -156,7 +145,7 @@ impl RenderOnce for SettingRow {
             self.mode == DescriptionMode::Inline,
             |this| {
                 this.when_some(self.description.clone(), |this, d| {
-                    this.child(div().text_xs().text_color(muted).child(d))
+                    this.child(div().text_size(px(12.)).text_color(muted).child(d))
                 })
             },
         );
@@ -180,8 +169,8 @@ impl RenderOnce for SettingRow {
             .when_some(self.description, |d, desc| d.aria_description(desc))
             .w_full()
             .min_h(px(48.))
-            .px_3()
-            .py_2()
+            .px(design::SECTION_X)
+            .py(px(10.))
             .flex()
             .items_center()
             .when(self.disabled, |d| d.opacity(0.5))
@@ -408,17 +397,64 @@ pub fn page() -> Div {
         .gap_6()
 }
 
-/// Muted section heading used at the top of pages.
+/// Page heading: title, then a muted descriptor after a slash
+/// ("History / 128 transcriptions"), with an optional lede below.
 pub fn page_header(title: SharedString, description: Option<SharedString>, cx: &App) -> Div {
+    let tone = design::tone(cx);
     v_flex()
-        .gap_1()
-        .child(div().text_lg().font_semibold().child(title))
+        .w_full()
+        .gap(px(6.))
+        .child(
+            div()
+                .text_size(design::TEXT_HEADLINE)
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
         .when_some(description, |this, d| {
             this.child(
                 div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_size(design::TEXT_BODY)
+                    .line_height(relative(1.55))
+                    .text_color(tone.text_muted)
                     .child(d),
+            )
+        })
+}
+
+/// A title with a slash-separated descriptor on one line, as in the title
+/// bar: "Weekly sync / Today · 10:00".
+pub fn crumb_title(
+    title: SharedString,
+    crumb: Option<SharedString>,
+    size: Pixels,
+    cx: &App,
+) -> Div {
+    let tone = design::tone(cx);
+    h_flex()
+        .min_w_0()
+        .gap(px(8.))
+        .items_baseline()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(size)
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
+        .when_some(crumb, |d, crumb| {
+            d.child(
+                div()
+                    .text_size(design::TEXT_BODY)
+                    .text_color(tone.text_faint)
+                    .child("/"),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(design::TEXT_BODY)
+                    .text_color(tone.text_muted)
+                    .child(crumb),
             )
         })
 }
@@ -438,19 +474,21 @@ pub fn path_display(
             div()
                 .flex_1()
                 .min_w_0()
-                .px_2()
-                .py_1()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().muted)
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(design::RADIUS_CHIP)
+                .bg(design::tone(cx).raised)
+                .text_color(design::tone(cx).text_muted)
                 .font_family(crate::theme::MONO_FONT)
-                .text_xs()
+                .text_size(px(11.))
                 .truncate()
                 .child(path),
         )
         .child(
             Button::new(id)
-                .outline()
+                .secondary()
                 .small()
+                .pill()
                 .label(t("common.open"))
                 .disabled(!enabled)
                 .on_click(move |_, window, cx| on_open(window, cx)),

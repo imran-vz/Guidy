@@ -48,7 +48,8 @@
     },
     "modelCard": {
       "accuracy": "accuracy",
-      "speed": "speed"
+      "speed": "speed",
+      "size": "size"
     },
     "models": {
       "small": {
@@ -125,7 +126,9 @@
       "translation": "Can translate to English",
       "translate": "Translate",
       "streaming": "Shows live transcription as you speak"
-    }
+    },
+    "download": "Download",
+    "use": "Use"
   },
   "settings": {
     "modelSettings": {
@@ -639,6 +642,12 @@
           "description": "High-performance tensor library for on-device machine learning inference",
           "details": "Guidy's local speech-to-text is built on transcribe.cpp and ggml. Thanks to the amazing work by Georgi Gerganov and contributors."
         }
+      },
+      "hero": {
+        "headline": "Speech to text that stays on this Mac",
+        "lede": "Press a shortcut, speak, and Guidy types into the focused app. Transcription runs locally.",
+        "engine": "Engine",
+        "model": "Model"
       }
     }
   },
@@ -816,7 +825,13 @@
       "play": "Play from here",
       "you": "You",
       "speakers": "Speakers",
-      "attendees": "Attendees"
+      "attendees": "Attendees",
+      "duration": "Duration",
+      "words": "Words",
+      "talkTime": "Talk time",
+      "share": "Share",
+      "youSpoke": "You spoke",
+      "minutes": "Min"
     },
     "speaker": {
       "rename": "Name this speaker",

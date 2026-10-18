@@ -10,6 +10,7 @@ use std::borrow::Cow;
 #[include = "themes/*.json"]
 #[include = "release-notes/*.md"]
 #[include = "icons/**/*.svg"]
+#[include = "illustrations/*.svg"]
 pub struct Embedded;
 
 /// App assets first, then gpui-kit's full Lucide catalog.
@@ -70,8 +71,8 @@ mod tests {
 
     #[test]
     fn embeds_fonts_theme_and_notes() {
-        assert!(fonts().len() >= 5);
-        assert!(text("themes/zed-one.json").unwrap().contains("One Dark"));
+        assert!(fonts().len() >= 6);
+        assert!(text("themes/guidy.json").unwrap().contains("Guidy Dark"));
         let notes = release_notes();
         assert!(notes.iter().any(|(v, _)| v == "0.1.0"));
     }

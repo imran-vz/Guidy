@@ -16,14 +16,12 @@ use crate::logic::meetings::{MeetingsEvent, MeetingsInit};
 use crate::logic::settings_store::ToastSpec;
 use crate::meetings_backend::{MeetingsBackend, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, page, page_header, t, t_args};
 use detail::{DetailEvent, MeetingDetail};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable, StyledExt, WindowExt,
-};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::managers::transcription::meeting::{resolve_meeting_model_id, MeetingModelMissing};
@@ -122,20 +120,12 @@ pub(crate) fn render_model_download(
             h_flex()
                 .gap_2()
                 .w(px(200.))
-                .child(
-                    div().flex_1().child(
-                        Progress::new(SharedString::from(format!(
-                            "meeting-model-progress-{place}"
-                        )))
-                        .value(pct as f32),
-                    ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(format!("{pct:.0}%")),
-                )
+                .child(div().flex_1().child(design::track(
+                    SharedString::from(format!("meeting-model-progress-{place}")),
+                    Some((pct as f32) / 100.0),
+                    cx,
+                )))
+                .child(design::mono(format!("{pct:.0}%")).text_color(theme.muted_foreground))
                 .into_any_element(),
         )
     } else {
@@ -145,6 +135,7 @@ pub(crate) fn render_model_download(
             )))
             .primary()
             .small()
+            .pill()
             .icon(icon("download"))
             .label(t("meetings.model.download"))
             .on_click(move |_, _, cx| {
@@ -154,18 +145,19 @@ pub(crate) fn render_model_download(
             .into_any_element(),
         )
     };
-    h_flex()
+    design::notice(theme.warning)
         .id(SharedString::from(format!("meeting-model-missing-{place}")))
-        .w_full()
+        .flex()
+        .items_center()
         .gap_3()
-        .px_3()
-        .py_2()
         .justify_between()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.warning.opacity(0.4))
-        .bg(theme.warning.opacity(0.08))
-        .child(div().flex_1().min_w_0().text_sm().child(message))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(design::TEXT_BODY)
+                .child(message),
+        )
         .children(action)
         .test_support()
         .into_any_element()
@@ -320,13 +312,17 @@ impl MeetingsPage {
                     .gap_2()
                     .px_3()
                     .py_3()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .text_color(theme.muted_foreground)
                     .child(crate::ui::kit::spinner(
                         "meetings-starting-spinner",
                         icon("loader-circle").xsmall(),
                     ))
-                    .child(t("meetings.init.starting"))
+                    .child(design::shimmer_text(
+                        "meetings-starting-text",
+                        t("meetings.init.starting"),
+                        cx,
+                    ))
                     .test_support()
                     .into_any_element(),
             ),
@@ -363,31 +359,29 @@ impl MeetingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
-        v_flex()
+        design::notice(theme.danger)
             .id(id)
-            .w_full()
+            .flex()
+            .flex_col()
             .gap_2()
-            .px_3()
-            .py_3()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(theme.danger.opacity(0.4))
-            .bg(theme.danger.opacity(0.08))
-            .child(div().text_sm().font_semibold().child(title))
-            .when_some(description, |d, text| d.child(div().text_sm().child(text)))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(error.to_string()),
+                    .text_size(design::TEXT_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
             )
+            .when_some(description, |d, text| {
+                d.child(div().text_size(design::TEXT_BODY).child(text))
+            })
+            .child(design::mono(error.to_string()).text_color(theme.muted_foreground))
             .child(
                 h_flex()
                     .gap_2()
                     .child(
                         Button::new("meetings-init-retry")
-                            .outline()
+                            .secondary()
                             .small()
+                            .pill()
                             .icon(icon("rotate-ccw"))
                             .label(t("meetings.init.retry"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -397,8 +391,9 @@ impl MeetingsPage {
                     .when(resettable, |row| {
                         row.child(
                             Button::new("meetings-init-reset")
-                                .outline()
+                                .secondary()
                                 .small()
+                                .pill()
                                 .icon(icon("archive"))
                                 .label(t("meetings.init.reset.action"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -519,61 +514,74 @@ impl MeetingsPage {
     }
 
     fn render_recorder(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+        let tone = design::tone(cx);
         let enabled = meeting_settings(cx).enabled;
         let recording = matches!(self.recorder, RecorderState::Recording { .. });
+        let dot = if recording {
+            design::signal_dot(cx)
+                .with_animation(
+                    "meeting-rec-pulse",
+                    Animation::new(std::time::Duration::from_millis(1900)).repeat(),
+                    |el, delta| el.opacity(1.0 - 0.45 * (delta * std::f32::consts::PI).sin()),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .size(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(7.)).rounded_full().bg(tone.text_faint))
+                .into_any_element()
+        };
         let status: AnyElement = match &self.recorder {
             RecorderState::Recording {
                 title, started_at, ..
             } => v_flex()
-                .gap_0p5()
+                .gap(px(3.))
                 .min_w_0()
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(div().size(px(8.)).rounded_full().bg(theme.danger))
+                        .items_baseline()
                         .child(
                             div()
-                                .text_sm()
-                                .font_semibold()
+                                .text_size(design::TEXT_TITLE)
+                                .font_weight(FontWeight::MEDIUM)
                                 .child(t("meetings.recorder.recording")),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(clock_time(*started_at)),
-                        ),
+                        .child(design::mono(clock_time(*started_at)).text_color(tone.accent_text)),
                 )
                 .child(
                     div()
                         .id("meeting-recording-title")
-                        .text_sm()
+                        .text_size(px(12.))
+                        .text_color(tone.text_muted)
                         .truncate()
                         .child(title.clone())
                         .test_support(),
                 )
                 .into_any_element(),
             RecorderState::Idle => v_flex()
-                .gap_0p5()
+                .gap(px(3.))
                 .child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().size(px(8.)).rounded_full().bg(theme.muted_foreground))
-                        .child(div().text_sm().child(t("meetings.recorder.idle"))),
+                    div()
+                        .text_size(design::TEXT_TITLE)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(t("meetings.recorder.idle")),
                 )
                 .when(!enabled, |d| {
                     d.child(
                         div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
+                            .text_size(px(12.))
+                            .text_color(tone.text_muted)
                             .child(t("meetings.recorder.disabled")),
                     )
                 })
                 .into_any_element(),
         };
         let button = Button::new("meeting-record-toggle")
-            .small()
+            .pill()
             .loading(self.recorder_busy)
             .disabled(self.recorder_busy || (!recording && !enabled))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_recording(cx)));
@@ -583,28 +591,29 @@ impl MeetingsPage {
                 .icon(icon("square"))
                 .label(t("meetings.recorder.stop"))
         } else {
+            // Unavailable until meeting notes are on: neutral, not a dim accent.
             button
                 .primary()
+                .when(!enabled, |b| b.secondary())
                 .icon(icon("mic"))
                 .label(t("meetings.recorder.start"))
         };
-        h_flex()
+        design::panel(cx)
             .id("meeting-recorder")
-            .w_full()
-            .gap_4()
-            .justify_between()
-            .px_3()
-            .py_2()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(if recording {
-                theme.danger.opacity(0.4)
-            } else {
-                theme.border
+            .when(recording, |d| {
+                d.border_color(tone.accent_text.opacity(0.35))
             })
-            .bg(theme.sidebar)
-            .child(div().flex_1().min_w_0().child(status))
-            .child(button)
+            .child(design::sheen("meeting-rec-sheen", design::RADIUS_PANEL, cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(px(14.))
+                    .px(design::SECTION_X)
+                    .py(design::SECTION_Y)
+                    .child(dot)
+                    .child(div().flex_1().min_w_0().child(status))
+                    .child(button),
+            )
             .test_support()
     }
 
@@ -612,7 +621,6 @@ impl MeetingsPage {
         if matches!(self.recorder, RecorderState::Recording { .. }) || self.upcoming.is_empty() {
             return None;
         }
-        let theme = cx.theme().clone();
         let enabled = meeting_settings(cx).enabled;
         let rows: Vec<AnyElement> = self
             .upcoming
@@ -624,22 +632,30 @@ impl MeetingsPage {
                     .id(SharedString::from(format!("upcoming-{i}")))
                     .w_full()
                     .gap_3()
-                    .px_3()
-                    .py_2()
+                    .px(design::SECTION_X)
+                    .py(px(10.))
                     .justify_between()
                     .child(
                         v_flex()
                             .min_w_0()
                             .flex_1()
-                            .child(div().text_sm().truncate().child(ev.title.clone()))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(design::TEXT_BODY)
+                                    .truncate()
+                                    .child(ev.title.clone()),
+                            )
+                            .child(design::eyebrow(
                                 format!("{} – {}", clock_time(ev.start_at), clock_time(ev.end_at)),
+                                cx,
                             )),
                     )
                     .child(
                         Button::new(SharedString::from(format!("upcoming-start-{i}")))
-                            .outline()
+                            .secondary()
                             .small()
+                            .pill()
                             .icon(icon("mic"))
                             .label(t("meetings.upcoming.start"))
                             .disabled(self.recorder_busy || !enabled)
@@ -664,17 +680,18 @@ impl MeetingsPage {
             (MeetingsTab::People, "meetings.tabs.people", "users"),
             (MeetingsTab::Settings, "meetings.tabs.settings", "settings"),
         ];
-        h_flex()
-            .gap_1()
-            .children(tabs.into_iter().map(|(tab, key, ic)| {
-                Button::new(SharedString::from(format!("meetings-tab-{}", tab.id())))
-                    .ghost()
-                    .small()
-                    .icon(icon(ic))
-                    .label(t(key))
-                    .selected(self.tab == tab)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
-            }))
+        h_flex().child(
+            design::segmented(cx).children(tabs.into_iter().map(|(tab, key, _)| {
+                design::segment(
+                    SharedString::from(format!("meetings-tab-{}", tab.id())),
+                    t(key),
+                    self.tab == tab,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
+                .test_support()
+            })),
+        )
     }
 }
 

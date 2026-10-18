@@ -7,10 +7,11 @@ use crate::logic::keyboard::{
     OsType, SystemRecorder,
 };
 use crate::state::{AppEvent, AppState};
+use crate::ui::design;
 use crate::ui::kit::{reset_button, t, t_args, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::notification::{Notification, NotificationType};
-use gpui_kit::component::{h_flex, ActiveTheme, StyledExt, WindowExt};
+use gpui_kit::component::{h_flex, ActiveTheme, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::settings::KeyboardImplementation;
@@ -374,29 +375,52 @@ impl Render for ShortcutInput {
         } else {
             format_key_combination(&binding.current_binding).into()
         };
-        let (accent, border, muted_bg, hover) =
-            (theme.primary, theme.input, theme.muted, theme.accent);
+        let tone = design::tone(cx);
+        let input_border = theme.input;
+        // One key cap per key; while recording, a single highlighted cap
+        // shows what's held so far.
+        let cap = move |text: SharedString| {
+            div()
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(input_border)
+                .bg(tone.raised)
+                .font_family(crate::theme::MONO_FONT)
+                .text_size(px(11.5))
+                .line_height(px(14.))
+                .child(text)
+        };
+        let caps: Vec<SharedString> = if recording {
+            vec![display.clone()]
+        } else {
+            display
+                .split(" + ")
+                .map(|k| SharedString::from(with_key_glyph(k)))
+                .collect()
+        };
 
-        let chip = div()
+        let chip = h_flex()
             .id(SharedString::from(format!("shortcut-chip-{id}")))
             .aria_label(title.clone())
             .track_focus(&self.focus)
-            .px_2()
-            .py_0p5()
-            .rounded(theme.radius)
+            .gap(px(4.))
+            .p(px(2.))
+            .rounded(px(8.))
             .border_1()
-            .text_sm()
-            .font_semibold()
-            .font_family(crate::theme::MONO_FONT)
             .cursor_pointer()
-            .child(display)
-            .when(recording, |d| {
-                d.border_color(accent).bg(accent.opacity(0.2))
-            })
+            .children(caps.into_iter().map(move |k| {
+                cap(k).when(recording, |d| {
+                    d.border_color(tone.accent_text)
+                        .bg(tone.accent_soft)
+                        .text_color(tone.accent_text)
+                })
+            }))
+            .when(recording, |d| d.border_color(tone.accent_soft))
             .when(!recording, |d| {
-                d.border_color(border)
-                    .bg(muted_bg)
-                    .hover(move |s| s.bg(hover).border_color(accent))
+                d.border_color(gpui_kit::transparent_black())
+                    .hover(move |s| s.border_color(tone.accent_soft))
             })
             .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
             .on_mouse_down_out(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
@@ -418,6 +442,20 @@ impl Render for ShortcutInput {
             )))
             .into_any_element()
     }
+}
+
+/// "Left Option" → "⌥ Left Option": the Mac modifier symbol in front of
+/// its name, as printed on the key.
+fn with_key_glyph(key: &str) -> String {
+    let name = key.rsplit(' ').next().unwrap_or(key).to_ascii_lowercase();
+    let glyph = match name.as_str() {
+        "option" | "alt" => "⌥",
+        "command" | "cmd" | "super" | "meta" => "⌘",
+        "shift" => "⇧",
+        "control" | "ctrl" => "⌃",
+        _ => return key.to_string(),
+    };
+    format!("{glyph} {key}")
 }
 
 /// Give the keyboard back: resume suspended bindings (system recorder) or
@@ -442,4 +480,17 @@ fn notify_error(window: AnyWindowHandle, message: SharedString, cx: &mut App) {
     let _ = cx.update_window(window, |_, window, cx| {
         window.push_notification((NotificationType::Error, message), cx);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_key_glyph;
+
+    #[test]
+    fn modifiers_get_their_mac_symbol() {
+        assert_eq!(with_key_glyph("Left Option"), "⌥ Left Option");
+        assert_eq!(with_key_glyph("Command"), "⌘ Command");
+        assert_eq!(with_key_glyph("Shift"), "⇧ Shift");
+        assert_eq!(with_key_glyph("Space"), "Space");
+    }
 }

@@ -9,6 +9,7 @@ use crate::logic::flows::{
 use crate::logic::keyboard::OsType;
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
+use crate::ui::design::Pill;
 use crate::ui::kit::{group, icon, page, t, t_args, toggle, Dropdown, DropdownOption, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -525,6 +526,8 @@ impl AdvancedPage {
                         .child(
                             Button::new("custom-words-add")
                                 .primary()
+                                .when(!can_add, |b| b.secondary())
+                                .pill()
                                 .small()
                                 .label(t("settings.advanced.customWords.add"))
                                 .disabled(!can_add)
@@ -546,7 +549,8 @@ impl AdvancedPage {
                     .children(s.custom_words.iter().enumerate().map(|(i, word)| {
                         let w = word.clone();
                         Button::new(("custom-word", i))
-                            .outline()
+                            .secondary()
+                            .pill()
                             .xsmall()
                             .label(word.clone())
                             .icon(icon("x"))

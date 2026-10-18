@@ -201,6 +201,10 @@ pub const PRIVACY_MICROPHONE_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
 pub const PRIVACY_AUDIO_CAPTURE_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+/// Notifications aren't a privacy pane; once the prompt has been answered,
+/// this pane is the only place to change the answer.
+pub const NOTIFICATIONS_SETTINGS_URL: &str =
+    "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 
 /// An `https://linear.app/...` URL (issue links come from Linear's API but
 /// are still checked before being opened).
@@ -215,13 +219,14 @@ pub fn is_linear_url(url: &str) -> bool {
             .all(|c| c.is_ascii_graphic() && c != '\\' && c != '@')
 }
 
-/// URLs the meetings UI may open: Linear pages and the privacy panes.
+/// URLs the meetings UI may open: Linear pages and the settings panes.
 pub fn is_allowed_external_url(url: &str) -> bool {
     is_linear_url(url)
         || [
             PRIVACY_CALENDARS_URL,
             PRIVACY_MICROPHONE_URL,
             PRIVACY_AUDIO_CAPTURE_URL,
+            NOTIFICATIONS_SETTINGS_URL,
         ]
         .contains(&url)
 }
@@ -285,6 +290,79 @@ pub fn group_by_speaker(segments: &[Segment]) -> Vec<SpeakerBlock> {
         }
     }
     blocks
+}
+
+/// Who spoke when, for the meeting's talk-time chart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TalkTime {
+    /// The timeline's length: the recording, else the last segment's end.
+    pub total_ms: i64,
+    pub words: usize,
+    /// Longest talker first; unattributed speech last.
+    pub speakers: Vec<SpeakerTalk>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpeakerTalk {
+    pub speaker_id: Option<SpeakerId>,
+    /// Speaking spans `(t0_ms, t1_ms)`, with short pauses merged.
+    pub spans: Vec<(i64, i64)>,
+    pub spoken_ms: i64,
+    /// Fraction of all speech in the meeting.
+    pub share: f32,
+}
+
+/// Pauses shorter than this join two spans, so the chart stays readable
+/// (it grows with long meetings to bound the number of bars).
+fn span_merge_gap(total_ms: i64) -> i64 {
+    (total_ms / 300).max(1_500)
+}
+
+pub fn talk_time(segments: &[Segment], duration_ms: Option<i64>) -> TalkTime {
+    let end = segments.iter().map(|s| s.t1_ms).max().unwrap_or(0);
+    let total_ms = duration_ms.unwrap_or(end).max(end);
+    let gap = span_merge_gap(total_ms);
+    let mut sorted: Vec<&Segment> = segments.iter().collect();
+    sorted.sort_by_key(|s| (s.t0_ms, s.id));
+    let mut speakers: Vec<SpeakerTalk> = Vec::new();
+    for seg in sorted {
+        let (t0, t1) = (seg.t0_ms, seg.t1_ms.max(seg.t0_ms));
+        let i = match speakers.iter().position(|s| s.speaker_id == seg.speaker_id) {
+            Some(i) => i,
+            None => {
+                speakers.push(SpeakerTalk {
+                    speaker_id: seg.speaker_id,
+                    spans: Vec::new(),
+                    spoken_ms: 0,
+                    share: 0.0,
+                });
+                speakers.len() - 1
+            }
+        };
+        let talk = &mut speakers[i];
+        talk.spoken_ms += t1 - t0;
+        match talk.spans.last_mut() {
+            Some(last) if t0 - last.1 <= gap => last.1 = last.1.max(t1),
+            _ => talk.spans.push((t0, t1)),
+        }
+    }
+    let spoken: i64 = speakers.iter().map(|s| s.spoken_ms).sum();
+    for s in &mut speakers {
+        s.share = if spoken > 0 {
+            s.spoken_ms as f32 / spoken as f32
+        } else {
+            0.0
+        };
+    }
+    speakers.sort_by_key(|s| (s.speaker_id.is_none(), std::cmp::Reverse(s.spoken_ms)));
+    TalkTime {
+        total_ms,
+        words: segments
+            .iter()
+            .map(|s| s.text.split_whitespace().count())
+            .sum(),
+        speakers,
+    }
 }
 
 /// Offset in the recording: `m:ss`, or `h:mm:ss` past an hour.
@@ -635,6 +713,7 @@ mod tests {
         assert!(is_allowed_external_url(PRIVACY_MICROPHONE_URL));
         assert!(is_allowed_external_url(PRIVACY_CALENDARS_URL));
         assert!(is_allowed_external_url(PRIVACY_AUDIO_CAPTURE_URL));
+        assert!(is_allowed_external_url(NOTIFICATIONS_SETTINGS_URL));
         for bad in [
             "http://linear.app/acme",
             "https://linear.app/",
@@ -756,5 +835,45 @@ mod tests {
         assert_eq!(speaker_name(&s, &[], None, "You"), "Speaker 3");
         s.cluster_label = "Guest".into();
         assert_eq!(cluster_label(&s), "Guest");
+    }
+
+    fn spoken(id: i64, t0: i64, t1: i64, spk: Option<i64>, text: &str) -> Segment {
+        Segment {
+            t1_ms: t1,
+            text: text.into(),
+            ..seg(id, t0, spk)
+        }
+    }
+
+    #[test]
+    fn talk_time_merges_close_spans_and_ranks_speakers() {
+        let segments = vec![
+            spoken(1, 0, 4_000, Some(1), "one two three"),
+            // 0.5 s pause: same span.
+            spoken(2, 4_500, 6_000, Some(1), "four"),
+            spoken(3, 6_000, 16_000, Some(2), "five six"),
+            // Long pause: a new span.
+            spoken(4, 30_000, 32_000, Some(1), "seven"),
+            spoken(5, 33_000, 34_000, None, "eight"),
+        ];
+        let tt = talk_time(&segments, Some(40_000));
+        assert_eq!(tt.total_ms, 40_000);
+        assert_eq!(tt.words, 8);
+        // Speaker 2 talked longest (10 s vs 7.5 s); unattributed comes last.
+        let ids: Vec<_> = tt.speakers.iter().map(|s| s.speaker_id).collect();
+        assert_eq!(ids, vec![Some(2), Some(1), None]);
+        let one = &tt.speakers[1];
+        assert_eq!(one.spans, vec![(0, 6_000), (30_000, 32_000)]);
+        assert_eq!(one.spoken_ms, 7_500);
+        let shares: f32 = tt.speakers.iter().map(|s| s.share).sum();
+        assert!((shares - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn talk_time_without_a_duration_uses_the_last_segment() {
+        let tt = talk_time(&[spoken(1, 1_000, 9_000, Some(1), "hi")], None);
+        assert_eq!(tt.total_ms, 9_000);
+        assert_eq!(tt.speakers[0].share, 1.0);
+        assert_eq!(talk_time(&[], None).speakers.len(), 0);
     }
 }

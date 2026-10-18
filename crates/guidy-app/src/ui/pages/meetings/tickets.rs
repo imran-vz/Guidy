@@ -13,14 +13,14 @@
 use crate::logic::meetings::{is_linear_url, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsBackend, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption};
 use crate::ui::pages::meetings::ai_settings::error_box;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::linear::{Label, Project, Team, User};
@@ -434,7 +434,8 @@ impl TicketsView {
             .justify_end()
             .child(
                 Button::new("tickets-draft")
-                    .outline()
+                    .secondary()
+                    .pill()
                     .small()
                     .icon(icon("file-pen-line"))
                     .label(t("meetingsAi.tickets.draft"))
@@ -444,7 +445,8 @@ impl TicketsView {
             )
             .child(
                 Button::new("tickets-approve-selected")
-                    .outline()
+                    .secondary()
+                    .pill()
                     .small()
                     .icon(icon("check"))
                     .label(t_args(
@@ -457,6 +459,8 @@ impl TicketsView {
             .child(
                 Button::new("tickets-create")
                     .primary()
+                    .when(approved == 0 || self.creating, |b| b.secondary())
+                    .pill()
                     .small()
                     .icon(icon("send"))
                     .label(t_args(
@@ -535,6 +539,7 @@ impl TicketsView {
             .child(
                 Button::new(SharedString::from(format!("ticket-restore-{id}")))
                     .ghost()
+                    .pill()
                     .xsmall()
                     .label(t("meetingsAi.tickets.restore"))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -575,18 +580,14 @@ impl TicketsView {
                         .flex_1()
                         .min_w_0()
                         .text_sm()
-                        .font_semibold()
+                        .font_weight(FontWeight::MEDIUM)
                         .truncate()
                         .child(item.ticket.title.clone()),
                 )
                 .child(if approved {
-                    Tag::primary()
-                        .small()
-                        .child(t("meetingsAi.tickets.approved"))
+                    design::chip(t("meetingsAi.tickets.approved"), true, cx)
                 } else {
-                    Tag::secondary()
-                        .small()
-                        .child(t("meetingsAi.tickets.draftState"))
+                    design::chip(t("meetingsAi.tickets.draftState"), false, cx)
                 })
                 .child(
                     Button::new(SharedString::from(format!("ticket-edit-{id}")))
@@ -605,7 +606,8 @@ impl TicketsView {
                 )
                 .child(if approved {
                     Button::new(SharedString::from(format!("ticket-unapprove-{id}")))
-                        .outline()
+                        .secondary()
+                        .pill()
                         .xsmall()
                         .label(t("meetingsAi.tickets.unapprove"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -614,6 +616,8 @@ impl TicketsView {
                 } else {
                     Button::new(SharedString::from(format!("ticket-approve-{id}")))
                         .primary()
+                        .when(!can_approve(item), |b| b.secondary())
+                        .pill()
                         .xsmall()
                         .label(t("meetingsAi.tickets.approve"))
                         .tooltip(if can_approve(item) {
@@ -807,11 +811,7 @@ impl TicketsView {
                 "meetingsAi.tickets.labels",
                 labels.into_any_element(),
             ))
-            .children(
-                label_names
-                    .into_iter()
-                    .map(|n| Tag::secondary().small().child(n)),
-            );
+            .children(label_names.into_iter().map(|n| design::chip(n, false, cx)));
 
         let body: AnyElement = if editing {
             v_flex()
@@ -824,13 +824,15 @@ impl TicketsView {
                         .child(
                             Button::new(SharedString::from(format!("ticket-save-{id}")))
                                 .primary()
+                                .pill()
                                 .small()
                                 .label(t("meetingsAi.common.save"))
                                 .on_click(cx.listener(|this, _, _, cx| this.save_edit(cx))),
                         )
                         .child(
                             Button::new(SharedString::from(format!("ticket-cancel-{id}")))
-                                .outline()
+                                .secondary()
+                                .pill()
                                 .small()
                                 .label(t("meetingsAi.common.cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -894,7 +896,8 @@ impl TicketsView {
             )
             .child(
                 Button::new("tickets-open-settings")
-                    .outline()
+                    .secondary()
+                    .pill()
                     .small()
                     .icon(icon("settings"))
                     .label(t("meetingsAi.tickets.openSettings"))

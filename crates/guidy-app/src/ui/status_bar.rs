@@ -3,13 +3,13 @@
 
 use crate::logic::models::SelectorStatus;
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{model_name, t, t_args};
 use crate::updater::{self, UpdateAction, UpdateStatus};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{h_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -210,15 +210,22 @@ impl StatusBar {
                 }))
                 .footer(
                     DialogFooter::new()
-                        .child(DialogClose::new().trigger(|b| b.outline().label(t("common.close"))))
+                        .child(
+                            DialogClose::new()
+                                .trigger(|b| b.secondary().pill().label(t("common.close"))),
+                        )
                         .when(!url.is_empty(), |f| {
-                            f.child(DialogAction::new().child(
-                                Button::new("portable-open").primary().label(if direct {
-                                    t("footer.portableUpdateButton")
-                                } else {
-                                    t("footer.portableUpdateBrowseButton")
-                                }),
-                            ))
+                            f.child(
+                                DialogAction::new().child(
+                                    Button::new("portable-open").primary().pill().label(
+                                        if direct {
+                                            t("footer.portableUpdateButton")
+                                        } else {
+                                            t("footer.portableUpdateBrowseButton")
+                                        },
+                                    ),
+                                ),
+                            )
                         }),
                 )
                 .on_ok(move |_, _, cx| {
@@ -301,15 +308,29 @@ impl StatusBar {
                 (_, None) => t("modelSelector.modelUnloaded"),
             }
         };
+        let tone = design::tone(cx);
+        // Ready and busy states use the signal color; busy ones pulse.
         let (dot, pulse) = match status {
-            SelectorStatus::Ready => (theme.success, false),
-            SelectorStatus::Loading => (theme.warning, true),
-            SelectorStatus::Downloading => (theme.primary, true),
-            SelectorStatus::Verifying => (theme.warning, true),
+            SelectorStatus::Ready => (tone.accent, false),
+            SelectorStatus::Loading | SelectorStatus::Downloading | SelectorStatus::Verifying => {
+                (tone.accent, true)
+            }
             SelectorStatus::Error | SelectorStatus::None => (theme.danger, false),
-            SelectorStatus::Unloaded => (theme.muted_foreground, false),
+            SelectorStatus::Unloaded => (tone.text_faint, false),
         };
-        let dot_el = div().size(px(7.)).rounded_full().bg(dot);
+        let halo = if dot == tone.accent {
+            tone.accent_soft
+        } else {
+            dot.opacity(0.)
+        };
+        let dot_el = div()
+            .size(px(14.))
+            .rounded_full()
+            .bg(halo)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(px(7.)).rounded_full().bg(dot));
         let dot_el: AnyElement = if pulse {
             dot_el
                 .with_animation(
@@ -336,9 +357,9 @@ impl StatusBar {
                     .xsmall()
                     .child(
                         h_flex()
-                            .gap_1p5()
+                            .gap(px(7.))
                             .child(dot_el)
-                            .child(div().text_xs().child(text)),
+                            .child(div().text_size(px(12.)).text_color(tone.text).child(text)),
                     )
                     .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
                         let mut menu = menu.min_w(px(256.)).max_h(px(320.)).scrollable(true);
@@ -380,11 +401,11 @@ impl StatusBar {
                 if progress.len() == 1 {
                     let (id, p) = progress.iter().next().unwrap();
                     let speed = stats.get(id).map(|s| s.speed).unwrap_or(0.0);
-                    d.child(
-                        div()
-                            .w(px(80.))
-                            .child(Progress::new("dl-progress").value(p.percentage as f32)),
-                    )
+                    d.child(div().w(px(80.)).child(design::track(
+                        "dl-progress",
+                        Some((p.percentage as f32) / 100.0),
+                        cx,
+                    )))
                     .when(speed > 0.0, |d| {
                         d.child(
                             div()
@@ -398,10 +419,11 @@ impl StatusBar {
                     })
                 } else {
                     d.children(progress.iter().map(|(id, p)| {
-                        div().w(px(32.)).child(
-                            Progress::new(SharedString::from(format!("dl-{id}")))
-                                .value(p.percentage as f32),
-                        )
+                        div().w(px(32.)).child(design::track(
+                            SharedString::from(format!("dl-{id}")),
+                            Some((p.percentage as f32) / 100.0),
+                            cx,
+                        ))
                     }))
                 }
             })
@@ -409,6 +431,7 @@ impl StatusBar {
 
     fn render_update_checker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let accent = design::tone(cx).accent_text;
         let (key, arg) = self.update.text_key();
         let text = match arg {
             Some(p) => t_args(key, &[("progress", &p)]),
@@ -416,11 +439,11 @@ impl StatusBar {
         };
         let available = self.update.available;
         let color = if available {
-            theme.primary
+            accent
         } else {
             theme.muted_foreground
         };
-        let label = div().text_xs().text_color(color).child(text);
+        let label = div().text_size(px(12.)).text_color(color).child(text);
         h_flex()
             .gap_2()
             .child(if self.update.clickable() {
@@ -447,11 +470,11 @@ impl StatusBar {
             .when(
                 self.update.installing && self.update.progress > 0 && self.update.progress < 100,
                 |d| {
-                    d.child(
-                        div().w(px(80.)).child(
-                            Progress::new("update-progress").value(self.update.progress as f32),
-                        ),
-                    )
+                    d.child(div().w(px(80.)).child(design::track(
+                        "update-progress",
+                        Some((self.update.progress as f32) / 100.0),
+                        cx,
+                    )))
                 },
             )
     }
@@ -459,28 +482,30 @@ impl StatusBar {
 
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (bg, border, muted) = (theme.status_bar, theme.border, theme.muted_foreground);
+        let tone = design::tone(cx);
         h_flex()
             .id("status-bar")
             .w_full()
-            .h(px(28.))
-            .px_2()
+            .h(px(30.))
+            .flex_none()
+            .px(px(8.))
             .justify_between()
-            .bg(bg)
-            .border_t_1()
-            .border_color(border)
+            .bg(tone.frame)
             .child(self.render_model_selector(cx))
             .child(
                 h_flex()
-                    .gap_2()
-                    .text_xs()
-                    .text_color(muted)
+                    .gap(px(8.))
+                    .pr(px(6.))
+                    .text_size(px(12.))
+                    .text_color(tone.text_muted)
                     .child(self.render_update_checker(cx))
-                    .child("•")
+                    .child(div().text_color(tone.text_faint).child("·"))
                     .child(
                         div()
                             .id("app-version")
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_size(px(11.))
+                            .text_color(tone.text_faint)
                             .child(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .test_support(),
                     ),

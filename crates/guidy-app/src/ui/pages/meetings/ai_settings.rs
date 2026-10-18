@@ -9,13 +9,12 @@ use crate::meetings_backend::{
     error_message, LocalLlmModel, MeetingsBackend, SharedMeetingsBackend,
 };
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::progress::Progress;
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::llm::{feature_model, is_builtin_provider, resolve_provider, Feature, ProviderRef};
@@ -552,7 +551,8 @@ impl AiSettingsView {
                         )
                         .child(
                             Button::new("meetings-llm-test-button")
-                                .outline()
+                                .secondary()
+                                .pill()
                                 .small()
                                 .label(t("meetingsAi.llm.testConnection"))
                                 .loading(self.testing)
@@ -604,6 +604,7 @@ impl AiSettingsView {
                                     d.child(
                                         Button::new("meetings-linear-remove-key")
                                             .ghost()
+                                            .pill()
                                             .small()
                                             .label(t("meetingsAi.linear.removeKey"))
                                             .on_click(cx.listener(|this, _, window, cx| {
@@ -653,7 +654,8 @@ impl AiSettingsView {
                         }))
                         .child(
                             Button::new("meetings-linear-test-button")
-                                .outline()
+                                .secondary()
+                                .pill()
                                 .small()
                                 .label(t("meetingsAi.linear.test"))
                                 .loading(self.linear_testing)
@@ -801,24 +803,25 @@ impl LocalModelsView {
         }
         for m in &self.models {
             let id = m.id.clone();
-            let mut tags = h_flex().gap_2().flex_wrap();
+            let mut tags = h_flex().gap(px(6.)).flex_wrap();
             if m.is_default {
-                tags = tags.child(Tag::primary().small().child(t("meetingsAi.local.default")));
+                tags = tags.child(design::chip(t("meetingsAi.local.default"), true, cx));
             }
             if let Some(gb) = m.recommended_ram_gb {
-                tags = tags.child(Tag::secondary().small().child(t_args(
-                    "meetingsAi.local.recommendedRam",
-                    &[("gb", &gb.to_string())],
-                )));
+                tags = tags.child(design::chip(
+                    t_args(
+                        "meetingsAi.local.recommendedRam",
+                        &[("gb", &gb.to_string())],
+                    ),
+                    false,
+                    cx,
+                ));
             }
             if m.downloaded {
                 tags = tags.child(
-                    Tag::secondary().small().child(
-                        h_flex()
-                            .gap_1()
-                            .child(icon("check").xsmall())
-                            .child(t("meetingsAi.local.downloaded")),
-                    ),
+                    design::chip("", false, cx)
+                        .child(icon("check").size(px(11.)))
+                        .child(t("meetingsAi.local.downloaded")),
                 );
             }
             let action: AnyElement = match (m.downloaded, m.download_progress) {
@@ -826,19 +829,33 @@ impl LocalModelsView {
                     let id = id.clone();
                     v_flex()
                         .w(px(220.))
-                        .gap_1()
+                        .gap(px(6.))
                         .child(
-                            Progress::new(SharedString::from(format!("local-progress-{}", m.id)))
-                                .value(p * 100.0),
+                            div()
+                                .id(SharedString::from(format!("local-progress-{}", m.id)))
+                                .child(design::track(
+                                    SharedString::from(format!("local-track-{}", m.id)),
+                                    Some(p),
+                                    cx,
+                                ))
+                                .test_support(),
                         )
                         .child(
                             h_flex()
                                 .justify_between()
-                                .text_xs()
+                                .font_family(crate::theme::MONO_FONT)
+                                .text_size(design::TEXT_MONO)
                                 .text_color(muted)
-                                .child(t_args(
-                                    "meetingsAi.local.downloading",
-                                    &[("percentage", &format!("{}", (p * 100.0).round() as i64))],
+                                .child(design::shimmer_text(
+                                    SharedString::from(format!("local-dl-{}", m.id)),
+                                    t_args(
+                                        "meetingsAi.local.downloading",
+                                        &[(
+                                            "percentage",
+                                            &format!("{}", (p * 100.0).round() as i64),
+                                        )],
+                                    ),
+                                    cx,
                                 ))
                                 .child(
                                     Button::new(SharedString::from(format!(
@@ -846,6 +863,7 @@ impl LocalModelsView {
                                         m.id
                                     )))
                                     .ghost()
+                                    .pill()
                                     .xsmall()
                                     .label(t("meetingsAi.common.cancel"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -857,6 +875,7 @@ impl LocalModelsView {
                 }
                 (true, None) => Button::new(SharedString::from(format!("local-delete-{}", m.id)))
                     .ghost()
+                    .pill()
                     .small()
                     .icon(icon("trash"))
                     .label(t("meetingsAi.common.delete"))
@@ -866,7 +885,8 @@ impl LocalModelsView {
                     .into_any_element(),
                 (false, None) => {
                     Button::new(SharedString::from(format!("local-download-{}", m.id)))
-                        .outline()
+                        .secondary()
+                        .pill()
                         .small()
                         .icon(icon("download"))
                         .label(t("meetingsAi.local.download"))
@@ -880,26 +900,32 @@ impl LocalModelsView {
                 h_flex()
                     .id(SharedString::from(format!("local-model-{}", m.id)))
                     .w_full()
-                    .px_3()
-                    .py_2()
+                    .px(design::SECTION_X)
+                    .py(px(12.))
                     .gap_4()
                     .justify_between()
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap_1()
+                            .gap(px(4.))
                             .child(
                                 h_flex()
-                                    .gap_3()
+                                    .gap(px(8.))
                                     .flex_wrap()
-                                    .child(div().text_sm().font_semibold().child(m.name.clone()))
+                                    .child(
+                                        div()
+                                            .text_size(design::TEXT_BODY)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(m.name.clone()),
+                                    )
                                     .child(tags),
                             )
                             .when(!m.description.is_empty(), |d| {
                                 d.child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(12.))
+                                        .line_height(relative(1.5))
                                         .text_color(muted)
                                         .child(m.description.clone()),
                                 )
@@ -907,15 +933,17 @@ impl LocalModelsView {
                             .when(!m.fits_this_mac, |d| {
                                 d.child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(12.))
                                         .text_color(theme.warning)
                                         .child(t("meetingsAi.local.notEnoughRam")),
                                 )
                             })
                             .child(
                                 h_flex()
-                                    .gap_1p5()
-                                    .text_xs()
+                                    .mt(px(2.))
+                                    .gap(px(6.))
+                                    .font_family(crate::theme::MONO_FONT)
+                                    .text_size(design::TEXT_MONO)
                                     .text_color(muted)
                                     .child(
                                         icon(if m.downloaded {
