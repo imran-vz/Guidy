@@ -191,75 +191,41 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// Post-processing through the provider layer
-/// (`crate::llm::provider_for_feature(.., Feature::PostProcess, ..)`). Used
-/// for providers that only exist there: the built-in llama.cpp runtime. The
-/// HTTP providers and Apple Intelligence keep their direct paths below, whose
-/// request shapes (structured-output schema name, legacy prompt mode, Apple's
-/// token limit) existing setups depend on.
-/// Asks `provider` for the structured `{transcription}` reply, retrying as
-/// plain chat only when structured output itself is the problem: the
-/// built-in runtime couldn't use the schema grammar (`GrammarError`) or the
-/// JSON lacks the field. Every other failure (cancelled, timed out, the
-/// helper died, a cut-off reply) is returned: a plain retry would respawn the
-/// helper or reload the model just to hit it again, and the caller falls back
-/// to the raw transcript.
-fn structured_then_plain(
+/// How long dictation post-processing waits for the built-in runtime while
+/// another request (a meeting summary, possibly minutes long) uses it. Past
+/// this the raw transcript is pasted instead of making the user wait.
+const DICTATION_QUEUE_WAIT: Duration = Duration::from_secs(3);
+
+/// Options for one dictation post-processing request.
+fn dictation_chat_options(cancel: crate::llm::CancelFlag) -> crate::llm::ChatOptions {
+    crate::llm::ChatOptions {
+        cancel: Some(cancel),
+        max_queue_wait: Some(DICTATION_QUEUE_WAIT),
+        ..Default::default()
+    }
+}
+
+/// Asks `provider` for the structured `{transcription}` reply. The provider's
+/// `chat_json` owns the fallback (for the built-in runtime: without the
+/// grammar, at most three requests in all) and enforces the schema, so any
+/// failure here is final and the caller falls back to the raw transcript.
+fn structured_transcription(
     provider: &dyn crate::llm::LlmProvider,
     messages: &[crate::llm::ChatMessage],
     opts: &crate::llm::ChatOptions,
 ) -> anyhow::Result<String> {
-    match provider.chat_json(messages, &transcription_schema(), opts) {
-        Ok(json) => {
-            if let Some(text) = json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str()) {
-                return Ok(text.to_string());
-            }
-            warn!(
-                "{}: structured reply missing 'transcription'; retrying as plain chat",
-                provider.name()
-            );
-        }
-        Err(e)
-            if e.chain()
-                .any(|c| c.is::<crate::llm::builtin::GrammarError>()) =>
-        {
-            warn!(
-                "{}: structured post-processing failed ({e}); retrying as plain chat",
-                provider.name()
-            )
-        }
-        Err(e) => return Err(e),
-    }
-    provider.chat(messages, opts)
+    let json = provider.chat_json(messages, &transcription_schema(), opts)?;
+    json.get(TRANSCRIPTION_FIELD)
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("the reply has no '{TRANSCRIPTION_FIELD}' string"))
 }
 
-async fn post_process_with_provider_layer(
-    app: &AppHandle,
-    settings: &AppSettings,
-    prompt: &str,
-    transcription: &str,
-) -> Option<String> {
-    use crate::llm::{ChatOptions, Feature};
-
-    let provider_id = settings.post_process_provider_id.clone();
-    debug!("Starting LLM post-processing with provider '{provider_id}' (provider layer)");
-    let messages = provider_layer_messages(prompt, transcription);
-    let cancel: crate::llm::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _cancel_on_drop = CancelOnDrop(cancel.clone());
-    let opts = ChatOptions {
-        cancel: Some(cancel),
-        ..Default::default()
-    };
-    let app = app.clone();
-    let settings = settings.clone();
-    let result = crate::host::async_runtime::spawn_blocking(move || {
-        let provider =
-            crate::llm::provider_for_feature(&app, &settings, Feature::PostProcess, None)?;
-        structured_then_plain(provider.as_ref(), &messages, &opts)
-    })
-    .await;
+/// The post-processed text from a provider-layer result, or `None` (logged)
+/// to paste the raw transcript.
+fn provider_layer_reply(provider_id: &str, result: anyhow::Result<String>) -> Option<String> {
     match result {
-        Ok(Ok(text)) => {
+        Ok(text) => {
             let text = strip_invisible_chars(strip_think_block(&text));
             if text.trim().is_empty() {
                 error!("LLM post-processing with '{provider_id}' returned an empty reply");
@@ -271,12 +237,51 @@ async fn post_process_with_provider_layer(
             );
             Some(text)
         }
-        Ok(Err(e)) => {
+        Err(e) if crate::llm::builtin::is_busy_error(&e) => {
+            warn!(
+                "LLM post-processing skipped: '{provider_id}' is still busy after {DICTATION_QUEUE_WAIT:?} (likely a meeting summary). Using the original transcription."
+            );
+            None
+        }
+        Err(e) => {
             error!(
                 "LLM post-processing failed for provider '{provider_id}': {e}. Falling back to original transcription."
             );
             None
         }
+    }
+}
+
+/// Post-processing through the provider layer
+/// (`crate::llm::provider_for_feature(.., Feature::PostProcess, ..)`). Used
+/// for providers that only exist there: the built-in llama.cpp runtime. The
+/// HTTP providers and Apple Intelligence keep their direct paths below, whose
+/// request shapes (structured-output schema name, legacy prompt mode, Apple's
+/// token limit) existing setups depend on.
+async fn post_process_with_provider_layer(
+    app: &AppHandle,
+    settings: &AppSettings,
+    prompt: &str,
+    transcription: &str,
+) -> Option<String> {
+    use crate::llm::Feature;
+
+    let provider_id = settings.post_process_provider_id.clone();
+    debug!("Starting LLM post-processing with provider '{provider_id}' (provider layer)");
+    let messages = provider_layer_messages(prompt, transcription);
+    let cancel: crate::llm::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    let opts = dictation_chat_options(cancel);
+    let app = app.clone();
+    let settings = settings.clone();
+    let result = crate::host::async_runtime::spawn_blocking(move || {
+        let provider =
+            crate::llm::provider_for_feature(&app, &settings, Feature::PostProcess, None)?;
+        structured_transcription(provider.as_ref(), &messages, &opts)
+    })
+    .await;
+    match result {
+        Ok(result) => provider_layer_reply(&provider_id, result),
         Err(e) => {
             error!("LLM post-processing task failed: {e}");
             None
@@ -1028,9 +1033,10 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
 #[cfg(test)]
 mod tests {
     use super::{
-        complete_unless_cancelled, is_blank_transcription, provider_layer_messages,
-        selected_post_process_prompt, should_use_streaming_overlay, strip_think_block,
-        structured_then_plain, transcription_schema, TRANSCRIPTION_FIELD,
+        complete_unless_cancelled, dictation_chat_options, is_blank_transcription,
+        provider_layer_messages, provider_layer_reply, selected_post_process_prompt,
+        should_use_streaming_overlay, strip_think_block, structured_transcription,
+        transcription_schema, DICTATION_QUEUE_WAIT, TRANSCRIPTION_FIELD,
     };
     use crate::llm::Role;
     use crate::settings::OverlayStyle;
@@ -1194,7 +1200,7 @@ mod tests {
     }
 
     fn run_structured(fake: &JsonFake) -> anyhow::Result<String> {
-        structured_then_plain(fake, &[], &Default::default())
+        structured_transcription(fake, &[], &Default::default())
     }
 
     #[test]
@@ -1205,21 +1211,10 @@ mod tests {
     }
 
     #[test]
-    fn grammar_error_or_missing_field_falls_back_to_plain_chat() {
-        let grammar = crate::llm::builtin::GrammarError("unsupported JSON schema".into());
-        let fake = JsonFake::new(Err(anyhow::Error::new(grammar).context("post-processing")));
-        assert_eq!(run_structured(&fake).unwrap(), "plain");
-        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 1);
-
-        let fake = JsonFake::new(Ok(serde_json::json!({ "other": "x" })));
-        assert_eq!(run_structured(&fake).unwrap(), "plain");
-        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn other_structured_failures_propagate_without_a_plain_retry() {
+    fn structured_failures_are_final() {
         for error in [
             anyhow::Error::new(crate::llm::builtin::WorkerTimeout),
+            anyhow::Error::new(crate::llm::builtin::WorkerBusy),
             anyhow::anyhow!("the built-in model runtime exited"),
             anyhow::anyhow!(crate::llm::CANCELLED),
         ] {
@@ -1228,5 +1223,52 @@ mod tests {
             assert_eq!(run_structured(&fake).unwrap_err().to_string(), message);
             assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 0);
         }
+        let fake = JsonFake::new(Ok(serde_json::json!({ "other": "x" })));
+        assert!(run_structured(&fake).is_err());
+        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dictation_waits_briefly_for_a_busy_builtin_model() {
+        let opts = dictation_chat_options(Arc::new(AtomicBool::new(false)));
+        assert_eq!(opts.max_queue_wait, Some(DICTATION_QUEUE_WAIT));
+        assert!(DICTATION_QUEUE_WAIT <= Duration::from_secs(5));
+
+        // A meeting summary holds the built-in worker: dictation gives up
+        // after its wait and pastes the raw transcript.
+        use crate::llm::builtin::{BuiltinLlm, BuiltinProvider};
+        let llm: &'static BuiltinLlm =
+            Box::leak(Box::new(BuiltinLlm::new(Duration::from_secs(60))));
+        let provider = BuiltinProvider::for_tests(llm, "/models/fake.gguf".into());
+        let held = llm.hold_worker_for_tests();
+        let opts = crate::llm::ChatOptions {
+            max_queue_wait: Some(Duration::from_millis(100)),
+            ..opts
+        };
+        let start = std::time::Instant::now();
+        let result = structured_transcription(
+            &provider,
+            &provider_layer_messages("Fix: ${output}", "hi"),
+            &opts,
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(crate::llm::builtin::is_busy_error(
+            result.as_ref().unwrap_err()
+        ));
+        assert_eq!(provider_layer_reply("builtin", result), None);
+        drop(held);
+    }
+
+    #[test]
+    fn provider_layer_reply_cleans_text_and_rejects_empty_replies() {
+        assert_eq!(
+            provider_layer_reply("p", Ok("<think>x</think>Clean\u{200B}.".into())),
+            Some("Clean.".into())
+        );
+        assert_eq!(provider_layer_reply("p", Ok("  ".into())), None);
+        assert_eq!(
+            provider_layer_reply("p", Err(anyhow::anyhow!("boom"))),
+            None
+        );
     }
 }

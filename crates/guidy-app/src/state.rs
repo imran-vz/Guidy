@@ -919,11 +919,12 @@ impl AppState {
             ModelsEffect::ReloadModels => self.load_models(cx),
             ModelsEffect::ReloadCurrentModel => self.load_current_model(cx),
             ModelsEffect::ToastError(e) => self.toast_error(e, cx),
+            // A meeting model: keep the dictation model as it is. Checked
+            // first so the set is cleaned up during onboarding too.
+            ModelsEffect::DownloadCompleted(id) if self.meeting_model_downloads.remove(&id) => {}
             // ModelSelector (mounted only once onboarding is done): during
             // onboarding and migration those screens pick the model.
             ModelsEffect::DownloadCompleted(_) if !self.onboarding_done() => {}
-            // A meeting model: keep the dictation model as it is.
-            ModelsEffect::DownloadCompleted(id) if self.meeting_model_downloads.remove(&id) => {}
             ModelsEffect::DownloadCompleted(id) => {
                 // ModelSelector: auto-select the finished download after
                 // 500 ms unless a recording is running.

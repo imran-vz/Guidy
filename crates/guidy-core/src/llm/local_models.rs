@@ -33,6 +33,10 @@ pub struct CatalogEntry {
     pub name: &'static str,
     pub description: &'static str,
     pub repo: &'static str,
+    /// Commit the file is downloaded from (40 hex digits). Pinned, unlike
+    /// `main`, so an upstream re-upload can't break the size and SHA256
+    /// checks below.
+    pub revision: &'static str,
     pub filename: &'static str,
     pub size_bytes: u64,
     pub sha256: &'static str,
@@ -46,19 +50,21 @@ pub struct CatalogEntry {
 impl CatalogEntry {
     pub fn url(&self) -> String {
         format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            self.repo, self.filename
+            "https://huggingface.co/{}/resolve/{}/{}",
+            self.repo, self.revision, self.filename
         )
     }
 }
 
-/// Default first. Sizes and SHA256s are the Hugging Face LFS values.
+/// Default first. Sizes and SHA256s are the Hugging Face LFS values of the
+/// file at `revision`.
 pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         id: "qwen3-4b-instruct-2507-q4_k_m",
         name: "Qwen3 4B Instruct",
         description: "Fast, good summaries. Works on any Apple silicon Mac.",
         repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        revision: "a06e946bb6b655725eafa393f4a9745d460374c9",
         filename: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         size_bytes: 2_497_281_120,
         sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
@@ -71,6 +77,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "Qwen3 8B",
         description: "Better action items and owners. Recommended with 16 GB of memory or more.",
         repo: "Qwen/Qwen3-8B-GGUF",
+        revision: "7c41481f57cb95916b40956ab2f0b139b296d974",
         filename: "Qwen3-8B-Q4_K_M.gguf",
         size_bytes: 5_027_783_488,
         sha256: "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
@@ -505,6 +512,13 @@ mod tests {
             assert!(e.filename.ends_with(".gguf"));
             assert!(e.size_bytes > 1_000_000_000);
             assert!(e.url().starts_with("https://huggingface.co/"));
+            assert_eq!(e.revision.len(), 40, "{}", e.id);
+            assert!(e.revision.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(
+                e.url().contains(&format!("/resolve/{}/", e.revision)),
+                "{}",
+                e.url()
+            );
             assert!(e.n_ctx >= 4096);
         }
         assert_eq!(
@@ -542,6 +556,7 @@ mod tests {
             name: "Test",
             description: "",
             repo: "",
+            revision: "",
             filename: "test-model.gguf",
             size_bytes: body.len() as u64,
             sha256: sha,
@@ -578,6 +593,7 @@ mod tests {
             name: "Test",
             description: "",
             repo: "",
+            revision: "",
             filename: Box::leak(format!("{id}.gguf").into_boxed_str()),
             size_bytes: body.len() as u64,
             sha256: sha,

@@ -4,9 +4,11 @@ use crate::logic::flows::{
     post_process_model_options, prompt_is_dirty, should_auto_fetch_models, APPLE_PROVIDER_ID,
     CUSTOM_PROVIDER_ID,
 };
+use crate::logic::meetings::MeetingsEvent;
 use crate::logic::settings_store::ToastSpec;
-use crate::state::AppState;
+use crate::state::{AppEvent, AppState};
 use crate::ui::kit::{group, icon, page, t, Dropdown, DropdownOption, SettingRow};
+use crate::ui::pages::meetings::ai_settings::LocalModelsView;
 use crate::ui::shortcut_input::ShortcutInput;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -30,6 +32,13 @@ pub struct PostProcessingPage {
     /// BYOK "Test connection": running, and the last result per provider.
     testing: bool,
     test_result: Option<(String, Result<String, String>)>,
+    /// A test asked for while that provider's key / base URL save is in
+    /// flight: it runs once the save lands.
+    pending_test: Option<String>,
+    /// Built-in models list (download/delete), shown by "Manage built-in
+    /// models"; created on first use.
+    local_models: Option<Entity<LocalModelsView>>,
+    show_local_models: bool,
     /// (provider id, prompt id) the inputs were last synced for.
     synced: (String, Option<String>),
     /// API keys per provider, read from the Keychain off the UI thread
@@ -105,7 +114,22 @@ impl PostProcessingPage {
         let subs = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.sync_inputs(false, window, cx);
+                this.run_pending_test(cx);
                 cx.notify();
+            }),
+            // A built-in model was downloaded or deleted: refresh the model
+            // choices when the built-in provider is selected.
+            cx.subscribe(&state, |this, state, ev: &AppEvent, cx| {
+                if !matches!(ev, AppEvent::Meetings(MeetingsEvent::LocalModelsChanged)) {
+                    return;
+                }
+                let builtin = state.read(cx).app_settings().and_then(|s| {
+                    matches!(provider_of(s).1, Some(ProviderRef::Builtin)).then(|| provider_of(s).0)
+                });
+                if let Some(pid) = builtin {
+                    this.state
+                        .update(cx, |st, cx| st.fetch_post_process_models(&pid, cx));
+                }
             }),
             // Base URL and API key save on blur (and Enter).
             cx.subscribe_in(&base_url, window, |this, input, ev: &InputEvent, _, cx| {
@@ -158,6 +182,9 @@ impl PostProcessingPage {
             apple_unavailable: false,
             testing: false,
             test_result: None,
+            pending_test: None,
+            local_models: None,
+            show_local_models: false,
             synced: (String::new(), None),
             api_keys: Default::default(),
             loading_keys: Default::default(),
@@ -300,6 +327,37 @@ impl PostProcessingPage {
         self.save_api_key(value, window, cx);
     }
 
+    /// Type into the key / base URL inputs without committing (no blur).
+    #[cfg(test)]
+    pub fn type_api_key(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let value = value.to_string();
+        self.api_key
+            .update(cx, |st, cx| st.set_value(value, window, cx));
+    }
+
+    #[cfg(test)]
+    pub fn type_base_url(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let value = value.to_string();
+        self.base_url
+            .update(cx, |st, cx| st.set_value(value, window, cx));
+    }
+
+    /// A test waits for a save to land.
+    #[cfg(test)]
+    pub fn test_waiting(&self) -> bool {
+        self.pending_test.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn saving_api_key(&self, provider_id: &str) -> bool {
+        self.saving_keys.contains_key(provider_id)
+    }
+
+    #[cfg(test)]
+    pub fn test_outcome(&self) -> Option<&Result<String, String>> {
+        self.test_result.as_ref().map(|(_, r)| r)
+    }
+
     #[cfg(test)]
     pub fn api_key_input(&self, cx: &App) -> String {
         self.api_key.read(cx).value().to_string()
@@ -383,6 +441,7 @@ impl PostProcessingPage {
                     .update(cx, |st, cx| st.set_value(old, window, cx));
             }
         }
+        self.run_pending_test(cx);
         cx.notify();
     }
 
@@ -414,8 +473,9 @@ impl PostProcessingPage {
         if !editable || value.is_empty() || provider.is_some_and(|p| p.base_url == value) {
             return;
         }
+        // Notify once done so a test waiting on this save runs.
         self.state.update(cx, |st, cx| {
-            st.update_post_process("base_url", &pid, value, cx)
+            st.update_post_process_then("base_url", &pid, value, cx, |_, _, cx| cx.notify())
         });
     }
 
@@ -459,13 +519,52 @@ impl PostProcessingPage {
         cx.notify();
     }
 
-    /// BYOK: check the provider's base URL, key and model.
-    fn test_connection(&mut self, provider_id: String, cx: &mut Context<Self>) {
+    /// BYOK: check the provider's base URL, key and model. A key or base
+    /// URL typed but not saved yet is saved first, and the test runs once
+    /// every save for the provider has landed (the backend reads the stored
+    /// values).
+    fn test_connection(
+        &mut self,
+        provider_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.testing {
             return;
         }
         self.testing = true;
         self.test_result = None;
+        let builtin = self
+            .state
+            .read(cx)
+            .app_settings()
+            .is_some_and(|s| matches!(provider_of(s).1, Some(ProviderRef::Builtin)));
+        if !builtin {
+            let base = self.base_url.read(cx).value().trim().to_string();
+            self.save_base_url(base, cx);
+            let key = self.api_key.read(cx).value().trim().to_string();
+            self.save_api_key(key, window, cx);
+        }
+        self.pending_test = Some(provider_id);
+        self.run_pending_test(cx);
+        cx.notify();
+    }
+
+    /// Run the pending test once its provider has no save in flight.
+    fn run_pending_test(&mut self, cx: &mut Context<Self>) {
+        let Some(pid) = self.pending_test.clone() else {
+            return;
+        };
+        let st = self.state.read(cx);
+        let saving = self.saving_keys.contains_key(&pid)
+            || ["base_url", "api_key", "model"]
+                .iter()
+                .any(|w| st.settings.is_updating(&format!("post_process_{w}:{pid}")));
+        if saving {
+            return;
+        }
+        self.pending_test = None;
+        let provider_id = pid;
         let backend = self.state.read(cx).meetings.clone();
         cx.spawn(async move |this, cx| {
             let pid = provider_id.clone();
@@ -482,6 +581,14 @@ impl PostProcessingPage {
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    fn toggle_local_models(&mut self, cx: &mut Context<Self>) {
+        self.show_local_models = !self.show_local_models;
+        if self.show_local_models && self.local_models.is_none() {
+            self.local_models = Some(cx.new(LocalModelsView::new));
+        }
         cx.notify();
     }
 
@@ -664,25 +771,19 @@ impl PostProcessingPage {
             );
         }
         if is_builtin {
-            // No key or URL: point to where built-in models are downloaded.
-            let meetings_available = st.meetings_supported;
+            // No key or URL: the built-in models are managed right here
+            // (meeting notes may be unavailable on this Mac).
             rows.push(
                 SettingRow::new("pp-builtin", t("settings.postProcessing.api.builtin.label"))
                     .description(t("settings.postProcessing.api.builtin.description"))
-                    .when(meetings_available, |r| {
-                        r.control(
-                            Button::new("pp-builtin-manage")
-                                .outline()
-                                .small()
-                                .icon(icon("download"))
-                                .label(t("settings.postProcessing.api.builtin.manage"))
-                                .on_click(|_, _, cx| {
-                                    if let Some(main) = crate::windows::main_window_entity(cx) {
-                                        main.update(cx, |m, cx| m.open_meetings_settings(cx));
-                                    }
-                                }),
-                        )
-                    })
+                    .control(
+                        Button::new("pp-builtin-manage")
+                            .outline()
+                            .small()
+                            .icon(icon("download"))
+                            .label(t("settings.postProcessing.api.builtin.manage"))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_local_models(cx))),
+                    )
                     .into_any_element(),
             );
         }
@@ -807,8 +908,8 @@ impl PostProcessingPage {
                             .label(t("meetingsAi.byok.testConnection"))
                             .loading(self.testing)
                             .disabled(self.testing)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.test_connection(pid_test.clone(), cx)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.test_connection(pid_test.clone(), window, cx)
                             })),
                     ),
                 )
@@ -1010,6 +1111,11 @@ impl Render for PostProcessingPage {
         };
         let api_rows = self.api_rows(&s, cx);
         let prompt_rows = self.prompt_rows(&s, cx);
+        let builtin = matches!(provider_of(&s).1, Some(ProviderRef::Builtin));
+        let local_models = self
+            .local_models
+            .clone()
+            .filter(|_| builtin && self.show_local_models);
         page()
             .id("page-post-processing")
             .child(group(
@@ -1022,6 +1128,7 @@ impl Render for PostProcessingPage {
                 api_rows,
                 cx,
             ))
+            .children(local_models)
             .child(group(
                 Some(t("settings.postProcessing.prompts.title")),
                 prompt_rows,

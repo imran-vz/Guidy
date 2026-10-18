@@ -933,6 +933,7 @@ pub fn summarize_meeting(
         max_tokens: Some(output_reserve(context) as u32),
         temperature: Some(0.2),
         cancel: opts.cancel.clone(),
+        max_queue_wait: opts.max_queue_wait,
     };
 
     let mut total = chunks.len() + usize::from(chunks.len() > 1);

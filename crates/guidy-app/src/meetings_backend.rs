@@ -1315,11 +1315,19 @@ pub mod fake {
             feature: guidy_core::llm::Feature,
         ) -> MeetingsResult<String> {
             self.rec(format!("llm_test_connection {provider_id} {feature:?}"));
-            Ok("Connected".into())
+            let test = self.data.lock().ai.llm_test.clone();
+            match test {
+                Some(f) => f(provider_id),
+                None => Ok("Connected".into()),
+            }
         }
         fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
             self.rec(format!("llm_models {provider_id}"));
-            Ok(self.data.lock().ai.llm_models.clone())
+            let d = self.data.lock();
+            match &d.ai.fail_llm_models {
+                Some(e) => Err(e.clone()),
+                None => Ok(d.ai.llm_models.clone()),
+            }
         }
         fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
             Ok(self.data.lock().ai.local_models.clone())
@@ -1354,6 +1362,12 @@ pub mod fake {
         /// `cancel_summarize` returns false (the job is already storing).
         pub cancel_refused: bool,
         pub llm_models: Vec<String>,
+        /// `llm_models` fails with this message.
+        pub fail_llm_models: Option<String>,
+        /// What `llm_test_connection` returns for a provider (default
+        /// "Connected").
+        #[allow(clippy::type_complexity)]
+        pub llm_test: Option<Arc<dyn Fn(&str) -> MeetingsResult<String> + Send + Sync>>,
         pub local_models: Vec<LocalLlmModel>,
     }
 

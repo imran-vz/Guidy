@@ -88,6 +88,11 @@ pub struct ChatOptions {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub cancel: Option<CancelFlag>,
+    /// Built-in runtime only: how long to wait for its single worker while
+    /// another request (e.g. a minutes-long meeting summary) uses it, before
+    /// failing with [`builtin::WorkerBusy`]. `None` waits until it's free.
+    /// Bounded waiters also go ahead of unbounded ones queued for the worker.
+    pub max_queue_wait: Option<std::time::Duration>,
 }
 
 impl ChatOptions {
