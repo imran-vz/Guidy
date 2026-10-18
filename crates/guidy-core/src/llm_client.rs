@@ -185,7 +185,7 @@ fn learned_params_cache() -> &'static Mutex<HashMap<String, LearnedParams>> {
     LEARNED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn endpoint_key(provider: &PostProcessProvider, model: &str) -> String {
+pub(crate) fn endpoint_key(provider: &PostProcessProvider, model: &str) -> String {
     format!("{}|{}", provider.base_url.trim_end_matches('/'), model)
 }
 

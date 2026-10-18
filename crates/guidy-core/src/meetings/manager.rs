@@ -479,15 +479,21 @@ impl MeetingsManager {
         };
         // A cancel can't stop a summary already storing: it is waited for.
         self.cancel_summarize(id);
-        // Cancels a running job and removes the per-segment voiceprint
-        // sidecar: voiceprints are kept only for people the user named (D11).
-        if let Err(e) = self.forget_processing(id) {
-            log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
+        if let Err(e) = self.stop_processing(id) {
+            log::warn!("meetings: stopping the processing of {id} failed: {e:#}");
         }
         if !self.wait_for_summary(id, std::time::Duration::from_secs(10)) {
             log::warn!("meetings: summary of {id} did not stop in time");
         }
+        // The row goes before the sidecars: a failed delete leaves the
+        // meeting with its voiceprints, and a job still running can't write
+        // them back after (it checks the row under the sidecar lock).
         self.store.delete_meeting(id)?;
+        // The per-segment voiceprints are kept only for people the user
+        // named (D11).
+        if let Err(e) = self.forget_processing(id) {
+            log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
+        }
         if let Err(e) =
             crate::meetings::audio_store::delete_track_files(&self.audio_dir(), &meeting)
         {
@@ -680,22 +686,29 @@ impl MeetingsManager {
         Ok(())
     }
 
-    /// Forget a deleted meeting's processing state: cancel/unqueue it and
-    /// delete its checkpoint and per-segment voiceprint sidecars (which hold
-    /// voiceprints of people nobody named). `delete_meeting` should call it.
-    ///
-    /// Waits (up to 10 s) for a running job to stop first, so it can't write
-    /// a sidecar after they are deleted; a job that outlives the wait finds
-    /// the meeting gone and removes its own files when it finishes. The
-    /// sidecars go under the meeting's embeddings lock, so a concurrent
-    /// [`Self::delete_person`] can't write the voiceprints back.
-    pub fn forget_processing(&self, id: MeetingId) -> Result<()> {
+    /// Cancel/unqueue a meeting about to be deleted, and wait (up to 10 s)
+    /// for a running job to stop. Before the row is deleted, so the job
+    /// records its outcome while the meeting still exists.
+    fn stop_processing(&self, id: MeetingId) -> Result<()> {
         if !self
             .processing
             .cancel_and_wait(id, std::time::Duration::from_secs(10))?
         {
             log::warn!("meetings: processing of {id} did not stop in time");
         }
+        Ok(())
+    }
+
+    /// Forget a deleted meeting's processing state: delete its checkpoint
+    /// and per-segment voiceprint sidecars (which hold voiceprints of people
+    /// nobody named). `delete_meeting` calls it once the row is gone.
+    ///
+    /// A job that outlived [`Self::stop_processing`] can't write a sidecar
+    /// after this: it checks the row is still there under the meeting's
+    /// embeddings lock, which this takes; it also removes its own files when
+    /// it finishes and finds the meeting gone. The same lock keeps a
+    /// concurrent [`Self::delete_person`] from writing the voiceprints back.
+    pub fn forget_processing(&self, id: MeetingId) -> Result<()> {
         crate::meetings::processing::delete_sidecars(&self.meetings_dir, id)
     }
 
@@ -1684,6 +1697,34 @@ mod store_section_tests {
         });
         assert!(!sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
         assert!(mgr.get_meeting(m).unwrap().is_none());
+    }
+
+    /// The row goes before the sidecars: a failed delete keeps the
+    /// meeting's voiceprints with it, and a retry removes both.
+    #[test]
+    fn a_failed_meeting_delete_keeps_its_sidecars() {
+        use crate::meetings::processing::sidecar;
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let key = crate::secrets::meetings_data_key().unwrap();
+        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+        mgr.store()
+            .execute_batch_for_tests(
+                "CREATE TEMP TRIGGER keep_meetings BEFORE DELETE ON meetings
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END",
+            )
+            .unwrap();
+        assert!(mgr.delete_meeting(m).is_err());
+        assert!(mgr.get_meeting(m).unwrap().is_some());
+        assert!(sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
+
+        mgr.store()
+            .execute_batch_for_tests("DROP TRIGGER temp.keep_meetings")
+            .unwrap();
+        mgr.delete_meeting(m).unwrap();
+        assert!(mgr.get_meeting(m).unwrap().is_none());
+        assert!(!sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
     }
 
     #[test]

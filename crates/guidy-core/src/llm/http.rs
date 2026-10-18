@@ -1,7 +1,7 @@
 //! [`HttpProvider`]: any `post_process_providers` entry (OpenAI-compatible or
 //! Anthropic format) as an [`LlmProvider`], through [`crate::llm_client`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -116,6 +116,11 @@ impl std::error::Error for ApiStatusError {}
 /// `response_format` / JSON schema itself (so a prompt-only retry can work),
 /// rather than an auth, rate-limit, server, network, truncation or
 /// context-overflow failure, which the retry would only repeat.
+///
+/// OpenAI-style typed error fields decide when present (`error.param` naming
+/// `response_format` / `text.format`, or `error.code` `invalid_json_schema`);
+/// matching the body text is the last resort, and a bare mention of "schema"
+/// (e.g. an invalid tool schema) doesn't count.
 fn structured_output_rejected(e: &anyhow::Error) -> bool {
     let Some(rejection) = e.downcast_ref::<ApiStatusError>() else {
         return false;
@@ -136,9 +141,43 @@ fn structured_output_rejected(e: &anyhow::Error) -> bool {
     if overflow.iter().any(|p| lower.contains(p)) {
         return false;
     }
-    ["response_format", "json_schema", "schema", "structured"]
-        .iter()
-        .any(|p| lower.contains(p))
+
+    let typed = serde_json::from_str::<Value>(&rejection.body).ok();
+    let error = typed.as_ref().and_then(|v| v.get("error"));
+    let field = |name: &str| {
+        error
+            .and_then(|e| e.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+    };
+    if let Some(param) = field("param") {
+        // The endpoint named the rejected field: trust it either way.
+        return param == "response_format"
+            || param.starts_with("response_format.")
+            || param == "text.format"
+            || param.starts_with("text.format.");
+    }
+    if field("code").as_deref() == Some("invalid_json_schema") {
+        return true;
+    }
+
+    [
+        "response_format",
+        "json_schema",
+        "structured output",
+        "structured_output",
+        "text.format",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+/// Endpoints (see [`llm_client::endpoint_key`]) that rejected structured
+/// output, remembered for the lifetime of the process so later requests go
+/// straight to prompt-only JSON.
+fn structured_output_rejections() -> &'static Mutex<HashSet<String>> {
+    static REJECTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    REJECTED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// A reply that got through but was cut off at the output token limit or
@@ -336,8 +375,10 @@ impl LlmProvider for HttpProvider {
         json_schema: &Value,
         opts: &ChatOptions,
     ) -> Result<Value> {
+        let endpoint = llm_client::endpoint_key(&self.provider, &self.model);
         if self.provider.supports_structured_output
             && self.provider.api_format == PostProcessApiFormat::OpenAi
+            && !structured_output_rejections().lock().contains(&endpoint)
         {
             let mut params = self.params(messages, opts);
             params.json_schema = Some(("response".to_string(), json_schema.clone()));
@@ -355,10 +396,13 @@ impl LlmProvider for HttpProvider {
                         ),
                     }
                 }
-                Err(e) if structured_output_rejected(&e) => log::warn!(
-                    "{}: structured output rejected ({e}); falling back to prompt-only JSON",
-                    self.name()
-                ),
+                Err(e) if structured_output_rejected(&e) => {
+                    log::warn!(
+                        "{}: structured output rejected ({e}); using prompt-only JSON from now on",
+                        self.name()
+                    );
+                    structured_output_rejections().lock().insert(endpoint);
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -582,6 +626,90 @@ mod tests {
         assert_eq!(v, json!({"a":"b"}));
     }
 
+    /// Like [`serve`], also returning each request's body as it arrives.
+    async fn serve_recording(
+        responses: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 65536];
+                // Read the headers, then the Content-Length body.
+                loop {
+                    let n = stream.read(&mut chunk).await.unwrap_or(0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        if n == 0 || buf.len() >= end + 4 + length {
+                            recorded.lock().push(text[end + 4..].to_string());
+                            break;
+                        }
+                    } else if n == 0 {
+                        break;
+                    }
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes()).await;
+            }
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    #[test]
+    fn a_rejected_structured_output_is_remembered_per_endpoint() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (base, requests) = rt.block_on(serve_recording(vec![
+            (
+                "400 Bad Request",
+                json!({"error":{
+                    "message":"Unsupported parameter.",
+                    "param":"response_format",
+                    "code":"unsupported_parameter"
+                }})
+                .to_string(),
+            ),
+            ("200 OK", completion("{\"a\":\"b\"}")),
+            ("200 OK", completion("{\"a\":\"c\"}")),
+        ]));
+        let p = HttpProvider::new(provider("openai", &base, true), "k".into(), "m".into());
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        let first = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap();
+        assert_eq!(first, json!({"a":"b"}));
+        // The next request skips the structured attempt entirely.
+        let second = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap();
+        assert_eq!(second, json!({"a":"c"}));
+        let requests = requests.lock().clone();
+        let structured: Vec<bool> = requests
+            .iter()
+            .map(|body| body.contains("response_format"))
+            .collect();
+        assert_eq!(structured, vec![true, false, false], "{requests:?}");
+
+        // Another model on the same endpoint still tries structured output.
+        let other = llm_client::endpoint_key(&provider("openai", &base, true), "other");
+        assert!(!structured_output_rejections().lock().contains(&other));
+    }
+
     #[test]
     fn chat_json_falls_back_when_a_schema_reply_does_not_match() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -699,6 +827,32 @@ mod tests {
         assert!(!structured_output_rejected(&status(
             400,
             "context_length_exceeded: input plus json_schema too long"
+        )));
+        // OpenAI's typed error fields decide when present.
+        assert!(structured_output_rejected(&status(
+            400,
+            r#"{"error":{"message":"Unsupported parameter.","type":"invalid_request_error","param":"response_format","code":"unsupported_parameter"}}"#
+        )));
+        assert!(structured_output_rejected(&status(
+            400,
+            r#"{"error":{"message":"Invalid value.","param":"text.format.schema","code":"invalid_value"}}"#
+        )));
+        assert!(structured_output_rejected(&status(
+            400,
+            r#"{"error":{"message":"Invalid schema for response_format 'response'.","code":"invalid_json_schema"}}"#
+        )));
+        assert!(!structured_output_rejected(&status(
+            400,
+            r#"{"error":{"message":"Unsupported parameter: 'temperature' (json_schema requests).","param":"temperature","code":"unsupported_parameter"}}"#
+        )));
+        // "schema" in an unrelated context isn't a structured-output rejection.
+        assert!(!structured_output_rejected(&status(
+            400,
+            r#"{"error":{"message":"Invalid schema for function 'lookup': 'type' is required."}}"#
+        )));
+        assert!(!structured_output_rejected(&status(
+            400,
+            "database schema mismatch for this deployment"
         )));
         assert!(!structured_output_rejected(&anyhow!(
             "openai: response_format unsupported"

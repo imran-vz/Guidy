@@ -78,7 +78,7 @@ impl From<LogLevel> for log::Level {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ShortcutBinding {
     pub id: String,
     pub name: String,
@@ -87,7 +87,7 @@ pub struct ShortcutBinding {
     pub current_binding: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LLMPrompt {
     pub id: String,
     pub name: String,
@@ -106,7 +106,7 @@ pub enum PostProcessApiFormat {
     Anthropic,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PostProcessProvider {
     pub id: String,
     pub label: String,
@@ -347,7 +347,7 @@ pub enum VadBackend {
 /// its `get_default_settings()` value when missing from a stored settings
 /// object, so a partial store can never fail the whole load (#1619).
 /// Field-level defaults below take precedence where present.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
     /// Internal settings schema marker for one-time migrations. Fresh installs
@@ -943,7 +943,8 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
-pub fn get_default_settings() -> AppSettings {
+/// The built-in shortcut bindings, keyed by binding id.
+fn default_bindings() -> HashMap<String, ShortcutBinding> {
     #[cfg(target_os = "windows")]
     let default_shortcut = "ctrl+space";
     #[cfg(target_os = "macos")]
@@ -994,10 +995,13 @@ pub fn get_default_settings() -> AppSettings {
             current_binding: "escape".to_string(),
         },
     );
+    bindings
+}
 
+pub fn get_default_settings() -> AppSettings {
     AppSettings {
         settings_schema_version: default_settings_schema_version(),
-        bindings,
+        bindings: default_bindings(),
         shortcut_activation: ShortcutActivation::default(),
         hold_threshold_ms: default_hold_threshold_ms(),
         audio_feedback: false,
@@ -1142,7 +1146,7 @@ fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
     }
 
     // Merge in any bindings added since this store was written.
-    for (key, value) in get_default_settings().bindings {
+    for (key, value) in default_bindings() {
         if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
             debug!("Adding missing binding: {}", entry.key());
             entry.insert(value);
@@ -1332,10 +1336,9 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
 pub fn update_settings<R>(app: &AppHandle, f: impl FnOnce(&mut AppSettings) -> R) -> R {
     let _guard = SETTINGS_LOCK.lock();
     let mut settings = get_settings(app);
-    // AppSettings has no PartialEq (it holds floats and maps); compare JSON.
-    let before = serde_json::to_value(&settings).unwrap();
+    let before = settings.clone();
     let result = f(&mut settings);
-    if serde_json::to_value(&settings).unwrap() != before {
+    if settings != before {
         write_settings(app, settings);
     }
     result

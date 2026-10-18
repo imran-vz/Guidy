@@ -1488,6 +1488,13 @@ impl MeetingsStore {
         Ok(())
     }
 
+    /// Test hook: run raw SQL (e.g. a `TEMP TRIGGER` that makes a later
+    /// statement fail).
+    #[cfg(test)]
+    pub(crate) fn execute_batch_for_tests(&self, sql: &str) -> Result<()> {
+        Ok(self.conn.lock().execute_batch(sql)?)
+    }
+
     /// Test hook: drop the item's sent draft, as an attempt made before
     /// migration 5 left it.
     #[cfg(test)]
@@ -1592,11 +1599,16 @@ fn replace_unlinked_action_items_tx(
         kept
     };
     for item in items {
-        if kept.iter().any(|k| is_duplicate(k, item)) {
-            continue;
-        }
         let mut item = item.clone();
         item.meeting_id = meeting_id;
+        // The owner was picked from a people snapshot taken before the (slow)
+        // summary ran; follow merges and drop deleted people so the FK holds.
+        if let Some(owner) = item.owner_person_id {
+            item.owner_person_id = resolve_person_tx(tx, owner)?;
+        }
+        if kept.iter().any(|k| is_duplicate(k, &item)) {
+            continue;
+        }
         insert_action_item_tx(tx, &item, false)?;
     }
     Ok(())
@@ -2200,15 +2212,19 @@ mod tests {
             .unwrap();
         assert_eq!(items.len(), 1);
 
-        // The second item's owner doesn't exist: its insert fails on the
-        // foreign key after the summary and the old items were rewritten.
+        // The second item's insert fails (a test trigger) after the summary
+        // and the old items were rewritten.
+        s.execute_batch_for_tests(
+            "CREATE TEMP TRIGGER fail_bad BEFORE INSERT ON action_items
+             WHEN NEW.text = 'bad' BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        )
+        .unwrap();
         let new = StoredSummary {
             title: "New".into(),
             generated_at: 2,
             ..old.clone()
         };
-        let mut bad = item(m, "bad");
-        bad.owner_person_id = Some(999_999);
+        let bad = item(m, "bad");
         assert!(s
             .put_summary_and_action_items(&new, &[item(m, "new item"), bad], &[], |_, _| false)
             .is_err());
@@ -2221,6 +2237,61 @@ mod tests {
         assert_eq!(s.summary(m).unwrap(), Some(new));
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].text, "new item");
+    }
+
+    /// Owners picked before a long summary run follow merges and drop
+    /// deleted people instead of failing the summary on the foreign key.
+    #[test]
+    fn summary_items_resolve_merged_and_deleted_owners() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let merged = s.insert_person("Annie", None).unwrap();
+        let into = s.insert_person("Ann", None).unwrap();
+        let gone = s.insert_person("Bob", None).unwrap();
+        let kept = s.insert_person("Cy", None).unwrap();
+        s.merge_people(merged.id, into.id).unwrap();
+        assert!(s.delete_person(gone.id).unwrap());
+
+        let sum = StoredSummary {
+            meeting_id: m,
+            title: "T".into(),
+            short_summary: "S".into(),
+            decisions: vec![],
+            topics: vec![],
+            generated_by: "a".into(),
+            generated_at: 1,
+        };
+        let owned = |text: &str, owner: PersonId| ActionItem {
+            owner_person_id: Some(owner),
+            ..item(m, text)
+        };
+        let items = s
+            .put_summary_and_action_items(
+                &sum,
+                &[
+                    owned("merged", merged.id),
+                    owned("gone", gone.id),
+                    owned("kept", kept.id),
+                    owned("missing", 999_999),
+                ],
+                &[],
+                |_, _| false,
+            )
+            .unwrap();
+        let owners: Vec<_> = items
+            .iter()
+            .map(|i| (i.text.as_str(), i.owner_person_id))
+            .collect();
+        assert_eq!(
+            owners,
+            vec![
+                ("merged", Some(into.id)),
+                ("gone", None),
+                ("kept", Some(kept.id)),
+                ("missing", None),
+            ]
+        );
+        assert_eq!(s.summary(m).unwrap(), Some(sum));
     }
 
     #[test]

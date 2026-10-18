@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use hf_hub::api::tokio::CancellationToken;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::host::AppHandle;
@@ -122,11 +122,33 @@ pub enum DownloadState {
     Deleted,
 }
 
+/// An in-flight download.
+struct InFlight {
+    token: CancellationToken,
+    /// Deleted while still running (the delete stopped waiting for it): its
+    /// end removes the partial it may have written since, instead of keeping
+    /// it for resume.
+    deleted: bool,
+}
+
+impl InFlight {
+    fn new(token: CancellationToken) -> Self {
+        Self {
+            token,
+            deleted: false,
+        }
+    }
+}
+
 /// In-flight downloads (process-wide), so any handle can cancel them.
-fn in_flight() -> &'static Mutex<HashMap<String, CancellationToken>> {
-    static MAP: OnceLock<Mutex<HashMap<String, CancellationToken>>> = OnceLock::new();
+fn in_flight() -> &'static Mutex<HashMap<String, InFlight>> {
+    static MAP: OnceLock<Mutex<HashMap<String, InFlight>>> = OnceLock::new();
     MAP.get_or_init(Default::default)
 }
+
+/// Signalled (with the [`in_flight`] lock) whenever a download ends, for a
+/// delete waiting on it.
+static DOWNLOAD_ENDED: Condvar = Condvar::new();
 
 /// Serializes a download's finalization (cancel check, rename, outcome
 /// event) against [`LocalModels::delete`], so a delete can't be undone by a
@@ -295,7 +317,7 @@ impl LocalModels {
                 bail!("{} is already downloading", entry.name);
             }
             let token = CancellationToken::new();
-            map.insert(entry.id.to_string(), token.clone());
+            map.insert(entry.id.to_string(), InFlight::new(token.clone()));
             token
         };
         self.emit_state(entry.id, DownloadState::Started, None);
@@ -304,7 +326,8 @@ impl LocalModels {
     }
 
     /// Move a verified download into place unless it was cancelled (or
-    /// deleted) meanwhile, then report the outcome. Runs under [`FINALIZE`].
+    /// deleted) meanwhile, then report the outcome. A download deleted while
+    /// it ran removes its partial. Runs under [`FINALIZE`].
     fn finish(
         &self,
         entry: &'static CatalogEntry,
@@ -322,7 +345,20 @@ impl LocalModels {
                 }),
             other => other,
         };
-        in_flight().lock().remove(entry.id);
+        let deleted = {
+            let mut map = in_flight().lock();
+            let deleted = map.remove(entry.id).is_some_and(|d| d.deleted);
+            DOWNLOAD_ENDED.notify_all();
+            deleted
+        };
+        if deleted {
+            let partial = self.partial_for(entry);
+            match std::fs::remove_file(&partial) {
+                Ok(()) => log::info!("Removed the partial of deleted model {}", entry.id),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("Could not remove {}: {e}", partial.display()),
+            }
+        }
         match &result {
             Ok(true) => self.emit_state(entry.id, DownloadState::Completed, None),
             Ok(false) => self.emit_state(entry.id, DownloadState::Cancelled, None),
@@ -349,6 +385,10 @@ impl LocalModels {
         const ATTEMPTS: usize = 3;
         let mut last_err = None;
         for attempt in 1..=ATTEMPTS {
+            // Cancelled (or deleted) during the backoff: don't resume.
+            if token.is_cancelled() {
+                return Ok(false);
+            }
             match crate::managers::model::download_file(
                 entry.id,
                 url,
@@ -403,8 +443,8 @@ impl LocalModels {
     /// Cancel an in-flight download (the partial file is kept for resume).
     pub fn cancel_download(&self, id: &str) -> bool {
         match in_flight().lock().get(id) {
-            Some(token) => {
-                token.cancel();
+            Some(download) => {
+                download.token.cancel();
                 true
             }
             None => false,
@@ -420,16 +460,18 @@ impl LocalModels {
 
     fn delete_entry(&self, entry: &'static CatalogEntry, wait: std::time::Duration) -> Result<()> {
         let id = entry.id;
-        if self.cancel_download(id) {
-            let deadline = std::time::Instant::now() + wait;
-            while self.is_downloading(id) {
-                if std::time::Instant::now() >= deadline {
+        {
+            let mut map = in_flight().lock();
+            if let Some(download) = map.get(id) {
+                download.token.cancel();
+                DOWNLOAD_ENDED.wait_while_for(&mut map, |map| map.contains_key(id), wait);
+                if let Some(download) = map.get_mut(id) {
                     // Still stuck (e.g. on the network). Its finish sees the
-                    // cancelled token under FINALIZE and won't rename.
+                    // cancelled token under FINALIZE and won't rename, and
+                    // removes any partial it wrote after the files below.
                     log::warn!("Deleting {id} while its cancelled download is still running");
-                    break;
+                    download.deleted = true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
         let path = self.path_for(entry);
@@ -558,7 +600,7 @@ mod tests {
         let token = CancellationToken::new();
         in_flight()
             .lock()
-            .insert(entry.id.to_string(), token.clone());
+            .insert(entry.id.to_string(), InFlight::new(token.clone()));
 
         let deleter = {
             let dir = dir.path().to_path_buf();
@@ -593,7 +635,7 @@ mod tests {
         let token = CancellationToken::new();
         in_flight()
             .lock()
-            .insert(entry.id.to_string(), token.clone());
+            .insert(entry.id.to_string(), InFlight::new(token.clone()));
         assert!(models.finish(entry, &token, Ok(true)).unwrap());
         assert!(models.path_for(entry).exists());
         models
@@ -601,5 +643,84 @@ mod tests {
             .unwrap();
         assert!(!models.path_for(entry).exists());
         assert!(!token.is_cancelled());
+    }
+
+    /// A delete that gives up waiting on a stuck download removes the files
+    /// and marks it deleted, so the partial the download writes before it
+    /// ends is removed too (not kept for resume).
+    #[test]
+    fn delete_timing_out_on_a_stuck_download_removes_its_late_partial() {
+        let body = b"verified fake model bytes";
+        let entry = fake_entry("test-model-delete-stuck", body);
+        let dir = tempfile::tempdir().unwrap();
+        let models = LocalModels::at(dir.path());
+        std::fs::write(models.partial_for(entry), &body[..4]).unwrap();
+        let token = CancellationToken::new();
+        in_flight()
+            .lock()
+            .insert(entry.id.to_string(), InFlight::new(token.clone()));
+
+        models
+            .delete_entry(entry, std::time::Duration::from_millis(50))
+            .unwrap();
+        assert!(token.is_cancelled());
+        assert!(!models.partial_for(entry).exists());
+        assert!(in_flight().lock()[entry.id].deleted);
+
+        // The cancelled download writes once more, then ends.
+        std::fs::write(models.partial_for(entry), &body[..8]).unwrap();
+        assert!(!models.finish(entry, &token, Ok(false)).unwrap());
+        assert!(!models.partial_for(entry).exists());
+        assert!(!models.path_for(entry).exists());
+        assert!(!models.is_downloading(entry.id));
+    }
+
+    /// A delete during a real (fake-served) transfer cancels it and is woken
+    /// when it ends; the partial is gone and nothing is left in flight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_cancels_a_running_download_and_waits_for_it() {
+        let body: &'static [u8] = b"GGUF fake model bytes for the delete-while-downloading test";
+        let entry = fake_entry("test-model-delete-running", body);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/m.gguf", listener.local_addr().unwrap());
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            s.write_all(head.as_bytes()).await.unwrap();
+            // Half the body, then hold the connection open.
+            s.write_all(&body[..body.len() / 2]).await.unwrap();
+            s.flush().await.unwrap();
+            let _ = sent_tx.send(());
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            drop(s);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let download =
+            tokio::spawn(async move { LocalModels::at(path).download_from(entry, &url).await });
+        sent_rx.await.unwrap();
+        let models = LocalModels::at(dir.path());
+        while !models.partial_for(entry).exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let path = dir.path().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            LocalModels::at(path).delete_entry(entry, std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        // Woken by the download's end, not by the timeout.
+        assert!(!models.is_downloading(entry.id));
+        assert!(!download.await.unwrap().unwrap());
+        assert!(!models.partial_for(entry).exists());
+        assert!(!models.path_for(entry).exists());
     }
 }
