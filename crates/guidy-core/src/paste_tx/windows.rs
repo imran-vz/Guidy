@@ -18,7 +18,6 @@ use std::sync::{mpsc::Sender, Arc, Mutex, Once};
 use std::thread;
 use std::time::Instant;
 
-use crate::host::Manager;
 use log::{error, info, warn};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
