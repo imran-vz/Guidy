@@ -148,7 +148,7 @@ fn full_pipeline_on_the_fixture() {
             ended_at: Some(20_000),
             mic_audio_path: None,
             system_audio_path: None,
-            status: MeetingStatus::Recorded,
+            status: MeetingStatus::Processing,
             error: None,
             processing_stage: None,
         })

@@ -3,10 +3,13 @@
 //! Only `Approved` items without a `linear_issue_id` are created. Before the
 //! create call, the item's client UUID is persisted ("creating"); it is sent
 //! as `IssueCreateInput.id`, so a retry after a timeout or crash reuses it and
-//! Linear can't create a second issue (the existing one is looked up,
-//! updated if the draft was edited since, and recorded as already existing). The issue is persisted on the item right
-//! after each successful create. An in-flight guard stops a double click
-//! (two overlapping calls) from creating the same item twice.
+//! Linear can't create a second issue (the existing one is looked up and
+//! recorded as already existing). The draft the first attempt sent is
+//! persisted with the client UUID, so if the user edited the draft before
+//! the retry (even across a restart), only their edits are applied to the
+//! existing issue. The issue is persisted on the item right after each
+//! successful create. An in-flight guard stops a double click (two
+//! overlapping calls) from creating the same item twice.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -21,9 +24,16 @@ use crate::meetings::types::{ActionItem, ActionItemId, TicketDraft, TicketState}
 pub trait TicketStore {
     fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>>;
     /// The item's client UUID for `IssueCreateInput.id`, generated and
-    /// persisted first if it has none (the recoverable "creating" state).
-    fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String>;
-    /// Record the created issue on the item (and mark it `Created`).
+    /// persisted first if it has none (the recoverable "creating" state),
+    /// and the draft the first attempt with it sent. Without one, `draft`
+    /// is persisted as that and `None` returned.
+    fn begin_create(
+        &self,
+        id: ActionItemId,
+        draft: &TicketDraft,
+    ) -> anyhow::Result<(String, Option<TicketDraft>)>;
+    /// Record the created issue on the item (and mark it `Created`), which
+    /// also drops the sent draft.
     fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()>;
 }
 
@@ -32,10 +42,12 @@ pub trait TicketStore {
 pub trait IssueCreator {
     /// Create the issue with id `client_id`. Returns the issue and whether it
     /// already existed (an earlier attempt with the same id went through).
+    /// `sent` is what an earlier attempt with this id sent, if known.
     async fn create_issue(
         &self,
         draft: &TicketDraft,
         client_id: &str,
+        sent: Option<&TicketDraft>,
     ) -> Result<(CreatedIssue, bool), String>;
 }
 
@@ -44,8 +56,9 @@ impl IssueCreator for LinearClient {
         &self,
         draft: &TicketDraft,
         client_id: &str,
+        sent: Option<&TicketDraft>,
     ) -> Result<(CreatedIssue, bool), String> {
-        LinearClient::create_issue_with_id(self, draft, client_id)
+        LinearClient::create_issue_with_id(self, draft, client_id, sent)
             .await
             .map_err(|e| e.to_string())
     }
@@ -126,9 +139,13 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                     } else if item.ticket_state != TicketState::Approved {
                         Err("Approve the ticket before creating it.".to_string())
                     } else {
-                        let created = match store.begin_create(id) {
+                        let created = match store.begin_create(id, &item.ticket) {
                             Err(e) => Err(format!("Could not save the action item: {e}")),
-                            Ok(client_id) => creator.create_issue(&item.ticket, &client_id).await,
+                            Ok((client_id, sent)) => {
+                                creator
+                                    .create_issue(&item.ticket, &client_id, sent.as_ref())
+                                    .await
+                            }
                         };
                         match created {
                             Err(e) => Err(e),
@@ -174,17 +191,28 @@ pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// In-memory [`TicketStore`].
+    /// In-memory [`TicketStore`]: the items, and each one's first sent draft.
     #[derive(Default)]
-    pub struct MemStore(pub Mutex<HashMap<ActionItemId, ActionItem>>);
+    pub struct MemStore(
+        pub Mutex<HashMap<ActionItemId, ActionItem>>,
+        pub Mutex<HashMap<ActionItemId, TicketDraft>>,
+    );
 
     impl TicketStore for MemStore {
         fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>> {
             Ok(self.0.lock().get(&id).cloned())
         }
-        fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String> {
+        fn begin_create(
+            &self,
+            id: ActionItemId,
+            draft: &TicketDraft,
+        ) -> anyhow::Result<(String, Option<TicketDraft>)> {
             // MemStore keeps no client ids: derive a stable one per item.
-            Ok(format!("00000000-0000-4000-8000-{id:012}"))
+            let sent = self.1.lock().get(&id).cloned();
+            if sent.is_none() {
+                self.1.lock().insert(id, draft.clone());
+            }
+            Ok((format!("00000000-0000-4000-8000-{id:012}"), sent))
         }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             let mut items = self.0.lock();
@@ -195,6 +223,7 @@ pub(crate) mod tests {
             it.linear_issue_identifier = Some(issue.identifier.clone());
             it.linear_issue_url = Some(issue.url.clone());
             it.ticket_state = TicketState::Created;
+            self.1.lock().remove(&id);
             Ok(())
         }
     }
@@ -231,6 +260,7 @@ pub(crate) mod tests {
             &self,
             _d: &TicketDraft,
             _client_id: &str,
+            _sent: Option<&TicketDraft>,
         ) -> Result<(CreatedIssue, bool), String> {
             let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
             Ok((

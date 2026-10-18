@@ -249,8 +249,12 @@ impl TicketStore for crate::meetings::store::MeetingsStore {
         self.get_action_item(id)
     }
 
-    fn begin_create(&self, id: ActionItemId) -> Result<String> {
-        self.ensure_linear_client_id(id)
+    fn begin_create(
+        &self,
+        id: ActionItemId,
+        draft: &TicketDraft,
+    ) -> Result<(String, Option<TicketDraft>)> {
+        self.ensure_linear_client_id(id, draft)
     }
 
     fn set_linear_issue(&self, id: ActionItemId, issue: &super::CreatedIssue) -> Result<()> {

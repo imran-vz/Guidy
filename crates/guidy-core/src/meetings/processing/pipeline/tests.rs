@@ -165,7 +165,7 @@ fn fixture() -> Fixture {
             ended_at: Some(30_000),
             mic_audio_path: Some("1-mic.gopus".into()),
             system_audio_path: Some("1-system.gopus".into()),
-            status: MeetingStatus::Recorded,
+            status: MeetingStatus::Processing,
             error: None,
             processing_stage: None,
         })
@@ -582,6 +582,56 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
     assert!(result.is_err());
     assert!(!sidecar::cache_path(dir, id).exists());
     assert!(!sidecar::embeddings_path(dir, id).exists());
+}
+
+/// A cancelled run whose status was already put back (a reprocess:
+/// `Processed`, stage `done`) stops without moving the stage or writing a
+/// checkpoint.
+#[test]
+fn a_run_no_longer_processing_saves_nothing() {
+    let f = fixture();
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Done))
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let store = &f.store;
+    let (id, dir) = (f.id, f.dir.path());
+    let result = Pipeline {
+        meeting_id: id,
+        store,
+        meetings_dir: dir,
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| {
+            // Restored (as `Processor::finish` does) while it is in VAD.
+            if p.stage == ProcessingStage::Vad {
+                store
+                    .set_meeting_status(id, MeetingStatus::Processed, None)
+                    .unwrap();
+                store
+                    .set_processing_stage(id, Some(ProcessingStage::Done))
+                    .unwrap();
+                sidecar::delete_cache(dir, id).unwrap();
+            }
+        }),
+    }
+    .run();
+    assert!(super::super::is_cancelled(&result.unwrap_err()));
+    assert_eq!(stage(&f), Some(ProcessingStage::Done));
+    assert!(!sidecar::cache_path(dir, id).exists());
 }
 
 #[test]

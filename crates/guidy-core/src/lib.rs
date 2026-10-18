@@ -403,10 +403,13 @@ fn reset_meetings_data_files(
         let data_dir =
             portable::app_data_dir(app).map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-        touched = true;
         // Data first: if the key can't be replaced afterwards, the next
         // start finds no data and may still create or use a key.
-        meetings::manager::move_meeting_data_aside(&data_dir, &stamp)?;
+        if let Err(e) = meetings::manager::move_meeting_data_aside(&data_dir, &stamp) {
+            touched = e.moved_any;
+            return Err(e.into());
+        }
+        touched = true;
         replace_key(&stamp)
     })();
     *cell.0.lock() = match &result {
@@ -1063,6 +1066,44 @@ mod meetings_init_tests {
         .unwrap_err();
         assert!(e.to_string().contains("keychain write"));
         assert!(matches!(status(&t), MeetingsInitStatus::Failed(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_reset_that_moved_nothing_stays_resettable() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = TestApp::new();
+        let dir = data_dir(&t);
+        let meetings_dir = dir.join("meetings");
+        std::fs::create_dir_all(&meetings_dir).unwrap();
+        std::fs::write(dir.join(meetings::store::MEETINGS_DB_FILE), b"db").unwrap();
+        let missing = MeetingsInitStatus::DataKeyMissing("gone".into());
+
+        // The destination folder can't be created: nothing moved.
+        set_status(&t, missing.clone());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = reset_meetings_data_files(&t.app, || Ok(()), |_| panic!("no reset"));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(status(&t), missing, "Reset stays offered");
+        assert!(meetings::manager::has_meeting_data(&dir));
+
+        // Something moved before the failure: Failed (Retry sorts it out).
+        let chflags = |flag: &str| {
+            let ok = std::process::Command::new("chflags")
+                .arg(flag)
+                .arg(&meetings_dir)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        };
+        chflags("uchg");
+        let result = reset_meetings_data_files(&t.app, || Ok(()), |_| panic!("no reset"));
+        chflags("nouchg");
+        assert!(result.is_err());
+        assert!(matches!(status(&t), MeetingsInitStatus::Failed(_)));
+        assert!(!dir.join(meetings::store::MEETINGS_DB_FILE).exists());
     }
 
     #[test]
