@@ -1849,7 +1849,7 @@ mod store_compat_tests {
     use crate::host::testing::TestApp;
 
     #[test]
-    fn handy_store_file_loads_and_migrates() {
+    fn legacy_store_file_loads_and_migrates() {
         let t = TestApp::new();
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),
