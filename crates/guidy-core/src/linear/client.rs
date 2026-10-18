@@ -324,7 +324,9 @@ impl LinearClient {
     /// a retry after a timeout can't duplicate it. When the create fails,
     /// look the id up: if the issue exists (an earlier attempt went through,
     /// or Linear rejected the id as taken) it is returned with
-    /// `already_existed = true`.
+    /// `already_existed = true`. If the draft was edited since that earlier
+    /// attempt, the existing issue is updated to match it first; when that
+    /// update fails, the error says so (and the item stays retryable).
     pub async fn create_issue_with_id(
         &self,
         draft: &TicketDraft,
@@ -347,22 +349,54 @@ impl LinearClient {
         match created {
             Ok(issue) => Ok((issue, false)),
             Err(e @ (LinearError::MissingApiKey | LinearError::Unauthorized)) => Err(e),
-            Err(e) => match self.issue(client_id).await {
-                Ok(Some(issue)) => {
+            Err(e) => match self.issue_state(client_id).await {
+                Ok(Some(existing)) => {
                     log::info!(
                         "Linear: issue {} already existed for this action item ({e})",
-                        issue.identifier
+                        existing.identifier
                     );
-                    Ok((issue, true))
+                    if existing.matches(&input) {
+                        return Ok((existing.into_created(), true));
+                    }
+                    // The draft was edited since the attempt that created it:
+                    // bring the issue in line rather than keep the old content.
+                    let identifier = existing.identifier.clone();
+                    match self.update_issue(client_id, draft).await {
+                        Ok(issue) => Ok((issue, true)),
+                        Err(e @ (LinearError::MissingApiKey | LinearError::Unauthorized)) => Err(e),
+                        Err(e) => Err(LinearError::GraphQl(format!(
+                            "{identifier} already exists in Linear, but your latest edits \
+                             could not be applied to it ({e}). Try again."
+                        ))),
+                    }
                 }
                 Ok(None) | Err(_) => Err(e),
             },
         }
     }
 
+    /// Overwrite an existing issue's fields with `draft` (cleared fields are
+    /// cleared on the issue too).
+    pub async fn update_issue(&self, id: &str, draft: &TicketDraft) -> LinearResult<CreatedIssue> {
+        let input = issue_update_input(draft).map_err(LinearError::GraphQl)?;
+        let q = "mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier url } } }";
+        let data = self.graphql(q, json!({ "id": id, "input": input })).await?;
+        let payload = pointer(&data, &["issueUpdate"])?;
+        if payload.get("success").and_then(Value::as_bool) == Some(false) {
+            return Err(LinearError::GraphQl("the issue was not updated".into()));
+        }
+        let issue = pointer(payload, &["issue"])?;
+        serde_json::from_value(issue.clone()).map_err(|e| LinearError::Decode(e.to_string()))
+    }
+
     /// Look an issue up by id. `Ok(None)` when Linear says it doesn't exist.
     pub async fn issue(&self, id: &str) -> LinearResult<Option<CreatedIssue>> {
-        let q = "query Issue($id: String!) { issue(id: $id) { id identifier url } }";
+        Ok(self.issue_state(id).await?.map(IssueState::into_created))
+    }
+
+    /// Look an issue up by id, with the fields a ticket draft sets.
+    async fn issue_state(&self, id: &str) -> LinearResult<Option<IssueState>> {
+        let q = "query Issue($id: String!) { issue(id: $id) { id identifier url title description priority dueDate team { id } project { id } assignee { id } labels(first: 250) { nodes { id } } } }";
         match self.graphql(q, json!({ "id": id })).await {
             Ok(data) => match data.get("issue") {
                 Some(v) if !v.is_null() => serde_json::from_value(v.clone())
@@ -376,6 +410,97 @@ impl LinearClient {
             Err(e) => Err(e),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct IdNode {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct IdNodes {
+    nodes: Vec<IdNode>,
+}
+
+/// An existing issue's draft-controlled fields.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueState {
+    id: String,
+    identifier: String,
+    url: String,
+    #[serde(default)]
+    title: String,
+    description: Option<String>,
+    priority: Option<f64>,
+    due_date: Option<String>,
+    team: Option<IdNode>,
+    project: Option<IdNode>,
+    assignee: Option<IdNode>,
+    labels: Option<IdNodes>,
+}
+
+impl IssueState {
+    fn into_created(self) -> CreatedIssue {
+        CreatedIssue {
+            id: self.id,
+            identifier: self.identifier,
+            url: self.url,
+        }
+    }
+
+    /// Whether the issue already has what `input` (an `IssueCreateInput`
+    /// from [`issue_create_input`]) would set.
+    fn matches(&self, input: &Value) -> bool {
+        let str_of = |key: &str| input.get(key).and_then(Value::as_str).map(str::trim);
+        fn id_of(n: &Option<IdNode>) -> Option<&str> {
+            n.as_ref().map(|n| n.id.as_str())
+        }
+        let mut want_labels: Vec<&str> = input
+            .get("labelIds")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let mut have_labels: Vec<&str> = self
+            .labels
+            .as_ref()
+            .map(|l| l.nodes.iter().map(|n| n.id.as_str()).collect())
+            .unwrap_or_default();
+        want_labels.sort_unstable();
+        want_labels.dedup();
+        have_labels.sort_unstable();
+        have_labels.dedup();
+        let want_priority = input.get("priority").and_then(Value::as_f64).unwrap_or(0.0);
+        str_of("title") == Some(self.title.trim())
+            && str_of("description").unwrap_or("")
+                == self.description.as_deref().unwrap_or("").trim()
+            && str_of("teamId") == id_of(&self.team)
+            && str_of("projectId") == id_of(&self.project)
+            && str_of("assigneeId") == id_of(&self.assignee)
+            && str_of("dueDate") == self.due_date.as_deref()
+            && self.priority.unwrap_or(0.0) == want_priority
+            && want_labels == have_labels
+    }
+}
+
+/// Build `IssueUpdateInput` from a draft: like [`issue_create_input`], but
+/// empty fields are sent cleared so the issue matches the draft exactly.
+pub fn issue_update_input(draft: &TicketDraft) -> std::result::Result<Value, String> {
+    let mut input = issue_create_input(draft)?;
+    let defaults = [
+        ("description", json!("")),
+        ("projectId", Value::Null),
+        ("assigneeId", Value::Null),
+        ("priority", json!(0)),
+        ("labelIds", json!([])),
+        ("dueDate", Value::Null),
+    ];
+    for (key, value) in defaults {
+        if input.get(key).is_none() {
+            input[key] = value;
+        }
+    }
+    Ok(input)
 }
 
 /// Build `IssueCreateInput` from a draft. Empty optional fields are omitted.

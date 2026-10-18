@@ -713,6 +713,16 @@ mod idempotent {
         (store, item.id)
     }
 
+    /// The issue Linear holds for [`approved_item`]'s unedited draft.
+    fn stored_issue(id: &str, identifier: &str, url: &str) -> Value {
+        json!({
+            "id": id, "identifier": identifier, "url": url,
+            "title": "item 0", "description": "", "priority": 0, "dueDate": null,
+            "team": { "id": "team-1" }, "project": { "id": "proj-1" },
+            "assignee": null, "labels": { "nodes": [] },
+        })
+    }
+
     #[tokio::test]
     async fn retry_after_a_lost_response_records_the_existing_issue() {
         // The first create reaches Linear but the response is lost (500);
@@ -737,7 +747,7 @@ mod idempotent {
             } else if q.contains("issue(id:") {
                 let id = r.vars()["id"].as_str().unwrap();
                 if cid.lock().as_deref() == Some(id) {
-                    ok(json!({ "issue": { "id": id, "identifier": "ENG-5", "url": "u5" } }))
+                    ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
                 } else {
                     (
                         200,
@@ -776,7 +786,7 @@ mod idempotent {
                 (200, json!({ "errors": [{ "message": "duplicate key value violates unique constraint" }] }))
             } else if q.contains("issue(id:") {
                 let id = r.vars()["id"].as_str().unwrap();
-                ok(json!({ "issue": { "id": id, "identifier": "ENG-8", "url": "u8" } }))
+                ok(json!({ "issue": stored_issue(id, "ENG-8", "u8") }))
             } else {
                 (500, json!({}))
             }
@@ -828,5 +838,136 @@ mod idempotent {
         assert_eq!(item.linear_issue_id, None);
         assert_eq!(item.ticket_state, TicketState::Approved);
         assert!(store.linear_client_id(id).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn retry_after_an_edit_updates_the_existing_issue() {
+        // The first create reaches Linear but times out, and the lookup fails
+        // too. The user then edits the draft and retries: the issue that
+        // exists (with the old content) is updated to the edited draft.
+        let lookups_fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let fail = lookups_fail.clone();
+        let creates = Arc::new(AtomicUsize::new(0));
+        let n = creates.clone();
+        let m = mock(move |r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (504, json!({}))
+                } else {
+                    (
+                        200,
+                        json!({ "errors": [{ "message": "Entity already exists" }] }),
+                    )
+                }
+            } else if q.contains("issue(id:") {
+                if fail.load(Ordering::SeqCst) {
+                    (503, json!({}))
+                } else {
+                    let id = r.vars()["id"].as_str().unwrap();
+                    ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
+                }
+            } else if q.contains("issueUpdate") {
+                let id = r.vars()["id"].as_str().unwrap();
+                ok(json!({ "issueUpdate": { "success": true, "issue": {
+                    "id": id, "identifier": "ENG-5", "url": "u5" } } }))
+            } else {
+                (500, json!({}))
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+
+        let first = s.create_tickets(&store, &[id]).await.unwrap();
+        assert!(first.results[0].result.is_err());
+        let client_id = store.linear_client_id(id).unwrap().unwrap();
+
+        let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
+        edited.title = "Edited title".into();
+        edited.description = "More detail".into();
+        edited.project_id = None;
+        edited.assignee_id = Some("u-2".into());
+        store.update_ticket_draft(id, &edited).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert!(out.results[0].already_existed);
+        assert_eq!(m.count("issueUpdate"), 1);
+        let update = m
+            .requests()
+            .into_iter()
+            .find(|r| r.query().contains("issueUpdate"))
+            .unwrap();
+        assert_eq!(update.vars()["id"], json!(client_id));
+        let input = &update.vars()["input"];
+        assert_eq!(input["title"], "Edited title");
+        assert_eq!(input["description"], "More detail");
+        assert_eq!(input["assigneeId"], "u-2");
+        assert_eq!(input["projectId"], Value::Null);
+        assert!(input.get("id").is_none());
+        let saved = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(saved.ticket_state, TicketState::Created);
+        assert_eq!(saved.linear_issue_identifier.as_deref(), Some("ENG-5"));
+    }
+
+    #[tokio::test]
+    async fn failed_update_of_an_edited_issue_is_reported_and_retryable() {
+        let m = mock(|r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "Entity already exists" }] }),
+                )
+            } else if q.contains("issue(id:") {
+                let id = r.vars()["id"].as_str().unwrap();
+                ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
+            } else {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "assignee is not a team member" }] }),
+                )
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
+        edited.assignee_id = Some("u-x".into());
+        store.update_ticket_draft(id, &edited).unwrap();
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        let err = out.results[0].result.clone().unwrap_err();
+        assert!(err.contains("ENG-5 already exists"), "{err}");
+        assert!(err.contains("assignee is not a team member"), "{err}");
+        let item = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(item.linear_issue_id, None);
+        assert_eq!(item.ticket_state, TicketState::Approved);
+    }
+
+    #[tokio::test]
+    async fn unchanged_existing_issue_is_not_updated() {
+        let m = mock(|r| {
+            let q = r.query();
+            if q.contains("issueCreate") {
+                (
+                    200,
+                    json!({ "errors": [{ "message": "Entity already exists" }] }),
+                )
+            } else if q.contains("issue(id:") {
+                let id = r.vars()["id"].as_str().unwrap();
+                ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
+            } else {
+                (500, json!({}))
+            }
+        })
+        .await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert_eq!(m.count("issueUpdate"), 0);
     }
 }

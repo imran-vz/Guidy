@@ -145,38 +145,109 @@ pub fn transcript_lines(
     lines
 }
 
-/// Greedy chunks of whole lines, each at most `budget_tokens` (estimated).
-/// A single line longer than the budget is split on character boundaries.
+/// Whether `c` is from a script where a tokenizer spends about one token per
+/// character (CJK ideographs, kana, Hangul, full-width forms), rather than
+/// the ~4 characters per token of Latin text.
+fn is_wide_char(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x11FF // Hangul Jamo
+        | 0x2E80..=0x303F // CJK radicals, symbols and punctuation
+        | 0x3040..=0x30FF // Hiragana, Katakana
+        | 0x3130..=0x318F // Hangul compatibility Jamo
+        | 0x3400..=0x4DBF // CJK Extension A
+        | 0x4E00..=0x9FFF // CJK Unified Ideographs
+        | 0xAC00..=0xD7AF // Hangul syllables
+        | 0xF900..=0xFAFF // CJK compatibility ideographs
+        | 0xFF00..=0xFFEF // Half/full-width forms
+        | 0x20000..=0x3FFFF // CJK Extensions B+
+    )
+}
+
+/// Estimated size of `c` in quarter tokens (1 for Latin-like text, 4 for
+/// [`is_wide_char`]).
+fn char_cost(c: char) -> usize {
+    if is_wide_char(c) {
+        4
+    } else {
+        1
+    }
+}
+
+fn text_cost(s: &str) -> usize {
+    s.chars().map(char_cost).sum()
+}
+
+/// Greedy chunks of whole lines, each at most `budget_tokens` (estimated at
+/// ~4 chars/token, or ~1 char/token for CJK and similar scripts). A single
+/// line longer than the budget is split on character boundaries.
 pub fn chunk_lines(lines: &[String], budget_tokens: usize) -> Vec<String> {
-    let budget_chars = budget_tokens.max(64) * 4;
+    // In quarter tokens (see `char_cost`).
+    let budget = budget_tokens.max(64) * 4;
     let mut chunks = Vec::new();
     let mut current = String::new();
+    let mut current_cost = 0usize;
     for line in lines {
-        let mut pieces: Vec<String> = Vec::new();
-        if line.chars().count() > budget_chars {
-            let chars: Vec<char> = line.chars().collect();
-            for part in chars.chunks(budget_chars - 1) {
-                pieces.push(part.iter().collect());
+        let mut pieces: Vec<(String, usize)> = Vec::new();
+        let line_cost = text_cost(line);
+        if line_cost > budget {
+            let mut piece = String::new();
+            let mut piece_cost = 0usize;
+            for c in line.chars() {
+                let cost = char_cost(c);
+                if !piece.is_empty() && piece_cost + cost > budget {
+                    pieces.push((std::mem::take(&mut piece), piece_cost));
+                    piece_cost = 0;
+                }
+                piece.push(c);
+                piece_cost += cost;
+            }
+            if !piece.is_empty() {
+                pieces.push((piece, piece_cost));
             }
         } else {
-            pieces.push(line.clone());
+            pieces.push((line.clone(), line_cost));
         }
-        for piece in pieces {
-            if !current.is_empty()
-                && current.chars().count() + 1 + piece.chars().count() > budget_chars
-            {
+        for (piece, cost) in pieces {
+            if !current.is_empty() && current_cost + 1 + cost > budget {
                 chunks.push(std::mem::take(&mut current));
+                current_cost = 0;
             }
             if !current.is_empty() {
                 current.push('\n');
+                current_cost += 1;
             }
             current.push_str(&piece);
+            current_cost += cost;
         }
     }
     if !current.is_empty() {
         chunks.push(current);
     }
     chunks
+}
+
+/// Chunks of fewer characters than this are never split further.
+const MIN_SPLIT_CHARS: usize = 32;
+
+/// Split a single-line chunk in two near its middle, preferring a break
+/// after whitespace or punctuation. `None` when it is too short to split.
+fn split_line_in_half(text: &str) -> Option<(String, String)> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < MIN_SPLIT_CHARS * 2 {
+        return None;
+    }
+    let mid = chars.len() / 2;
+    let is_break = |c: char| {
+        c.is_whitespace() || c.is_ascii_punctuation() || "。、，！？；：…」』）".contains(c)
+    };
+    // Look up to a quarter of the length either side of the middle.
+    let at = (0..=chars.len() / 4)
+        .flat_map(|d| [mid + d, mid - d])
+        .find(|&i| i > 0 && i < chars.len() && is_break(chars[i - 1]))
+        .unwrap_or(mid);
+    let a: String = chars[..at].iter().collect();
+    let b: String = chars[at..].iter().collect();
+    Some((a.trim_end().to_string(), b.trim_start().to_string()))
 }
 
 /// Output tokens reserved per call for a context size.
@@ -825,12 +896,22 @@ pub fn summarize_meeting(
         let messages = chunk_messages(&chunk, &ctx, done + 1, parts.max(1));
         let value = match provider.chat_json(&messages, &schema, &call_opts) {
             Ok(v) => v,
-            Err(e) if is_context_overflow(&e) && chunk.lines().count() > 1 => {
-                let lines: Vec<&str> = chunk.lines().collect();
-                let (a, b) = lines.split_at(lines.len() / 2);
+            Err(e) if is_context_overflow(&e) => {
+                let halves = if chunk.lines().count() > 1 {
+                    let lines: Vec<&str> = chunk.lines().collect();
+                    let (a, b) = lines.split_at(lines.len() / 2);
+                    Some((a.join("\n"), b.join("\n")))
+                } else {
+                    // One overflowing line (e.g. CJK, ~1 char/token): split
+                    // it by characters, down to `MIN_SPLIT_CHARS`.
+                    split_line_in_half(&chunk)
+                };
+                let Some((a, b)) = halves else {
+                    return Err(e);
+                };
                 log::info!("Chunk too long for {}; splitting it", provider.name());
-                queue.push_front(b.join("\n"));
-                queue.push_front(a.join("\n"));
+                queue.push_front(b);
+                queue.push_front(a);
                 total += 1 + usize::from(total == 1);
                 continue;
             }
@@ -1595,6 +1676,75 @@ mod tests {
             "openai: This model's maximum context length is 8192 tokens"
         )));
         assert!(!is_context_overflow(&anyhow::anyhow!("401 unauthorized")));
+    }
+
+    #[test]
+    fn cjk_counts_about_one_token_per_char_when_chunking() {
+        let line = "我们讨论了发布计划，".repeat(300); // 3000 chars
+        let chunks = chunk_lines(std::slice::from_ref(&line), 256);
+        assert!(chunks.len() >= 12, "{}", chunks.len());
+        assert!(chunks.iter().all(|c| c.chars().count() <= 256));
+        assert_eq!(chunks.concat(), line);
+        // Latin text keeps the ~4 chars/token estimate.
+        assert_eq!(chunk_lines(&["x".repeat(1000)], 256).len(), 1);
+    }
+
+    #[test]
+    fn single_lines_split_near_the_middle_at_a_break() {
+        let text = format!("{}。{}", "甲".repeat(40), "乙".repeat(44));
+        let (a, b) = split_line_in_half(&text).unwrap();
+        assert_eq!(a, format!("{}。", "甲".repeat(40)));
+        assert_eq!(b, "乙".repeat(44));
+        // No break nearby: split exactly in half, on a char boundary.
+        let (a, b) = split_line_in_half(&"字".repeat(100)).unwrap();
+        assert_eq!((a.chars().count(), b.chars().count()), (50, 50));
+        assert!(split_line_in_half(&"字".repeat(MIN_SPLIT_CHARS * 2 - 1)).is_none());
+    }
+
+    fn cjk_fixture() -> (Vec<Segment>, Vec<MeetingSpeaker>, Vec<Person>) {
+        let speakers = vec![speaker(10, "me", None, true)];
+        let text = "我们讨论了发布计划和文档更新".repeat(80); // 1120 chars, one line
+        (
+            vec![seg(1, 0, Some(10), Track::Mic, &text)],
+            speakers,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn an_overflowing_single_line_is_split_by_characters() {
+        let f = cjk_fixture();
+        let p = Tight {
+            inner: Fake {
+                context: 128_000,
+                calls: Mutex::new(vec![]),
+            },
+            // ~3 bytes per char: only pieces under ~300 chars fit.
+            max_chars: 1000,
+        };
+        let out = summarize_meeting(&p, &input(&f), &ChatOptions::default(), &|_, _| {});
+        assert!(out.is_ok(), "{:?}", out.err());
+        let calls = p.inner.calls.lock();
+        let chunks: Vec<&String> = calls
+            .iter()
+            .filter(|c| c.starts_with("<transcript>"))
+            .collect();
+        assert!(chunks.len() >= 4, "{}", chunks.len());
+        assert!(chunks.iter().all(|c| c.len() <= 1000));
+    }
+
+    #[test]
+    fn single_line_splitting_stops_at_the_floor() {
+        let f = cjk_fixture();
+        let p = Tight {
+            inner: Fake {
+                context: 128_000,
+                calls: Mutex::new(vec![]),
+            },
+            max_chars: 10, // nothing fits
+        };
+        let e = summarize_meeting(&p, &input(&f), &ChatOptions::default(), &|_, _| {}).unwrap_err();
+        assert!(is_context_overflow(&e), "{e:#}");
     }
 
     #[test]
