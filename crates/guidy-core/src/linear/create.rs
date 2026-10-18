@@ -3,8 +3,8 @@
 //! Only `Approved` items without a `linear_issue_id` are created. Before the
 //! create call, the item's client UUID is persisted ("creating"); it is sent
 //! as `IssueCreateInput.id`, so a retry after a timeout or crash reuses it and
-//! Linear can't create a second issue (the existing one is looked up and
-//! recorded as already existing). The issue is persisted on the item right
+//! Linear can't create a second issue (the existing one is looked up,
+//! updated if the draft was edited since, and recorded as already existing). The issue is persisted on the item right
 //! after each successful create. An in-flight guard stops a double click
 //! (two overlapping calls) from creating the same item twice.
 
