@@ -231,8 +231,7 @@ fn init_meetings(app_handle: &AppHandle) {
     // items.
     let settings_app = app_handle.clone();
     app_handle.listen("settings-changed", move |e| {
-        on_settings_changed(&settings_app, e.payload());
-        tray::update_tray_menu(&settings_app);
+        on_settings_changed(&settings_app, e.payload(), tray::update_tray_menu);
     });
 
     start_meetings_if_wanted(app_handle);
@@ -251,11 +250,18 @@ fn is_meetings_setting_change(payload: &serde_json::Value) -> bool {
 /// so nothing here may block: only meetings settings matter; the scheduler
 /// sync is cheap (stopping one never joins its thread), and the check
 /// whether to start the manager, which may scan the data directory, runs on
-/// its own thread.
-fn on_settings_changed(app: &AppHandle, payload: &serde_json::Value) {
+/// its own thread. `refresh_tray` (the meeting tray items follow
+/// `meetings.enabled`) runs for meetings changes only: the other tray items
+/// are refreshed by their own setters and events.
+fn on_settings_changed(
+    app: &AppHandle,
+    payload: &serde_json::Value,
+    refresh_tray: impl FnOnce(&AppHandle),
+) {
     if !is_meetings_setting_change(payload) {
         return;
     }
+    refresh_tray(app);
     if let Some(m) = app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
         m.sync_scheduler();
         return;
@@ -1024,6 +1030,27 @@ mod meetings_init_tests {
             "setting": "debug_mode",
             "value": true
         })));
+    }
+
+    #[test]
+    fn only_a_meetings_change_refreshes_the_tray() {
+        let t = TestApp::new();
+        // Not `Off`: nothing is started.
+        set_status(&t, MeetingsInitStatus::Ready);
+        let refreshes = std::cell::Cell::new(0);
+        let count = |_: &AppHandle| refreshes.set(refreshes.get() + 1);
+        on_settings_changed(
+            &t.app,
+            &serde_json::json!({ "setting": "debug_mode", "value": true }),
+            count,
+        );
+        assert_eq!(refreshes.get(), 0);
+        on_settings_changed(
+            &t.app,
+            &serde_json::json!({ "setting": "meetings", "value": {} }),
+            count,
+        );
+        assert_eq!(refreshes.get(), 1);
     }
 
     #[test]

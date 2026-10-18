@@ -89,6 +89,10 @@ pub struct MeetingsManager {
     /// Meetings whose summary is being stored: past the point a cancel can
     /// stop it, so `cancel_summarize` reports false for them.
     summary_commits: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
+    /// Meetings a `delete_meeting` call is deleting: `create_tickets` and
+    /// `summarize` refuse them. Locked before `ticket_creations` when both
+    /// are.
+    deletions: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -115,6 +119,7 @@ impl MeetingsManager {
             processing,
             ticket_creations: Default::default(),
             summary_commits: Default::default(),
+            deletions: Default::default(),
         }))
     }
 
@@ -443,6 +448,10 @@ impl MeetingsManager {
     }
 
     /// Deletes the meeting, its transcript and audio. Voiceprints stay.
+    ///
+    /// Refused while Linear tickets are being created for it (the issues
+    /// they create must be saved to it). A running summary is cancelled and
+    /// waited for (up to 10 s; one outliving that ends as cancelled).
     pub fn delete_meeting(&self, id: MeetingId) -> Result<()> {
         let Some(meeting) = self.store.get_meeting(id)? else {
             return Ok(());
@@ -450,10 +459,23 @@ impl MeetingsManager {
         if meeting.status == MeetingStatus::Recording {
             anyhow::bail!("stop the recording before deleting the meeting");
         }
+        let _deletion = {
+            let mut deleting = self.deletions.lock();
+            if self.creating_tickets_for(id) {
+                anyhow::bail!(DELETE_DURING_CREATE);
+            }
+            deleting.insert(id);
+            MeetingDeletion(self, id)
+        };
+        // A cancel can't stop a summary already storing: it is waited for.
+        self.cancel_summarize(id);
         // Cancels a running job and removes the per-segment voiceprint
         // sidecar: voiceprints are kept only for people the user named (D11).
         if let Err(e) = self.forget_processing(id) {
             log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
+        }
+        if !self.wait_for_summary(id, std::time::Duration::from_secs(10)) {
+            log::warn!("meetings: summary of {id} did not stop in time");
         }
         self.store.delete_meeting(id)?;
         if let Err(e) =
@@ -504,22 +526,45 @@ impl MeetingsManager {
     /// Deletes the person and their voiceprints, including the speaker
     /// centroids linked to them and their per-segment voiceprints in the
     /// meetings' embeddings sidecars (found through the segments' speakers).
+    ///
+    /// The sidecars are rewritten under their [`EmbeddingsLock`]s, taken
+    /// before the segments are looked up: a processing run replacing a
+    /// meeting's transcript and sidecar meanwhile goes entirely before (its
+    /// segments are the ones dropped) or after (the person is gone by then).
+    ///
+    /// [`EmbeddingsLock`]: crate::meetings::processing::sidecar::EmbeddingsLock
     pub fn delete_person(&self, id: PersonId) -> Result<()> {
-        let segments = self.store.person_segments(id)?;
+        use crate::meetings::processing::sidecar;
+        // Lock the meetings the person is in, then check the set is still
+        // the same (a run may have linked them in another meeting meanwhile).
+        let mut meetings: std::collections::BTreeSet<MeetingId> =
+            self.store.person_segments(id)?.into_keys().collect();
+        let (segments, locks) = loop {
+            // Ascending order, as `lock_embeddings` asks.
+            let locks: std::collections::BTreeMap<_, _> = meetings
+                .iter()
+                .map(|m| (*m, sidecar::lock_embeddings(&self.meetings_dir, *m)))
+                .collect();
+            let segments = self.store.person_segments(id)?;
+            if segments.keys().all(|m| locks.contains_key(m)) {
+                break (segments, locks);
+            }
+            drop(locks);
+            meetings = segments.into_keys().collect();
+        };
         self.store.delete_person(id)?;
         if !segments.is_empty() {
             match crate::secrets::meetings_data_key() {
                 Ok(key) => {
                     for (meeting_id, ids) in &segments {
                         let ids: std::collections::HashSet<i64> = ids.iter().copied().collect();
-                        if let Err(e) =
-                            crate::meetings::processing::sidecar::drop_segment_embeddings(
-                                &self.meetings_dir,
-                                *meeting_id,
-                                &key,
-                                &ids,
-                            )
-                        {
+                        if let Err(e) = sidecar::drop_segment_embeddings(
+                            &locks[meeting_id],
+                            &self.meetings_dir,
+                            *meeting_id,
+                            &key,
+                            &ids,
+                        ) {
                             log::warn!(
                                 "meetings: dropping voiceprints from meeting {meeting_id}: {e:#}"
                             );
@@ -630,6 +675,18 @@ impl MeetingsManager {
         crate::meetings::processing::delete_sidecars(&self.meetings_dir, id)
     }
 
+    /// Wait (up to `timeout`) for no summary of `id` to be running.
+    fn wait_for_summary(&self, id: MeetingId, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while self.is_summarizing(id) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        true
+    }
+
     fn creating_tickets_for(&self, meeting_id: MeetingId) -> bool {
         self.ticket_creations.lock().contains_key(&meeting_id)
     }
@@ -649,8 +706,25 @@ impl MeetingsManager {
     ///
     /// Blocking (minutes with a local model): call it off the UI thread.
     /// Progress arrives as [`crate::meetings::summarize::events::SUMMARY_PROGRESS`];
-    /// [`Self::cancel_summarize`] stops it.
+    /// [`Self::cancel_summarize`] stops it. A summary whose meeting is
+    /// deleted meanwhile ends with the "cancelled" error.
     pub fn summarize(
+        &self,
+        id: MeetingId,
+        provider_override: Option<(String, String)>,
+    ) -> Result<StoredSummary> {
+        self.run_summary(id, provider_override).map_err(|e| {
+            let deleted = matches!(self.store.get_meeting(id), Ok(None));
+            if deleted && !crate::llm::is_cancelled_error(&e) {
+                log::info!("meetings: summary of deleted meeting {id} dropped: {e:#}");
+                anyhow::anyhow!(crate::llm::CANCELLED)
+            } else {
+                e
+            }
+        })
+    }
+
+    fn run_summary(
         &self,
         id: MeetingId,
         provider_override: Option<(String, String)>,
@@ -672,6 +746,11 @@ impl MeetingsManager {
             provider_override,
         )?;
         let job = sum::begin_job(id)?;
+        // Checked after the job is visible to `delete_meeting`'s cancel, so
+        // a deletion either sees the job or is seen here.
+        if self.deletions.lock().contains(&id) {
+            anyhow::bail!(crate::llm::CANCELLED);
+        }
         let segments = self.store.segments(id)?;
         let speakers = self.store.speakers(id)?;
         let people = self.store.list_people()?;
@@ -929,7 +1008,15 @@ impl MeetingsManager {
             }
         }
         let outcome = {
-            let _claim = TicketCreationClaim::new(&self.ticket_creations, &meetings);
+            let _claim = {
+                // Under `deletions`, so a meeting being deleted can't be
+                // claimed (nor deleted once claimed).
+                let deleting = self.deletions.lock();
+                if meetings.iter().any(|m| deleting.contains(m)) {
+                    anyhow::bail!("this meeting is being deleted");
+                }
+                TicketCreationClaim::new(&self.ticket_creations, &meetings)
+            };
             crate::host::async_runtime::block_on(
                 self.linear.create_tickets(self.store.as_ref(), ids),
             )
@@ -1123,6 +1210,19 @@ fn summary_title(meeting: &Meeting) -> &str {
 
 const SUMMARIZE_DURING_CREATE: &str =
     "Linear tickets are being created for this meeting. Summarize again when that finishes.";
+
+const DELETE_DURING_CREATE: &str =
+    "Linear tickets are being created for this meeting. Try deleting it again shortly.";
+
+/// Marks a meeting as being deleted ([`MeetingsManager::deletions`]), until
+/// dropped.
+struct MeetingDeletion<'a>(&'a MeetingsManager, MeetingId);
+
+impl Drop for MeetingDeletion<'_> {
+    fn drop(&mut self) {
+        self.0.deletions.lock().remove(&self.1);
+    }
+}
 
 /// Marks meetings as having a `create_tickets` call running, until dropped.
 struct TicketCreationClaim<'a> {
@@ -1474,6 +1574,145 @@ mod store_section_tests {
             .unwrap();
         assert_eq!(left, vec![e(segs[1].id)]);
         assert_eq!(mgr.store().speaker_embedding(speakers[0].id).unwrap(), None);
+    }
+
+    /// A processing run replacing the transcript and sidecar while a person
+    /// is deleted: the deletion waits for the run's sidecar lock, then drops
+    /// the person's segments of the new transcript and keeps the rest of the
+    /// run's voiceprints (not a filtered stale copy).
+    #[test]
+    fn deleting_a_person_during_a_merge_keeps_the_new_voiceprints() {
+        use crate::meetings::processing::sidecar::{self, SegmentEmbedding};
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let ann = mgr.store().insert_person("Ann", None).unwrap();
+        let sp = |id, person| MeetingSpeaker {
+            id,
+            meeting_id: m,
+            cluster_label: format!("Speaker {id}"),
+            person_id: person,
+            match_confidence: None,
+            confirmed: true,
+            is_user: false,
+        };
+        let seg = |t0, speaker| Segment {
+            id: 0,
+            meeting_id: m,
+            track: Track::System,
+            t0_ms: t0,
+            t1_ms: t0 + 1000,
+            text: "hi".into(),
+            words: vec![],
+            speaker_id: Some(speaker),
+        };
+        let key = crate::secrets::meetings_data_key().unwrap();
+        let e = |id| SegmentEmbedding {
+            segment_id: id,
+            duration_ms: 1000,
+            embedding: vec![id as f32],
+        };
+        let (_, old) = mgr
+            .store()
+            .replace_transcript(m, &[sp(1, Some(ann.id))], &[seg(0, 1)])
+            .unwrap();
+        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[e(old[0].id)]).unwrap();
+
+        // The run is merging (it holds the lock) when the deletion starts.
+        let merging = sidecar::lock_embeddings(mgr.meetings_dir(), m);
+        let new = std::thread::scope(|s| {
+            let deletion = s.spawn(|| mgr.delete_person(ann.id));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!deletion.is_finished(), "the deletion waits for the merge");
+            let (_, new) = mgr
+                .store()
+                .replace_transcript(
+                    m,
+                    &[sp(1, Some(ann.id)), sp(2, None)],
+                    &[seg(0, 1), seg(2000, 2), seg(4000, 2)],
+                )
+                .unwrap();
+            let prints: Vec<_> = new.iter().map(|g| e(g.id)).collect();
+            sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &prints).unwrap();
+            drop(merging);
+            deletion.join().unwrap().unwrap();
+            new
+        });
+        let left = sidecar::read_embeddings(mgr.meetings_dir(), m, &key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(left, vec![e(new[1].id), e(new[2].id)]);
+        assert!(mgr.list_people().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_meeting_is_not_deleted_while_its_tickets_are_created() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let claim = TicketCreationClaim::new(&mgr.ticket_creations, &[m]);
+        let e = mgr.delete_meeting(m).unwrap_err();
+        assert!(e.to_string().contains("being created"), "{e}");
+        assert!(mgr.get_meeting(m).unwrap().is_some());
+        drop(claim);
+        mgr.delete_meeting(m).unwrap();
+        assert!(mgr.get_meeting(m).unwrap().is_none());
+        assert!(mgr.deletions.lock().is_empty());
+    }
+
+    #[test]
+    fn tickets_are_not_created_for_a_meeting_being_deleted() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let item = item_in(&mgr, m, "do it");
+        let deletion = {
+            mgr.deletions.lock().insert(m);
+            MeetingDeletion(&mgr, m)
+        };
+        let e = mgr.create_tickets(&[item.id]).unwrap_err();
+        assert!(e.to_string().contains("being deleted"), "{e}");
+        assert!(!mgr.creating_tickets_for(m));
+        drop(deletion);
+        assert!(mgr.deletions.lock().is_empty());
+    }
+
+    /// Deleting cancels a running summary and waits for it to end.
+    #[test]
+    fn deleting_a_meeting_cancels_and_waits_for_its_summary() {
+        use crate::meetings::summarize as sum;
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let job = sum::begin_job(m).unwrap();
+        let cancel = job.cancel.clone();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                // The summarizer notices the cancel and unwinds.
+                while !cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                drop(job);
+            });
+            mgr.delete_meeting(m).unwrap();
+            assert!(
+                !mgr.is_summarizing(m),
+                "deletion returned before the job ended"
+            );
+        });
+        assert!(mgr.get_meeting(m).unwrap().is_none());
+    }
+
+    /// A summary whose meeting is gone ends as cancelled, not as an error.
+    #[test]
+    fn a_summary_of_a_deleted_meeting_is_cancelled() {
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        mgr.delete_meeting(m).unwrap();
+        let e = mgr.summarize(m, None).unwrap_err();
+        assert!(crate::llm::is_cancelled_error(&e), "{e:#}");
     }
 
     fn event(id: &str, end_at: i64) -> CalendarEvent {
