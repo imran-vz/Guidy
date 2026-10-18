@@ -87,7 +87,7 @@ Guidy uses the identifier **`dev.guidy.app`** (`host::APP_IDENTIFIER`), which na
 ### 3.2 Rules
 - 0 failures in gating jobs, and no `#[ignore]` without an `IGNORE-REASON:` comment.
 - Tests that need a model or real hardware are `#[ignore]`d and run with `cargo xtask test --full`, which builds the `guidy` binary and passes the model via `GUIDY_TEST_MODEL`.
-- CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings`, and `cargo xtask gate` on macOS, Windows and Linux, then builds unsigned packages.
+- CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings`, and `cargo xtask gate` on macOS, then builds an unsigned macOS package. Windows and Linux are left out until there are machines to test them on.
 
 ### 3.3 `cargo xtask parity`
 - Every test listed in `docs/baseline/tests.txt` must still exist. Tests that only build on some platforms are listed in `docs/baseline/platform-tests.txt` and are required only where they build.
