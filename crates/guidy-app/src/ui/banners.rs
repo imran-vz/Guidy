@@ -4,6 +4,7 @@
 use crate::logic::flows::{secure_input_impacted, secure_input_message, SECURE_INPUT_HELP_URL};
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -103,13 +104,15 @@ impl Render for AccessibilityBanner {
             .id("accessibility-banner")
             .w_full()
             .max_w(px(768.))
+            .mb_4()
             .gap_3()
-            .px_3()
-            .py_2()
-            .rounded(theme.radius_lg)
+            .pl(px(14.))
+            .pr(px(10.))
+            .py(px(10.))
+            .rounded(design::RADIUS_PANEL)
             .border_1()
-            .border_color(theme.warning.opacity(0.4))
-            .bg(theme.warning.opacity(0.1))
+            .border_color(theme.warning.opacity(0.3))
+            .bg(theme.warning.opacity(0.08))
             .child(
                 icon("triangle-alert")
                     .flex_shrink_0()
@@ -119,14 +122,15 @@ impl Render for AccessibilityBanner {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .child(t("accessibility.permissionsDescription")),
             )
             .child(
                 Button::new("accessibility-open-settings")
                     .flex_shrink_0()
-                    .outline()
+                    .primary()
                     .small()
+                    .pill()
                     .label(t("accessibility.openSettings"))
                     .on_click(cx.listener(|this, _, _, cx| this.on_click(cx))),
             )
@@ -177,13 +181,15 @@ impl Render for SecureInputBanner {
             .id("secure-input-banner")
             .w_full()
             .max_w(px(768.))
+            .mb_4()
             .gap_3()
-            .px_3()
-            .py_2()
-            .rounded(theme.radius_lg)
+            .pl(px(14.))
+            .pr(px(10.))
+            .py(px(10.))
+            .rounded(design::RADIUS_PANEL)
             .border_1()
-            .border_color(theme.warning.opacity(0.4))
-            .bg(theme.warning.opacity(0.1))
+            .border_color(theme.warning.opacity(0.3))
+            .bg(theme.warning.opacity(0.08))
             .child(
                 icon("triangle-alert")
                     .flex_shrink_0()
@@ -193,7 +199,7 @@ impl Render for SecureInputBanner {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .child(secure_input_message(&status)),
             )
             .child(
@@ -201,6 +207,7 @@ impl Render for SecureInputBanner {
                     .flex_shrink_0()
                     .ghost()
                     .small()
+                    .pill()
                     .label(t("secureInput.learnMore"))
                     .icon(icon("external-link"))
                     .on_click(|_, _, cx| cx.open_url(SECURE_INPUT_HELP_URL)),

@@ -116,7 +116,20 @@ pub fn create_app_handle() -> AppHandle {
         paths.app_data_dir = data_dir.clone();
         paths.app_log_dir = data_dir.join("logs");
     }
+    // Debug builds: run beside an installed Guidy with separate data.
+    #[cfg(debug_assertions)]
+    if let Some(dir) = dev_profile_dir() {
+        paths.app_data_dir = dir.join("data");
+        paths.app_log_dir = dir.join("logs");
+    }
     AppHandle::new(paths)
+}
+
+/// `GUIDY_DEV_PROFILE_DIR`: a debug build keeps its data and logs there,
+/// takes its own single-instance lock and its own Keychain service.
+#[cfg(debug_assertions)]
+pub fn dev_profile_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("GUIDY_DEV_PROFILE_DIR").map(std::path::PathBuf::from)
 }
 
 #[allow(unused_variables)]

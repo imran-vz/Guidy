@@ -1,9 +1,10 @@
 //! The recording overlay, drawn as a floating
-//! Zed-style panel: compact pill for recording/working, and the Live card
+//! glass panel: compact pill for recording/working, and the Live card
 //! that opens into a transcript panel while streaming.
 
 use crate::logic::overlay::{bar_height, format_timer, OverlayKind, OverlayModel};
 use crate::state::now_ms;
+use crate::ui::design;
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable};
@@ -140,13 +141,9 @@ fn cancel_button(cx: &App) -> impl IntoElement {
 }
 
 fn status_dot(ready: bool, cx: &App) -> AnyElement {
-    let accent = cx.theme().primary;
     let muted = cx.theme().muted_foreground;
     if ready {
-        div()
-            .size(px(7.))
-            .rounded_full()
-            .bg(accent)
+        design::signal_dot(cx)
             .with_animation(
                 "dot-pulse",
                 Animation::new(Duration::from_millis(1900)).repeat(),
@@ -223,13 +220,16 @@ impl Render for OverlayView {
             return div().size_full().into_any_element();
         }
 
+        // Glass: near-opaque surface, hairline edge, rim light on top.
         let card = div()
-            .bg(bg.opacity(0.98))
+            .relative()
+            .bg(bg.opacity(0.96))
             .border_1()
             .border_color(border)
             .text_color(fg)
-            .shadow_md()
-            .overflow_hidden();
+            .shadow_lg()
+            .overflow_hidden()
+            .child(design::rim_light(cx));
 
         let listening_row = |show_timer: bool, cx: &App| {
             h_flex()
@@ -253,7 +253,7 @@ impl Render for OverlayView {
                             d.child(
                                 div()
                                     .id("overlay-timer")
-                                    .text_xs()
+                                    .text_size(px(11.))
                                     .text_color(muted)
                                     .font_family(crate::theme::MONO_FONT)
                                     .child(format_timer(m.elapsed_secs(now)))
@@ -273,9 +273,9 @@ impl Render for OverlayView {
                 .child(
                     div()
                         .id("overlay-work-label")
-                        .text_sm()
+                        .text_size(design::TEXT_BODY)
                         .text_color(muted)
-                        .child(label)
+                        .child(design::shimmer_text("overlay-work-shimmer", label, cx))
                         .test_support(),
                 )
                 .child(cancel_button(cx))
@@ -357,6 +357,9 @@ impl Render for OverlayView {
             };
             card.rounded(px(radius))
                 .child(inner)
+                .when(l.working, |d| {
+                    d.child(design::sheen("overlay-live-sheen", px(radius), cx))
+                })
                 .with_animation(
                     ("pop-in", m.session as usize),
                     Animation::new(Duration::from_millis(460)).with_easing(ease_out_quint()),
@@ -374,6 +377,9 @@ impl Render for OverlayView {
             card.w(px(width))
                 .rounded_full()
                 .child(row)
+                .when(working, |d| {
+                    d.child(design::sheen("overlay-work-sheen", px(20.), cx))
+                })
                 .with_animation(
                     "fade",
                     Animation::new(Duration::from_millis(200)),

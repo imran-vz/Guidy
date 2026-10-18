@@ -5,6 +5,7 @@ use crate::logic::flows::{
 };
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
+use crate::ui::design::Pill;
 use crate::ui::kit::{
     group, page, reset_button, t, t_args, toggle, Dropdown, DropdownOption, SettingRow, SliderRow,
 };
@@ -170,7 +171,8 @@ impl DebugPage {
         let theme = cx.theme().clone();
         let mut body = v_flex().w_full().gap_2().child(
             Button::new("diag-run")
-                .outline()
+                .secondary()
+                .pill()
                 .small()
                 .label(if self.diag_running {
                     t("settings.debug.keyboardDiagnostic.running")
@@ -298,7 +300,8 @@ impl DebugPage {
                     .gap_2()
                     .child(
                         Button::new("logs-pause")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .xsmall()
                             .label(if paused {
                                 t("settings.debug.liveLogs.resume")
@@ -316,7 +319,8 @@ impl DebugPage {
                     .child({
                         let text = format_logs_for_copy(&lines);
                         Button::new("logs-copy")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .xsmall()
                             .label(if self.logs_copied {
                                 t("settings.debug.liveLogs.copied")
@@ -343,7 +347,8 @@ impl DebugPage {
                     })
                     .child(
                         Button::new("logs-clear")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .xsmall()
                             .label(t("common.clear"))
                             .disabled(empty)
@@ -461,7 +466,8 @@ impl Render for DebugPage {
             .description(t("settings.debug.whatsNewPreview.description"))
             .control(
                 Button::new("whats-new-preview-button")
-                    .outline()
+                    .secondary()
+                    .pill()
                     .small()
                     .label(t("settings.debug.whatsNewPreview.button"))
                     .on_click(|_, window, cx| {
@@ -487,7 +493,8 @@ impl Render for DebugPage {
                         .gap_2()
                         .child(
                             Button::new("preview-permissions")
-                                .outline()
+                                .secondary()
+                                .pill()
                                 .small()
                                 .label(t("settings.debug.onboardingPreview.permissionsButton"))
                                 .on_click(move |_, _, cx| {
@@ -498,7 +505,8 @@ impl Render for DebugPage {
                         )
                         .child(
                             Button::new("preview-models")
-                                .outline()
+                                .secondary()
+                                .pill()
                                 .small()
                                 .label(t("settings.debug.onboardingPreview.modelsButton"))
                                 .on_click(move |_, _, cx| {

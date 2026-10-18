@@ -237,6 +237,16 @@ fn use_memory_by_default() -> bool {
     requested
 }
 
+/// [`SERVICE`], or in a debug build with a dev profile its own service, so
+/// a dev build never reads or replaces the installed app's secrets.
+fn keychain_service() -> String {
+    #[cfg(debug_assertions)]
+    if crate::dev_profile_dir().is_some() {
+        return format!("{SERVICE}.dev");
+    }
+    SERVICE.to_string()
+}
+
 fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
     static BACKEND: OnceLock<RwLock<Arc<dyn SecretsBackend>>> = OnceLock::new();
     BACKEND.get_or_init(|| {
@@ -250,7 +260,7 @@ fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
             }
             Arc::new(memory)
         } else {
-            Arc::new(Cached::new(KeychainBackend::new(SERVICE)))
+            Arc::new(Cached::new(KeychainBackend::new(keychain_service())))
         };
         RwLock::new(backend)
     })

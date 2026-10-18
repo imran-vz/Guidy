@@ -2,6 +2,7 @@
 //! acknowledgments.
 
 use crate::state::AppState;
+use crate::ui::design;
 use crate::ui::kit::{
     group, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
 };
@@ -110,7 +111,7 @@ impl Render for AboutPage {
                 .control(
                     div()
                         .id("version-value")
-                        .text_sm()
+                        .text_size(design::TEXT_MONO)
                         .font_family(crate::theme::MONO_FONT)
                         .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                 )
@@ -173,14 +174,73 @@ impl Render for AboutPage {
                 .stacked()
                 .control(
                     div()
-                        .text_sm()
+                        .text_size(px(12.))
+                        .line_height(relative(1.55))
                         .text_color(muted)
                         .child(t("settings.about.acknowledgments.ggml.details")),
                 )
                 .into_any_element(),
         ];
+        // The one place the product introduces itself: a drawing of what it
+        // does (voice in), what it is, and the facts about this install.
+        let model = st
+            .models
+            .models
+            .iter()
+            .find(|m| m.id == st.models.current_model)
+            .map(crate::ui::kit::model_name)
+            .unwrap_or_else(|| "—".into());
+        let hero = design::panel(cx)
+            .child(
+                design::blueprint(px(150.), cx).child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(design::illustration("waveform", px(260.), px(113.), cx)),
+                ),
+            )
+            .child(
+                design::section(false, cx)
+                    .pt_0()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(design::TEXT_HEADLINE)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(t("settings.about.hero.headline")),
+                    )
+                    .child(
+                        div()
+                            .text_size(design::TEXT_BODY)
+                            .line_height(relative(1.55))
+                            .text_color(muted)
+                            .child(t("settings.about.hero.lede")),
+                    ),
+            )
+            .child(
+                div()
+                    .border_t_1()
+                    .border_color(design::tone(cx).hairline)
+                    .child(design::stat_grid(
+                        vec![
+                            design::Stat::new(
+                                t("settings.about.version.title"),
+                                format!("v{}", env!("CARGO_PKG_VERSION")),
+                            )
+                            .accent(true),
+                            design::Stat::new(t("settings.about.hero.engine"), "transcribe.cpp"),
+                            design::Stat::new(t("settings.about.hero.model"), model),
+                        ],
+                        3,
+                        cx,
+                    )),
+            );
         page()
             .id("page-about")
+            .child(hero)
             .child(group(Some(t("settings.about.title")), rows, cx))
             .child(group(
                 Some(t("settings.about.acknowledgments.title")),

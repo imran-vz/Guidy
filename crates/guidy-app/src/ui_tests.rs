@@ -1944,8 +1944,9 @@ mod meetings_fixes {
         assert!(exists(cx, w, "meetings-permissions"));
         assert!(!exists(cx, w, "meetings-permission-open-calendar"));
         assert!(exists(cx, w, "meetings-permission-open-microphone"));
-        // Notifications have no privacy pane, only "Request again".
-        assert!(!exists(cx, w, "meetings-permission-open-notifications"));
+        // Notifications: once answered, macOS won't ask again, so the row
+        // also links to the Notifications pane.
+        assert!(exists(cx, w, "meetings-permission-open-notifications"));
         assert!(exists(cx, w, "meetings-permission-request-notifications"));
         with_window(cx, w, |window, cx| {
             window.click("meetings-permission-open-system-audio", cx)

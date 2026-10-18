@@ -3,13 +3,13 @@
 
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::brand::wordmark;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, spinner, t};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::NotificationType;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::commands::audio::PermissionAccess;
@@ -277,6 +277,9 @@ impl PermissionsOnboarding {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// One permission: what it's for on the left, its state or the grant
+    /// button on the right.
+    #[allow(clippy::too_many_arguments)]
     fn card(
         &self,
         id: &'static str,
@@ -288,24 +291,23 @@ impl PermissionsOnboarding {
         cx: &mut Context<Self>,
         on_grant: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
-        let theme = cx.theme();
+        let tone = design::tone(cx);
+        let granted = status == PermissionStatus::Granted;
         let action: AnyElement = match status {
-            PermissionStatus::Granted => h_flex()
-                .gap_2()
-                .text_sm()
-                .text_color(theme.success)
-                .child(icon("check").small())
+            PermissionStatus::Granted => design::chip("", true, cx)
+                .child(icon("check").size(px(11.)))
                 .child(t("onboarding.permissions.granted"))
                 .into_any_element(),
-            PermissionStatus::Waiting => h_flex()
-                .gap_2()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(spinner("permission-wait", icon("loader-circle").small()))
-                .child(t("onboarding.permissions.waiting"))
+            PermissionStatus::Waiting => design::chip("", true, cx)
+                .child(design::shimmer_text(
+                    SharedString::from(format!("{id}-waiting")),
+                    t("onboarding.permissions.waiting"),
+                    cx,
+                ))
                 .into_any_element(),
             _ => Button::new(SharedString::from(format!("grant-{id}")))
                 .primary()
+                .pill()
                 .small()
                 .label(button_label)
                 .on_click(cx.listener(move |this, _, window, cx| on_grant(this, window, cx)))
@@ -314,35 +316,101 @@ impl PermissionsOnboarding {
         h_flex()
             .id(id)
             .w_full()
-            .p_4()
-            .gap_4()
-            .rounded(theme.radius_lg)
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.sidebar)
-            .child(
-                div()
-                    .p_3()
-                    .rounded_full()
-                    .bg(theme.primary.opacity(0.15))
-                    .text_color(theme.primary)
-                    .child(icon(icon_name)),
-            )
+            .gap(px(14.))
+            .px(design::SECTION_X)
+            .py(px(12.))
+            .border_t_1()
+            .border_color(tone.hairline)
+            .child(icon(icon_name).small().text_color(if granted {
+                tone.text_faint
+            } else {
+                tone.accent_text
+            }))
             .child(
                 v_flex()
                     .flex_1()
-                    .gap_1()
-                    .items_start()
-                    .child(div().font_semibold().child(title))
+                    .min_w_0()
+                    .gap(px(3.))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .mb_2()
-                            .child(description),
+                            .text_size(design::TEXT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(title),
                     )
-                    .child(action),
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(tone.text_muted)
+                            .child(description),
+                    ),
             )
+            .child(div().flex_none().child(action))
+    }
+
+    /// The blueprint drawing: a microphone, and the ⌘ V keys Guidy presses
+    /// to paste. Whatever is still to grant is drawn in the accent.
+    fn render_drawing(&self, cx: &App) -> impl IntoElement {
+        // Drawn by scripts/illustrations.py on a 480 × 210 canvas; the
+        // callouts start at the anchors it prints.
+        const W: f32 = 480.;
+        const H: f32 = 210.;
+        let mic_pending = self.microphone != PermissionStatus::Granted;
+        let ax_pending = !mic_pending && self.accessibility != PermissionStatus::Granted;
+        let mac = self.os == OsType::MacOs;
+        design::blueprint(px(228.), cx).child(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .relative()
+                        .w(px(W))
+                        .h(px(H))
+                        .child(
+                            design::illustration_state("microphone", px(W), px(H), mic_pending, cx)
+                                .absolute(),
+                        )
+                        .when(mac, |d| {
+                            d.child(
+                                design::illustration_state(
+                                    "paste-keys",
+                                    px(W),
+                                    px(H),
+                                    ax_pending,
+                                    cx,
+                                )
+                                .absolute(),
+                            )
+                        })
+                        .child(
+                            design::callout(
+                                t("onboarding.permissions.microphone.title"),
+                                mic_pending,
+                                cx,
+                            )
+                            .absolute()
+                            .left(px(132.))
+                            .right_0()
+                            .top(px(70.)),
+                        )
+                        .when(mac, |d| {
+                            d.child(
+                                design::callout(
+                                    t("onboarding.permissions.accessibility.title"),
+                                    ax_pending,
+                                    cx,
+                                )
+                                .absolute()
+                                .left(px(322.))
+                                .right(px(-8.))
+                                .top(px(146.)),
+                            )
+                        }),
+                ),
+        )
     }
 }
 
@@ -382,13 +450,14 @@ impl Render for PermissionsOnboarding {
                     div()
                         .p_4()
                         .rounded_full()
-                        .bg(theme.success.opacity(0.2))
-                        .text_color(theme.success)
+                        .bg(design::tone(cx).accent_soft)
+                        .text_color(design::tone(cx).accent_text)
                         .child(icon("check").large()),
                 )
                 .child(
                     div()
-                        .text_lg()
+                        .text_size(design::TEXT_HEADLINE)
+                        .font_weight(FontWeight::MEDIUM)
                         .child(t("onboarding.permissions.allGranted")),
                 )
                 .into_any_element();
@@ -399,35 +468,31 @@ impl Render for PermissionsOnboarding {
         } else {
             t("onboarding.permissions.grant")
         };
+        let tone = design::tone(cx);
         v_flex()
             .id("permissions-onboarding")
             .size_full()
             .p_6()
-            .gap_6()
             .items_center()
             .justify_center()
-            .child(wordmark(px(28.), cx))
             .child(
-                v_flex()
-                    .max_w(px(448.))
-                    .w_full()
-                    .gap_4()
-                    .items_center()
+                design::panel(cx)
+                    .max_w(px(520.))
+                    .child(self.render_drawing(cx))
                     .child(
-                        v_flex()
-                            .items_center()
-                            .gap_2()
-                            .mb_2()
+                        design::section(false, cx)
+                            .gap(px(6.))
                             .child(
                                 div()
-                                    .text_xl()
-                                    .font_semibold()
+                                    .text_size(design::TEXT_HEADLINE)
+                                    .font_weight(FontWeight::MEDIUM)
                                     .child(t("onboarding.permissions.title")),
                             )
                             .child(
                                 div()
-                                    .text_center()
-                                    .text_color(theme.muted_foreground)
+                                    .text_size(design::TEXT_BODY)
+                                    .line_height(relative(1.55))
+                                    .text_color(tone.text_muted)
                                     .child(t("onboarding.permissions.description")),
                             ),
                     )

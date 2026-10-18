@@ -7,13 +7,14 @@ use crate::logic::flows::{
 use crate::logic::meetings::MeetingsEvent;
 use crate::logic::settings_store::ToastSpec;
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::Pill;
 use crate::ui::kit::{group, icon, page, t, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::LocalModelsView;
 use crate::ui::shortcut_input::ShortcutInput;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::llm::{is_builtin_provider, resolve_provider, ProviderRef};
@@ -778,7 +779,8 @@ impl PostProcessingPage {
                     .description(t("settings.postProcessing.api.builtin.description"))
                     .control(
                         Button::new("pp-builtin-manage")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .small()
                             .icon(icon("download"))
                             .label(t("settings.postProcessing.api.builtin.manage"))
@@ -903,7 +905,8 @@ impl PostProcessingPage {
                 .control(
                     h_flex().gap_2().children(result).child(
                         Button::new("pp-test-connection-button")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .small()
                             .label(t("meetingsAi.byok.testConnection"))
                             .loading(self.testing)
@@ -945,7 +948,7 @@ impl PostProcessingPage {
                     .child(
                         div()
                             .text_sm()
-                            .font_semibold()
+                            .font_weight(FontWeight::MEDIUM)
                             .child(t("settings.postProcessing.prompts.promptLabel")),
                     )
                     .child(Input::new(&self.prompt_name).small()),
@@ -956,7 +959,7 @@ impl PostProcessingPage {
                     .child(
                         div()
                             .text_sm()
-                            .font_semibold()
+                            .font_weight(FontWeight::MEDIUM)
                             .child(t("settings.postProcessing.prompts.promptInstructions")),
                     )
                     .child(Textarea::new(&self.prompt_text))
@@ -1015,6 +1018,8 @@ impl PostProcessingPage {
                 .child(
                     Button::new("pp-create-new")
                         .primary()
+                        .when(self.creating, |b| b.secondary())
+                        .pill()
                         .small()
                         .label(t("settings.postProcessing.prompts.createNew"))
                         .disabled(self.creating)
@@ -1037,6 +1042,8 @@ impl PostProcessingPage {
                     .child(
                         Button::new("pp-create-prompt")
                             .primary()
+                            .when(!complete, |b| b.secondary())
+                            .pill()
                             .small()
                             .label(t("settings.postProcessing.prompts.createPrompt"))
                             .disabled(!complete)
@@ -1044,7 +1051,8 @@ impl PostProcessingPage {
                     )
                     .child(
                         Button::new("pp-cancel-create")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .small()
                             .label(t("settings.postProcessing.prompts.cancel"))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1063,6 +1071,8 @@ impl PostProcessingPage {
                     .child(
                         Button::new("pp-update-prompt")
                             .primary()
+                            .when(!dirty || !complete, |b| b.secondary())
+                            .pill()
                             .small()
                             .label(t("settings.postProcessing.prompts.updatePrompt"))
                             .disabled(!dirty || !complete)
@@ -1072,7 +1082,8 @@ impl PostProcessingPage {
                     )
                     .child(
                         Button::new("pp-delete-prompt")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .small()
                             .label(t("settings.postProcessing.prompts.deletePrompt"))
                             .disabled(prompts.len() <= 1)

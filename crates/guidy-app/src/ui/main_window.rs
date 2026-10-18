@@ -5,6 +5,7 @@ use crate::logic::flows::OnboardingStep;
 use crate::logic::settings_store::ToastKind;
 use crate::state::{AppEvent, AppState};
 use crate::ui::banners::{AccessibilityBanner, SecureInputBanner};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, t};
 use crate::ui::onboarding::{
     migration::ModelMigration, model_picker::ModelPicker, permissions::PermissionsOnboarding,
@@ -18,9 +19,9 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
 use crate::ui::{CloseWindow, ToggleDebugMode};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::{Notification, NotificationType};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, TitleBar, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, Sizable, TitleBar, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -301,25 +302,17 @@ impl MainWindow {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let tone = design::tone(cx);
         let visible = self.visible_sections(cx);
-        let (selected_bg, hover_bg, muted, border, panel) = (
-            theme.sidebar_accent,
-            theme.accent,
-            theme.muted_foreground,
-            theme.sidebar_border,
-            theme.sidebar,
-        );
         v_flex()
             .id("sidebar")
-            .w(px(168.))
+            .w(px(176.))
             .h_full()
             .flex_none()
-            .bg(panel)
-            .border_r_1()
-            .border_color(border)
-            .p_1p5()
-            .gap_0p5()
+            .bg(tone.frame)
+            .px(px(8.))
+            .pt(px(4.))
+            .gap(px(2.))
             .children(
                 visible
                     .into_iter()
@@ -329,17 +322,29 @@ impl MainWindow {
                         h_flex()
                             .id(SharedString::from(format!("nav-{}", section.id())))
                             .aria_label(t(section.label_key()))
-                            .gap_2()
-                            .px_2()
-                            .h(px(28.))
-                            .rounded(px(4.))
+                            .relative()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .h(px(32.))
+                            .rounded(px(9.))
                             .cursor_pointer()
-                            .text_sm()
-                            .when(active, |d| d.bg(selected_bg))
-                            .when(!active, |d| {
-                                d.text_color(muted).hover(move |s| s.bg(hover_bg))
+                            .text_size(design::TEXT_BODY)
+                            .when(active, |d| {
+                                d.bg(tone.raised)
+                                    .text_color(tone.text)
+                                    .shadow_xs()
+                                    .child(design::rim_light(cx))
                             })
-                            .child(icon(section.icon()).small())
+                            .when(!active, |d| {
+                                d.text_color(tone.text_muted).hover(move |s| {
+                                    s.bg(tone.raised.opacity(0.55)).text_color(tone.text)
+                                })
+                            })
+                            .child(
+                                icon(section.icon())
+                                    .small()
+                                    .when(active, |i| i.text_color(tone.accent_text)),
+                            )
                             .child(div().truncate().child(t(section.label_key())))
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.select_section(section, cx)),
@@ -435,18 +440,34 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (bg, fg, muted) = (theme.background, theme.foreground, theme.muted_foreground);
+        let tone = design::tone(cx);
         let rtl = guidy_i18n::is_rtl(&guidy_i18n::language());
+        let in_app = self.step(cx) == Some(OnboardingStep::Done) && self.preview.is_none();
 
-        let title_bar = TitleBar::new().child(
-            h_flex()
-                .gap_1p5()
-                .text_sm()
-                .text_color(muted)
-                .child(icon("audio-lines").small())
-                .child(guidy_core::host::PRODUCT_NAME),
-        );
+        // "Guidy / General": the product, then where you are.
+        let title_bar = TitleBar::new()
+            .bg(tone.frame)
+            .border_color(tone.frame)
+            .child(
+                h_flex()
+                    .gap(px(8.))
+                    .items_center()
+                    .text_size(design::TEXT_BODY)
+                    .child(icon("audio-lines").small().text_color(tone.accent_text))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tone.text)
+                            .child(guidy_core::host::PRODUCT_NAME),
+                    )
+                    .when(in_app, |d| {
+                        d.child(div().text_color(tone.text_faint).child("/")).child(
+                            div()
+                                .text_color(tone.text_muted)
+                                .child(t(self.section.label_key())),
+                        )
+                    }),
+            );
 
         let content: AnyElement = if let Some(step) = self.preview {
             let body = self.render_onboarding(step, true, window, cx);
@@ -457,7 +478,8 @@ impl Render for MainWindow {
                 .child(
                     div().absolute().top_2().right_2().child(
                         Button::new("exit-preview")
-                            .outline()
+                            .secondary()
+                            .pill()
                             .small()
                             .label(t("settings.debug.onboardingPreview.exitButton"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -474,31 +496,39 @@ impl Render for MainWindow {
                 None => div().size_full().into_any_element(),
                 Some(OnboardingStep::Done) => {
                     let page = self.render_page(window, cx);
+                    // Pages sit in an ink well inset into the window frame.
+                    let well = div()
+                        .id("page-scroll")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .when(rtl, |d| d.ml(design::WELL_INSET))
+                        .when(!rtl, |d| d.mr(design::WELL_INSET))
+                        .rounded(design::RADIUS_WELL)
+                        .border_1()
+                        .border_color(tone.hairline)
+                        .bg(tone.ink)
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .px(px(20.))
+                                .pt(px(20.))
+                                .pb(px(28.))
+                                .items_center()
+                                .child(self.accessibility_banner.clone())
+                                .child(self.secure_banner.clone())
+                                .child(page),
+                        );
                     h_flex()
                         .size_full()
                         .min_h_0()
+                        .bg(tone.frame)
                         .when(rtl, |d| d.flex_row_reverse())
                         .child(self.render_sidebar(cx))
-                        .child(
-                            div()
-                                .id("page-scroll")
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.scroll)
-                                .child(
-                                    v_flex()
-                                        .w_full()
-                                        .min_w_0()
-                                        .p_4()
-                                        .gap_4()
-                                        .items_center()
-                                        .child(self.accessibility_banner.clone())
-                                        .child(self.secure_banner.clone())
-                                        .child(page),
-                                ),
-                        )
+                        .child(well)
                         .into_any_element()
                 }
                 Some(step) => self.render_onboarding(step, false, window, cx),
@@ -509,8 +539,8 @@ impl Render for MainWindow {
             .id("main-window")
             .track_focus(&self.focus)
             .size_full()
-            .bg(bg)
-            .text_color(fg)
+            .bg(if in_app { tone.frame } else { tone.ink })
+            .text_color(tone.text)
             .font_family(crate::theme::UI_FONT)
             .on_action(cx.listener(Self::toggle_debug_mode))
             .on_action(|_: &CloseWindow, window, cx| {
@@ -520,12 +550,9 @@ impl Render for MainWindow {
             })
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(content))
-            .when(
-                self.step(cx) == Some(OnboardingStep::Done) && self.preview.is_none(),
-                |d| {
-                    d.child(self.status_bar.clone())
-                        .child(self.whats_new.clone())
-                },
-            )
+            .when(in_app, |d| {
+                d.child(self.status_bar.clone())
+                    .child(self.whats_new.clone())
+            })
     }
 }
