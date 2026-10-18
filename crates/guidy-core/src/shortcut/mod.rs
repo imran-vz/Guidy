@@ -14,6 +14,7 @@ mod handler;
 pub mod native_keys;
 
 use crate::host::AppHandle;
+use crate::llm::ProviderRef;
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -495,8 +496,12 @@ fn register_all_shortcuts_for_implementation(
             );
 
             // Reset to default
+            reset_values.push(BindingReset {
+                id: id.clone(),
+                invalid: binding.current_binding.clone(),
+                replacement: default_binding.current_binding.clone(),
+            });
             binding.current_binding = default_binding.current_binding.clone();
-            reset_values.push((id.clone(), binding.clone()));
             reset_bindings.push(id.clone());
         }
 
@@ -517,11 +522,36 @@ fn register_all_shortcuts_for_implementation(
     // Save settings if any bindings were reset
     if !reset_values.is_empty() {
         settings::update_settings(app, |s| {
-            s.bindings.extend(reset_values);
+            apply_binding_resets(&mut s.bindings, &reset_values)
         });
     }
 
     reset_bindings
+}
+
+/// A binding whose shortcut was invalid for the implementation, reset to
+/// its default.
+struct BindingReset {
+    id: String,
+    /// The `current_binding` that failed validation.
+    invalid: String,
+    replacement: String,
+}
+
+/// Write `resets` into fresh settings. Only `current_binding` changes, and
+/// only while it still holds the invalid value: a `change_binding` made
+/// since the snapshot the resets were computed from is kept.
+fn apply_binding_resets(
+    bindings: &mut std::collections::HashMap<String, ShortcutBinding>,
+    resets: &[BindingReset],
+) {
+    for reset in resets {
+        if let Some(binding) = bindings.get_mut(&reset.id) {
+            if binding.current_binding == reset.invalid {
+                binding.current_binding = reset.replacement.clone();
+            }
+        }
+    }
 }
 
 /// Initialize NativeKeys if not already initialized, with rollback on failure
@@ -940,19 +970,11 @@ fn validate_provider_exists(
     settings: &settings::AppSettings,
     provider_id: &str,
 ) -> Result<(), String> {
-    // The built-in llama.cpp runtime is not a `post_process_providers` entry,
-    // but post-processing can use it (through `crate::llm`).
-    if provider_id == crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID {
-        return Ok(());
-    }
-    if !settings
-        .post_process_providers
-        .iter()
-        .any(|provider| provider.id == provider_id)
-    {
-        return Err(format!("Provider '{}' not found", provider_id));
-    }
-    Ok(())
+    // Includes the built-in llama.cpp runtime, which post-processing can use
+    // (through `crate::llm`).
+    crate::llm::resolve_provider(settings, provider_id)
+        .map(|_| ())
+        .ok_or_else(|| format!("Provider '{}' not found", provider_id))
 }
 pub fn change_post_process_api_key_setting(
     app: AppHandle,
@@ -1048,17 +1070,14 @@ pub async fn fetch_post_process_models(
 ) -> Result<Vec<String>, String> {
     let settings = settings::get_settings(&app);
 
-    // The built-in runtime: its downloaded models.
-    if provider_id == crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID {
-        return crate::llm::list_models(&app, &provider_id).map_err(|e| e.to_string());
-    }
-
-    // Find the provider
-    let provider = settings
-        .post_process_providers
-        .iter()
-        .find(|p| p.id == provider_id)
-        .ok_or_else(|| format!("Provider '{}' not found", provider_id))?;
+    let provider = match crate::llm::resolve_provider(&settings, &provider_id) {
+        // The built-in runtime: its downloaded models.
+        Some(ProviderRef::Builtin) => {
+            return crate::llm::list_models(&app, &provider_id).map_err(|e| e.to_string());
+        }
+        Some(ProviderRef::Configured(provider)) => provider,
+        None => return Err(format!("Provider '{}' not found", provider_id)),
+    };
 
     if provider.id == APPLE_INTELLIGENCE_PROVIDER_ID {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1218,8 +1237,40 @@ pub async fn get_available_accelerators(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use global_hotkey::hotkey::HotKey as Shortcut;
     use key_listener::Hotkey;
+
+    #[test]
+    fn binding_resets_keep_concurrent_changes() {
+        let binding = |id: &str, current: &str| ShortcutBinding {
+            id: id.to_string(),
+            name: format!("{id} name"),
+            description: "renamed meanwhile".to_string(),
+            default_binding: "alt+space".to_string(),
+            current_binding: current.to_string(),
+        };
+        let mut bindings: std::collections::HashMap<_, _> = [
+            ("still_invalid".to_string(), binding("still_invalid", "fn")),
+            ("changed".to_string(), binding("changed", "ctrl+k")),
+        ]
+        .into();
+        let reset = |id: &str| BindingReset {
+            id: id.to_string(),
+            invalid: "fn".to_string(),
+            replacement: "alt+space".to_string(),
+        };
+        apply_binding_resets(
+            &mut bindings,
+            &[reset("still_invalid"), reset("changed"), reset("missing")],
+        );
+        // Only `current_binding` is reset; the rest of the fresh binding stays.
+        assert_eq!(bindings["still_invalid"].current_binding, "alt+space");
+        assert_eq!(bindings["still_invalid"].description, "renamed meanwhile");
+        // Changed since the snapshot: left alone.
+        assert_eq!(bindings["changed"].current_binding, "ctrl+k");
+        assert!(!bindings.contains_key("missing"));
+    }
 
     #[test]
     fn compound_shortcut_keys_parse_on_both_backends() {

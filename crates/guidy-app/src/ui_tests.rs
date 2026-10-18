@@ -2166,6 +2166,43 @@ mod meetings_fixes {
         assert!(!exists(cx, w, "summary-progress"));
     }
 
+    #[gpui_kit::test]
+    fn summary_job_state_follows_the_shown_meeting(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+
+        // Meeting 1 summarizes (here), meeting 2 is summarizing elsewhere.
+        meetings.data.lock().ai.summarizing = vec![2];
+        view.update(cx, |v, cx| {
+            v.generate(None, cx);
+            assert!(v.is_generating());
+            v.set_meeting(2, cx);
+            // Meeting 1's spinner doesn't carry over.
+            assert!(!v.is_generating());
+        });
+        cx.run_until_parked();
+        assert!(meetings.called("summarize 1 default"));
+        // Meeting 2's own job shows; meeting 1's finishing doesn't clear it
+        // or show its summary here.
+        assert!(view.read_with(cx, |v, _| v.is_generating()));
+        assert!(exists(cx, w, "summary-progress"));
+        assert!(exists(cx, w, "summary-empty"));
+        with_window(cx, w, |window, cx| {
+            window.click("summary-cancel-generate", cx)
+        });
+        assert!(meetings.called("cancel_summarize 2"));
+        assert!(!meetings.called("cancel_summarize 1"));
+
+        // Back to meeting 1: its finished summary loads, no spinner.
+        meetings.data.lock().ai.summarizing.clear();
+        view.update(cx, |v, cx| v.set_meeting(1, cx));
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |v, _| v.is_generating()));
+        assert!(!exists(cx, w, "summary-empty"));
+    }
+
     /// Hosts the ticket list through its public entry point.
     struct TicketsHost;
     impl gpui_kit::Render for TicketsHost {
@@ -2378,6 +2415,42 @@ mod meetings_fixes {
             Some("sk-good".into())
         );
         assert_eq!(*toasts.borrow(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn api_key_typed_before_the_stored_key_loads_is_saved(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let state = setup(cx, backend.clone());
+        let (w, page) = open(cx, PostProcessingPage::new);
+        let shown = backend.settings().post_process_provider_id.clone();
+        let shown = if shown.is_empty() {
+            backend.settings().post_process_providers[0].id.clone()
+        } else {
+            shown
+        };
+        let pid = backend
+            .settings()
+            .post_process_providers
+            .iter()
+            .map(|p| p.id.clone())
+            .find(|id| *id != shown && id != "apple_intelligence" && id != "guidy_local")
+            .expect("another BYOK provider");
+        // Showing another provider starts its Keychain read; the key is
+        // typed and saved before that read finishes.
+        cx.update_window(w, |_, window, cx| {
+            state.update(cx, |s, cx| s.set_post_process_provider(&pid, cx));
+            assert!(page.read_with(cx, |p, _| p.cached_api_key(&pid).is_none()));
+            page.update(cx, |p, cx| p.enter_api_key("sk-early", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(backend.called(&format!("change_post_process_api_key {pid} sk-early")));
+        // The finished read doesn't bring back the old (empty) key.
+        assert_eq!(
+            page.read_with(cx, |p, _| p.cached_api_key(&pid).map(str::to_string)),
+            Some("sk-early".into())
+        );
+        assert_eq!(page.read_with(cx, |p, cx| p.api_key_input(cx)), "sk-early");
     }
 
     #[gpui_kit::test]

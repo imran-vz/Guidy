@@ -156,23 +156,6 @@ struct LearnedParams {
 }
 
 impl LearnedParams {
-    /// What changed between the first request sent (`before`) and the one
-    /// that succeeded (`after`).
-    fn from_change(before: ParamShape, after: ParamShape) -> Self {
-        let use_max_completion_tokens = if before.max_tokens && after.max_completion_tokens {
-            Some(true)
-        } else if before.max_completion_tokens && after.max_tokens {
-            Some(false)
-        } else {
-            None
-        };
-        Self {
-            drop_reasoning: before.reasoning && !after.reasoning,
-            drop_temperature: before.temperature && !after.temperature,
-            use_max_completion_tokens,
-        }
-    }
-
     fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -184,15 +167,6 @@ impl LearnedParams {
             self.use_max_completion_tokens = other.use_max_completion_tokens;
         }
     }
-}
-
-/// Which optional fields a request carries (see [`LearnedParams::from_change`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ParamShape {
-    max_tokens: bool,
-    max_completion_tokens: bool,
-    temperature: bool,
-    reasoning: bool,
 }
 
 /// [`LearnedParams`] per endpoint (base_url|model), remembered for the
@@ -269,8 +243,10 @@ fn leading_param_name(rest: &str) -> Option<String> {
     Some(rest[..end].to_string()).filter(|n| !n.is_empty())
 }
 
-/// The parameter a 400/422 error body names as the rejected one, if any.
-/// `lower` is the lowercased error text.
+/// The parameter a 400/422 error body is about, if it names one. That alone
+/// doesn't mean the parameter is unsupported: OpenAI's `param` and pydantic's
+/// `loc` also name a parameter whose *value* is invalid (see
+/// [`says_unsupported`]). `lower` is the lowercased error text.
 fn rejected_param_name(lower: &str) -> Option<String> {
     // OpenAI: "Unsupported parameter: 'max_tokens' is not supported with
     // this model. Use 'max_completion_tokens' instead." /
@@ -300,19 +276,36 @@ fn rejected_param_name(lower: &str) -> Option<String> {
     loc.rsplit(',').next().and_then(leading_param_name)
 }
 
-/// Whether error text says `temperature` itself is the problem ("temperature
-/// must be 1", "'temperature' is not supported", "Invalid value for
-/// temperature"), as opposed to merely mentioning it (an echoed request body).
-fn names_temperature_as_problem(lower: &str) -> bool {
-    const AFTER: [&str; 6] = [
+/// Whether error text says a parameter is not supported at all (OpenAI's
+/// `unsupported_parameter` / `unsupported_value` codes and messages,
+/// pydantic's `extra_forbidden`), as opposed to having an invalid value
+/// ("max_tokens is too large", "temperature: decimal above maximum value").
+/// Only the former is fixed by dropping or renaming the parameter; doing that
+/// for the latter would silently change the request.
+fn says_unsupported(lower: &str) -> bool {
+    const MARKERS: [&str; 7] = [
+        "unsupported",
+        "not supported",
+        "does not support",
+        "extra_forbidden",
+        "extra inputs are not permitted",
+        "unrecognized request argument",
+        "unknown parameter",
+    ];
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Whether error text says `temperature` itself is unsupported
+/// ("'temperature' is not supported", "temperature: only the default (1)
+/// value is supported"), as opposed to merely mentioning it (an echoed
+/// request body) or rejecting its value.
+fn names_temperature_as_unsupported(lower: &str) -> bool {
+    const AFTER: [&str; 4] = [
         "not supported",
         "unsupported",
         "does not support",
-        "invalid",
-        "must",
-        "only",
+        "only the default",
     ];
-    const BEFORE: [&str; 2] = ["unsupported", "invalid"];
     // Look only within the clause around each mention.
     let is_break = |c: char| matches!(c, '.' | ',' | ';' | '\n' | '{' | '}' | '[' | ']');
     lower.match_indices("temperature").any(|(at, word)| {
@@ -320,7 +313,7 @@ fn names_temperature_as_problem(lower: &str) -> bool {
         let after = &after[..after.find(is_break).unwrap_or(after.len())];
         let before = &lower[..at];
         let before = &before[before.rfind(is_break).map_or(0, |i| i + 1)..];
-        AFTER.iter().any(|w| after.contains(w)) || BEFORE.iter().any(|w| before.contains(w))
+        AFTER.iter().any(|w| after.contains(w)) || before.contains("unsupported")
     })
 }
 
@@ -355,51 +348,57 @@ impl ChatCompletionRequest {
         }
     }
 
-    fn shape(&self) -> ParamShape {
-        ParamShape {
-            max_tokens: self.max_tokens.is_some(),
-            max_completion_tokens: self.max_completion_tokens.is_some(),
-            temperature: self.temperature.is_some(),
-            reasoning: !self.reasoning.is_empty(),
-        }
-    }
-
     /// After a 400/422 with `error_text`, drop or rename the parameter the
-    /// endpoint rejected. Returns false when nothing could be changed (the
-    /// error is then reported as is).
-    fn adjust_after_rejection(&mut self, error_text: &str) -> bool {
+    /// endpoint says it doesn't support, recording each change in `learned`
+    /// (what this request has learned so far). Returns false when nothing
+    /// could be changed (the error is then reported as is).
+    fn adjust_after_rejection(&mut self, error_text: &str, learned: &mut LearnedParams) -> bool {
         let lower = error_text.to_ascii_lowercase();
         let rejected = match rejected_param_name(&lower) {
-            Some(n) => n,
-            None if names_temperature_as_problem(&lower) && self.temperature.is_some() => {
+            Some(name) if says_unsupported(&lower) => name,
+            // An invalid value for a named parameter: dropping it would
+            // silently change the request (e.g. lose the output limit).
+            Some(_) => return false,
+            None if self.temperature.is_some() && names_temperature_as_unsupported(&lower) => {
                 "temperature".to_string()
             }
-            None if !self.reasoning.is_empty()
-                && ["unsupported parameter", "reasoning", "thinking"]
-                    .iter()
-                    .any(|w| lower.contains(w)) =>
-            {
-                "reasoning".to_string()
-            }
+            // Last resort: some endpoints (Gemini's compat layer, some
+            // OpenRouter upstreams) reject the reasoning-disable fields
+            // without naming them. A retry that fails the same way is
+            // reported as is.
+            None if !self.reasoning.is_empty() => "reasoning".to_string(),
             None => return false,
         };
         match rejected.as_str() {
             "temperature" if self.temperature.is_some() => {
                 self.temperature = None;
+                learned.drop_temperature = true;
                 true
             }
-            "max_tokens" if self.max_tokens.is_some() => {
+            // The output budget is renamed at most once per request: an
+            // endpoint that rejects both names gets the error reported
+            // instead of a back-and-forth.
+            "max_tokens"
+                if self.max_tokens.is_some() && learned.use_max_completion_tokens.is_none() =>
+            {
                 self.max_completion_tokens = self.max_tokens.take();
+                learned.use_max_completion_tokens = Some(true);
                 true
             }
-            "max_completion_tokens" if self.max_completion_tokens.is_some() => {
+            "max_completion_tokens"
+                if self.max_completion_tokens.is_some()
+                    && learned.use_max_completion_tokens.is_none() =>
+            {
                 self.max_tokens = self.max_completion_tokens.take();
+                learned.use_max_completion_tokens = Some(false);
                 true
             }
-            r if r.starts_with("reasoning") || r.starts_with("thinking") => {
-                let had = !self.reasoning.is_empty();
+            r if (r.starts_with("reasoning") || r.starts_with("thinking"))
+                && !self.reasoning.is_empty() =>
+            {
                 self.reasoning = ReasoningParams::default();
-                had
+                learned.drop_reasoning = true;
+                true
             }
             _ => false,
         }
@@ -415,6 +414,37 @@ struct ChatCompletionResponse {
 struct ChatChoice {
     message: ChatMessageResponse,
     finish_reason: Option<String>,
+    /// Set by OpenRouter when the upstream failed mid-request (with
+    /// `finish_reason: "error"` and no content).
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+impl ChatChoice {
+    /// The error for a choice without content that didn't simply stop: an
+    /// upstream failure (OpenRouter's `finish_reason: "error"`), a content
+    /// filter, or no finish reason at all. None when the empty reply is a
+    /// normal one.
+    fn empty_reply_error(&self) -> Option<String> {
+        let empty = self.message.content.as_deref().is_none_or(str::is_empty);
+        let reason = self.finish_reason.as_deref();
+        if !empty || reason == Some("stop") {
+            return None;
+        }
+        let detail = self
+            .error
+            .as_ref()
+            .and_then(|e| e.get("message").and_then(Value::as_str).or(e.as_str()))
+            .map(|m| format!(": {m}"))
+            .unwrap_or_default();
+        Some(match reason {
+            Some("content_filter") => {
+                format!("The response was blocked by the provider's content filter{detail}")
+            }
+            Some(r) => format!("The response ended with no content (finish reason '{r}'){detail}"),
+            None => format!("The response ended with no content and no finish reason{detail}"),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -829,7 +859,8 @@ async fn send_openai_chat(
     };
     request_body.fit_params_to_model();
     request_body.apply_learned(learned);
-    let first_shape = request_body.shape();
+    // What this request learns, recorded by each adjustment as it is made.
+    let mut newly_learned = LearnedParams::default();
 
     // A 400/422 is usually the endpoint rejecting one optional field: an
     // unsupported parameter (OpenAI reasoning models and `max_tokens` /
@@ -870,25 +901,16 @@ async fn send_openai_chat(
         if !matches!(status.as_u16(), 400 | 422) || retries >= MAX_RETRIES {
             return fail();
         }
-        let had_reasoning = !request_body.reasoning.is_empty();
-        if request_body.adjust_after_rejection(&error_text) {
-            info!(
-                "Endpoint rejected a request parameter (status {}): {}. Retrying without it",
-                status, error_text
-            );
-        } else if had_reasoning {
-            info!(
-                "Endpoint rejected request with reasoning disabled (status {}): {}. Retrying without reasoning fields",
-                status, error_text
-            );
-            request_body.reasoning = ReasoningParams::default();
-        } else {
+        if !request_body.adjust_after_rejection(&error_text, &mut newly_learned) {
             return fail();
         }
+        info!(
+            "Endpoint rejected a request parameter (status {}): {}. Retrying without it",
+            status, error_text
+        );
         retries += 1;
     };
 
-    let newly_learned = LearnedParams::from_change(first_shape, request_body.shape());
     if !newly_learned.is_empty() {
         info!(
             "Retry with adjusted parameters succeeded; '{}' (model '{}') will use them from now on: {:?}",
@@ -915,6 +937,9 @@ async fn send_openai_chat(
         return Err(ChatError::Truncated(
             "Response was truncated at the provider's output token limit".to_string(),
         ));
+    }
+    if let Some(e) = choice.empty_reply_error() {
+        return Err(ChatError::Failed(e));
     }
 
     Ok(choice.message.content)
@@ -1355,33 +1380,12 @@ mod tests {
     }
 
     #[test]
-    fn learned_params_come_from_what_changed_and_apply_up_front() {
-        let shape = |max_tokens, max_completion_tokens, temperature, reasoning| ParamShape {
-            max_tokens,
-            max_completion_tokens,
-            temperature,
-            reasoning,
+    fn learned_params_apply_up_front() {
+        let learned = LearnedParams {
+            drop_reasoning: true,
+            drop_temperature: true,
+            use_max_completion_tokens: Some(true),
         };
-        let learned = LearnedParams::from_change(
-            shape(true, false, true, true),
-            shape(false, true, false, false),
-        );
-        assert_eq!(
-            learned,
-            LearnedParams {
-                drop_reasoning: true,
-                drop_temperature: true,
-                use_max_completion_tokens: Some(true),
-            }
-        );
-        // Nothing changed, nothing learned (a field the caller didn't send is
-        // not a rejection).
-        assert!(LearnedParams::from_change(
-            shape(false, false, false, false),
-            shape(false, false, false, false)
-        )
-        .is_empty());
-
         let mut r = ChatCompletionRequest {
             model: "my-gpt5".to_string(),
             messages: vec![],
@@ -1739,9 +1743,8 @@ mod tests {
         assert!(json.get("temperature").is_some());
     }
 
-    #[test]
-    fn rejected_parameters_are_dropped_or_renamed() {
-        let request = || ChatCompletionRequest {
+    fn adjustable_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
             model: "m".to_string(),
             messages: vec![],
             stream: false,
@@ -1753,85 +1756,159 @@ mod tests {
                 reasoning_effort: Some("none".into()),
                 ..Default::default()
             },
-        };
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","param":"max_tokens"}}"#
-        ));
+        }
+    }
+
+    /// Apply one rejection to a fresh request; returns the request and what
+    /// it learned, or None when nothing was adjusted.
+    fn adjusted(error_text: &str) -> Option<(ChatCompletionRequest, LearnedParams)> {
+        let mut r = adjustable_request();
+        let mut learned = LearnedParams::default();
+        r.adjust_after_rejection(error_text, &mut learned)
+            .then_some((r, learned))
+    }
+
+    #[test]
+    fn rejected_parameters_are_dropped_or_renamed() {
+        let (r, learned) = adjusted(
+            r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","param":"max_tokens","code":"unsupported_parameter"}}"#,
+        )
+        .unwrap();
         assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
         assert_eq!(r.temperature, Some(0.2));
         assert!(!r.reasoning.is_empty());
+        assert_eq!(
+            learned,
+            LearnedParams {
+                use_max_completion_tokens: Some(true),
+                ..Default::default()
+            }
+        );
 
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported."}}"#
-        ));
+        let (r, learned) = adjusted(
+            r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported."}}"#,
+        )
+        .unwrap();
         assert_eq!(r.temperature, None);
         assert_eq!(r.max_tokens, Some(100));
+        assert!(learned.drop_temperature && !learned.drop_reasoning);
 
-        let mut r = request();
-        assert!(r.adjust_after_rejection("temperature must be 1 for this model"));
-        assert_eq!(r.temperature, None);
-
-        let mut r = request();
-        assert!(r.adjust_after_rejection("Unsupported parameter: 'reasoning_effort'"));
+        let (r, learned) = adjusted("Unsupported parameter: 'reasoning_effort'").unwrap();
         assert!(r.reasoning.is_empty());
         assert_eq!(r.temperature, Some(0.2));
+        assert!(learned.drop_reasoning && !learned.drop_temperature);
 
         // A JSON-escaped name inside an error string.
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":"{\"message\":\"Unsupported parameter: \\\"max_tokens\\\" is not supported\"}"}"#
-        ));
+        let (r, _) = adjusted(
+            r#"{"error":"{\"message\":\"Unsupported parameter: \\\"max_tokens\\\" is not supported\"}"}"#,
+        )
+        .unwrap();
         assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
-        let mut r = request();
-        assert!(r.adjust_after_rejection(r#"Unsupported parameter: \"max_tokens\""#));
+        let (r, _) = adjusted(r#"Unsupported parameter: \"max_tokens\""#).unwrap();
         assert_eq!(r.max_completion_tokens, Some(100));
 
         // OpenAI's `param` field and pydantic's `loc` name the field.
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":{"message":"Invalid request","param":"temperature"}}"#
-        ));
+        let (r, _) = adjusted(
+            r#"{"error":{"message":"This model does not support it","param":"temperature","code":"unsupported_value"}}"#,
+        )
+        .unwrap();
         assert_eq!(r.temperature, None);
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"detail":[{"loc":["body","temperature"],"msg":"Input should be 1"}]}"#
-        ));
-        assert_eq!(r.temperature, None);
-        assert!(!r.reasoning.is_empty());
 
         // A pydantic 422 rejecting reasoning_effort while echoing the request
         // body (temperature included) keeps the temperature.
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"detail":[{"type":"extra_forbidden","loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted","input":"none"}],"body":{"temperature":0.2,"max_tokens":100,"reasoning_effort":"none"}}"#
-        ));
+        let (r, _) = adjusted(
+            r#"{"detail":[{"type":"extra_forbidden","loc":["body","reasoning_effort"],"msg":"Extra inputs are not permitted","input":"none"}],"body":{"temperature":0.2,"max_tokens":100,"reasoning_effort":"none"}}"#,
+        )
+        .unwrap();
         assert!(r.reasoning.is_empty());
         assert_eq!(r.temperature, Some(0.2));
         // Same without a `loc`: temperature is only mentioned, not blamed.
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":"Extra inputs are not permitted","body":{"temperature":0.2,"reasoning_effort":"none"}}"#
-        ));
+        let (r, _) = adjusted(
+            r#"{"error":"Extra inputs are not permitted","body":{"temperature":0.2,"reasoning_effort":"none"}}"#,
+        )
+        .unwrap();
         assert!(r.reasoning.is_empty());
         assert_eq!(r.temperature, Some(0.2));
         // `"param": null` names nothing.
-        let mut r = request();
-        assert!(r.adjust_after_rejection(
-            r#"{"error":{"message":"temperature is not supported for this model","param":null}}"#
-        ));
+        let (r, _) = adjusted(
+            r#"{"error":{"message":"temperature is not supported for this model","param":null}}"#,
+        )
+        .unwrap();
         assert_eq!(r.temperature, None);
-        let mut r = request();
-        assert!(r.adjust_after_rejection("Invalid value for temperature: 0.2"));
-        assert_eq!(r.temperature, None);
+        assert!(!r.reasoning.is_empty());
 
-        // Nothing identifiable: left to the caller.
-        let mut r = request();
-        assert!(!r.adjust_after_rejection("model not found"));
-        assert!(!r.adjust_after_rejection(r#"{"error":"bad request","temperature":0.2}"#));
+        // Nothing identifiable: the reasoning fields are the last resort.
+        let (r, learned) = adjusted("model not found").unwrap();
+        assert!(r.reasoning.is_empty());
+        assert_eq!((r.temperature, r.max_tokens), (Some(0.2), Some(100)));
+        assert!(learned.drop_reasoning);
+        let mut r = adjustable_request();
+        r.reasoning = ReasoningParams::default();
+        let mut learned = LearnedParams::default();
+        assert!(!r.adjust_after_rejection("model not found", &mut learned));
+        assert!(
+            !r.adjust_after_rejection(r#"{"error":"bad request","temperature":0.2}"#, &mut learned)
+        );
         r.temperature = None;
-        assert!(!r.adjust_after_rejection("Unsupported value: 'temperature'"));
+        assert!(!r.adjust_after_rejection("Unsupported value: 'temperature'", &mut learned));
+        assert!(learned.is_empty());
+    }
+
+    #[test]
+    fn invalid_values_are_not_treated_as_unsupported_parameters() {
+        // OpenAI names the parameter in `param` for an invalid value too;
+        // dropping it would silently lose the output limit or temperature.
+        for error in [
+            r#"{"error":{"message":"max_tokens is too large: 100000. This model supports at most 16384 completion tokens, whereas you provided 100000.","type":"invalid_request_error","param":"max_tokens","code":null}}"#,
+            r#"{"error":{"message":"Invalid 'temperature': decimal above maximum value. Expected a value <= 2, but got 5 instead.","type":"invalid_request_error","param":"temperature","code":"decimal_above_max_value"}}"#,
+            r#"{"detail":[{"loc":["body","temperature"],"msg":"Input should be less than or equal to 2"}]}"#,
+            r#"{"error":{"message":"Invalid request","param":"temperature"}}"#,
+        ] {
+            assert!(adjusted(error).is_none(), "{error}");
+        }
+        // Without a named parameter, an invalid temperature isn't dropped
+        // either (the reasoning fields are, as the last resort).
+        for error in [
+            "Invalid value for temperature: 5",
+            "temperature must be between 0 and 2",
+        ] {
+            let (r, learned) = adjusted(error).unwrap();
+            assert_eq!(r.temperature, Some(0.2), "{error}");
+            assert!(!learned.drop_temperature, "{error}");
+        }
+    }
+
+    #[test]
+    fn the_output_budget_is_renamed_at_most_once() {
+        let mut r = adjustable_request();
+        r.reasoning = ReasoningParams::default();
+        let mut learned = LearnedParams::default();
+        assert!(r.adjust_after_rejection(
+            "Unsupported parameter: 'max_tokens' is not supported with this model.",
+            &mut learned
+        ));
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
+        // The new name is rejected too: stop rather than flip back.
+        assert!(!r.adjust_after_rejection(
+            "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+            &mut learned
+        ));
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
+        assert_eq!(learned.use_max_completion_tokens, Some(true));
+
+        // The same from the other side (a model-name guess of
+        // `max_completion_tokens` the endpoint rejects).
+        let mut r = adjustable_request();
+        r.model = "o3".to_string();
+        r.fit_params_to_model();
+        let mut learned = LearnedParams::default();
+        assert!(r.adjust_after_rejection(
+            "Unsupported parameter: 'max_completion_tokens'",
+            &mut learned
+        ));
+        assert_eq!((r.max_tokens, r.max_completion_tokens), (Some(100), None));
+        assert!(!r.adjust_after_rejection("Unsupported parameter: 'max_tokens'", &mut learned));
+        assert_eq!(learned.use_max_completion_tokens, Some(false));
     }
 
     #[tokio::test]
@@ -1914,6 +1991,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_endpoint_rejecting_both_budget_names_is_not_retried_forever() {
+        let (base_url, mut requests) = serve_sequence(vec![
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model."}}"#,
+            ),
+            (
+                "400 Bad Request",
+                r#"{"error":{"message":"Unsupported parameter: 'max_completion_tokens' is not supported with this model."}}"#,
+            ),
+        ])
+        .await;
+        let p = provider("custom", &base_url);
+        let result = send_chat(
+            &p,
+            "key".to_string(),
+            "flip-flop-model",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                max_tokens: Some(50),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("max_completion_tokens"));
+        for _ in 0..2 {
+            requests.recv().await.unwrap();
+        }
+        assert!(requests.recv().await.is_none());
+        // A request that never succeeded teaches nothing.
+        assert!(learned_params(&endpoint_key(&p, "flip-flop-model")).is_empty());
+    }
+
+    #[tokio::test]
     async fn chat_without_choices_is_distinguished_from_an_empty_message() {
         let (base_url, _requests) = serve_sequence(vec![
             ("200 OK", r#"{"choices":[]}"#),
@@ -1941,6 +2055,46 @@ mod tests {
         assert_eq!(
             send_chat_completion(&p, "key".to_string(), "m", "hi".into(), false).await,
             Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_is_a_failure_unless_it_stopped_normally() {
+        let (base_url, _requests) = serve_sequence(vec![
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":null},"finish_reason":"error","error":{"message":"Upstream error"}}]}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"choices":[{"message":{"content":"partial"},"finish_reason":"content_filter"}]}"#,
+            ),
+        ])
+        .await;
+        let p = provider("custom", &base_url);
+        let params = || ChatParams {
+            messages: vec![("user".into(), "hi".into())],
+            ..Default::default()
+        };
+        let err = send_chat(&p, "key".to_string(), "m", params())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ChatError::Failed(m) if m.contains("'error'") && m.contains("Upstream error")),
+            "{err}"
+        );
+        assert_eq!(
+            send_chat(&p, "key".to_string(), "m", params()).await,
+            Ok(Some(String::new()))
+        );
+        // Content is kept whatever the finish reason.
+        assert_eq!(
+            send_chat(&p, "key".to_string(), "m", params()).await,
+            Ok(Some("partial".to_string()))
         );
     }
 

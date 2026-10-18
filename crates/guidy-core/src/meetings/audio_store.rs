@@ -665,9 +665,12 @@ pub fn apply_retention(
         return Ok(out);
     };
     let cutoff = now_ms - days as i64 * DAY_MS;
-    let meetings = repo.list_meetings()?;
+    // Both read before any path is cleared, so files cleared below whose
+    // deletion fails are swept as orphans on a later run, not this one.
+    let candidates = repo.meetings_with_audio_older_than(cutoff)?;
+    let referenced: std::collections::HashSet<String> = repo.audio_paths()?.into_iter().collect();
 
-    for meeting in &meetings {
+    for meeting in &candidates {
         let in_use = matches!(
             meeting.status,
             MeetingStatus::Recording | MeetingStatus::Processing
@@ -701,11 +704,6 @@ pub fn apply_retention(
     }
 
     // Orphans: files no meeting references.
-    let referenced: std::collections::HashSet<&str> = meetings
-        .iter()
-        .flat_map(|m| [m.mic_audio_path.as_deref(), m.system_audio_path.as_deref()])
-        .flatten()
-        .collect();
     if let Ok(entries) = fs::read_dir(audio_dir) {
         for entry in entries.flatten() {
             let path = entry.path();

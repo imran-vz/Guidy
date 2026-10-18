@@ -23,19 +23,37 @@ pub trait MeetingRepo: Send + Sync {
     /// End a recording: set `ended_at`, status `Recorded` and `error`, only
     /// while the row is still `Recording`. Returns false when it wasn't.
     fn finish_recording(&self, id: MeetingId, ended_at: i64, error: Option<&str>) -> Result<bool>;
+    /// End a recording that never got going (a failed start): set `ended_at`,
+    /// status `Failed` and `error`, only while the row is still `Recording`.
+    /// Returns false when it wasn't.
+    fn fail_recording(&self, id: MeetingId, ended_at: i64, error: &str) -> Result<bool>;
     /// Retention: clear both track paths, only when the meeting is fully
     /// processed (`processing_stage = done`) and not recording/processing.
     /// Returns false (nothing changed) otherwise.
     fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool>;
+    /// Retention candidates: meetings that still have audio (either track),
+    /// aren't recording, and ended (or, without an end, started) before
+    /// `ts` (unix ms).
+    fn meetings_with_audio_older_than(&self, ts: i64) -> Result<Vec<Meeting>>;
+    /// Every track path any meeting references (the orphan sweep).
+    fn audio_paths(&self) -> Result<Vec<String>>;
 }
 
-/// Called from the capture (audio) threads with 16 kHz mono f32 samples.
-/// Must not block.
-pub type CaptureSink = Arc<dyn Fn(Track, &[f32]) + Send + Sync>;
+/// Called from the capture threads with 16 kHz mono f32 samples (owned, so
+/// they move on to the writer without another copy). Must not block.
+pub type CaptureSink = Arc<dyn Fn(Track, Vec<f32>) + Send + Sync>;
+
+/// Called from the capture threads when a stream fails mid-recording (e.g.
+/// the mic or the system-audio tap stopped delivering audio). Must not block.
+pub type CaptureErrorSink = Arc<dyn Fn(Track, String) + Send + Sync>;
 
 /// Mic (echo-cancelled) + system-audio capture.
 pub trait CaptureBackend: Send + Sync {
-    fn start(&self, sink: CaptureSink) -> Result<Box<dyn CaptureSession>>;
+    fn start(
+        &self,
+        sink: CaptureSink,
+        on_error: CaptureErrorSink,
+    ) -> Result<Box<dyn CaptureSession>>;
 }
 
 /// A running capture. Dropping it must also stop it.
@@ -80,6 +98,28 @@ pub mod fakes {
     }
 
     impl MeetingRepo for MemRepo {
+        fn meetings_with_audio_older_than(&self, ts: i64) -> Result<Vec<Meeting>> {
+            Ok(self
+                .rows
+                .lock()
+                .iter()
+                .filter(|m| {
+                    (m.mic_audio_path.is_some() || m.system_audio_path.is_some())
+                        && m.status != MeetingStatus::Recording
+                        && m.ended_at.unwrap_or(m.started_at) < ts
+                })
+                .cloned()
+                .collect())
+        }
+        fn audio_paths(&self) -> Result<Vec<String>> {
+            Ok(self
+                .rows
+                .lock()
+                .iter()
+                .flat_map(|m| [m.mic_audio_path.clone(), m.system_audio_path.clone()])
+                .flatten()
+                .collect())
+        }
         fn insert_meeting(&self, meeting: &Meeting) -> Result<MeetingId> {
             let mut next = self.next.lock();
             *next += 1;
@@ -139,6 +179,21 @@ pub mod fakes {
                 None => Ok(false),
             }
         }
+        fn fail_recording(&self, id: MeetingId, ended_at: i64, error: &str) -> Result<bool> {
+            let mut rows = self.rows.lock();
+            match rows
+                .iter_mut()
+                .find(|m| m.id == id && m.status == MeetingStatus::Recording)
+            {
+                Some(row) => {
+                    row.ended_at = Some(ended_at);
+                    row.status = MeetingStatus::Failed;
+                    row.error = Some(error.into());
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
         fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool> {
             let mut rows = self.rows.lock();
             match rows.iter_mut().find(|m| {
@@ -163,6 +218,7 @@ pub mod fakes {
     #[derive(Default)]
     pub struct FakeCapture {
         pub sink: Mutex<Option<CaptureSink>>,
+        pub on_error: Mutex<Option<CaptureErrorSink>>,
         pub fail: Mutex<bool>,
         pub stops: Arc<Mutex<usize>>,
     }
@@ -179,16 +235,27 @@ pub mod fakes {
     impl FakeCapture {
         pub fn feed(&self, track: Track, samples: &[f32]) {
             let sink = self.sink.lock().clone().expect("capture not started");
-            sink(track, samples);
+            sink(track, samples.to_vec());
+        }
+
+        /// A stream dying mid-recording.
+        pub fn fail_stream(&self, track: Track, message: &str) {
+            let on_error = self.on_error.lock().clone().expect("capture not started");
+            on_error(track, message.into());
         }
     }
 
     impl CaptureBackend for FakeCapture {
-        fn start(&self, sink: CaptureSink) -> Result<Box<dyn CaptureSession>> {
+        fn start(
+            &self,
+            sink: CaptureSink,
+            on_error: CaptureErrorSink,
+        ) -> Result<Box<dyn CaptureSession>> {
             if *self.fail.lock() {
                 anyhow::bail!("no permission");
             }
             *self.sink.lock() = Some(sink);
+            *self.on_error.lock() = Some(on_error);
             Ok(Box::new(FakeSession(self.stops.clone())))
         }
     }

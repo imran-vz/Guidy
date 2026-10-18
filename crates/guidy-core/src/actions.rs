@@ -3,13 +3,13 @@ use crate::apple_intelligence;
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::audio_toolkit::VadPolicy;
 use crate::host::AppHandle;
+use crate::llm::ProviderRef;
 use crate::managers::audio::{recording_error_type, AudioRecordingManager};
 use crate::managers::history::HistoryManager;
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::policy::{live_decode, LiveDecode, ModelTraits};
 use crate::managers::transcription::StreamWorkKind;
 use crate::managers::transcription::TranscriptionManager;
-use crate::meetings::settings::BUILTIN_LLM_PROVIDER_ID;
 use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
 use crate::shortcut;
 use crate::tray::{set_tray_state, TrayIconState};
@@ -274,13 +274,13 @@ async fn post_process_transcription(
         return None;
     }
 
-    if settings.post_process_provider_id == BUILTIN_LLM_PROVIDER_ID {
-        let prompt = selected_post_process_prompt(settings)?;
-        return post_process_with_provider_layer(app, settings, &prompt, transcription).await;
-    }
-
-    let provider = match settings.active_post_process_provider().cloned() {
-        Some(provider) => provider,
+    let provider = match crate::llm::resolve_provider(settings, &settings.post_process_provider_id)
+    {
+        Some(ProviderRef::Builtin) => {
+            let prompt = selected_post_process_prompt(settings)?;
+            return post_process_with_provider_layer(app, settings, &prompt, transcription).await;
+        }
+        Some(ProviderRef::Configured(provider)) => provider.clone(),
         None => {
             debug!("Post-processing enabled but no provider is selected");
             return None;

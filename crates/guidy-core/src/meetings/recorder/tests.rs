@@ -259,12 +259,96 @@ fn a_failed_start_that_cant_be_cleaned_up_is_not_recovered() {
     *r.capture.fail.lock() = true;
     *r.repo.fail_delete.lock() = true;
     assert!(r.rec.start(None, T0).is_err());
-    // The row survives, ended with the error: not a crash leftover.
+    // The row survives, failed with the error: not a crash leftover, and not
+    // offered for processing (it has no audio).
     let rows = r.repo.list_meetings().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].status, MeetingStatus::Recorded);
+    assert_eq!(rows[0].status, MeetingStatus::Failed);
+    assert_eq!(rows[0].ended_at, Some(T0));
     assert!(rows[0].error.as_deref().unwrap().contains("no permission"));
     assert!(r.rec.recover_interrupted().unwrap().is_empty());
+}
+
+#[test]
+fn a_stream_dying_mid_recording_is_the_meetings_error() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    r.capture.feed(Track::Mic, &vec![0.1; 16_000]);
+    r.capture
+        .fail_stream(Track::System, "error: system audio tap stopped");
+    // Repeats of the same failure are kept once.
+    r.capture
+        .fail_stream(Track::System, "error: system audio tap stopped");
+    r.capture
+        .fail_stream(Track::Mic, "error: microphone restart failed");
+    r.capture.feed(Track::Mic, &vec![0.1; 16_000]);
+    r.rec.stop(T0 + 2_000).unwrap();
+
+    // Still recorded (the audio up to the failure is there), with the error.
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(
+        m.error.as_deref(),
+        Some(
+            "system capture: error: system audio tap stopped; \
+             mic capture: error: microphone restart failed"
+        )
+    );
+}
+
+/// A track output whose `n`th push fails.
+struct FailingWriter {
+    fail_at: Option<usize>,
+    pushes: Arc<Mutex<usize>>,
+    finished: Arc<Mutex<bool>>,
+}
+
+impl TrackOutput for FailingWriter {
+    fn push(&mut self, _samples: &[f32]) -> Result<()> {
+        let mut n = self.pushes.lock();
+        *n += 1;
+        if Some(*n) == self.fail_at {
+            anyhow::bail!("disk full");
+        }
+        Ok(())
+    }
+    fn finish(self) -> Result<TrackSummary> {
+        *self.finished.lock() = true;
+        Ok(TrackSummary { samples: 0 })
+    }
+}
+
+#[test]
+fn a_failed_write_stops_that_track_and_is_reported() {
+    let writer = |fail_at| FailingWriter {
+        fail_at,
+        pushes: Arc::default(),
+        finished: Arc::default(),
+    };
+    let (mic, sys) = (writer(Some(2)), writer(None));
+    let (mic_pushes, mic_finished) = (mic.pushes.clone(), mic.finished.clone());
+    let (sys_pushes, sys_finished) = (sys.pushes.clone(), sys.finished.clone());
+    let (tx, rx) = channel();
+    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys));
+    for _ in 0..4 {
+        tx.send(WriterMsg::Samples(Track::Mic, vec![0.0; 320]))
+            .unwrap();
+        tx.send(WriterMsg::Samples(Track::System, vec![0.0; 320]))
+            .unwrap();
+    }
+    tx.send(WriterMsg::Finish).unwrap();
+    let (mic, sys) = thread.join().unwrap();
+
+    // Nothing is appended after the failed (possibly torn) write, and the
+    // track isn't finished (no end marker after a torn record).
+    assert_eq!(*mic_pushes.lock(), 2);
+    assert!(!*mic_finished.lock());
+    let err = format!("{:#}", mic.unwrap_err());
+    assert!(err.contains("disk full"), "{err}");
+    // The other track is unaffected.
+    assert_eq!(*sys_pushes.lock(), 4);
+    assert!(*sys_finished.lock());
+    assert!(sys.is_ok());
 }
 
 #[test]

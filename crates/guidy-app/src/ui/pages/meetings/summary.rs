@@ -314,7 +314,10 @@ impl SummaryView {
         self.run(
             cx,
             move |b| b.cancel_summarize(id),
-            |this, cancelled, _| {
+            move |this, cancelled, _| {
+                if this.meeting_id != id {
+                    return;
+                }
                 this.cancelling = false;
                 if !cancelled {
                     // Nothing was running (any more).
@@ -350,9 +353,18 @@ impl SummaryView {
         self.summary = None;
         self.items.clear();
         self.item_inputs.clear();
+        self.item_resync.clear();
         self.editing = false;
         self.picker_open = false;
         self.error = None;
+        // The previous meeting's job keeps running in the backend, but its
+        // state is not this meeting's: `reload` asks `is_summarizing` and
+        // shows the spinner again if this meeting has a summary running.
+        self.generating = false;
+        self.own_job = false;
+        self.progress = None;
+        self.cancelling = false;
+        self.cancelled = false;
         self.reload(cx);
     }
 
@@ -465,12 +477,14 @@ impl SummaryView {
                 (s, b.action_items(id))
             },
             move |this, (summary, items), _| {
-                this.generating = false;
-                this.own_job = false;
-                this.progress = None;
+                // Switched away meanwhile: the job state was reset by
+                // `set_meeting`, and the result loads with the meeting.
                 if this.meeting_id != id {
                     return;
                 }
+                this.generating = false;
+                this.own_job = false;
+                this.progress = None;
                 match summary {
                     Ok(s) => {
                         this.summary = Some(s);
@@ -569,6 +583,7 @@ impl SummaryView {
             cx,
             move |b| b.update_summary(&s),
             move |this, r, _| match r {
+                _ if this.meeting_id != saved.meeting_id => {}
                 Ok(()) => {
                     this.summary = Some(saved);
                     this.editing = false;
@@ -651,7 +666,8 @@ impl SummaryView {
         self.run(
             cx,
             move |b| b.add_action_item(id, &text),
-            |this, r, cx| match r {
+            move |this, r, cx| match r {
+                _ if this.meeting_id != id => {}
                 Ok(item) => {
                     this.items.push(item);
                     this.clear_new_item = true;

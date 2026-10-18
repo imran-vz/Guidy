@@ -171,6 +171,48 @@ pub fn feature_model(settings: &AppSettings, feature: Feature, provider_id: &str
     .unwrap_or_default()
 }
 
+/// A provider id resolved against the settings: the built-in llama.cpp
+/// runtime, which isn't a `post_process_providers` entry, or a configured
+/// provider. Every lookup by id goes through [`resolve_provider`] so no call
+/// site special-cases the built-in id.
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderRef<'a> {
+    /// The built-in llama.cpp runtime ([`BUILTIN_LLM_PROVIDER_ID`]).
+    Builtin,
+    /// A `post_process_providers` entry (incl. Apple Intelligence).
+    Configured(&'a PostProcessProvider),
+}
+
+impl<'a> ProviderRef<'a> {
+    /// The `post_process_providers` entry, None for the built-in runtime.
+    pub fn configured(self) -> Option<&'a PostProcessProvider> {
+        match self {
+            Self::Builtin => None,
+            Self::Configured(p) => Some(p),
+        }
+    }
+}
+
+/// The provider `provider_id` names, or None when it names none.
+pub fn resolve_provider<'a>(
+    settings: &'a AppSettings,
+    provider_id: &str,
+) -> Option<ProviderRef<'a>> {
+    if is_builtin_provider(provider_id) {
+        Some(ProviderRef::Builtin)
+    } else {
+        settings
+            .post_process_provider(provider_id)
+            .map(ProviderRef::Configured)
+    }
+}
+
+/// Whether `provider_id` is the built-in llama.cpp runtime. For callers that
+/// only have an id; with settings at hand, use [`resolve_provider`].
+pub fn is_builtin_provider(provider_id: &str) -> bool {
+    provider_id == BUILTIN_LLM_PROVIDER_ID
+}
+
 /// Build the provider for a feature (or an explicit `(provider_id, model)`).
 pub fn provider_for_feature(
     app: &AppHandle,
@@ -190,16 +232,16 @@ pub fn provider_by_id(
     provider_id: &str,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>> {
-    if provider_id == BUILTIN_LLM_PROVIDER_ID {
-        return Ok(Arc::new(builtin::BuiltinProvider::new(app, model)?));
-    }
     if provider_id == APPLE_INTELLIGENCE_PROVIDER_ID {
         return Ok(Arc::new(apple::AppleProvider::new()?));
     }
-    let provider = settings
-        .post_process_provider(provider_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("unknown LLM provider '{provider_id}'"))?;
+    let provider = match resolve_provider(settings, provider_id) {
+        Some(ProviderRef::Builtin) => {
+            return Ok(Arc::new(builtin::BuiltinProvider::new(app, model)?));
+        }
+        Some(ProviderRef::Configured(p)) => p.clone(),
+        None => bail!("unknown LLM provider '{provider_id}'"),
+    };
     validate_base_url(&provider)?;
     if model.trim().is_empty() {
         bail!("no model selected for {}", provider.label);
@@ -251,20 +293,20 @@ pub fn validate_base_url(provider: &PostProcessProvider) -> Result<()> {
 /// settings the meetings model). Blocking. Never logs or returns the key.
 pub fn test_connection(app: &AppHandle, provider_id: &str, feature: Feature) -> Result<String> {
     let settings = crate::settings::get_settings(app);
-    if provider_id == BUILTIN_LLM_PROVIDER_ID {
-        let model = feature_model(&settings, feature, provider_id);
-        let provider = builtin::BuiltinProvider::new(app, &model)?;
-        builtin::BuiltinLlm::global().ping()?;
-        return Ok(format!("Built-in model ready: {}", provider.model_label()));
-    }
     if provider_id == APPLE_INTELLIGENCE_PROVIDER_ID {
         apple::AppleProvider::new()?;
         return Ok("Apple Intelligence is available".to_string());
     }
-    let provider = settings
-        .post_process_provider(provider_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("unknown LLM provider '{provider_id}'"))?;
+    let provider = match resolve_provider(&settings, provider_id) {
+        Some(ProviderRef::Builtin) => {
+            let model = feature_model(&settings, feature, provider_id);
+            let provider = builtin::BuiltinProvider::new(app, &model)?;
+            builtin::BuiltinLlm::global().ping()?;
+            return Ok(format!("Built-in model ready: {}", provider.model_label()));
+        }
+        Some(ProviderRef::Configured(p)) => p.clone(),
+        None => bail!("unknown LLM provider '{provider_id}'"),
+    };
     validate_base_url(&provider)?;
     let api_key = crate::settings::provider_api_key(provider_id);
     if api_key.trim().is_empty() && provider.id != "custom" {
@@ -320,24 +362,24 @@ fn is_probe_cut_short(e: &anyhow::Error) -> bool {
 /// Model ids a provider offers (the built-in runtime: downloaded GGUFs).
 /// Blocking.
 pub fn list_models(app: &AppHandle, provider_id: &str) -> Result<Vec<String>> {
-    if provider_id == BUILTIN_LLM_PROVIDER_ID {
-        return Ok(local_models::LocalModels::new(app)?
-            .list()
-            .into_iter()
-            .filter(|m| m.downloaded)
-            .map(|m| m.id)
-            .collect());
-    }
     if provider_id == APPLE_INTELLIGENCE_PROVIDER_ID {
         return Ok(vec![
             crate::settings::APPLE_INTELLIGENCE_DEFAULT_MODEL_ID.to_string()
         ]);
     }
     let settings = crate::settings::get_settings(app);
-    let provider = settings
-        .post_process_provider(provider_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("unknown LLM provider '{provider_id}'"))?;
+    let provider = match resolve_provider(&settings, provider_id) {
+        Some(ProviderRef::Builtin) => {
+            return Ok(local_models::LocalModels::new(app)?
+                .list()
+                .into_iter()
+                .filter(|m| m.downloaded)
+                .map(|m| m.id)
+                .collect());
+        }
+        Some(ProviderRef::Configured(p)) => p.clone(),
+        None => bail!("unknown LLM provider '{provider_id}'"),
+    };
     validate_base_url(&provider)?;
     let api_key = crate::settings::provider_api_key(provider_id);
     block_on(http::list_models(&provider, api_key))
@@ -613,6 +655,22 @@ mod tests {
             resolve_provider_model(&s, Feature::Meetings, Some(("x".into(), "y".into()))),
             ("x".into(), "y".into())
         );
+    }
+
+    #[test]
+    fn provider_ids_resolve_to_the_builtin_runtime_or_a_configured_provider() {
+        let s = crate::settings::get_default_settings();
+        assert!(matches!(
+            resolve_provider(&s, BUILTIN_LLM_PROVIDER_ID),
+            Some(ProviderRef::Builtin)
+        ));
+        assert!(is_builtin_provider(BUILTIN_LLM_PROVIDER_ID));
+        assert!(!is_builtin_provider("openai"));
+        match resolve_provider(&s, "openai") {
+            Some(ProviderRef::Configured(p)) => assert_eq!(p.id, "openai"),
+            other => panic!("expected the configured provider, got {other:?}"),
+        }
+        assert!(resolve_provider(&s, "no_such_provider").is_none());
     }
 
     #[test]
