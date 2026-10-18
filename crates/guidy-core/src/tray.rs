@@ -27,7 +27,7 @@ use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings;
 use crate::tray_i18n::get_tray_translations;
-use log::{debug, error, info, trace, warn};
+use log::{error, info, trace, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,31 +69,100 @@ struct MenuInputs {
     downloaded_models: Vec<(String, String)>,
     locale: String,
     update_checks_enabled: bool,
+    meeting: MeetingMenu,
 }
+
+/// The meeting-notes part of the tray menu.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+struct MeetingMenu {
+    /// Show "Start/Stop Meeting Notes" (supported macOS, meetings enabled,
+    /// or a recording in progress).
+    available: bool,
+    recording: bool,
+    /// Title of the meeting being recorded (the linked event's title).
+    title: Option<String>,
+}
+
+fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMenu {
+    let manager = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>();
+    let state = manager
+        .as_ref()
+        .map(|m| m.recorder_state())
+        .unwrap_or_default();
+    match state {
+        crate::meetings::types::RecorderState::Recording { title, .. } => MeetingMenu {
+            available: true,
+            recording: true,
+            title: Some(title),
+        },
+        crate::meetings::types::RecorderState::Idle => MeetingMenu {
+            available: manager.is_some()
+                && settings.meetings.enabled
+                && crate::meetings::is_supported(),
+            recording: false,
+            title: None,
+        },
+    }
+}
+
+/// A meeting recording shows the recording icon unless dictation is busy
+/// (which has its own icons).
+fn effective_icon_state(dictation: TrayIconState, meeting_recording: bool) -> TrayIconState {
+    if meeting_recording && dictation == TrayIconState::Idle {
+        TrayIconState::Recording
+    } else {
+        dictation
+    }
+}
+
+/// Number of frames in the dictation recording animation (frame 0 is the
+/// static icon, animation frames are `1..=ANIMATION_FRAMES`).
+const ANIMATION_FRAMES: u8 = 12;
+/// Time between animation frames.
+const ANIMATION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A displayable icon: a resource path plus an animation frame (0 = the
+/// image as shipped, other frames are derived from it).
+type IconKey = (&'static str, u8);
 
 /// Complete description of what the tray should look like.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrayDesired {
     icon_path: &'static str,
+    /// Animation frame of `icon_path`; always 0 unless `animated`.
+    frame: u8,
+    /// Dictation is recording, so the animation ticker may advance `frame`.
+    animated: bool,
     menu: MenuInputs,
+}
+
+impl TrayDesired {
+    fn icon_key(&self) -> IconKey {
+        (self.icon_path, self.frame)
+    }
 }
 
 struct TrayInner {
     /// Intent set by [`set_tray_state`].
     icon_state: TrayIconState,
+    /// Current recording animation frame, advanced by the animation ticker.
+    anim_frame: u8,
+    /// The animation ticker thread is running.
+    animating: bool,
     /// Latest computed snapshot, waiting to be (or just) applied.
     desired: Option<TrayDesired>,
     /// Icon the native tray currently shows. Only updated when `set_icon`
     /// succeeds, so a failed update is retried on the next sync.
-    applied_icon: Option<&'static str>,
+    applied_icon: Option<IconKey>,
     /// Inputs the native menu was last successfully built from. The tooltip
     /// is derived from the same inputs and set best-effort alongside the menu;
     /// it is not tracked separately.
     applied_menu: Option<MenuInputs>,
     /// An apply is scheduled on the main thread.
     pending: bool,
-    /// Decoded icons by resource path so the main thread never touches disk.
-    icons: HashMap<&'static str, Image<'static>>,
+    /// Decoded icons (and derived animation frames) so the main thread never
+    /// touches disk or renders frames.
+    icons: HashMap<IconKey, Image<'static>>,
     /// Handed out to each sync request in trigger order, so a slow request
     /// can't overwrite the snapshot of one that was triggered after it.
     next_seq: u64,
@@ -108,6 +177,8 @@ impl TrayState {
     pub fn new() -> Self {
         Self(Mutex::new(TrayInner {
             icon_state: TrayIconState::Idle,
+            anim_frame: 0,
+            animating: false,
             desired: None,
             applied_icon: None,
             applied_menu: None,
@@ -218,8 +289,79 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'
 }
 
 /// Sets the recording state shown by the tray (icon + Cancel/model menu).
+/// While dictation is recording the icon is animated.
 pub fn set_tray_state(app: &AppHandle, state: TrayIconState) {
-    sync_tray_with(app, |inner| inner.icon_state = state);
+    let mut start_animation = false;
+    sync_tray_with(app, |inner| {
+        inner.icon_state = state;
+        if state == TrayIconState::Recording {
+            start_animation = !std::mem::replace(&mut inner.animating, true);
+        } else {
+            // The next recording starts from the first frame.
+            inner.anim_frame = 0;
+        }
+    });
+    if start_animation {
+        spawn_animation(app);
+    }
+}
+
+/// Advances the recording animation until dictation leaves the Recording
+/// state. Only touches the frame of the latest snapshot, so it never
+/// recomputes (or clobbers) the menu inputs, and it goes through the same
+/// coalescing applier as every other tray update.
+fn spawn_animation(app: &AppHandle) {
+    let ticker_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-animation".into())
+        .spawn(move || loop {
+            let app = &ticker_app;
+            std::thread::sleep(ANIMATION_INTERVAL);
+            let Some(state) = app.try_state::<TrayState>() else {
+                return;
+            };
+            let target = {
+                let mut inner = state.lock();
+                // No native tray (`--no-tray`): nothing to animate.
+                if inner.icon_state != TrayIconState::Recording
+                    || app.try_state::<TrayIcon>().is_none()
+                {
+                    inner.animating = false;
+                    return;
+                }
+                inner.anim_frame = inner.anim_frame % ANIMATION_FRAMES + 1;
+                inner
+                    .desired
+                    .as_ref()
+                    .filter(|d| d.animated)
+                    .map(|d| (d.icon_path, inner.anim_frame))
+            };
+            let Some(key) = target else {
+                continue;
+            };
+            ensure_icon(app, &state, key);
+            let schedule = {
+                let mut inner = state.lock();
+                match inner.desired.as_mut() {
+                    // Re-check: a state change may have replaced the snapshot
+                    // while the frame was being rendered.
+                    Some(d) if d.animated && d.icon_path == key.0 => {
+                        d.frame = key.1;
+                        !std::mem::replace(&mut inner.pending, true)
+                    }
+                    _ => false,
+                }
+            };
+            if schedule {
+                post_apply(app);
+            }
+        });
+    if let Err(err) = spawned {
+        error!("Failed to start the tray animation: {err}");
+        if let Some(state) = app.try_state::<TrayState>() {
+            state.lock().animating = false;
+        }
+    }
 }
 
 /// Re-syncs the tray after something other than the recording state changed
@@ -252,11 +394,11 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
 
     // Record intent and claim a sequence number in one critical section, so
     // sequence order == the order in which state changes were requested.
-    let (seq, icon_state) = {
+    let (seq, icon_state, anim_frame) = {
         let mut inner = state.lock();
         update(&mut inner);
         inner.next_seq += 1;
-        (inner.next_seq, inner.icon_state)
+        (inner.next_seq, inner.icon_state, inner.anim_frame)
     };
 
     // Tray not built yet (early secure-input monitor callbacks). The intent
@@ -265,30 +407,12 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
         return;
     }
 
-    let desired = compute_desired(app, icon_state);
+    let desired = compute_desired(app, icon_state, anim_frame);
 
-    // Decode the icon off the main thread, once per path, outside the lock.
-    let needs_icon = !state.lock().icons.contains_key(desired.icon_path);
-    let loaded_icon = if needs_icon {
-        match load_tray_icon(app.path().resolve(
-            desired.icon_path,
-            crate::host::path::BaseDirectory::Resource,
-        )) {
-            Ok(image) => Some(image),
-            Err(err) => {
-                error!("Failed to load tray icon '{}': {err}", desired.icon_path);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    ensure_icon(app, &state, desired.icon_key());
 
     let schedule = {
         let mut inner = state.lock();
-        if let Some(image) = loaded_icon {
-            inner.icons.insert(desired.icon_path, image);
-        }
         if seq < inner.desired_seq {
             // A request triggered after this one already stored its snapshot
             // (and scheduled an apply). Ours is stale; drop it.
@@ -312,7 +436,152 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
     }
 }
 
-fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
+/// Decodes (and for animation frames, renders) the icon off the main thread,
+/// once per key, outside the lock.
+fn ensure_icon(app: &AppHandle, state: &TrayState, key: IconKey) {
+    let (path, frame) = key;
+    let (has_frame, base) = {
+        let inner = state.lock();
+        (
+            inner.icons.contains_key(&key),
+            inner.icons.get(&(path, 0)).cloned(),
+        )
+    };
+    if has_frame {
+        return;
+    }
+    let base = match base {
+        Some(base) => base,
+        None => match load_tray_icon(
+            app.path()
+                .resolve(path, crate::host::path::BaseDirectory::Resource),
+        ) {
+            Ok(image) => {
+                state.lock().icons.insert((path, 0), image.clone());
+                image
+            }
+            Err(err) => {
+                error!("Failed to load tray icon '{path}': {err}");
+                return;
+            }
+        },
+    };
+    if frame != 0 {
+        let image = waveform_frame(&base, frame);
+        state.lock().icons.insert(key, image);
+    }
+}
+
+/// Renders animation frame `frame` (1..=[`ANIMATION_FRAMES`]) of a waveform
+/// icon: every narrow vertical bar gets a new height (top and bottom caps are
+/// kept, the straight middle is stretched or shrunk) so the bars bounce like a
+/// level meter. Wide shapes, like the recording dot, are left untouched.
+fn waveform_frame(base: &Image<'static>, frame: u8) -> Image<'static> {
+    let (w, h) = (base.width() as usize, base.height() as usize);
+    let src = base.rgba();
+    let alpha = |x: usize, y: usize| src[(y * w + x) * 4 + 3];
+
+    // Columns that are solidly part of a shape. Antialiasing bleeds faint
+    // alpha between bars, so a low threshold would merge them.
+    let solid: Vec<bool> = (0..w).map(|x| (0..h).any(|y| alpha(x, y) >= 128)).collect();
+    let mut bars = Vec::new();
+    let mut x = 0;
+    while x < w {
+        if !solid[x] {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        while x < w && solid[x] {
+            x += 1;
+        }
+        // Bars are narrow; anything wider (the dot) stays static. Rows are
+        // measured on the solid core columns only, since the edge columns
+        // carry faint full-height bleed from the neighbouring bars.
+        let core = start..x;
+        let rows: Vec<usize> = (0..h)
+            .filter(|&y| core.clone().any(|x| alpha(x, y) >= 16))
+            .collect();
+        if let (true, Some(&top), Some(&bottom)) = (core.len() <= w / 8, rows.first(), rows.last())
+        {
+            bars.push(Bar {
+                // Redraw the antialiased edge columns along with the bar.
+                x0: start.saturating_sub(1),
+                x1: (x + 1).min(w),
+                width: core.len(),
+                top,
+                bottom,
+            });
+        }
+    }
+
+    let mut out = src.to_vec();
+    let tallest = bars.iter().map(|b| b.bottom - b.top + 1).max().unwrap_or(0);
+    let phase = f32::from(frame - 1) / f32::from(ANIMATION_FRAMES) * std::f32::consts::TAU;
+
+    for (i, bar) in bars.iter().enumerate() {
+        let &Bar {
+            x0,
+            x1,
+            width,
+            top,
+            bottom,
+        } = bar;
+        let height = bottom - top + 1;
+        // Rounded caps are about half the bar's width tall.
+        let cap = width.div_ceil(2).min(height / 2);
+        let min_height = (2 * cap + 1).max(tallest * 2 / 5);
+        let max_height = tallest.max(min_height);
+        // Each bar runs its own phase and a second harmonic, so the bars
+        // move independently instead of as one wave.
+        let t = phase + i as f32 * 2.1;
+        let level = (0.5 + 0.35 * t.sin() + 0.15 * (2.0 * t + i as f32).sin()).clamp(0.0, 1.0);
+        let new_height = min_height + ((max_height - min_height) as f32 * level).round() as usize;
+        let center = (top + bottom) / 2;
+        let new_top = center.saturating_sub(new_height / 2);
+        let middle = center;
+
+        for x in x0..x1 {
+            for y in 0..h {
+                let src_y = if y < new_top || y >= new_top + new_height {
+                    None
+                } else {
+                    let d = y - new_top;
+                    Some(if d < cap {
+                        top + d
+                    } else if d >= new_height - cap {
+                        bottom - (new_height - 1 - d)
+                    } else {
+                        middle
+                    })
+                };
+                let o = (y * w + x) * 4;
+                match src_y {
+                    Some(sy) => {
+                        let s = (sy * w + x) * 4;
+                        out[o..o + 4].copy_from_slice(&src[s..s + 4]);
+                    }
+                    None => out[o..o + 4].copy_from_slice(&[0, 0, 0, 0]),
+                }
+            }
+        }
+    }
+    Image::new_owned(out, w as u32, h as u32)
+}
+
+/// One waveform bar found by [`waveform_frame`].
+struct Bar {
+    /// Columns to redraw, including the antialiased edges.
+    x0: usize,
+    x1: usize,
+    /// Width of the solid core.
+    width: usize,
+    /// Rows the bar covers.
+    top: usize,
+    bottom: usize,
+}
+
+fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -> TrayDesired {
     let settings = settings::get_settings(app);
     let theme = get_current_theme(app);
     let warning = crate::secure_input::tray_warning_active(app);
@@ -327,17 +596,46 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
         .collect();
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
-    TrayDesired {
-        icon_path: get_icon_path(theme, icon_state, warning),
-        menu: MenuInputs {
-            busy: icon_state.is_busy(),
+    let meeting = meeting_menu(app, &settings);
+
+    desired_from(
+        icon_state,
+        anim_frame,
+        theme,
+        MenuInputs {
+            busy: false, // set from the dictation state by `desired_from`
             warning,
             model_loaded,
             selected_model: settings.selected_model,
             downloaded_models,
             locale: settings.app_language,
             update_checks_enabled: settings.update_checks_enabled,
+            meeting,
         },
+    )
+}
+
+/// The pure part of [`compute_desired`]. `busy` (the dictation "Cancel" item
+/// instead of the model submenu and "Unload model") follows the *dictation*
+/// state only; a meeting recording changes the icon and the meeting items,
+/// never the dictation items.
+///
+/// Only dictation recording animates; a meeting recording (which can run for
+/// hours) keeps the static recording icon.
+fn desired_from(
+    dictation: TrayIconState,
+    anim_frame: u8,
+    theme: AppTheme,
+    mut menu: MenuInputs,
+) -> TrayDesired {
+    menu.busy = dictation.is_busy();
+    let icon_state = effective_icon_state(dictation, menu.meeting.recording);
+    let animated = dictation == TrayIconState::Recording;
+    TrayDesired {
+        icon_path: get_icon_path(theme, icon_state, menu.warning),
+        frame: if animated { anim_frame } else { 0 },
+        animated,
+        menu,
     }
 }
 
@@ -384,13 +682,13 @@ fn apply_on_main(app: &AppHandle) {
         let Some(desired) = inner.desired.clone() else {
             return;
         };
-        let icon_changed = inner.applied_icon != Some(desired.icon_path);
+        let icon_changed = inner.applied_icon != Some(desired.icon_key());
         let menu_changed = inner.applied_menu.as_ref() != Some(&desired.menu);
         if !icon_changed && !menu_changed {
             trace!("tray apply: nothing changed");
             return;
         }
-        let icon = inner.icons.get(desired.icon_path).cloned();
+        let icon = inner.icons.get(&desired.icon_key()).cloned();
         (desired, icon, icon_changed, menu_changed)
     };
 
@@ -435,20 +733,28 @@ fn apply_on_main(app: &AppHandle) {
     {
         let mut inner = state.lock();
         if icon_ok {
-            inner.applied_icon = Some(desired.icon_path);
+            inner.applied_icon = Some(desired.icon_key());
         }
         if menu_ok {
             inner.applied_menu = Some(desired.menu.clone());
         }
     }
 
-    debug!(
-        "tray apply: icon={} menu={} busy={} took={:?}",
+    // Animation frames apply ten times a second; keep them out of debug logs.
+    let level = if menu_changed || desired.frame == 0 {
+        log::Level::Debug
+    } else {
+        log::Level::Trace
+    };
+    log::log!(
+        level,
+        "tray apply: icon={} frame={} menu={} busy={} took={:?}",
         if icon_changed {
             desired.icon_path
         } else {
             "unchanged"
         },
+        desired.frame,
         if menu_changed { "rebuilt" } else { "unchanged" },
         desired.menu.busy,
         started.elapsed()
@@ -632,6 +938,44 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
     }
     entries.push(MenuEntry::Separator);
     entries.push(quit_i);
+
+    // Meeting notes go right below the version line.
+    if inputs.meeting.available {
+        let en = get_tray_translations(Some("en".to_string()));
+        let or_en = |s: &str, e: &str| {
+            if s.is_empty() {
+                e.to_string()
+            } else {
+                s.to_string()
+            }
+        };
+        let mut items = Vec::new();
+        if inputs.meeting.recording {
+            if let Some(title) = inputs.meeting.title.as_deref().filter(|t| !t.is_empty()) {
+                items.push(MenuEntry::item(
+                    "meeting_title",
+                    &format!("● {title}"),
+                    false,
+                    None,
+                ));
+            }
+            items.push(MenuEntry::item(
+                "meeting_stop",
+                &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
+                true,
+                None,
+            ));
+        } else {
+            items.push(MenuEntry::item(
+                "meeting_start",
+                &or_en(&strings.start_meeting_notes, &en.start_meeting_notes),
+                true,
+                None,
+            ));
+        }
+        items.push(MenuEntry::Separator);
+        entries.splice(2..2, items);
+    }
 
     // Both layouts start with [version, separator, ...]; slot the warning in
     // right below the version line so it's the first actionable thing seen.
@@ -896,6 +1240,30 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "cancel" => {
             crate::utils::cancel_current_operation(app);
         }
+        "meeting_start" | "meeting_stop" => {
+            let Some(manager) = app
+                .try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
+                .map(|m| m.inner().clone())
+            else {
+                return;
+            };
+            let start = id == "meeting_start";
+            // Capture start/stop and calendar lookups must not block the
+            // main thread.
+            std::thread::spawn(move || {
+                let result = if start {
+                    manager.start_recording(None).map(|_| ())
+                } else {
+                    manager.stop_recording().map(|_| ())
+                };
+                if let Err(e) = result {
+                    error!(
+                        "Meeting notes {} from tray failed: {e:#}",
+                        if start { "start" } else { "stop" }
+                    );
+                }
+            });
+        }
         "quit" => {
             app.exit(0);
         }
@@ -921,8 +1289,9 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, last_transcript_text, load_tray_icon, MenuEntry, MenuInputs, TrayDesired,
-        TrayIconState,
+        build_menu, desired_from, effective_icon_state, get_icon_path, last_transcript_text,
+        load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry, MenuInputs, TrayDesired,
+        TrayIconState, ANIMATION_FRAMES,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -949,6 +1318,7 @@ mod tests {
             downloaded_models: vec![("small".to_string(), "Small".to_string())],
             locale: "en".to_string(),
             update_checks_enabled: true,
+            meeting: MeetingMenu::default(),
         }
     }
 
@@ -982,10 +1352,14 @@ mod tests {
         // Recording -> Transcribing transition must not rebuild the menu.
         let recording = TrayDesired {
             icon_path: "resources/tray_recording.png",
+            frame: 0,
+            animated: true,
             menu: inputs(TrayIconState::Recording.is_busy()),
         };
         let transcribing = TrayDesired {
             icon_path: "resources/tray_transcribing.png",
+            frame: 0,
+            animated: false,
             menu: inputs(TrayIconState::Transcribing.is_busy()),
         };
         assert_ne!(recording.icon_path, transcribing.icon_path);
@@ -1071,5 +1445,156 @@ mod tests {
         let de = build_menu(&i);
         let en = build_menu(&inputs(false));
         assert_ne!(de.entries, en.entries);
+    }
+
+    #[test]
+    fn meeting_items_hidden_when_unavailable() {
+        let ids = ids(&build_menu(&inputs(false)).entries);
+        assert!(!ids.iter().any(|id| id.starts_with("meeting_")));
+    }
+
+    #[test]
+    fn meeting_start_item_when_idle() {
+        let mut i = inputs(false);
+        i.meeting.available = true;
+        let menu = build_menu(&i);
+        assert_eq!(menu.entries[2].id(), Some("meeting_start"));
+        assert_eq!(menu.entries[3], MenuEntry::Separator);
+        assert!(matches!(
+            &menu.entries[2],
+            MenuEntry::Item { label, enabled: true, .. } if label == "Start Meeting Notes"
+        ));
+        // The rest of the idle menu is unchanged.
+        assert!(ids(&menu.entries).contains(&"model_submenu".to_string()));
+    }
+
+    #[test]
+    fn meeting_recording_shows_title_and_stop() {
+        for busy in [false, true] {
+            let mut i = inputs(busy);
+            i.meeting = MeetingMenu {
+                available: true,
+                recording: true,
+                title: Some("Weekly sync".into()),
+            };
+            let menu = build_menu(&i);
+            assert_eq!(
+                menu.entries[2],
+                MenuEntry::Item {
+                    id: "meeting_title".into(),
+                    label: "● Weekly sync".into(),
+                    enabled: false,
+                    accelerator: None,
+                }
+            );
+            assert_eq!(menu.entries[3].id(), Some("meeting_stop"));
+            assert_eq!(menu.entries[4], MenuEntry::Separator);
+            assert!(!ids(&menu.entries).contains(&"meeting_start".to_string()));
+        }
+    }
+
+    #[test]
+    fn untranslated_meeting_labels_fall_back_to_english() {
+        let mut i = inputs(false);
+        i.locale = "de".to_string();
+        i.meeting.available = true;
+        let menu = build_menu(&i);
+        assert!(matches!(&menu.entries[2], MenuEntry::Item { label, .. } if !label.is_empty()));
+    }
+
+    #[test]
+    fn meeting_recording_changes_the_menu_and_icon() {
+        let mut rec = inputs(false);
+        rec.meeting.recording = true;
+        assert_ne!(rec, inputs(false));
+        assert_eq!(
+            effective_icon_state(TrayIconState::Idle, true),
+            TrayIconState::Recording
+        );
+        assert_eq!(
+            effective_icon_state(TrayIconState::Transcribing, true),
+            TrayIconState::Transcribing
+        );
+        assert_eq!(
+            effective_icon_state(TrayIconState::Idle, false),
+            TrayIconState::Idle
+        );
+    }
+
+    #[test]
+    fn meeting_recording_keeps_the_idle_dictation_menu() {
+        // Regression: the meeting's Recording icon state used to make the
+        // menu "busy" (dictation Cancel, no model submenu / Unload model).
+        let mut i = inputs(true);
+        i.meeting = MeetingMenu {
+            available: true,
+            recording: true,
+            title: Some("Weekly sync".into()),
+        };
+        let desired = desired_from(TrayIconState::Idle, 3, AppTheme::Dark, i);
+        assert!(!desired.menu.busy);
+        // Meetings can run for hours; only dictation animates.
+        assert!(!desired.animated);
+        assert_eq!(desired.frame, 0);
+        assert_eq!(
+            desired.icon_path,
+            get_icon_path(AppTheme::Dark, TrayIconState::Recording, false)
+        );
+        let ids = ids(&build_menu(&desired.menu).entries);
+        assert!(ids.contains(&"meeting_stop".to_string()));
+        assert!(ids.contains(&"model_submenu".to_string()));
+        assert!(ids.contains(&"unload_model".to_string()));
+        assert!(!ids.contains(&"cancel".to_string()));
+
+        // Dictation busy during a meeting: Cancel shows, dictation's icon wins.
+        let mut i = inputs(false);
+        i.meeting.recording = true;
+        let desired = desired_from(TrayIconState::Transcribing, 3, AppTheme::Dark, i);
+        assert!(desired.menu.busy);
+        assert_eq!(
+            desired.icon_path,
+            get_icon_path(AppTheme::Dark, TrayIconState::Transcribing, false)
+        );
+    }
+
+    #[test]
+    fn dictation_recording_is_animated() {
+        let desired = desired_from(TrayIconState::Recording, 3, AppTheme::Dark, inputs(false));
+        assert!(desired.animated);
+        assert_eq!(desired.frame, 3);
+        assert_eq!(desired.icon_key(), (desired.icon_path, 3));
+    }
+
+    fn recording_icon() -> crate::host::image::Image<'static> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/resources/tray_recording.png");
+        load_tray_icon(Ok(path)).expect("recording icon loads")
+    }
+
+    #[test]
+    fn waveform_frames_move_the_bars_and_keep_the_dot() {
+        let base = recording_icon();
+        let (w, h) = (base.width() as usize, base.height() as usize);
+        let frames: Vec<_> = (1..=ANIMATION_FRAMES)
+            .map(|f| waveform_frame(&base, f))
+            .collect();
+        for frame in &frames {
+            assert_eq!(
+                (frame.width(), frame.height()),
+                (base.width(), base.height())
+            );
+            // The recording dot (right of the bars) is untouched.
+            for y in 0..h {
+                for x in 44..w {
+                    let o = (y * w + x) * 4;
+                    assert_eq!(frame.rgba()[o..o + 4], base.rgba()[o..o + 4]);
+                }
+            }
+        }
+        assert_ne!(frames[0].rgba(), base.rgba());
+        assert_ne!(
+            frames[0].rgba(),
+            frames[ANIMATION_FRAMES as usize / 2].rgba()
+        );
     }
 }

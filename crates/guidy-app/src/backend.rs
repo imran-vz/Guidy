@@ -141,6 +141,50 @@ fn device_name(key: &str, value: &Value) -> BackendResult<String> {
     })
 }
 
+/// Merge a `MeetingSettings` patch into the stored settings, then emit
+/// `settings-changed` (core starts/stops the meeting scheduler and refreshes
+/// the tray on it). A shorter retention runs right away, off this thread.
+fn update_meetings_settings(app: &AppHandle, patch: Value) -> BackendResult<()> {
+    use guidy_core::meetings::settings::MeetingSettings;
+    if !patch.is_object() {
+        return Err("Invalid value for meetings: expected an object".into());
+    }
+    // Under the settings lock: a concurrent patch (or core write) can't be
+    // lost between the read and the write.
+    let (meetings, retention_changed) =
+        guidy_core::settings::update_settings(app, |settings| -> BackendResult<_> {
+            let before = &settings.meetings;
+            let mut json = serde_json::to_value(before).map_err(|e| e.to_string())?;
+            if let (Value::Object(current), Value::Object(patch)) = (&mut json, patch) {
+                current.extend(patch);
+            }
+            let meetings: MeetingSettings = from_json("meetings", json)?;
+            let retention_changed = meetings.audio_retention_days != before.audio_retention_days;
+            settings.meetings = meetings.clone();
+            Ok((meetings, retention_changed))
+        })?;
+    let _ = app.emit(
+        "settings-changed",
+        serde_json::json!({ "setting": "meetings", "value": meetings }),
+    );
+    if retention_changed {
+        if let Some(m) = app.try_state::<Arc<guidy_core::meetings::manager::MeetingsManager>>() {
+            let m = Arc::clone(&*m);
+            let spawned = std::thread::Builder::new()
+                .name("meetings-retention".into())
+                .spawn(move || {
+                    if let Err(e) = m.apply_retention() {
+                        log::warn!("meetings: applying retention failed: {e:#}");
+                    }
+                });
+            if let Err(e) = spawned {
+                log::warn!("meetings: couldn't start retention: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The live backend.
 pub struct CoreBackend {
     app: AppHandle,
@@ -293,6 +337,9 @@ impl Backend for CoreBackend {
             "extra_recording_buffer_ms" => {
                 s::change_extra_recording_buffer_setting(app, u(&value)?)
             }
+            // A patch of the nested `MeetingSettings`: only the given
+            // top-level fields change (two views never clobber each other).
+            "meetings" => update_meetings_settings(&app, value),
             other => {
                 log::warn!("No handler for setting: {other}");
                 Ok(())
@@ -856,6 +903,32 @@ mod tests {
         let ev = t.take_events();
         let changed = ev.iter().find(|e| e.name == "settings-changed").unwrap();
         assert_eq!(changed.payload["setting"], "debug_mode");
+    }
+
+    #[test]
+    fn meetings_patch_merges_fields_and_emits_settings_changed() {
+        let t = TestApp::new();
+        let backend = CoreBackend::new(t.app.clone());
+        backend
+            .update_setting("meetings", json!({ "user_display_name": "Imran" }))
+            .unwrap();
+        backend
+            .update_setting("meetings", json!({ "enabled": true }))
+            .unwrap();
+        let stored = backend.get_app_settings().unwrap().meetings;
+        assert!(stored.enabled);
+        assert_eq!(stored.user_display_name, "Imran");
+        let ev = t.take_events();
+        let changed: Vec<_> = ev.iter().filter(|e| e.name == "settings-changed").collect();
+        assert_eq!(changed.len(), 2);
+        assert_eq!(changed[1].payload["setting"], "meetings");
+        assert_eq!(changed[1].payload["value"]["enabled"], true);
+        // Not an object, or a bad field type: rejected, nothing written.
+        assert!(backend.update_setting("meetings", json!(true)).is_err());
+        assert!(backend
+            .update_setting("meetings", json!({ "enabled": "yes" }))
+            .is_err());
+        assert!(backend.get_app_settings().unwrap().meetings.enabled);
     }
 
     #[test]

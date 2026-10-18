@@ -2,6 +2,7 @@
 //! machine, option matrices, banners, release notes, updater fallbacks.
 
 use guidy_core::commands::audio::{PermissionAccess, WindowsMicrophonePermissionStatus};
+use guidy_core::llm::ProviderRef;
 use guidy_core::secure_input::SecureInputStatus;
 use guidy_core::settings::{AppSettings, AutoSubmitKey, PasteMethod};
 use std::collections::BTreeSet;
@@ -315,14 +316,16 @@ pub const CUSTOM_PROVIDER_ID: &str = "custom";
 
 /// After switching provider, fetch its models only when it's configured
 /// (custom: a base URL; others: an API key). Never for Apple Intelligence.
-pub fn should_auto_fetch_models(provider_id: &str, base_url: &str, api_key: &str) -> bool {
-    if provider_id == APPLE_PROVIDER_ID {
-        return false;
-    }
-    if provider_id == CUSTOM_PROVIDER_ID {
-        !base_url.trim().is_empty()
-    } else {
-        !api_key.trim().is_empty()
+pub fn should_auto_fetch_models(provider: Option<ProviderRef>, api_key: &str) -> bool {
+    match provider {
+        // Built-in llama.cpp: the downloaded models, no key or URL needed.
+        Some(ProviderRef::Builtin) => true,
+        Some(ProviderRef::Configured(p)) => match p.id.as_str() {
+            APPLE_PROVIDER_ID => false,
+            CUSTOM_PROVIDER_ID => !p.base_url.trim().is_empty(),
+            _ => !api_key.trim().is_empty(),
+        },
+        None => false,
     }
 }
 
@@ -1042,11 +1045,26 @@ mod tests {
 
     #[test]
     fn post_process_rules() {
-        assert!(!should_auto_fetch_models("apple_intelligence", "x", "k"));
-        assert!(should_auto_fetch_models("custom", "http://x", ""));
-        assert!(!should_auto_fetch_models("custom", "  ", "key"));
-        assert!(should_auto_fetch_models("openai", "", "sk"));
-        assert!(!should_auto_fetch_models("openai", "", " "));
+        let provider = |id: &str, base_url: &str| guidy_core::settings::PostProcessProvider {
+            id: id.into(),
+            label: id.into(),
+            base_url: base_url.into(),
+            allow_base_url_edit: false,
+            models_endpoint: None,
+            supports_structured_output: false,
+            api_format: Default::default(),
+        };
+        let fetch = |p: &guidy_core::settings::PostProcessProvider, key: &str| {
+            should_auto_fetch_models(Some(ProviderRef::Configured(p)), key)
+        };
+        assert!(!fetch(&provider("apple_intelligence", "x"), "k"));
+        assert!(fetch(&provider("custom", "http://x"), ""));
+        assert!(!fetch(&provider("custom", "  "), "key"));
+        assert!(fetch(&provider("openai", ""), "sk"));
+        assert!(!fetch(&provider("openai", ""), " "));
+        // The built-in runtime needs neither a key nor a URL.
+        assert!(should_auto_fetch_models(Some(ProviderRef::Builtin), ""));
+        assert!(!should_auto_fetch_models(None, "sk"));
         assert_eq!(
             post_process_model_options(&[" a ".into(), "b".into(), "a".into()], "c"),
             vec!["a", "b", "c"]

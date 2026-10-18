@@ -41,7 +41,6 @@ regex = "1"
 whatlang = "0.16"
 isolang = "2"
 chrono = "0.4"
-rusqlite = { version = "0.37", features = ["bundled"] }
 rusqlite_migration = "2.3"
 sha2 = "0.10"
 libc = "0.2"
@@ -61,6 +60,38 @@ dirs = "6"
 parking_lot = "0.12"
 auto-launch = "0.5"
 interprocess = "2"
+# Meeting notes: Keychain secrets, voiceprints, encrypted audio.
+sherpa-onnx = "1.13.8"
+chacha20poly1305 = "0.10"
+rand = "0.9"
+opus = "0.3"
+base64 = "0.22"
+
+# SQLCipher replaces plain bundled SQLite: unkeyed databases (history.db) stay
+# plain SQLite, keyed ones (meetings.db) are encrypted. macOS uses
+# CommonCrypto; other targets vendor OpenSSL.
+[target.'cfg(target_os = "macos")'.dependencies.rusqlite]
+version = "0.37"
+features = ["bundled-sqlcipher"]
+
+[target.'cfg(not(target_os = "macos"))'.dependencies.rusqlite]
+version = "0.37"
+features = ["bundled-sqlcipher-vendored-openssl"]
+
+# Secrets (`crate::secrets`): Keychain on macOS, Credential Manager on
+# Windows, and on Linux keyutils backed by the Secret Service so secrets
+# survive a reboot (plain keyutils is session-only).
+[target.'cfg(target_os = "macos")'.dependencies.keyring]
+version = "3.6"
+features = ["apple-native"]
+
+[target.'cfg(windows)'.dependencies.keyring]
+version = "3.6"
+features = ["windows-native"]
+
+[target.'cfg(target_os = "linux")'.dependencies.keyring]
+version = "3.6"
+features = ["linux-native-sync-persistent", "crypto-rust", "vendored"]
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"

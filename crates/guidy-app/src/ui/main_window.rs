@@ -11,7 +11,8 @@ use crate::ui::onboarding::{
 };
 use crate::ui::pages::{
     about::AboutPage, advanced::AdvancedPage, debug::DebugPage, general::GeneralPage,
-    history::HistoryPage, models::ModelsPage, post_processing::PostProcessingPage,
+    history::HistoryPage, meetings::MeetingsPage, models::ModelsPage,
+    post_processing::PostProcessingPage,
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
@@ -27,6 +28,7 @@ use gpui_kit::*;
 pub enum Section {
     General,
     History,
+    Meetings,
     Models,
     Advanced,
     PostProcessing,
@@ -39,6 +41,7 @@ impl Section {
         match self {
             Section::General => "general",
             Section::History => "history",
+            Section::Meetings => "meetings",
             Section::Models => "models",
             Section::Advanced => "advanced",
             Section::PostProcessing => "postprocessing",
@@ -51,6 +54,7 @@ impl Section {
         Some(match id {
             "general" => Section::General,
             "history" => Section::History,
+            "meetings" => Section::Meetings,
             "models" => Section::Models,
             "advanced" => Section::Advanced,
             "postprocessing" => Section::PostProcessing,
@@ -64,6 +68,7 @@ impl Section {
         match self {
             Section::General => "sidebar.general",
             Section::History => "sidebar.history",
+            Section::Meetings => "meetings.title",
             Section::Models => "sidebar.models",
             Section::Advanced => "sidebar.advanced",
             Section::PostProcessing => "sidebar.postProcessing",
@@ -76,6 +81,7 @@ impl Section {
         match self {
             Section::General => "mic",
             Section::History => "clock",
+            Section::Meetings => "notebook-pen",
             Section::Models => "cpu",
             Section::Advanced => "cog",
             Section::PostProcessing => "sparkles",
@@ -94,6 +100,7 @@ impl Global for LastSection {}
 struct Pages {
     general: Option<Entity<GeneralPage>>,
     history: Option<Entity<HistoryPage>>,
+    meetings: Option<Entity<MeetingsPage>>,
     models: Option<Entity<ModelsPage>>,
     advanced: Option<Entity<AdvancedPage>>,
     post_processing: Option<Entity<PostProcessingPage>>,
@@ -116,6 +123,10 @@ pub struct MainWindow {
     secure_banner: Entity<SecureInputBanner>,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    /// A `guidy://meetings/<id>` link to open once the Meetings page renders.
+    pending_meeting: Option<crate::logic::meetings::MeetingLink>,
+    /// Show the Meetings > Settings tab once the Meetings page renders.
+    pending_meetings_settings: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -185,6 +196,8 @@ impl MainWindow {
             secure_banner: cx.new(SecureInputBanner::new),
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            pending_meeting: None,
+            pending_meetings_settings: false,
             _subs: subs,
         };
         // Window-level shortcuts (debug toggle, close) need a focused node.
@@ -194,6 +207,15 @@ impl MainWindow {
         this
     }
 
+    /// Sidebar sections in order; Meetings only where supported.
+    fn visible_sections(&self, cx: &App) -> Vec<&'static str> {
+        let state = self.state.read(cx);
+        crate::logic::meetings::with_meetings_section(
+            crate::logic::flows::sidebar_sections(state.app_settings()),
+            state.meetings_supported,
+        )
+    }
+
     /// The startup step (`None` while the startup check runs).
     pub fn step(&self, cx: &App) -> Option<OnboardingStep> {
         self.state.read(cx).startup.step
@@ -201,7 +223,7 @@ impl MainWindow {
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
         // Keep the selected section valid when it becomes hidden.
-        let visible = crate::logic::flows::sidebar_sections(self.state.read(cx).app_settings());
+        let visible = self.visible_sections(cx);
         if !visible.contains(&self.section.id()) {
             self.section = Section::General;
         }
@@ -249,6 +271,30 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Deep link: show the Meetings section and open the meeting (seeking
+    /// to the link's time). Ignored where meeting notes aren't available.
+    pub fn open_meeting_link(
+        &mut self,
+        link: crate::logic::meetings::MeetingLink,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.visible_sections(cx).contains(&Section::Meetings.id()) {
+            log::info!("Ignoring a meeting link: meeting notes are unavailable");
+            return;
+        }
+        self.pending_meeting = Some(link);
+        self.select_section(Section::Meetings, cx);
+    }
+
+    /// Meetings > Settings (built-in LLM model downloads live there).
+    pub fn open_meetings_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.visible_sections(cx).contains(&Section::Meetings.id()) {
+            return;
+        }
+        self.pending_meetings_settings = true;
+        self.select_section(Section::Meetings, cx);
+    }
+
     pub fn start_preview(&mut self, step: OnboardingStep, cx: &mut Context<Self>) {
         self.preview = Some(step);
         cx.notify();
@@ -256,7 +302,7 @@ impl MainWindow {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let visible = crate::logic::flows::sidebar_sections(self.state.read(cx).app_settings());
+        let visible = self.visible_sections(cx);
         let (selected_bg, hover_bg, muted, border, panel) = (
             theme.sidebar_accent,
             theme.accent,
@@ -317,6 +363,25 @@ impl MainWindow {
         match self.section {
             Section::General => page!(general, GeneralPage),
             Section::History => page!(history, HistoryPage),
+            Section::Meetings => {
+                let page = self
+                    .pages
+                    .meetings
+                    .get_or_insert_with(|| cx.new(|cx| MeetingsPage::new(window, cx)))
+                    .clone();
+                if std::mem::take(&mut self.pending_meetings_settings) {
+                    page.update(cx, |p, cx| {
+                        p.close_meeting(cx);
+                        p.set_tab(crate::ui::pages::meetings::MeetingsTab::Settings, cx)
+                    });
+                }
+                if let Some(link) = self.pending_meeting.take() {
+                    page.update(cx, |p, cx| {
+                        p.open_meeting_at(link.meeting_id, link.t_ms, window, cx)
+                    });
+                }
+                page.into_any_element()
+            }
             Section::Models => page!(models, ModelsPage),
             Section::Advanced => page!(advanced, AdvancedPage),
             Section::PostProcessing => page!(post_processing, PostProcessingPage),

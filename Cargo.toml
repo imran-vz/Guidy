@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app", "xtask"]
-default-members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app"]
+members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app", "crates/guidy-llm", "xtask"]
+default-members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app", "crates/guidy-llm"]
 
 [workspace.package]
 version = "0.1.0"

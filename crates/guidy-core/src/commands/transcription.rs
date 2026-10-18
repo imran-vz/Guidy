@@ -1,6 +1,6 @@
 use crate::host::{AppHandle, State};
 use crate::managers::transcription::TranscriptionManager;
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use crate::settings::{update_settings, ModelUnloadTimeout};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -10,9 +10,7 @@ pub struct ModelLoadStatus {
     pub current_model: Option<String>,
 }
 pub fn set_model_unload_timeout(app: AppHandle, timeout: ModelUnloadTimeout) {
-    let mut settings = get_settings(&app);
-    settings.model_unload_timeout = timeout;
-    write_settings(&app, settings);
+    update_settings(&app, |s| s.model_unload_timeout = timeout);
 }
 pub fn get_model_load_status(
     transcription_manager: State<Arc<TranscriptionManager>>,

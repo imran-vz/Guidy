@@ -32,6 +32,14 @@ impl Default for PlaybackState {
 
 enum Cmd {
     Play(PathBuf),
+    /// Play decoded mono samples kept in memory (meeting audio is encrypted
+    /// at rest, so it is never written out). `key` identifies the clip in
+    /// [`PlaybackState::path`].
+    PlaySamples {
+        key: PathBuf,
+        samples: Arc<Vec<f32>>,
+        sample_rate: u32,
+    },
     Pause,
     Resume,
     Seek(Duration),
@@ -75,6 +83,15 @@ impl Playback {
     pub fn play(&self, path: PathBuf) {
         let _ = self.tx.send(Cmd::Play(path));
     }
+    /// Play in-memory mono samples. `key` identifies the clip (it shows up
+    /// as `PlaybackState::path`); it is not a file.
+    pub fn play_samples(&self, key: PathBuf, samples: Vec<f32>, sample_rate: u32) {
+        let _ = self.tx.send(Cmd::PlaySamples {
+            key,
+            samples: Arc::new(samples),
+            sample_rate,
+        });
+    }
     pub fn pause(&self) {
         let _ = self.tx.send(Cmd::Pause);
     }
@@ -92,15 +109,42 @@ impl Playback {
 fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
     let mut sink: Option<rodio::MixerDeviceSink> = None;
     let mut player: Option<rodio::Player> = None;
+    // The in-memory clip being played, so Resume can replay it.
+    let mut clip: Option<(Arc<Vec<f32>>, u32)> = None;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Cmd::Play(path)) => {
+            Ok(Cmd::PlaySamples {
+                key,
+                samples,
+                sample_rate,
+            }) => {
                 player = None;
                 if sink.is_none() {
-                    sink = rodio::DeviceSinkBuilder::from_default_device()
-                        .and_then(|b| b.open_stream())
-                        .map_err(|e| log::error!("Failed to open audio output: {e}"))
-                        .ok();
+                    sink = open_sink();
+                }
+                let mut st = state.lock();
+                *st = PlaybackState {
+                    path: Some(key),
+                    duration: samples_duration(samples.len(), sample_rate),
+                    ..Default::default()
+                };
+                match &sink {
+                    Some(s) => {
+                        player = play_clip(s, samples.clone(), sample_rate);
+                        st.playing = player.is_some();
+                        if player.is_none() {
+                            st.error = Some("Invalid audio".into());
+                        }
+                    }
+                    None => st.error = Some("No audio output".into()),
+                }
+                clip = Some((samples, sample_rate));
+            }
+            Ok(Cmd::Play(path)) => {
+                player = None;
+                clip = None;
+                if sink.is_none() {
+                    sink = open_sink();
                 }
                 let mut st = state.lock();
                 *st = PlaybackState {
@@ -108,18 +152,15 @@ fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
                     duration: wav_duration(&path).unwrap_or_default(),
                     ..Default::default()
                 };
-                match (&sink, std::fs::File::open(&path)) {
-                    (Some(s), Ok(file)) => {
-                        match rodio::play(s.mixer(), std::io::BufReader::new(file)) {
-                            Ok(p) => {
-                                player = Some(p);
-                                st.playing = true;
-                            }
-                            Err(e) => st.error = Some(e.to_string()),
+                match &sink {
+                    Some(s) => match play_file(s, &path) {
+                        Ok(p) => {
+                            player = Some(p);
+                            st.playing = true;
                         }
-                    }
-                    (None, _) => st.error = Some("No audio output".into()),
-                    (_, Err(e)) => st.error = Some(e.to_string()),
+                        Err(e) => st.error = Some(e),
+                    },
+                    None => st.error = Some("No audio output".into()),
                 }
             }
             Ok(Cmd::Pause) => {
@@ -133,11 +174,10 @@ fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
                     if p.empty() {
                         // Finished: replay from the start.
                         let path = state.lock().path.clone();
-                        if let Some(path) = path {
-                            player = None;
-                            if let (Some(s), Ok(file)) = (&sink, std::fs::File::open(&path)) {
-                                player = rodio::play(s.mixer(), std::io::BufReader::new(file)).ok();
-                            }
+                        if let (Some((samples, rate)), Some(s)) = (&clip, &sink) {
+                            player = play_clip(s, samples.clone(), *rate);
+                        } else if let Some(path) = path {
+                            player = sink.as_ref().and_then(|s| play_file(s, &path).ok());
                         }
                     } else {
                         p.play();
@@ -155,6 +195,7 @@ fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
             }
             Ok(Cmd::Stop) => {
                 player = None;
+                clip = None;
                 *state.lock() = PlaybackState::default();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -169,6 +210,98 @@ fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
             }
         }
     }
+}
+
+fn open_sink() -> Option<rodio::MixerDeviceSink> {
+    rodio::DeviceSinkBuilder::from_default_device()
+        .and_then(|b| b.open_stream())
+        .map_err(|e| log::error!("Failed to open audio output: {e}"))
+        .ok()
+}
+
+fn play_file(
+    sink: &rodio::MixerDeviceSink,
+    path: &std::path::Path,
+) -> Result<rodio::Player, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    rodio::play(sink.mixer(), std::io::BufReader::new(file)).map_err(|e| e.to_string())
+}
+
+fn play_clip(
+    sink: &rodio::MixerDeviceSink,
+    samples: Arc<Vec<f32>>,
+    sample_rate: u32,
+) -> Option<rodio::Player> {
+    let source = ArcSamples::new(samples, sample_rate)?;
+    let player = rodio::Player::connect_new(sink.mixer());
+    player.append(source);
+    Some(player)
+}
+
+/// Mono samples played straight from a shared buffer, so each (re)play only
+/// bumps a refcount instead of copying the clip (rodio's `SamplesBuffer`
+/// wants an owned `Vec`).
+struct ArcSamples {
+    data: Arc<Vec<f32>>,
+    pos: usize,
+    sample_rate: rodio::SampleRate,
+}
+
+impl ArcSamples {
+    fn new(data: Arc<Vec<f32>>, sample_rate: u32) -> Option<Self> {
+        Some(Self {
+            data,
+            pos: 0,
+            sample_rate: std::num::NonZero::new(sample_rate)?,
+        })
+    }
+}
+
+impl Iterator for ArcSamples {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = *self.data.get(self.pos)?;
+        self.pos += 1;
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.data.len().saturating_sub(self.pos);
+        (remaining, Some(remaining))
+    }
+}
+
+impl rodio::Source for ArcSamples {
+    fn current_span_len(&self) -> Option<usize> {
+        Some(self.data.len().saturating_sub(self.pos))
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        std::num::NonZero::<u16>::MIN
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(samples_duration(self.data.len(), self.sample_rate.get()))
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        // Mono, constant rate: jump straight to the sample, saturating at the end.
+        let target = pos.as_secs_f64() * self.sample_rate.get() as f64;
+        self.pos = (target as usize).min(self.data.len());
+        Ok(())
+    }
+}
+
+pub fn samples_duration(len: usize, sample_rate: u32) -> Duration {
+    if sample_rate == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f64(len as f64 / sample_rate as f64)
 }
 
 /// `m:ss`
@@ -198,5 +331,25 @@ mod tests {
         w.finalize().unwrap();
         assert_eq!(wav_duration(&path), Some(Duration::from_secs(2)));
         assert_eq!(format_time(Duration::from_secs(65)), "1:05");
+        assert_eq!(samples_duration(32_000, 16_000), Duration::from_secs(2));
+        assert_eq!(samples_duration(10, 0), Duration::ZERO);
+    }
+
+    #[test]
+    fn arc_samples_plays_and_seeks_without_copying() {
+        use rodio::Source;
+        let data = Arc::new((0..8).map(|i| i as f32).collect::<Vec<_>>());
+        assert!(ArcSamples::new(data.clone(), 0).is_none());
+        let mut src = ArcSamples::new(data.clone(), 4).unwrap();
+        assert_eq!(Arc::strong_count(&data), 2);
+        assert_eq!(src.channels().get(), 1);
+        assert_eq!(src.total_duration(), Some(Duration::from_secs(2)));
+        assert_eq!(src.next(), Some(0.0));
+        src.try_seek(Duration::from_secs(1)).unwrap();
+        assert_eq!(src.size_hint(), (4, Some(4)));
+        assert_eq!(src.collect::<Vec<_>>(), vec![4.0, 5.0, 6.0, 7.0]);
+        let mut src = ArcSamples::new(data, 4).unwrap();
+        src.try_seek(Duration::from_secs(10)).unwrap();
+        assert_eq!(src.next(), None);
     }
 }

@@ -53,7 +53,7 @@ This plan was agreed on through a design review. The decisions behind it are rec
 | D11 | Naming and voiceprints | Store voiceprints only for people the user names. Group speakers by clustering voiceprints, which has no speaker limit. A People list allows rename, merge and delete. |
 | D12 | Where meetings appear | A new **Meetings** page, with **People** as a tab inside it. Dictation history is unchanged. |
 | D13 | Raw audio retention | 3 days by default. The user can choose 3, 7 or 30 days, or forever. Deleting audio never deletes voiceprints. |
-| D14 | Secrets | Every secret lives in the macOS Keychain, starting in task 1. Existing plain-text provider keys are migrated on first run. |
+| D14 | Secrets | Every secret lives in the macOS Keychain, starting in task 1. |
 | D15 | Local models | Built-in llama.cpp (default) and Apple Intelligence, both offered to the user. |
 | D16 | Stop | Manual stop only, with recurring "still recording" reminders after the meeting should have ended (§3.1). |
 | D17 | Sensitive data at rest | **(default)** The meetings database and the meeting audio are encrypted with a key held in the Keychain. Dictation history (`history.db`) is unchanged. |
@@ -76,7 +76,6 @@ The tasks ship in order. Each one ends in a working, tested feature.
 
 **1.1 Secrets module (Keychain)**
 - A `secrets` module in `guidy-core` built on the `keyring` crate (Keychain on macOS), with a get/set/delete-by-key API.
-- Migration: move `post_process_api_keys` out of `settings_store.json` into the Keychain, then remove them from the JSON file.
 - Also generate the encryption key for meeting data and keep it in the Keychain (D17).
 
 **1.2 Calendar (EventKit)**

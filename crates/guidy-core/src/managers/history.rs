@@ -793,10 +793,10 @@ mod db_tests {
     #[test]
     fn saving_emits_added_and_preserve_limit_keeps_saved_entries() {
         let t = TestApp::new();
-        let mut s = crate::settings::get_settings(&t.app);
-        s.history_limit = 2;
-        s.recording_retention_period = crate::settings::RecordingRetentionPeriod::PreserveLimit;
-        crate::settings::write_settings(&t.app, s);
+        crate::settings::update_settings(&t.app, |s| {
+            s.history_limit = 2;
+            s.recording_retention_period = crate::settings::RecordingRetentionPeriod::PreserveLimit;
+        });
         let hm = HistoryManager::new(&t.app).unwrap();
         for i in 0..4 {
             hm.save_entry(format!("{i}.wav"), format!("text {i}"), false, None, None)
