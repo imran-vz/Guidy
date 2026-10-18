@@ -44,12 +44,26 @@ struct JobState {
     settling: HashSet<MeetingId>,
 }
 
+impl JobState {
+    /// Whether `id`'s run is cancelled but hasn't finished yet.
+    fn stopping(&self, id: MeetingId) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|(c, cancel)| *c == id && cancel.load(Ordering::SeqCst))
+    }
+
+    fn is_running(&self, id: MeetingId) -> bool {
+        self.current.as_ref().is_some_and(|(c, _)| *c == id)
+    }
+}
+
 struct Inner {
     app: AppHandle,
     store: Arc<MeetingsStore>,
     meetings_dir: PathBuf,
     state: Mutex<JobState>,
-    /// Notified when a meeting leaves [`JobState::settling`].
+    /// Notified when a meeting leaves [`JobState::settling`] and when a run
+    /// stops being [`JobState::current`].
     settled: Condvar,
     /// The meeting transcribe worker's supervisor (created on first use).
     engine: OnceLock<EngineSupervisor>,
@@ -76,9 +90,11 @@ impl Processor {
     }
 
     /// Queue (or resume) processing `id`. A no-op if it is already queued or
-    /// running. One whose run was cancelled but hasn't stopped yet is queued
-    /// again: it stays `Processing`, and the new run starts once the
-    /// cancelled one has (see [`Self::finish`]).
+    /// running. One whose run was cancelled but hasn't stopped yet (Process
+    /// clicked right after Cancel) is queued once that run has finished and
+    /// restored its status, so the new run starts from the meeting as the
+    /// cancel left it; this waits up to [`STOP_WAIT`] for that (callers are
+    /// off the UI thread). After that it fails with [`STILL_STOPPING`].
     ///
     /// The row is marked `Processing` before this returns (by a statement
     /// that also re-checks the audio is still there), so audio retention,
@@ -86,6 +102,35 @@ impl Processor {
     /// the audio of a queued meeting. Its previous status and error are
     /// saved in the row, so a cancel restores them even after a restart.
     pub fn enqueue(&self, id: MeetingId) -> Result<()> {
+        let deadline = std::time::Instant::now() + STOP_WAIT;
+        loop {
+            self.wait_until_stopped(id, deadline)?;
+            if self.enqueue_once(id)? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Wait (until `deadline`) while a cancelled run of `id` is stopping.
+    fn wait_until_stopped(&self, id: MeetingId, deadline: std::time::Instant) -> Result<()> {
+        let mut state = self.inner.state.lock();
+        while state.stopping(id) {
+            if self
+                .inner
+                .settled
+                .wait_until(&mut state, deadline)
+                .timed_out()
+                && state.stopping(id)
+            {
+                bail!(STILL_STOPPING);
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::enqueue`], unless a cancelled run of `id` is (again) still
+    /// stopping: then false, and nothing changed.
+    fn enqueue_once(&self, id: MeetingId) -> Result<bool> {
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
         };
@@ -118,12 +163,11 @@ impl Processor {
             }
         }
         let mut state = self.lock_for(id);
-        let running_on = state
-            .current
-            .as_ref()
-            .is_some_and(|(c, cancel)| *c == id && !cancel.load(Ordering::SeqCst));
-        if state.queue.contains(&id) || running_on {
-            return Ok(());
+        if state.stopping(id) {
+            return Ok(false);
+        }
+        if state.queue.contains(&id) || state.is_running(id) {
+            return Ok(true);
         }
         // Settling: one enqueue claims it, and a cancel or finish of it
         // waits until it is marked and queued.
@@ -175,7 +219,7 @@ impl Processor {
                 bail!("could not start meeting processing: {e}");
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Cancel `id`: dropped from the queue, or stopped if it is running (its
@@ -184,27 +228,12 @@ impl Processor {
     /// a reprocessed meeting stays `Processed`, a retry stays `Failed`. One
     /// with nothing saved (a crash leftover from an older version) goes back
     /// to `Recorded`, so the UI offers "Process" again instead of a spinner.
-    ///
-    /// A run queued again while its cancelled run is still stopping (Cancel,
-    /// Process, Cancel) is only taken off the queue: the stopping run's
-    /// [`Self::finish`] then finds no run to hand over to and restores the
-    /// status. Restoring here would let that run go on saving its stage and
-    /// checkpoint, and record its outcome, over the restored meeting.
+    /// A running job restores it in [`Self::finish`], once it has stopped.
     pub fn cancel(&self, id: MeetingId) -> Result<()> {
         let mut state = self.lock_for(id);
-        let running = state
-            .current
-            .as_ref()
-            .filter(|(c, _)| *c == id)
-            .map(|(_, flag)| flag.clone());
         if let Some(pos) = state.queue.iter().position(|q| *q == id) {
             state.queue.remove(pos);
             state.progress.remove(&id);
-            if running.is_some() {
-                drop(state);
-                self.emit_changed(id);
-                return Ok(());
-            }
             // Settling, so an enqueue can't mark it again in between and
             // then be left queued but not `Processing`.
             let restored = self.settle(&mut state, id, || self.restore_status(id));
@@ -214,7 +243,7 @@ impl Processor {
             }
             return Ok(());
         }
-        if let Some(flag) = running {
+        if let Some((_, flag)) = state.current.as_ref().filter(|(c, _)| *c == id) {
             flag.store(true, Ordering::SeqCst);
             if let Some(engine) = self.inner.engine.get() {
                 engine.cancel();
@@ -287,12 +316,7 @@ impl Processor {
 
     /// True while `id`'s job is the one running.
     pub fn is_running(&self, id: MeetingId) -> bool {
-        self.inner
-            .state
-            .lock()
-            .current
-            .as_ref()
-            .is_some_and(|(c, _)| *c == id)
+        self.inner.state.lock().is_running(id)
     }
 
     /// [`Self::cancel`], then wait (at most `timeout`) until `id`'s job has
@@ -301,11 +325,16 @@ impl Processor {
     pub fn cancel_and_wait(&self, id: MeetingId, timeout: std::time::Duration) -> Result<bool> {
         self.cancel(id)?;
         let deadline = std::time::Instant::now() + timeout;
-        while self.is_running(id) {
-            if std::time::Instant::now() >= deadline {
-                return Ok(false);
+        let mut state = self.inner.state.lock();
+        while state.is_running(id) {
+            if self
+                .inner
+                .settled
+                .wait_until(&mut state, deadline)
+                .timed_out()
+            {
+                return Ok(!state.is_running(id));
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         Ok(true)
     }
@@ -413,32 +442,22 @@ impl Processor {
     ///
     /// Ordering: the outcome is decided under the lock, written while `id`
     /// is settling (see [`Self::settle`]), and only then does `id` stop
-    /// being `current` and leave the queue. So until its status is written
-    /// it stays busy and running ([`Self::cancel_and_wait`] waits for it),
-    /// and an enqueue or cancel of it lands either before (and is seen
-    /// here) or after (and finds the outcome written, nothing running).
+    /// being `current`. So until its status is written it stays busy and
+    /// running ([`Self::cancel_and_wait`] and an [`Self::enqueue`] after a
+    /// cancel wait for it), and a cancel of it lands either before (and is
+    /// seen here) or after (and finds the outcome written, nothing running).
     ///
-    /// A cancelled run queued again meanwhile (Process clicked right after
-    /// Cancel) stays `Processing`, its saved status untouched, so the queued
-    /// run follows straight on. One that finished anyway records its
-    /// outcome; a success drops the extra run (its notes are fresh), a
-    /// failure keeps it queued as a retry. A cancelled run with no run
-    /// queued after it gets its status back, even when it stopped with
-    /// another error (the cancel may have caused it).
+    /// A cancelled run gets its status back, even when it stopped with
+    /// another error (the cancel may have caused it). One the cancel reached
+    /// too late, which finished anyway, records its notes.
     fn finish(&self, id: MeetingId, outcome: Result<()>) {
         let store = &self.inner.store;
         let mut state = self.lock_for(id);
-        let stopped = state
-            .current
-            .as_ref()
-            .is_some_and(|(c, flag)| *c == id && flag.load(Ordering::SeqCst));
-        let requeued = state.queue.contains(&id);
         let cancelled = match &outcome {
             Ok(()) => false,
-            Err(e) => is_cancelled(e) || (stopped && !requeued),
+            Err(e) => is_cancelled(e) || state.stopping(id),
         };
-        // Whether the queued run stays queued.
-        let keep_queued = self.settle(&mut state, id, || {
+        self.settle(&mut state, id, || {
             // Deleted while it ran: drop whatever sidecars it wrote (they
             // hold voiceprints of people nobody named) instead of recording
             // an outcome.
@@ -447,51 +466,36 @@ impl Processor {
                 if let Err(e) = super::sidecar::delete_sidecars(&self.inner.meetings_dir, id) {
                     log::warn!("meeting {id}: {e:#}");
                 }
-                return false;
+                return;
             }
-            let (result, keep) = match &outcome {
-                Err(_) if cancelled && requeued => {
-                    log::info!("meeting {id}: processing cancelled; queued again");
-                    (Ok(()), true)
-                }
-                Ok(()) => (
-                    store.finish_processing(id, MeetingStatus::Processed, None),
-                    false,
-                ),
+            let result = match &outcome {
+                Ok(()) => store.finish_processing(id, MeetingStatus::Processed, None),
                 Err(e) if cancelled => {
                     log::info!("meeting {id}: processing cancelled ({e:#})");
-                    (self.restore_status(id).map(|_| ()), false)
+                    self.restore_status(id).map(|_| ())
                 }
                 Err(e) => {
                     log::error!("meeting {id}: processing failed: {e:#}");
-                    let failed =
-                        store.finish_processing(id, MeetingStatus::Failed, Some(&format!("{e:#}")));
-                    // The queued retry: `Processing` again, keeping this
-                    // failure for a cancel to restore.
-                    let keep = requeued && matches!(store.mark_processing(id, false), Ok(true));
-                    (failed, keep)
+                    store.finish_processing(id, MeetingStatus::Failed, Some(&format!("{e:#}")))
                 }
             };
             if let Err(e) = result {
                 log::warn!("meeting {id}: could not record the processing outcome: {e:#}");
             }
-            keep
         });
-        if state.current.as_ref().is_some_and(|(c, _)| *c == id) {
+        if state.is_running(id) {
             state.current = None;
         }
-        if !keep_queued {
-            state.queue.retain(|q| *q != id);
-            state.progress.remove(&id);
-        }
+        state.progress.remove(&id);
+        // Wakes an enqueue or `cancel_and_wait` waiting for it to stop.
+        self.inner.settled.notify_all();
         drop(state);
         self.emit_changed(id);
     }
 
     /// Record `run`'s progress, unless it is no longer the live run of its
-    /// meeting: once cancelled, its updates are stale (a run queued again
-    /// meanwhile shows "queued" until it starts). Emitted under the lock, so
-    /// it can't arrive after a cancel and enqueue that follow it.
+    /// meeting: once cancelled, its updates are stale. Emitted under the
+    /// lock, so it can't arrive after a cancel that follows it.
     fn report_progress(&self, run: &Arc<AtomicBool>, p: ProcessingProgress) {
         let mut state = self.inner.state.lock();
         let live = state.current.as_ref().is_some_and(|(c, flag)| {
@@ -567,6 +571,15 @@ impl Processor {
         .run()
     }
 }
+
+/// How long [`Processor::enqueue`] waits for a cancelled run of the same
+/// meeting to stop.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Why [`Processor::enqueue`] gives up when a cancelled run outlives
+/// [`STOP_WAIT`].
+pub const STILL_STOPPING: &str =
+    "this meeting's cancelled processing is still stopping; try again in a moment";
 
 /// Why [`Processor::enqueue`] refuses a meeting without audio.
 pub const AUDIO_DELETED: &str =
@@ -1027,61 +1040,22 @@ mod tests {
         flag
     }
 
-    /// Process clicked after Cancel, before the cancelled run noticed: a new
-    /// run is queued, and the cancelled one's end doesn't undo it.
-    #[test]
-    fn processing_again_while_a_cancelled_run_stops_queues_a_new_run() {
-        let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
-        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
-        p.inner.state.lock().running = true;
-        let id = store
-            .insert_meeting(&Meeting {
-                processing_stage: Some(ProcessingStage::Done.as_str().into()),
-                ..meeting(MeetingStatus::Processed)
-            })
-            .unwrap();
-        p.enqueue(id).unwrap();
-        let flag = take_job(&p, id);
-        // Running and not cancelled: nothing more to queue.
-        p.enqueue(id).unwrap();
+    /// [`Processor::enqueue`] on another thread, as the UI calls it.
+    fn enqueue_in_background(p: &Processor, id: MeetingId) -> std::thread::JoinHandle<Result<()>> {
+        let q = p.clone();
+        let t = std::thread::spawn(move || q.enqueue(id));
+        // It waits for the stopping run, leaving the queue alone.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!t.is_finished());
         assert!(p.inner.state.lock().queue.is_empty());
-
-        p.cancel(id).unwrap();
-        assert!(flag.load(Ordering::SeqCst));
-        p.enqueue(id).unwrap();
-        assert_eq!(p.inner.state.lock().queue, [id]);
-        p.enqueue(id).unwrap(); // no duplicate
-        assert_eq!(p.inner.state.lock().queue.len(), 1);
-
-        // The cancelled run (which had started over) stops.
-        store
-            .set_processing_stage(id, Some(ProcessingStage::Vad))
-            .unwrap();
-        p.finish(id, Err(anyhow::Error::new(super::super::Cancelled)));
-        assert!(!p.is_running(id));
-        assert!(p.is_busy(id));
-        assert_eq!(p.progress(id).unwrap().message.as_deref(), Some("queued"));
-        let m = store.get_meeting(id).unwrap().unwrap();
-        assert_eq!(m.status, MeetingStatus::Processing);
-        assert_eq!(
-            store.status_before_processing(id).unwrap(),
-            Some(MeetingStatus::Processed)
-        );
-
-        // The new run, cancelled too: the processed meeting is whole again.
-        p.cancel(id).unwrap();
-        assert!(!p.is_busy(id));
-        let m = store.get_meeting(id).unwrap().unwrap();
-        assert_eq!(m.status, MeetingStatus::Processed);
-        assert_eq!(m.processing_stage.as_deref(), Some("done"));
+        t
     }
 
-    /// Cancel, Process, Cancel while the first run is still stopping: the
-    /// second cancel only unqueues the new run, and the stopping run's end
-    /// restores the meeting, after its last writes.
+    /// Process clicked after Cancel, before the cancelled run noticed: it
+    /// waits for that run to stop and restore the meeting, then queues a
+    /// fresh run. Cancelling that one leaves the processed meeting whole.
     #[test]
-    fn cancel_process_cancel_restores_once_the_cancelled_run_stops() {
+    fn processing_again_while_a_cancelled_run_stops_queues_a_fresh_run() {
         let app = TestApp::new();
         let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
         let dir = tempfile::tempdir().unwrap();
@@ -1089,6 +1063,7 @@ mod tests {
         p.inner.state.lock().running = true;
         let key = [3u8; 32];
         let cache = super::super::sidecar::ProcessingCache::new();
+        // However the cancelled run ends, it doesn't record a failure.
         for stopped_with in [
             anyhow::Error::new(super::super::Cancelled),
             anyhow::anyhow!("engine went away"),
@@ -1100,18 +1075,14 @@ mod tests {
                 })
                 .unwrap();
             p.enqueue(id).unwrap();
-            take_job(&p, id);
-            p.cancel(id).unwrap();
+            let flag = take_job(&p, id);
+            // Running and not cancelled: nothing more to queue.
             p.enqueue(id).unwrap();
-            p.cancel(id).unwrap();
-            // Unqueued, but not restored under the still-running run.
             assert!(p.inner.state.lock().queue.is_empty());
-            assert!(p.progress(id).is_none());
-            assert!(p.is_running(id));
-            assert_eq!(
-                store.get_meeting(id).unwrap().unwrap().status,
-                MeetingStatus::Processing
-            );
+
+            p.cancel(id).unwrap();
+            assert!(flag.load(Ordering::SeqCst));
+            let queueing = enqueue_in_background(&p, id);
 
             // The run, not yet stopped, saves a stage and its checkpoint.
             assert!(store
@@ -1119,20 +1090,64 @@ mod tests {
                 .unwrap());
             super::super::sidecar::write_cache(dir.path(), id, &key, &cache).unwrap();
             p.finish(id, Err(stopped_with));
+            queueing.join().unwrap().unwrap();
+
+            // Queued afresh, from the restored meeting.
+            assert!(!p.is_running(id));
+            assert_eq!(p.inner.state.lock().queue, [id]);
+            let queued = p.progress(id).unwrap();
+            assert_eq!(queued.message.as_deref(), Some("queued"));
+            assert_eq!(queued.stage, ProcessingStage::Decode);
+            assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
+            let m = store.get_meeting(id).unwrap().unwrap();
+            assert_eq!((m.status, m.error), (MeetingStatus::Processing, None));
+            assert_eq!(m.processing_stage.as_deref(), Some("done"));
+            assert_eq!(
+                store.status_before_processing(id).unwrap(),
+                Some(MeetingStatus::Processed)
+            );
+
+            // The fresh run, cancelled too (queued or running).
+            p.cancel(id).unwrap();
             assert!(!p.is_busy(id));
             let m = store.get_meeting(id).unwrap().unwrap();
             assert_eq!((m.status, m.error), (MeetingStatus::Processed, None));
             assert_eq!(m.processing_stage.as_deref(), Some("done"));
-            assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
-            // Nothing it does afterwards moves the stage.
-            assert!(!store
-                .set_processing_stage_if_processing(id, Some(ProcessingStage::Vad))
-                .unwrap());
+
+            p.enqueue(id).unwrap();
+            take_job(&p, id);
+            p.cancel(id).unwrap();
+            p.finish(id, Err(anyhow::Error::new(super::super::Cancelled)));
+            let m = store.get_meeting(id).unwrap().unwrap();
+            assert_eq!((m.status, m.error), (MeetingStatus::Processed, None));
+            assert_eq!(m.processing_stage.as_deref(), Some("done"));
         }
     }
 
-    /// A cancelled run's progress doesn't overwrite the "queued" entry of
-    /// the run queued after it.
+    /// An enqueue gives up (changing nothing) when the cancelled run never
+    /// stops.
+    #[test]
+    fn processing_again_gives_up_if_the_cancelled_run_never_stops() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        p.inner.state.lock().running = true;
+        let id = store
+            .insert_meeting(&meeting(MeetingStatus::Recorded))
+            .unwrap();
+        p.enqueue(id).unwrap();
+        take_job(&p, id);
+        p.cancel(id).unwrap();
+        let soon = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let err = p.wait_until_stopped(id, soon).unwrap_err();
+        assert_eq!(err.to_string(), STILL_STOPPING);
+        assert!(p.is_running(id));
+        assert!(p.inner.state.lock().queue.is_empty());
+        // Nothing stopping: no wait.
+        p.wait_until_stopped(7, soon).unwrap();
+    }
+
+    /// A cancelled run's progress is dropped.
     #[test]
     fn a_cancelled_runs_progress_is_dropped() {
         let app = TestApp::new();
@@ -1154,16 +1169,15 @@ mod tests {
         assert_eq!(p.progress(id).unwrap().stage, ProcessingStage::Vad);
 
         p.cancel(id).unwrap();
-        p.enqueue(id).unwrap();
         let emitted = app.event_names().len();
         p.report_progress(&run, at(ProcessingStage::Transcribe));
-        let queued = p.progress(id).unwrap();
-        assert_eq!(queued.message.as_deref(), Some("queued"));
-        assert_eq!(queued.stage, ProcessingStage::Decode);
+        assert_eq!(p.progress(id).unwrap().stage, ProcessingStage::Vad);
         assert_eq!(app.event_names().len(), emitted);
 
-        // The next run reports again.
+        // The next run reports again; the old one still doesn't.
         p.finish(id, Err(anyhow::Error::new(super::super::Cancelled)));
+        assert!(p.progress(id).is_none());
+        p.enqueue(id).unwrap();
         let next = take_job(&p, id);
         p.report_progress(&run, at(ProcessingStage::Transcribe));
         assert_eq!(p.progress(id).unwrap().message.as_deref(), Some("queued"));
@@ -1192,9 +1206,10 @@ mod tests {
         assert!(state.settling.is_empty());
     }
 
-    /// The cancel came too late and the run ended anyway.
+    /// The cancel came too late and the run finished anyway: its notes are
+    /// kept, and Process (which waited for it) queues a fresh run.
     #[test]
-    fn a_run_queued_after_a_late_cancel_follows_its_outcome() {
+    fn a_late_cancel_keeps_a_finished_runs_notes() {
         let app = TestApp::new();
         let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
@@ -1203,31 +1218,21 @@ mod tests {
             .insert_meeting(&meeting(MeetingStatus::Recorded))
             .unwrap();
 
-        // It succeeded: its notes are fresh, so the extra run is dropped.
         p.enqueue(id).unwrap();
         take_job(&p, id);
         p.cancel(id).unwrap();
-        p.enqueue(id).unwrap();
+        let queueing = enqueue_in_background(&p, id);
         p.finish(id, Ok(()));
+        queueing.join().unwrap().unwrap();
+        assert_eq!(p.inner.state.lock().queue, [id]);
+        assert_eq!(
+            store.status_before_processing(id).unwrap(),
+            Some(MeetingStatus::Processed)
+        );
+        p.cancel(id).unwrap();
         assert!(!p.is_busy(id));
-        assert!(p.progress(id).is_none());
         let m = store.get_meeting(id).unwrap().unwrap();
-        assert_eq!(m.status, MeetingStatus::Processed);
-
-        // It failed: the queued run is the retry, and a cancel of it gives
-        // back the failure.
-        p.enqueue(id).unwrap();
-        take_job(&p, id);
-        p.cancel(id).unwrap();
-        p.enqueue(id).unwrap();
-        p.finish(id, Err(anyhow::anyhow!("boom")));
-        assert!(p.is_busy(id));
-        let m = store.get_meeting(id).unwrap().unwrap();
-        assert_eq!(m.status, MeetingStatus::Processing);
-        p.cancel(id).unwrap();
-        let m = store.get_meeting(id).unwrap().unwrap();
-        assert_eq!(m.status, MeetingStatus::Failed);
-        assert_eq!(m.error.as_deref(), Some("boom"));
+        assert_eq!((m.status, m.error), (MeetingStatus::Processed, None));
     }
 
     /// A cancelled reprocess leaves the meeting complete: stage `done` (so
@@ -1296,6 +1301,7 @@ mod tests {
         let t = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
             worker.inner.state.lock().current = None;
+            worker.inner.settled.notify_all();
         });
         assert!(p
             .cancel_and_wait(7, std::time::Duration::from_secs(10))
