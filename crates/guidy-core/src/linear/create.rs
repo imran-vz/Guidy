@@ -7,7 +7,9 @@
 //! recorded as already existing). The draft the first attempt sent is
 //! persisted with the client UUID, so if the user edited the draft before
 //! the retry (even across a restart), only their edits are applied to the
-//! existing issue. The issue is persisted on the item right after each
+//! existing issue. When that draft is unknown (an attempt made before it
+//! was recorded), the current draft's non-empty fields are applied, so
+//! edits aren't lost and nothing set in Linear is cleared. The issue is persisted on the item right after each
 //! successful create. An in-flight guard stops a double click (two
 //! overlapping calls) from creating the same item twice.
 
@@ -16,7 +18,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::client::{CreatedIssue, LinearClient};
+use super::client::{CreatedIssue, LinearClient, SentDraft};
 use crate::meetings::manager::TicketResult;
 use crate::meetings::types::{ActionItem, ActionItemId, TicketDraft, TicketState};
 
@@ -25,13 +27,13 @@ pub trait TicketStore {
     fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>>;
     /// The item's client UUID for `IssueCreateInput.id`, generated and
     /// persisted first if it has none (the recoverable "creating" state),
-    /// and the draft the first attempt with it sent. Without one, `draft`
-    /// is persisted as that and `None` returned.
+    /// and what the first attempt with it sent. Without an earlier attempt,
+    /// `draft` is persisted as that and [`SentDraft::First`] returned.
     fn begin_create(
         &self,
         id: ActionItemId,
         draft: &TicketDraft,
-    ) -> anyhow::Result<(String, Option<TicketDraft>)>;
+    ) -> anyhow::Result<(String, SentDraft)>;
     /// Record the created issue on the item (and mark it `Created`), which
     /// also drops the sent draft.
     fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()>;
@@ -42,12 +44,12 @@ pub trait TicketStore {
 pub trait IssueCreator {
     /// Create the issue with id `client_id`. Returns the issue and whether it
     /// already existed (an earlier attempt with the same id went through).
-    /// `sent` is what an earlier attempt with this id sent, if known.
+    /// `sent` is what an earlier attempt with this id sent.
     async fn create_issue(
         &self,
         draft: &TicketDraft,
         client_id: &str,
-        sent: Option<&TicketDraft>,
+        sent: &SentDraft,
     ) -> Result<(CreatedIssue, bool), String>;
 }
 
@@ -56,7 +58,7 @@ impl IssueCreator for LinearClient {
         &self,
         draft: &TicketDraft,
         client_id: &str,
-        sent: Option<&TicketDraft>,
+        sent: &SentDraft,
     ) -> Result<(CreatedIssue, bool), String> {
         LinearClient::create_issue_with_id(self, draft, client_id, sent)
             .await
@@ -142,9 +144,7 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                         let created = match store.begin_create(id, &item.ticket) {
                             Err(e) => Err(format!("Could not save the action item: {e}")),
                             Ok((client_id, sent)) => {
-                                creator
-                                    .create_issue(&item.ticket, &client_id, sent.as_ref())
-                                    .await
+                                creator.create_issue(&item.ticket, &client_id, &sent).await
                             }
                         };
                         match created {
@@ -206,13 +206,17 @@ pub(crate) mod tests {
             &self,
             id: ActionItemId,
             draft: &TicketDraft,
-        ) -> anyhow::Result<(String, Option<TicketDraft>)> {
+        ) -> anyhow::Result<(String, SentDraft)> {
             // MemStore keeps no client ids: derive a stable one per item.
-            let sent = self.1.lock().get(&id).cloned();
-            if sent.is_none() {
-                self.1.lock().insert(id, draft.clone());
-            }
-            Ok((format!("00000000-0000-4000-8000-{id:012}"), sent))
+            let mut sent = self.1.lock();
+            let earlier = match sent.get(&id) {
+                Some(d) => SentDraft::Earlier(d.clone()),
+                None => {
+                    sent.insert(id, draft.clone());
+                    SentDraft::First
+                }
+            };
+            Ok((format!("00000000-0000-4000-8000-{id:012}"), earlier))
         }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             let mut items = self.0.lock();
@@ -260,7 +264,7 @@ pub(crate) mod tests {
             &self,
             _d: &TicketDraft,
             _client_id: &str,
-            _sent: Option<&TicketDraft>,
+            _sent: &SentDraft,
         ) -> Result<(CreatedIssue, bool), String> {
             let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
             Ok((

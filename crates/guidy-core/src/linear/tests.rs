@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::client::{issue_create_input, LinearClient, LinearError};
+use super::client::{issue_create_input, LinearClient, LinearError, SentDraft};
 use super::create::{create_tickets, tests::approved_item, tests::MemStore, InFlight};
 use crate::meetings::types::{TicketDraft, TicketState};
 
@@ -216,6 +216,7 @@ async fn issue_create_sends_input_and_returns_issue() {
     let m = mock(|r| {
         let input = &r.vars()["input"];
         assert!(r.query().contains("issueCreate"));
+        assert_eq!(input["id"], "cid-1");
         assert_eq!(input["teamId"], "t1");
         assert_eq!(input["title"], "Ship it");
         assert_eq!(input["projectId"], "p1");
@@ -239,9 +240,60 @@ async fn issue_create_sends_input_and_returns_issue() {
         assignee_id: Some("u1".into()),
         due_date: Some("2026-10-20".into()),
     };
-    let issue = c.create_issue(&draft).await.unwrap();
+    let (issue, existed) = c
+        .create_issue_with_id(&draft, "cid-1", &SentDraft::First)
+        .await
+        .unwrap();
+    assert!(!existed);
     assert_eq!(issue.identifier, "ENG-12");
     assert_eq!(issue.url, "https://linear.app/a/issue/ENG-12");
+}
+
+#[tokio::test]
+async fn unsuccessful_mutations_are_errors() {
+    let m = mock(|r| {
+        if r.query().contains("issueUpdate") {
+            ok(json!({ "issueUpdate": { "success": false, "issue": null } }))
+        } else {
+            ok(json!({ "issueCreate": { "success": true } }))
+        }
+    })
+    .await;
+    let c = LinearClient::with_endpoint("k", &m.url);
+    let err = c
+        .update_issue("i", &json!({ "title": "x" }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        LinearError::GraphQl("the issue was not updated".into())
+    );
+    let draft = TicketDraft {
+        title: "T".into(),
+        team_id: Some("t".into()),
+        ..Default::default()
+    };
+    // No issue in the payload; the lookup by id fails too.
+    let err = c
+        .create_issue_with_id(&draft, "cid", &SentDraft::First)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LinearError::Decode(_)), "{err:?}");
+}
+
+#[test]
+fn fill_input_sets_only_non_empty_fields_and_adds_labels() {
+    let d = TicketDraft {
+        title: "T".into(),
+        team_id: Some("t".into()),
+        project_id: Some(String::new()),
+        label_ids: vec!["l".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        super::client::issue_fill_input(&d).unwrap(),
+        json!({ "title": "T", "addedLabelIds": ["l"] })
+    );
 }
 
 #[test]
@@ -378,7 +430,7 @@ mod service {
             &self,
             id: ActionItemId,
             draft: &TicketDraft,
-        ) -> anyhow::Result<(String, Option<TicketDraft>)> {
+        ) -> anyhow::Result<(String, crate::linear::SentDraft)> {
             self.items.begin_create(id, draft)
         }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
@@ -1086,6 +1138,62 @@ mod idempotent {
         assert_eq!(item.ticket_state, TicketState::Approved);
 
         // The next retry still compares against the first attempt's draft.
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert!(out.results[0].result.is_err());
+        assert_eq!(m.count("issueUpdate"), 2);
+    }
+
+    #[tokio::test]
+    async fn unknown_sent_draft_applies_the_drafts_fields_without_clearing() {
+        // The first attempt predates recording the sent draft (or its record
+        // is unreadable): the retry can't tell what the user edited, so the
+        // draft's non-empty fields are applied and its labels added, and
+        // what it leaves empty is not cleared in Linear.
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        store.forget_linear_sent_ticket(id).unwrap();
+        let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
+        edited.title = "Edited title".into();
+        edited.project_id = None;
+        edited.label_ids = vec!["l-mine".into()];
+        store.update_ticket_draft(id, &edited).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert!(out.results[0].already_existed);
+        assert_eq!(
+            update_input(&m),
+            Some(json!({
+                "title": "Edited title",
+                "addedLabelIds": ["l-mine"],
+            }))
+        );
+        let saved = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(saved.ticket_state, TicketState::Created);
+    }
+
+    #[tokio::test]
+    async fn failed_update_with_an_unknown_sent_draft_is_retryable() {
+        let (m, lookups_fail) = timed_out_create(stored_issue("", "ENG-5", "u5"), false).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        store.forget_linear_sent_ticket(id).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        let err = out.results[0].result.clone().unwrap_err();
+        assert!(err.contains("ENG-5 already exists"), "{err}");
+        let item = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(item.linear_issue_id, None);
+        // Still unknown: the next retry applies the draft again.
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert!(out.results[0].result.is_err());
         assert_eq!(m.count("issueUpdate"), 2);

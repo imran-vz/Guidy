@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use rusqlite_migration::{Migrations, M};
 
+use crate::linear::SentDraft;
 use crate::meetings::types::*;
 
 static MIGRATIONS: &[M] = &[
@@ -1330,15 +1331,18 @@ impl MeetingsStore {
     /// the create call is the "creating" state: a crash or timeout after it
     /// leaves an id that a retry reuses, so Linear rejects the duplicate.
     ///
-    /// Also returns the draft an earlier attempt with this id sent; when
-    /// there is none, `draft` (what this attempt sends) is recorded as that
-    /// and `None` is returned. Only the first attempt's draft is kept (a
-    /// later failed one may not have reached Linear).
+    /// Also returns what an earlier attempt with this id sent. Without an
+    /// earlier attempt, `draft` (what this attempt sends) is recorded as
+    /// that and [`SentDraft::First`] returned. Only the first attempt's draft
+    /// is kept (a later failed one may not have reached Linear). An id
+    /// without a readable sent draft (an attempt before migration 5, or a
+    /// corrupt record) gives [`SentDraft::Unknown`], every time: `draft` is
+    /// not what that attempt sent, so it is not recorded as such.
     pub fn ensure_linear_client_id(
         &self,
         id: ActionItemId,
         draft: &TicketDraft,
-    ) -> Result<(String, Option<TicketDraft>)> {
+    ) -> Result<(String, SentDraft)> {
         let json = to_json(draft)?;
         self.with_tx(|tx| {
             let current: Option<(Option<String>, Option<String>)> = tx
@@ -1351,25 +1355,36 @@ impl MeetingsStore {
             let Some((client_id, sent)) = current else {
                 bail!("action item {id} not found");
             };
-            let client_id = client_id
-                .filter(|c| !c.is_empty())
-                .unwrap_or_else(new_uuid_v4);
-            let sent = sent.and_then(|s| match serde_json::from_str::<TicketDraft>(&s) {
-                Ok(d) => Some(d),
-                Err(e) => {
-                    log::warn!("action item {id}: unreadable sent ticket ({e}); replacing it");
-                    None
-                }
-            });
-            if sent.is_none() {
-                tx.execute(
-                    "UPDATE action_items SET linear_client_id = ?2, linear_sent_ticket = ?3
-                     WHERE id = ?1",
-                    params![id, client_id, json],
-                )?;
+            if let Some(client_id) = client_id.filter(|c| !c.is_empty()) {
+                let sent = match sent.map(|s| serde_json::from_str::<TicketDraft>(&s)) {
+                    Some(Ok(d)) => SentDraft::Earlier(d),
+                    Some(Err(e)) => {
+                        log::warn!("action item {id}: unreadable sent ticket ({e})");
+                        SentDraft::Unknown
+                    }
+                    None => SentDraft::Unknown,
+                };
+                return Ok((client_id, sent));
             }
-            Ok((client_id, sent))
+            let client_id = new_uuid_v4();
+            tx.execute(
+                "UPDATE action_items SET linear_client_id = ?2, linear_sent_ticket = ?3
+                 WHERE id = ?1",
+                params![id, client_id, json],
+            )?;
+            Ok((client_id, SentDraft::First))
         })
+    }
+
+    /// Test hook: drop the item's sent draft, as an attempt made before
+    /// migration 5 left it.
+    #[cfg(test)]
+    pub(crate) fn forget_linear_sent_ticket(&self, id: ActionItemId) -> Result<()> {
+        let n = self.conn.lock().execute(
+            "UPDATE action_items SET linear_sent_ticket = NULL WHERE id = ?1",
+            [id],
+        )?;
+        expect_one(n, "action item", id)
     }
 
     pub fn linear_client_id(&self, id: ActionItemId) -> Result<Option<String>> {
@@ -2162,7 +2177,7 @@ mod tests {
         let a = s.insert_action_item(&item(m, "x")).unwrap();
         assert_eq!(s.linear_client_id(a.id).unwrap(), None);
         let (id, sent) = s.ensure_linear_client_id(a.id, &a.ticket).unwrap();
-        assert_eq!(sent, None);
+        assert_eq!(sent, SentDraft::First);
         assert_eq!(s.ensure_linear_client_id(a.id, &a.ticket).unwrap().0, id);
         assert_eq!(s.linear_client_id(a.id).unwrap().as_deref(), Some(&*id));
         assert_eq!(id.len(), 36);
@@ -2190,13 +2205,13 @@ mod tests {
             ..Default::default()
         };
         let (id, sent) = s.ensure_linear_client_id(a.id, &first).unwrap();
-        assert_eq!(sent, None);
+        assert_eq!(sent, SentDraft::First);
         // A retry with an edited draft gets the first attempt's draft back,
         // and keeps it.
         for _ in 0..2 {
             let (again, sent) = s.ensure_linear_client_id(a.id, &edited).unwrap();
             assert_eq!(again, id);
-            assert_eq!(sent.as_ref(), Some(&first));
+            assert_eq!(sent, SentDraft::Earlier(first.clone()));
         }
         s.set_linear_issue(a.id, "iss", "ENG-1", "u").unwrap();
         let sent: Option<String> = s
@@ -2209,6 +2224,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sent, None);
+    }
+
+    #[test]
+    fn unreadable_sent_ticket_is_unknown_and_kept() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_action_item(&item(m, "x")).unwrap();
+        let (id, _) = s.ensure_linear_client_id(a.id, &a.ticket).unwrap();
+        s.conn
+            .lock()
+            .execute(
+                "UPDATE action_items SET linear_sent_ticket = 'not json' WHERE id = ?1",
+                [a.id],
+            )
+            .unwrap();
+        let edited = TicketDraft {
+            title: "Edited".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.ensure_linear_client_id(a.id, &edited).unwrap(),
+            (id, SentDraft::Unknown)
+        );
+        let sent: Option<String> = s
+            .conn
+            .lock()
+            .query_row(
+                "SELECT linear_sent_ticket FROM action_items WHERE id = ?1",
+                [a.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sent.as_deref(), Some("not json"));
     }
 
     #[test]
@@ -2400,7 +2448,8 @@ mod tests {
     }
 
     /// An item a version 4 database left "creating" (client id, no sent
-    /// draft) keeps its id; the next attempt's draft becomes the sent one.
+    /// draft) keeps its id, and what it sent stays unknown: a later
+    /// attempt's draft is not recorded as it.
     #[test]
     fn a_version_4_creating_item_is_migrated() {
         let dir = tempfile::tempdir().unwrap();
@@ -2430,16 +2479,12 @@ mod tests {
             title: "Now".into(),
             ..Default::default()
         };
-        assert_eq!(
-            s.ensure_linear_client_id(id, &draft).unwrap(),
-            ("old-client-id".to_string(), None)
-        );
-        assert_eq!(
-            s.ensure_linear_client_id(id, &TicketDraft::default())
-                .unwrap()
-                .1,
-            Some(draft)
-        );
+        for _ in 0..2 {
+            assert_eq!(
+                s.ensure_linear_client_id(id, &draft).unwrap(),
+                ("old-client-id".to_string(), SentDraft::Unknown)
+            );
+        }
     }
 
     /// A database created when migration 3 was the last one gets the stage

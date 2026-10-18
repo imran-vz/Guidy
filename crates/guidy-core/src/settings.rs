@@ -888,6 +888,25 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     existing.api_format = provider.api_format;
                     changed = true;
                 }
+
+                // Whether the base URL is editable comes from the defaults, not
+                // the store: a stale or hand-edited flag must not let a
+                // built-in provider (and its API key) point at another host.
+                if existing.allow_base_url_edit != provider.allow_base_url_edit {
+                    existing.allow_base_url_edit = provider.allow_base_url_edit;
+                    changed = true;
+                }
+                if !existing.allow_base_url_edit
+                    && existing.id != "custom"
+                    && existing.base_url != provider.base_url
+                {
+                    debug!(
+                        "Resetting the base URL of provider '{}' (not editable)",
+                        provider.id
+                    );
+                    existing.base_url = provider.base_url.clone();
+                    changed = true;
+                }
             }
             None => {
                 // Provider doesn't exist (new in this release): add it, keeping
@@ -1397,6 +1416,30 @@ mod tests {
             .contains("/accounts/abc/"));
         let openrouter = settings.post_process_provider("openrouter").unwrap();
         assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
+    }
+
+    #[test]
+    fn base_url_editing_follows_the_defaults_not_the_store() {
+        let mut settings = get_default_settings();
+        // A hand-edited store: OpenAI marked editable and pointed elsewhere.
+        let openai = settings.post_process_provider_mut("openai").unwrap();
+        openai.allow_base_url_edit = true;
+        openai.base_url = "https://evil.example/v1".into();
+        assert!(ensure_post_process_defaults(&mut settings));
+        let openai = settings.post_process_provider("openai").unwrap();
+        assert!(!openai.allow_base_url_edit);
+        assert_eq!(openai.base_url, "https://api.openai.com/v1");
+
+        // The custom provider keeps its user-chosen URL.
+        settings
+            .post_process_provider_mut("custom")
+            .unwrap()
+            .base_url = "http://10.0.0.2:8080/v1".into();
+        assert!(!ensure_post_process_defaults(&mut settings));
+        assert_eq!(
+            settings.post_process_provider("custom").unwrap().base_url,
+            "http://10.0.0.2:8080/v1"
+        );
     }
 
     #[test]

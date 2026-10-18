@@ -47,6 +47,9 @@ pub enum MeetingsError {
     },
     NoLinearKey,
     LinearUnauthorized,
+    /// The job was cancelled ([`guidy_core::llm::CANCELLED`]): not an error
+    /// to show.
+    Cancelled,
     Other(String),
 }
 
@@ -54,6 +57,9 @@ impl MeetingsError {
     pub fn from_anyhow(e: &anyhow::Error) -> Self {
         use guidy_core::linear::LinearError;
         use guidy_core::managers::transcription::meeting::MeetingModelMissing;
+        if guidy_core::llm::is_cancelled_error(e) {
+            return Self::Cancelled;
+        }
         for cause in e.chain() {
             if let Some(m) = cause.downcast_ref::<MeetingModelMissing>() {
                 return Self::ModelMissing {
@@ -82,6 +88,7 @@ impl MeetingsError {
             } => format!("{TAG}model-missing{TAG}{model_id}{TAG}{name}{TAG}{known}"),
             Self::NoLinearKey => format!("{TAG}no-linear-key"),
             Self::LinearUnauthorized => format!("{TAG}linear-unauthorized"),
+            Self::Cancelled => format!("{TAG}cancelled"),
             Self::Other(s) => s.clone(),
         }
     }
@@ -102,6 +109,7 @@ impl MeetingsError {
             },
             ["no-linear-key"] => Self::NoLinearKey,
             ["linear-unauthorized"] => Self::LinearUnauthorized,
+            ["cancelled"] => Self::Cancelled,
             _ => Self::Other(s.to_string()),
         }
     }
@@ -120,7 +128,7 @@ impl MeetingsError {
             }
             Self::NoLinearKey => t("meetings.errors.noLinearKey"),
             Self::LinearUnauthorized => t("meetings.errors.linearUnauthorized"),
-            Self::Other(_) => return None,
+            Self::Cancelled | Self::Other(_) => return None,
         })
     }
 
@@ -128,6 +136,7 @@ impl MeetingsError {
     pub fn message(&self) -> String {
         match self {
             Self::Other(s) => s.clone(),
+            Self::Cancelled => guidy_core::llm::CANCELLED.to_string(),
             e => e.localized().unwrap_or_default(),
         }
     }
@@ -768,6 +777,16 @@ mod error_tests {
         assert_eq!(
             MeetingsError::parse("disk full"),
             MeetingsError::Other("disk full".into())
+        );
+        let cancelled = anyhow::anyhow!(guidy_core::llm::CANCELLED);
+        assert_eq!(
+            MeetingsError::parse(&err(cancelled)),
+            MeetingsError::Cancelled
+        );
+        // Only the job's own error: text that merely mentions it isn't.
+        assert_ne!(
+            MeetingsError::parse(&err(anyhow::anyhow!("cancelled: disk full"))),
+            MeetingsError::Cancelled
         );
     }
 

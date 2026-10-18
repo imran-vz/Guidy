@@ -13,7 +13,7 @@ pub mod service;
 #[cfg(test)]
 mod tests;
 
-pub use client::{CreatedIssue, LinearClient, LinearError, Viewer};
+pub use client::{CreatedIssue, LinearClient, LinearError, SentDraft, Viewer};
 
 use serde::{Deserialize, Serialize};
 

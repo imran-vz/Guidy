@@ -305,18 +305,6 @@ impl LinearClient {
         labels.sort_by_key(|l| l.name.to_lowercase());
         Ok(labels)
     }
-
-    pub async fn create_issue(&self, draft: &TicketDraft) -> LinearResult<CreatedIssue> {
-        let input = issue_create_input(draft).map_err(LinearError::GraphQl)?;
-        let q = "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }";
-        let data = self.graphql(q, json!({ "input": input })).await?;
-        let payload = pointer(&data, &["issueCreate"])?;
-        if payload.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(LinearError::GraphQl("the issue was not created".into()));
-        }
-        let issue = pointer(payload, &["issue"])?;
-        serde_json::from_value(issue.clone()).map_err(|e| LinearError::Decode(e.to_string()))
-    }
 }
 
 impl LinearClient {
@@ -326,32 +314,26 @@ impl LinearClient {
     /// or Linear rejected the id as taken) it is returned with
     /// `already_existed = true`.
     ///
-    /// `sent` is the draft an earlier attempt with this id sent (`None`: no
-    /// earlier attempt is known, so `draft` is what was sent). When the user
+    /// `sent` is what an earlier attempt with this id sent. When the user
     /// edited the draft since, only the fields they changed are applied to
     /// the existing issue; everything else (changes made in Linear meanwhile,
-    /// Linear's own normalisation) is left alone. When that update fails, the
-    /// error says so (and the item stays retryable).
+    /// Linear's own normalisation) is left alone. When what was sent is
+    /// unknown, the draft's non-empty fields are applied (and its labels
+    /// added), and nothing is cleared. When that update fails, the error
+    /// says so (and the item stays retryable).
     pub async fn create_issue_with_id(
         &self,
         draft: &TicketDraft,
         client_id: &str,
-        sent: Option<&TicketDraft>,
+        sent: &SentDraft,
     ) -> LinearResult<(CreatedIssue, bool)> {
         let mut input = issue_create_input(draft).map_err(LinearError::GraphQl)?;
         input["id"] = json!(client_id);
         let q = "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }";
-        let created = async {
-            let data = self.graphql(q, json!({ "input": input })).await?;
-            let payload = pointer(&data, &["issueCreate"])?;
-            if payload.get("success").and_then(Value::as_bool) == Some(false) {
-                return Err(LinearError::GraphQl("the issue was not created".into()));
-            }
-            let issue = pointer(payload, &["issue"])?;
-            serde_json::from_value::<CreatedIssue>(issue.clone())
-                .map_err(|e| LinearError::Decode(e.to_string()))
-        }
-        .await;
+        let created = match self.graphql(q, json!({ "input": input })).await {
+            Ok(data) => mutation_issue(&data, "issueCreate", "the issue was not created"),
+            Err(e) => Err(e),
+        };
         match created {
             Ok(issue) => Ok((issue, false)),
             Err(e @ (LinearError::MissingApiKey | LinearError::Unauthorized)) => Err(e),
@@ -361,13 +343,17 @@ impl LinearClient {
                         "Linear: issue {} already existed for this action item ({e})",
                         existing.identifier
                     );
-                    let changes = issue_changes_input(sent.unwrap_or(draft), draft)
-                        .map_err(LinearError::GraphQl)?;
+                    let changes = match sent {
+                        SentDraft::First => Ok(json!({})),
+                        SentDraft::Earlier(sent) => issue_changes_input(sent, draft),
+                        SentDraft::Unknown => issue_fill_input(draft),
+                    }
+                    .map_err(LinearError::GraphQl)?;
                     if changes.as_object().is_some_and(serde_json::Map::is_empty) {
                         return Ok((existing, true));
                     }
-                    // The draft was edited since the attempt that created it:
-                    // apply those edits (and only those) to the issue.
+                    // The draft was edited since the attempt that created it
+                    // (or that attempt's draft is unknown): apply the edits.
                     match self.update_issue(client_id, &changes).await {
                         Ok(issue) => Ok((issue, true)),
                         Err(e @ (LinearError::MissingApiKey | LinearError::Unauthorized)) => Err(e),
@@ -387,12 +373,7 @@ impl LinearClient {
     pub async fn update_issue(&self, id: &str, input: &Value) -> LinearResult<CreatedIssue> {
         let q = "mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier url } } }";
         let data = self.graphql(q, json!({ "id": id, "input": input })).await?;
-        let payload = pointer(&data, &["issueUpdate"])?;
-        if payload.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(LinearError::GraphQl("the issue was not updated".into()));
-        }
-        let issue = pointer(payload, &["issue"])?;
-        serde_json::from_value(issue.clone()).map_err(|e| LinearError::Decode(e.to_string()))
+        mutation_issue(&data, "issueUpdate", "the issue was not updated")
     }
 
     /// Look an issue up by id. `Ok(None)` when Linear says it doesn't exist.
@@ -411,6 +392,45 @@ impl LinearClient {
             Err(e) => Err(e),
         }
     }
+}
+
+/// The issue of an `issueCreate`/`issueUpdate` payload (`data.<mutation>`);
+/// `failed` is the error when Linear reports `success: false`.
+fn mutation_issue(data: &Value, mutation: &str, failed: &str) -> LinearResult<CreatedIssue> {
+    let payload = pointer(data, &[mutation])?;
+    if payload.get("success").and_then(Value::as_bool) == Some(false) {
+        return Err(LinearError::GraphQl(failed.into()));
+    }
+    let issue = pointer(payload, &["issue"])?;
+    serde_json::from_value(issue.clone()).map_err(|e| LinearError::Decode(e.to_string()))
+}
+
+/// What an earlier create attempt with the same client id sent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SentDraft {
+    /// No earlier attempt: this one's draft is what is sent.
+    First,
+    /// The earlier attempt's draft.
+    Earlier(TicketDraft),
+    /// An earlier attempt was made, but what it sent is unknown (it predates
+    /// recording the sent draft, or the record can't be read).
+    Unknown,
+}
+
+/// Build the `IssueUpdateInput` that applies `draft` to an issue created
+/// from an unknown draft: its non-empty fields are set and its labels added;
+/// nothing is cleared or removed (Linear may hold values the draft lacks).
+/// The team is left alone: moving the issue to another team in Linear is
+/// deliberate, and the issue's team can't be read from an unknown draft.
+pub fn issue_fill_input(draft: &TicketDraft) -> std::result::Result<Value, String> {
+    let mut input = issue_create_input(draft)?;
+    if let Some(o) = input.as_object_mut() {
+        o.remove("teamId");
+        if let Some(labels) = o.remove("labelIds") {
+            o.insert("addedLabelIds".into(), labels);
+        }
+    }
+    Ok(input)
 }
 
 /// Build the `IssueUpdateInput` that turns an issue created from `sent` into

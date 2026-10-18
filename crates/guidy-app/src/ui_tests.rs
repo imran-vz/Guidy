@@ -2243,6 +2243,36 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn cancel_hides_only_the_jobs_cancelled_error(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+
+        // The job ends with its own error while Cancel is still pending (the
+        // summarize result arrives first): the error is shown.
+        meetings.data.lock().ai.fail_summarize = Some("could not store".into());
+        view.update(cx, |v, cx| {
+            v.generate(None, cx);
+            v.cancel(cx);
+        });
+        cx.run_until_parked();
+        assert!(meetings.called("cancel_summarize 1"));
+        assert!(!view.read_with(cx, |v, _| v.is_generating()));
+        assert!(exists(cx, w, "summary-error"));
+
+        // The cancel stopped the job: its "cancelled" error isn't shown.
+        meetings.data.lock().ai.fail_summarize = Some(MeetingsError::Cancelled.encode());
+        view.update(cx, |v, cx| {
+            v.generate(None, cx);
+            v.cancel(cx);
+        });
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |v, _| v.is_generating()));
+        assert!(!exists(cx, w, "summary-error"));
+    }
+
+    #[gpui_kit::test]
     fn summary_job_state_follows_the_shown_meeting(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());

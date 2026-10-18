@@ -4,7 +4,7 @@
 //! and a source quote whose timestamp jumps to the transcript moment.
 
 use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
-use crate::meetings_backend::{error_message, SharedMeetingsBackend};
+use crate::meetings_backend::{error_message, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::{
@@ -184,8 +184,6 @@ pub struct SummaryView {
     /// LLM calls of the running summary: (done, total).
     progress: Option<(usize, usize)>,
     cancelling: bool,
-    /// The user cancelled: the "cancelled" error isn't shown.
-    cancelled: bool,
     error: Option<String>,
     // Summary editor.
     editing: bool,
@@ -265,7 +263,6 @@ impl SummaryView {
             own_job: false,
             progress: None,
             cancelling: false,
-            cancelled: false,
             error: None,
             editing: false,
             title,
@@ -309,7 +306,6 @@ impl SummaryView {
             return;
         }
         self.cancelling = true;
-        self.cancelled = true;
         let id = self.meeting_id;
         self.run(
             cx,
@@ -330,13 +326,10 @@ impl SummaryView {
     /// outcome (e.g. a store error) is shown as usual.
     fn cancel_finished(&mut self, cancelled: bool, cx: &mut Context<Self>) {
         self.cancelling = false;
-        if !cancelled {
-            self.cancelled = false;
-            if !self.own_job {
-                // Seen through `is_summarizing`: ask again rather than wait
-                // for an event that may already have been sent.
-                self.reload(cx);
-            }
+        if !cancelled && !self.own_job {
+            // Seen through `is_summarizing`: ask again rather than wait for
+            // an event that may already have been sent.
+            self.reload(cx);
         }
     }
 
@@ -382,7 +375,6 @@ impl SummaryView {
         self.own_job = false;
         self.progress = None;
         self.cancelling = false;
-        self.cancelled = false;
         self.reload(cx);
     }
 
@@ -483,7 +475,6 @@ impl SummaryView {
         }
         self.generating = true;
         self.own_job = true;
-        self.cancelled = false;
         self.progress = None;
         self.error = None;
         self.picker_open = false;
@@ -508,10 +499,11 @@ impl SummaryView {
                         this.summary = Some(s);
                         this.editing = false;
                     }
-                    Err(_) if std::mem::take(&mut this.cancelled) => {}
+                    // Only the job's own "cancelled" error is the cancel:
+                    // a refused or too-late cancel leaves the real outcome.
+                    Err(e) if MeetingsError::parse(&e) == MeetingsError::Cancelled => {}
                     Err(e) => this.error = Some(error_message(&e)),
                 }
-                this.cancelled = false;
                 if let Ok(items) = items {
                     this.set_items(items);
                 }

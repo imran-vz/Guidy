@@ -253,7 +253,7 @@ impl TicketStore for crate::meetings::store::MeetingsStore {
         &self,
         id: ActionItemId,
         draft: &TicketDraft,
-    ) -> Result<(String, Option<TicketDraft>)> {
+    ) -> Result<(String, super::SentDraft)> {
         self.ensure_linear_client_id(id, draft)
     }
 
