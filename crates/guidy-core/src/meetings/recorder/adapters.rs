@@ -39,8 +39,24 @@ impl MeetingRepo for StoreRepo {
     fn finish_recording(&self, id: MeetingId, ended_at: i64, error: Option<&str>) -> Result<bool> {
         self.0.finish_recording(id, ended_at, error)
     }
+    fn fail_recording(&self, id: MeetingId, ended_at: i64, error: &str) -> Result<bool> {
+        // `finish_recording` is the conditional step (only a row still
+        // `Recording` changes); the status then moves on to `Failed`.
+        if !self.0.finish_recording(id, ended_at, Some(error))? {
+            return Ok(false);
+        }
+        self.0
+            .set_meeting_status(id, MeetingStatus::Failed, Some(error))?;
+        Ok(true)
+    }
     fn clear_audio_paths_if_processed(&self, id: MeetingId) -> Result<bool> {
         self.0.clear_audio_paths_if_processed(id)
+    }
+    fn meetings_with_audio_older_than(&self, ts: i64) -> Result<Vec<Meeting>> {
+        self.0.meetings_with_audio_older_than(ts)
+    }
+    fn audio_paths(&self) -> Result<Vec<String>> {
+        self.0.audio_paths()
     }
 }
 
@@ -67,7 +83,7 @@ impl CaptureSession for NativeSession {
     }
 }
 
-fn forward(sink: &CaptureSink, track: Track, samples: &[f32], rate: u32, warned: &mut bool) {
+fn forward(sink: &CaptureSink, track: Track, samples: Vec<f32>, rate: u32, warned: &mut bool) {
     if rate != native::CAPTURE_SAMPLE_RATE && !*warned {
         // The bridge contract is 16 kHz; anything else would mistime the track.
         log::error!("meeting capture: {track:?} delivered {rate} Hz, expected 16 kHz");
@@ -77,20 +93,22 @@ fn forward(sink: &CaptureSink, track: Track, samples: &[f32], rate: u32, warned:
 }
 
 impl CaptureBackend for NativeCapture {
-    fn start(&self, sink: CaptureSink) -> Result<Box<dyn CaptureSession>> {
+    fn start(
+        &self,
+        sink: CaptureSink,
+        on_error: CaptureErrorSink,
+    ) -> Result<Box<dyn CaptureSession>> {
         let mic_sink = sink.clone();
         let (mut mic_warned, mut sys_warned) = (false, false);
         let callbacks = native::CaptureCallbacks::new(
-            move |samples: &[f32], rate| {
-                forward(&mic_sink, Track::Mic, samples, rate, &mut mic_warned)
-            },
-            move |samples: &[f32], rate| {
-                forward(&sink, Track::System, samples, rate, &mut sys_warned)
-            },
+            move |samples, rate| forward(&mic_sink, Track::Mic, samples, rate, &mut mic_warned),
+            move |samples, rate| forward(&sink, Track::System, samples, rate, &mut sys_warned),
         )
-        .with_events(|e| {
+        .with_events(move |e| {
             if e.is_error() {
-                log::error!("meeting capture ({:?}): {}", e.track, e.message);
+                // A stream stopped delivering audio: the recorder keeps it
+                // for the meeting's error.
+                on_error(e.track, e.message);
             } else {
                 log::warn!("meeting capture ({:?}): {}", e.track, e.message);
             }

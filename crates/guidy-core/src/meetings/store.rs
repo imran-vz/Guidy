@@ -461,8 +461,9 @@ impl MeetingsStore {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Overwrite every column of the meeting row `m.id`. Avoid outside tests:
-    /// a stale copy undoes concurrent changes. Use the targeted setters.
+    /// Overwrite every column of the meeting row `m.id`. Tests only: a stale
+    /// copy undoes concurrent changes. Use the targeted setters.
+    #[cfg(test)]
     pub fn update_meeting(&self, m: &Meeting) -> Result<()> {
         let n = self.conn.lock().execute(
             "UPDATE meetings SET title = ?2, calendar_event_id = ?3, calendar_event = ?4,
@@ -541,6 +542,19 @@ impl MeetingsStore {
         )
     }
 
+    /// Every non-null track path, of every meeting (retention's orphan
+    /// sweep; reads only the two path columns).
+    pub fn audio_paths(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT mic_audio_path FROM meetings WHERE mic_audio_path IS NOT NULL
+             UNION ALL
+             SELECT system_audio_path FROM meetings WHERE system_audio_path IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     fn query_meetings(&self, sql: &str, p: impl rusqlite::Params) -> Result<Vec<Meeting>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(sql)?;
@@ -580,14 +594,6 @@ impl MeetingsStore {
         let n = self.conn.lock().execute(
             "UPDATE meetings SET processing_stage = ?2 WHERE id = ?1",
             params![id, stage.map(|s| s.as_str())],
-        )?;
-        expect_one(n, "meeting", id)
-    }
-
-    pub fn set_meeting_ended(&self, id: MeetingId, ended_at: i64) -> Result<()> {
-        let n = self.conn.lock().execute(
-            "UPDATE meetings SET ended_at = ?2 WHERE id = ?1",
-            params![id, ended_at],
         )?;
         expect_one(n, "meeting", id)
     }
@@ -635,7 +641,8 @@ impl MeetingsStore {
         )? > 0)
     }
 
-    /// Link (or unlink) a calendar event, storing its snapshot.
+    /// Link (or unlink) a calendar event, storing its snapshot (tests).
+    #[cfg(test)]
     pub fn set_calendar_event(&self, id: MeetingId, event: Option<&CalendarEvent>) -> Result<()> {
         let n = self.conn.lock().execute(
             "UPDATE meetings SET calendar_event_id = ?2, calendar_event = ?3 WHERE id = ?1",
@@ -1017,32 +1024,25 @@ impl MeetingsStore {
 
     /// Insert or replace the meeting's summary.
     pub fn put_summary(&self, s: &StoredSummary) -> Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO meeting_summaries (meeting_id, title, short_summary, decisions, topics,
-                generated_by, generated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(meeting_id) DO UPDATE SET title = excluded.title,
-                short_summary = excluded.short_summary, decisions = excluded.decisions,
-                topics = excluded.topics, generated_by = excluded.generated_by,
-                generated_at = excluded.generated_at",
-            params![
-                s.meeting_id,
-                s.title,
-                s.short_summary,
-                to_json(&s.decisions)?,
-                to_json(&s.topics)?,
-                s.generated_by,
-                s.generated_at,
-            ],
-        )?;
-        Ok(())
+        put_summary_tx(&self.conn.lock(), s)
     }
 
-    pub fn delete_summary(&self, meeting_id: MeetingId) -> Result<bool> {
-        Ok(self.conn.lock().execute(
-            "DELETE FROM meeting_summaries WHERE meeting_id = ?1",
-            [meeting_id],
-        )? > 0)
+    /// Store a regenerated summary: [`Self::put_summary`] and
+    /// [`Self::replace_unlinked_action_items`] in one transaction, so a
+    /// failure leaves both the old summary and the old items in place.
+    /// Returns all the meeting's items.
+    pub fn put_summary_and_action_items(
+        &self,
+        s: &StoredSummary,
+        items: &[ActionItem],
+        keep: &[ActionItemId],
+        is_duplicate: impl Fn(&ActionItem, &ActionItem) -> bool,
+    ) -> Result<Vec<ActionItem>> {
+        self.with_tx(|tx| {
+            put_summary_tx(tx, s)?;
+            replace_unlinked_action_items_tx(tx, s.meeting_id, items, keep, is_duplicate)
+        })?;
+        self.action_items(s.meeting_id)
     }
 
     // ----- action items -----------------------------------------------------
@@ -1250,34 +1250,7 @@ impl MeetingsStore {
         is_duplicate: impl Fn(&ActionItem, &ActionItem) -> bool,
     ) -> Result<Vec<ActionItem>> {
         self.with_tx(|tx| {
-            let kept: Vec<ActionItem> = {
-                let mut stmt = tx.prepare(&format!(
-                    "SELECT {ACTION_COLS}, {PRESERVED} FROM action_items
-                     WHERE meeting_id = ?1 ORDER BY id"
-                ))?;
-                let rows = stmt.query_map([meeting_id], |r| {
-                    Ok((map_action_item(r)?, r.get::<_, bool>(ACTION_COL_COUNT)?))
-                })?;
-                let mut kept = Vec::new();
-                for row in rows {
-                    let (item, preserved) = row?;
-                    if preserved || keep.contains(&item.id) {
-                        kept.push(item);
-                    } else {
-                        tx.execute("DELETE FROM action_items WHERE id = ?1", [item.id])?;
-                    }
-                }
-                kept
-            };
-            for item in items {
-                if kept.iter().any(|k| is_duplicate(k, item)) {
-                    continue;
-                }
-                let mut item = item.clone();
-                item.meeting_id = meeting_id;
-                insert_action_item_tx(tx, &item, false)?;
-            }
-            Ok(())
+            replace_unlinked_action_items_tx(tx, meeting_id, items, keep, is_duplicate)
         })?;
         self.action_items(meeting_id)
     }
@@ -1304,6 +1277,66 @@ impl MeetingsStore {
 const PRESERVED: &str = "(linear_issue_id IS NOT NULL OR linear_client_id IS NOT NULL \
      OR ticket_state IN ('approved', 'created') OR manual != 0 OR user_edited != 0)";
 const ACTION_COL_COUNT: usize = 14;
+
+/// [`MeetingsStore::replace_unlinked_action_items`] inside `tx`.
+fn replace_unlinked_action_items_tx(
+    tx: &Transaction<'_>,
+    meeting_id: MeetingId,
+    items: &[ActionItem],
+    keep: &[ActionItemId],
+    is_duplicate: impl Fn(&ActionItem, &ActionItem) -> bool,
+) -> Result<()> {
+    let kept: Vec<ActionItem> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {ACTION_COLS}, {PRESERVED} FROM action_items
+             WHERE meeting_id = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([meeting_id], |r| {
+            Ok((map_action_item(r)?, r.get::<_, bool>(ACTION_COL_COUNT)?))
+        })?;
+        let mut kept = Vec::new();
+        for row in rows {
+            let (item, preserved) = row?;
+            if preserved || keep.contains(&item.id) {
+                kept.push(item);
+            } else {
+                tx.execute("DELETE FROM action_items WHERE id = ?1", [item.id])?;
+            }
+        }
+        kept
+    };
+    for item in items {
+        if kept.iter().any(|k| is_duplicate(k, item)) {
+            continue;
+        }
+        let mut item = item.clone();
+        item.meeting_id = meeting_id;
+        insert_action_item_tx(tx, &item, false)?;
+    }
+    Ok(())
+}
+
+fn put_summary_tx(conn: &Connection, s: &StoredSummary) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meeting_summaries (meeting_id, title, short_summary, decisions, topics,
+            generated_by, generated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(meeting_id) DO UPDATE SET title = excluded.title,
+            short_summary = excluded.short_summary, decisions = excluded.decisions,
+            topics = excluded.topics, generated_by = excluded.generated_by,
+            generated_at = excluded.generated_at",
+        params![
+            s.meeting_id,
+            s.title,
+            s.short_summary,
+            to_json(&s.decisions)?,
+            to_json(&s.topics)?,
+            s.generated_by,
+            s.generated_at,
+        ],
+    )?;
+    Ok(())
+}
 
 fn ensure_not_created(tx: &Transaction<'_>, id: ActionItemId) -> Result<()> {
     let row: Option<(String, Option<String>)> = tx
@@ -1449,14 +1482,12 @@ mod tests {
             .unwrap();
         s.set_processing_stage(id, Some(ProcessingStage::Vad))
             .unwrap();
-        s.set_meeting_ended(id, 9_999).unwrap();
         s.set_audio_paths(id, None, Some("x")).unwrap();
         let got = s.get_meeting(id).unwrap().unwrap();
         assert_eq!(got.title, "Renamed");
         assert_eq!(got.status, MeetingStatus::Failed);
         assert_eq!(got.error.as_deref(), Some("boom"));
         assert_eq!(got.processing_stage.as_deref(), Some("vad"));
-        assert_eq!(got.ended_at, Some(9_999));
         assert_eq!(got.mic_audio_path, None);
         assert_eq!(got.system_audio_path.as_deref(), Some("x"));
 
@@ -1524,6 +1555,20 @@ mod tests {
         assert_eq!(ids(500_000), vec![old]);
         assert_eq!(ids(i64::MAX), vec![old, new]);
         assert!(ids(0).is_empty());
+
+        let mut paths = s.audio_paths().unwrap();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                "new-mic.opus.enc",
+                "new-sys.opus.enc",
+                "old-mic.opus.enc",
+                "old-sys.opus.enc",
+                "rec-mic.opus.enc",
+                "rec-sys.opus.enc"
+            ]
+        );
     }
 
     #[test]
@@ -1767,8 +1812,47 @@ mod tests {
         sum.decisions.clear();
         s.put_summary(&sum).unwrap();
         assert_eq!(s.summary(m).unwrap(), Some(sum));
-        assert!(s.delete_summary(m).unwrap());
-        assert_eq!(s.summary(m).unwrap(), None);
+    }
+
+    #[test]
+    fn summary_and_items_are_replaced_atomically() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let old = StoredSummary {
+            meeting_id: m,
+            title: "Old".into(),
+            short_summary: "S".into(),
+            decisions: vec![],
+            topics: vec![],
+            generated_by: "a".into(),
+            generated_at: 1,
+        };
+        let items = s
+            .put_summary_and_action_items(&old, &[item(m, "old item")], &[], |_, _| false)
+            .unwrap();
+        assert_eq!(items.len(), 1);
+
+        // The second item's owner doesn't exist: its insert fails on the
+        // foreign key after the summary and the old items were rewritten.
+        let new = StoredSummary {
+            title: "New".into(),
+            generated_at: 2,
+            ..old.clone()
+        };
+        let mut bad = item(m, "bad");
+        bad.owner_person_id = Some(999_999);
+        assert!(s
+            .put_summary_and_action_items(&new, &[item(m, "new item"), bad], &[], |_, _| false)
+            .is_err());
+        assert_eq!(s.summary(m).unwrap(), Some(old));
+        assert_eq!(s.action_items(m).unwrap(), items);
+
+        let after = s
+            .put_summary_and_action_items(&new, &[item(m, "new item")], &[], |_, _| false)
+            .unwrap();
+        assert_eq!(s.summary(m).unwrap(), Some(new));
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].text, "new item");
     }
 
     #[test]

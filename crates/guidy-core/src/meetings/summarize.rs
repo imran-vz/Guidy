@@ -945,7 +945,7 @@ pub fn is_running(meeting_id: MeetingId) -> bool {
 }
 
 /// Store a summarizer result: replace the summary and the regenerable
-/// action items. Kept (see [`MeetingsStore::replace_unlinked_action_items`]):
+/// action items, in one transaction (on failure neither changes). Kept (see [`MeetingsStore::replace_unlinked_action_items`]):
 /// items with a Linear issue or a create attempt, `Approved` items, manual
 /// items, items the user edited, and the ids in `keep` (the in-flight create
 /// guard). New items duplicating a kept one are skipped. Returns the stored
@@ -966,8 +966,7 @@ pub fn persist(
         generated_by: generated_by.to_string(),
         generated_at: now_ms(),
     };
-    store.put_summary(&stored)?;
-    store.replace_unlinked_action_items(meeting_id, &output.items, keep, is_duplicate)?;
+    store.put_summary_and_action_items(&stored, &output.items, keep, is_duplicate)?;
     Ok(stored)
 }
 

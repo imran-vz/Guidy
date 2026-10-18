@@ -462,7 +462,7 @@ fn hw_captures_two_seconds() {
         st.rates.insert(rate);
     };
     let callbacks =
-        CaptureCallbacks::new(move |x, r| record(&m, x, r), move |x, r| record(&s, x, r))
+        CaptureCallbacks::new(move |x, r| record(&m, &x, r), move |x, r| record(&s, &x, r))
             .with_events(move |e| ev.lock().unwrap().push(e));
 
     // Play something so the system track has signal (best effort).

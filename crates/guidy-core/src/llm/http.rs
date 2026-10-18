@@ -81,7 +81,8 @@ impl HttpProvider {
 }
 
 /// A reply that got through but was cut off at the output token limit or
-/// came back with an empty message. A typed error so the connection test can
+/// came back with an empty message after a normal stop (other finish
+/// reasons, like OpenRouter's "error", are failures). A typed error so the connection test can
 /// tell such a probe from a failed one (see `super::test_connection`).
 #[derive(Debug)]
 pub struct ReplyCutShort(String);
@@ -430,6 +431,31 @@ mod tests {
         let empty = probe(json!({"choices":[{"message":{"content":null},"finish_reason":"stop"}]}));
         assert!(super::super::is_probe_cut_short(&empty));
         assert_eq!(empty.to_string(), "custom returned an empty reply");
+
+        // OpenRouter's upstream failure: a 200 with no content.
+        let upstream_failed = probe(json!({"choices":[{
+            "message":{"content":null},
+            "finish_reason":"error",
+            "error":{"code":502,"message":"Upstream provider timed out"}
+        }]}));
+        assert!(!super::super::is_probe_cut_short(&upstream_failed));
+        assert!(
+            upstream_failed.to_string().contains("'error'")
+                && upstream_failed
+                    .to_string()
+                    .contains("Upstream provider timed out"),
+            "{upstream_failed}"
+        );
+        let filtered =
+            probe(json!({"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}));
+        assert!(!super::super::is_probe_cut_short(&filtered));
+        assert!(
+            filtered.to_string().contains("content filter"),
+            "{filtered}"
+        );
+        let no_reason =
+            probe(json!({"choices":[{"message":{"content":null},"finish_reason":null}]}));
+        assert!(!super::super::is_probe_cut_short(&no_reason));
 
         let no_choices = probe(json!({"choices":[]}));
         assert!(!super::super::is_probe_cut_short(&no_choices));

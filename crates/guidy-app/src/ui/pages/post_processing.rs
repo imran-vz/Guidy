@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID;
+use guidy_core::llm::{is_builtin_provider, resolve_provider, ProviderRef};
 use guidy_core::settings::{AppSettings, PostProcessApiFormat};
 
 pub struct PostProcessingPage {
@@ -37,10 +37,15 @@ pub struct PostProcessingPage {
     api_keys: std::collections::HashMap<String, String>,
     /// Providers whose key is being read.
     loading_keys: std::collections::HashSet<String>,
+    /// Keys being saved, per provider: shown in the input until the save
+    /// finishes, whatever a Keychain read in flight returns meanwhile.
+    saving_keys: std::collections::HashMap<String, String>,
     _subs: Vec<Subscription>,
 }
 
-fn provider_of(s: &AppSettings) -> (String, Option<guidy_core::settings::PostProcessProvider>) {
+/// The selected provider id and what it resolves to. An unknown id falls
+/// back to the first configured provider.
+fn provider_of(s: &AppSettings) -> (String, Option<ProviderRef<'_>>) {
     let id = if s.post_process_provider_id.is_empty() {
         s.post_process_providers
             .first()
@@ -49,12 +54,11 @@ fn provider_of(s: &AppSettings) -> (String, Option<guidy_core::settings::PostPro
     } else {
         s.post_process_provider_id.clone()
     };
-    let provider = s
-        .post_process_providers
-        .iter()
-        .find(|p| p.id == id)
-        .or(s.post_process_providers.first())
-        .cloned();
+    let provider = resolve_provider(s, &id).or_else(|| {
+        s.post_process_providers
+            .first()
+            .map(ProviderRef::Configured)
+    });
     (id, provider)
 }
 
@@ -157,6 +161,7 @@ impl PostProcessingPage {
             synced: (String::new(), None),
             api_keys: Default::default(),
             loading_keys: Default::default(),
+            saving_keys: Default::default(),
             _subs: subs,
         };
         this.sync_inputs(true, window, cx);
@@ -170,6 +175,8 @@ impl PostProcessingPage {
             return;
         };
         let (pid, provider) = provider_of(&s);
+        let is_builtin = matches!(provider, Some(ProviderRef::Builtin));
+        let provider = provider.and_then(ProviderRef::configured);
         let prompt_id = s.post_process_selected_prompt_id.clone();
         let provider_changed = force || self.synced.0 != pid;
         let set_if = |input: &Entity<InputState>,
@@ -183,15 +190,17 @@ impl PostProcessingPage {
             }
         };
         if provider_changed || !self.base_url.focus_handle(cx).is_focused(window) {
-            let base = provider
-                .as_ref()
-                .map(|p| p.base_url.clone())
-                .unwrap_or_default();
+            let base = provider.map(|p| p.base_url.clone()).unwrap_or_default();
             set_if(&self.base_url, base, window, cx);
-            match self.api_keys.get(&pid).cloned() {
+            let shown_key = self
+                .saving_keys
+                .get(&pid)
+                .or_else(|| self.api_keys.get(&pid))
+                .cloned();
+            match shown_key {
                 Some(key) => set_if(&self.api_key, key, window, cx),
                 // No key for the built-in runtime.
-                None if pid == BUILTIN_LLM_PROVIDER_ID => {}
+                None if is_builtin => {}
                 None => {
                     if provider_changed {
                         // Don't show the previous provider's key meanwhile.
@@ -207,7 +216,6 @@ impl PostProcessingPage {
                 cx,
             );
             let anthropic = provider
-                .as_ref()
                 .map(|p| p.api_format == PostProcessApiFormat::Anthropic)
                 .unwrap_or(false);
             let placeholder = if anthropic {
@@ -268,7 +276,8 @@ impl PostProcessingPage {
                 .await;
             this.update(cx, |this, cx| {
                 this.loading_keys.remove(&provider_id);
-                this.api_keys.insert(provider_id, key.clone());
+                // A key saved while this read was in flight is newer.
+                let key = this.api_keys.entry(provider_id).or_insert(key).clone();
                 // The observer mirrors the cached key into the input.
                 cx.notify();
                 done(this, key, cx);
@@ -298,19 +307,25 @@ impl PostProcessingPage {
 
     /// Store the key in the Keychain. The cached key changes only once the
     /// backend confirms; on failure the input goes back to the stored key
-    /// and an error toast says why.
+    /// and an error toast says why. A key typed before the stored one has
+    /// loaded is saved too.
     fn save_api_key(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = self.state.read(cx).app_settings().cloned() else {
             return;
         };
         let (pid, _) = provider_of(&s);
-        // Unknown until loaded: don't overwrite a key we haven't seen.
-        let Some(current) = self.api_keys.get(&pid) else {
-            return;
-        };
-        if *current == value {
-            return;
+        let current = self
+            .saving_keys
+            .get(&pid)
+            .or_else(|| self.api_keys.get(&pid));
+        match current {
+            Some(current) if *current == value => return,
+            // Still loading, the input shows nothing yet: an empty value
+            // is the placeholder, not a cleared key.
+            None if value.is_empty() => return,
+            _ => {}
         }
+        self.saving_keys.insert(pid.clone(), value.clone());
         let page = cx.entity().downgrade();
         let window = window.window_handle();
         let provider = pid.clone();
@@ -351,9 +366,17 @@ impl PostProcessingPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.saving_keys.get(&pid) == Some(&value) {
+            self.saving_keys.remove(&pid);
+        }
         if ok {
             self.api_keys.insert(pid, value);
-        } else if let Some(old) = self.api_keys.get(&pid).cloned() {
+        } else if let Some(old) = self
+            .saving_keys
+            .get(&pid)
+            .or_else(|| self.api_keys.get(&pid))
+            .cloned()
+        {
             let shown = self.state.read(cx).app_settings().map(|s| provider_of(s).0);
             if shown.as_deref() == Some(pid.as_str()) {
                 self.api_key
@@ -386,8 +409,8 @@ impl PostProcessingPage {
             return;
         };
         let (pid, provider) = provider_of(&s);
-        let editable =
-            pid == CUSTOM_PROVIDER_ID || provider.as_ref().is_some_and(|p| p.allow_base_url_edit);
+        let provider = provider.and_then(ProviderRef::configured);
+        let editable = pid == CUSTOM_PROVIDER_ID || provider.is_some_and(|p| p.allow_base_url_edit);
         if !editable || value.is_empty() || provider.is_some_and(|p| p.base_url == value) {
             return;
         }
@@ -413,24 +436,18 @@ impl PostProcessingPage {
                 .backend
                 .check_apple_intelligence_available();
         }
-        let base = s
-            .post_process_providers
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.base_url.clone())
-            .unwrap_or_default();
         self.state
             .update(cx, |st, cx| st.set_post_process_provider(&id, cx));
         // Fetch models once the provider's key is known (Keychain read
         // off the UI thread, cached).
         let pid = id.clone();
-        let cached = if id == BUILTIN_LLM_PROVIDER_ID {
+        let cached = if is_builtin_provider(&id) {
             Some(String::new())
         } else {
             self.api_keys.get(&id).cloned()
         };
         let fetch_if = move |this: &mut Self, key: String, cx: &mut Context<Self>| {
-            if should_auto_fetch_models(&id, &base, &key) {
+            if should_auto_fetch_models(resolve_provider(&s, &id), &key) {
                 this.state
                     .update(cx, |st, cx| st.fetch_post_process_models(&id, cx));
             }
@@ -544,9 +561,10 @@ impl PostProcessingPage {
         let (pid, provider) = provider_of(s);
         let is_apple = pid == APPLE_PROVIDER_ID;
         let is_custom = pid == CUSTOM_PROVIDER_ID;
-        let is_builtin = pid == BUILTIN_LLM_PROVIDER_ID;
+        let is_builtin = matches!(provider, Some(ProviderRef::Builtin));
+        let provider = provider.and_then(ProviderRef::configured);
         let base_url_editable =
-            !is_builtin && (is_custom || provider.as_ref().is_some_and(|p| p.allow_base_url_edit));
+            !is_builtin && (is_custom || provider.is_some_and(|p| p.allow_base_url_edit));
         let up = |k: String| st.settings.is_updating(&k);
         let mut rows = vec![SettingRow::new(
             "pp-provider",
@@ -558,7 +576,7 @@ impl PostProcessingPage {
                 .options(
                     std::iter::once(
                         DropdownOption::new(
-                            BUILTIN_LLM_PROVIDER_ID,
+                            guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID,
                             t("settings.postProcessing.api.builtin.label"),
                         )
                         .description(t("settings.postProcessing.api.builtin.description")),
@@ -605,7 +623,7 @@ impl PostProcessingPage {
         }
 
         if is_custom {
-            let fmt = provider.as_ref().map(|p| p.api_format).unwrap_or_default();
+            let fmt = provider.map(|p| p.api_format).unwrap_or_default();
             let fmt_str = if fmt == PostProcessApiFormat::Anthropic {
                 "anthropic"
             } else {

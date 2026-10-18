@@ -335,8 +335,9 @@ impl CaptureEvent {
     }
 }
 
-/// Called with a block of mono f32 samples and its sample rate.
-pub type PcmCallback = Box<dyn FnMut(&[f32], u32) + Send>;
+/// Called with a block of mono f32 samples (owned: the callback may keep
+/// them without copying) and its sample rate.
+pub type PcmCallback = Box<dyn FnMut(Vec<f32>, u32) + Send>;
 
 /// Receives captured audio: 16 kHz mono f32 samples plus the sample rate
 /// (always [`CAPTURE_SAMPLE_RATE`]). All callbacks of one capture run on its
@@ -350,8 +351,8 @@ pub struct CaptureCallbacks {
 impl CaptureCallbacks {
     /// Callbacks that ignore events.
     pub fn new(
-        on_mic: impl FnMut(&[f32], u32) + Send + 'static,
-        on_system: impl FnMut(&[f32], u32) + Send + 'static,
+        on_mic: impl FnMut(Vec<f32>, u32) + Send + 'static,
+        on_system: impl FnMut(Vec<f32>, u32) + Send + 'static,
     ) -> Self {
         Self {
             on_mic: Box::new(on_mic),
@@ -376,10 +377,8 @@ pub(crate) enum CaptureMsg {
 pub(crate) fn deliver(rx: mpsc::Receiver<CaptureMsg>, mut callbacks: CaptureCallbacks) {
     while let Ok(msg) = rx.recv() {
         match msg {
-            CaptureMsg::Audio(Track::Mic, samples, rate) => (callbacks.on_mic)(&samples, rate),
-            CaptureMsg::Audio(Track::System, samples, rate) => {
-                (callbacks.on_system)(&samples, rate)
-            }
+            CaptureMsg::Audio(Track::Mic, samples, rate) => (callbacks.on_mic)(samples, rate),
+            CaptureMsg::Audio(Track::System, samples, rate) => (callbacks.on_system)(samples, rate),
             CaptureMsg::Event(event) => (callbacks.on_event)(event),
         }
     }

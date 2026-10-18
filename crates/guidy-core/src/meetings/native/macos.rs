@@ -116,7 +116,8 @@ unsafe extern "C" fn audio_trampoline(
     if ctx.is_null() || samples.is_null() || count <= 0 {
         return;
     }
-    // Runs on an audio thread: copy and hand off, nothing else.
+    // Runs on an audio thread: copy and hand off, nothing else. This is the
+    // only copy; the Vec is moved from here on (delivery thread, sink, writer).
     let tx = &*(ctx as *const Ctx);
     let data = std::slice::from_raw_parts(samples, count as usize).to_vec();
     let _ = tx.send(CaptureMsg::Audio(track(stream), data, rate.max(0) as u32));

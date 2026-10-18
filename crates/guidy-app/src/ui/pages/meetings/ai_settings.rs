@@ -18,6 +18,7 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::llm::{is_builtin_provider, resolve_provider, ProviderRef};
 use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
 use guidy_core::settings::AppSettings;
 use std::collections::HashMap;
@@ -66,14 +67,11 @@ pub fn provider_options(s: &AppSettings, apple_available: bool) -> Vec<DropdownO
 }
 
 pub fn provider_label(s: &AppSettings, provider_id: &str) -> String {
-    if provider_id == BUILTIN_LLM_PROVIDER_ID {
-        return guidy_i18n::t("meetingsAi.llm.builtin");
+    match resolve_provider(s, provider_id) {
+        Some(ProviderRef::Builtin) => guidy_i18n::t("meetingsAi.llm.builtin"),
+        Some(ProviderRef::Configured(p)) => p.label.clone(),
+        None => provider_id.to_string(),
     }
-    s.post_process_providers
-        .iter()
-        .find(|p| p.id == provider_id)
-        .map(|p| p.label.clone())
-        .unwrap_or_else(|| provider_id.to_string())
 }
 
 pub fn model_label(model: &str) -> String {
@@ -310,7 +308,7 @@ impl AiSettingsView {
             return;
         }
         // Built-in: default to the first downloaded model.
-        let model = (id == BUILTIN_LLM_PROVIDER_ID && !s.meetings.llm_models.contains_key(&id))
+        let model = (is_builtin_provider(&id) && !s.meetings.llm_models.contains_key(&id))
             .then(|| {
                 self.local
                     .iter()
@@ -448,7 +446,7 @@ impl AiSettingsView {
 
     fn llm_rows(&self, s: &AppSettings, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = MeetingsLlmChoice::from_settings(s);
-        let is_builtin = c.provider_id == BUILTIN_LLM_PROVIDER_ID;
+        let is_builtin = is_builtin_provider(&c.provider_id);
         let is_apple = c.provider_id == APPLE_PROVIDER_ID;
         let updating = self.state.read(cx).settings.is_updating("meetings");
         let weak = cx.entity().downgrade();
@@ -869,7 +867,9 @@ impl Render for AiSettingsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{provider_options, with_llm_choice, MeetingsLlmChoice, APPLE_PROVIDER_ID};
+    use super::{
+        provider_label, provider_options, with_llm_choice, MeetingsLlmChoice, APPLE_PROVIDER_ID,
+    };
     use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
 
     #[test]
@@ -923,6 +923,19 @@ mod tests {
         assert_eq!(ids(false)[0], BUILTIN_LLM_PROVIDER_ID);
         assert!(!ids(false).contains(&APPLE_PROVIDER_ID.to_string()));
         assert!(ids(true).contains(&APPLE_PROVIDER_ID.to_string()));
+    }
+
+    #[test]
+    fn provider_labels_cover_builtin_configured_and_unknown() {
+        guidy_i18n::set_language("en");
+        let s = guidy_core::settings::get_default_settings();
+        assert_eq!(
+            provider_label(&s, BUILTIN_LLM_PROVIDER_ID),
+            guidy_i18n::t("meetingsAi.llm.builtin")
+        );
+        let openai = s.post_process_provider("openai").unwrap();
+        assert_eq!(provider_label(&s, "openai"), openai.label);
+        assert_eq!(provider_label(&s, "no_such"), "no_such");
     }
 }
 

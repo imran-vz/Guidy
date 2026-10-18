@@ -1050,12 +1050,6 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    pub fn active_post_process_provider(&self) -> Option<&PostProcessProvider> {
-        self.post_process_providers
-            .iter()
-            .find(|provider| provider.id == self.post_process_provider_id)
-    }
-
     pub fn post_process_provider(&self, provider_id: &str) -> Option<&PostProcessProvider> {
         self.post_process_providers
             .iter()
@@ -1084,57 +1078,64 @@ pub fn load_or_create_app_settings(app: &AppHandle) -> AppSettings {
 /// Serializes every settings write: whole replacements ([`write_settings`]),
 /// the migrations a read persists ([`get_settings`]) and read-modify-write
 /// sections ([`update_settings`], which holds it across its read and write;
-/// reentrant so those can nest). Nothing slow (Keychain, I/O beyond the
-/// store) may run under it: every settings read, the UI's included, waits.
+/// reentrant so those can nest). Plain reads don't take it. Nothing slow
+/// (Keychain, I/O beyond the store) may run under it.
 static SETTINGS_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
 
 pub fn get_settings(app: &AppHandle) -> AppSettings {
-    let _guard = SETTINGS_LOCK.lock();
     let store = app
         .store(crate::portable::store_path(SETTINGS_STORE_PATH))
         .expect("Failed to initialize store");
 
     // Settings reads also persist one-time migrations. Migration helpers are
     // idempotent, so this converges after the first read of an older store.
-    let mut settings = if let Some(settings_value) = store.get("settings") {
-        let (mut settings, mut updated) =
-            match serde_json::from_value::<AppSettings>(settings_value.clone()) {
-                Ok(settings) => (settings, false),
-                Err(e) => {
-                    warn!("Failed to parse stored settings ({e}); salvaging valid fields");
-                    (salvage_settings(&settings_value), true)
-                }
-            };
-
-        if apply_settings_migrations(&mut settings, &settings_value) {
-            updated = true;
-        }
-
-        // Merge in any bindings added since this store was written.
-        for (key, value) in get_default_settings().bindings {
-            if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
-                debug!("Adding missing binding: {}", entry.key());
-                entry.insert(value);
-                updated = true;
-            }
-        }
-
-        if updated {
-            store.set("settings", serde_json::to_value(&settings).unwrap());
-        }
-
-        settings
-    } else {
-        let default_settings = get_default_settings();
-        store.set("settings", serde_json::to_value(&default_settings).unwrap());
-        default_settings
-    };
-
-    if ensure_post_process_defaults(&mut settings) {
+    let (settings, needs_write) = load_settings(&store);
+    if !needs_write {
+        return settings;
+    }
+    // Re-read under the lock so a migration computed from a value an
+    // `update_settings` replaced meanwhile never overwrites its change.
+    let _guard = SETTINGS_LOCK.lock();
+    let (settings, needs_write) = load_settings(&store);
+    if needs_write {
         store.set("settings", serde_json::to_value(&settings).unwrap());
     }
-
     settings
+}
+
+/// The stored settings with salvage, migrations and defaults applied, and
+/// whether that changed them (so they need writing back).
+fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
+    let Some(settings_value) = store.get("settings") else {
+        return (get_default_settings(), true);
+    };
+    let (mut settings, mut updated) =
+        match serde_json::from_value::<AppSettings>(settings_value.clone()) {
+            Ok(settings) => (settings, false),
+            Err(e) => {
+                warn!("Failed to parse stored settings ({e}); salvaging valid fields");
+                (salvage_settings(&settings_value), true)
+            }
+        };
+
+    if apply_settings_migrations(&mut settings, &settings_value) {
+        updated = true;
+    }
+
+    // Merge in any bindings added since this store was written.
+    for (key, value) in get_default_settings().bindings {
+        if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
+            debug!("Adding missing binding: {}", entry.key());
+            entry.insert(value);
+            updated = true;
+        }
+    }
+
+    if ensure_post_process_defaults(&mut settings) {
+        updated = true;
+    }
+
+    (settings, updated)
 }
 
 /// Rebuilds settings from a store value that failed to deserialize as a whole.
@@ -1308,12 +1309,16 @@ pub fn update_checks_effectively_enabled(settings: &AppSettings) -> bool {
 /// the mutation: do slow work and side effects (registering shortcuts,
 /// emitting events, Keychain calls) before or after it. The lock is
 /// reentrant, but a nested write inside `f` is overwritten by this one's:
-/// don't.
+/// don't. Nothing is written when `f` leaves the settings unchanged.
 pub fn update_settings<R>(app: &AppHandle, f: impl FnOnce(&mut AppSettings) -> R) -> R {
     let _guard = SETTINGS_LOCK.lock();
     let mut settings = get_settings(app);
+    // AppSettings has no PartialEq (it holds floats and maps); compare JSON.
+    let before = serde_json::to_value(&settings).unwrap();
     let result = f(&mut settings);
-    write_settings(app, settings);
+    if serde_json::to_value(&settings).unwrap() != before {
+        write_settings(app, settings);
+    }
     result
 }
 
@@ -2008,6 +2013,37 @@ mod store_compat_tests {
         let s = get_settings(&t.app);
         assert_eq!(s.custom_words, vec!["setter".to_string()]);
         assert_eq!(s.meetings.linear_default_team_id.as_deref(), Some("team-1"));
+    }
+
+    #[test]
+    fn update_settings_skips_the_write_when_nothing_changed() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.history_limit = 42);
+        let path = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::remove_file(&path).unwrap();
+
+        // A no-op closure, and one that fails before changing anything.
+        update_settings(&t.app, |_| ());
+        let r: Result<(), &str> = update_settings(&t.app, |_| Err("invalid"));
+        assert!(r.is_err());
+        // A change that sets the current value again.
+        update_settings(&t.app, |s| s.history_limit = 42);
+        assert!(!path.exists(), "unchanged settings were written");
+
+        update_settings(&t.app, |s| s.history_limit = 43);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["settings"]["history_limit"], 43);
+    }
+
+    #[test]
+    fn reading_migrated_settings_writes_nothing() {
+        let t = TestApp::new();
+        get_settings(&t.app);
+        let path = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::remove_file(&path).unwrap();
+        get_settings(&t.app);
+        assert!(!path.exists(), "an up-to-date read wrote the store");
     }
 
     #[test]

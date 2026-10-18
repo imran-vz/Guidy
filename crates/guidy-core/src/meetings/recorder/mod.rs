@@ -94,6 +94,8 @@ struct Session {
     capture: Option<Box<dyn CaptureSession>>,
     tx: Sender<WriterMsg>,
     writer: Option<JoinHandle<WriterOutcome>>,
+    /// Streams that failed mid-recording; written as the meeting's error.
+    capture_errors: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Default)]
@@ -263,12 +265,13 @@ impl MeetingRecorder {
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
                 // recorded anything (`open_session` removed its files). If it
-                // can't be deleted, end it with the error so crash recovery
-                // doesn't take it for an interrupted recording.
+                // can't be deleted, mark it failed with the error so crash
+                // recovery doesn't take it for an interrupted recording (and
+                // the UI doesn't offer to process audio that doesn't exist).
                 if let Err(e2) = self.deps.repo.delete_meeting(id) {
                     log::warn!("meetings: cleanup of meeting {id} failed: {e2:#}");
                     let msg = format!("{e:#}");
-                    if let Err(e3) = self.deps.repo.finish_recording(id, now, Some(&msg)) {
+                    if let Err(e3) = self.deps.repo.fail_recording(id, now, &msg) {
                         log::warn!("meetings: ending meeting {id} failed: {e3:#}");
                     }
                 }
@@ -342,15 +345,23 @@ impl MeetingRecorder {
             .context("spawn meeting writer")?;
 
         let sink_tx = Mutex::new(tx.clone());
-        let sink: CaptureSink = Arc::new(move |track, samples: &[f32]| {
+        let sink: CaptureSink = Arc::new(move |track, samples: Vec<f32>| {
             if !samples.is_empty() {
                 // Unbounded channel: never blocks the audio thread.
-                let _ = sink_tx
-                    .lock()
-                    .send(WriterMsg::Samples(track, samples.to_vec()));
+                let _ = sink_tx.lock().send(WriterMsg::Samples(track, samples));
             }
         });
-        let capture = match self.deps.capture.start(sink) {
+        let capture_errors = Arc::new(Mutex::new(Vec::new()));
+        let errors = capture_errors.clone();
+        let on_error: CaptureErrorSink = Arc::new(move |track, message: String| {
+            log::error!("meetings: {track:?} capture of meeting {id} failed: {message}");
+            let msg = format!("{} capture: {message}", track_name(track));
+            let mut errors = errors.lock();
+            if !errors.contains(&msg) {
+                errors.push(msg);
+            }
+        });
+        let capture = match self.deps.capture.start(sink, on_error) {
             Ok(c) => c,
             Err(e) => {
                 let _ = tx.send(WriterMsg::Finish);
@@ -367,6 +378,7 @@ impl MeetingRecorder {
             capture: Some(capture),
             tx,
             writer: Some(writer),
+            capture_errors,
         })
     }
 
@@ -383,10 +395,11 @@ impl MeetingRecorder {
             }
         }
         let _ = session.tx.send(WriterMsg::Finish);
-        let mut errors = Vec::new();
+        let mut errors = std::mem::take(&mut *session.capture_errors.lock());
         match session.writer.take().map(|w| w.join()) {
             Some(Ok((mic, sys))) => {
-                for (track, r) in [("mic", mic), ("system", sys)] {
+                for (track, r) in [(Track::Mic, mic), (Track::System, sys)] {
+                    let track = track_name(track);
                     match r {
                         Ok(s) => log::info!(
                             "meetings: {track} track of meeting {id}: {} ms",
@@ -629,30 +642,57 @@ fn reminder_state(s: &Session, interval_minutes: u32) -> ReminderState {
     }
 }
 
-fn writer_loop(
-    rx: Receiver<WriterMsg>,
-    mut mic: TrackWriter,
-    mut sys: TrackWriter,
-) -> WriterOutcome {
-    let mut failed = [false, false];
+fn track_name(track: Track) -> &'static str {
+    match track {
+        Track::Mic => "mic",
+        Track::System => "system",
+    }
+}
+
+/// What the writer thread needs from a track file ([`TrackWriter`]; tests
+/// use a failing fake).
+trait TrackOutput: Send {
+    fn push(&mut self, samples: &[f32]) -> Result<()>;
+    fn finish(self) -> Result<TrackSummary>;
+}
+
+impl TrackOutput for TrackWriter {
+    fn push(&mut self, samples: &[f32]) -> Result<()> {
+        TrackWriter::push(self, samples)
+    }
+    fn finish(self) -> Result<TrackSummary> {
+        TrackWriter::finish(self)
+    }
+}
+
+/// Writes both tracks until `Finish`. A track whose write fails is closed
+/// right there and never written again: appending after a possibly torn
+/// record would misalign every later one, while a torn *final* record just
+/// reads as the end of the file. Its outcome is the write error.
+fn writer_loop<W: TrackOutput>(rx: Receiver<WriterMsg>, mic: W, sys: W) -> WriterOutcome {
+    let mut tracks: [Result<W>; 2] = [Ok(mic), Ok(sys)];
     for msg in rx {
         match msg {
             WriterMsg::Samples(track, samples) => {
-                let (w, i) = match track {
-                    Track::Mic => (&mut mic, 0),
-                    Track::System => (&mut sys, 1),
+                let slot = match track {
+                    Track::Mic => &mut tracks[0],
+                    Track::System => &mut tracks[1],
                 };
+                let Ok(w) = slot else { continue };
                 if let Err(e) = w.push(&samples) {
-                    if !failed[i] {
-                        log::error!("meetings: writing {} failed: {e:#}", w.path().display());
-                        failed[i] = true;
-                    }
+                    log::error!(
+                        "meetings: writing the {} track failed, stopping it: {e:#}",
+                        track_name(track)
+                    );
+                    // Drops (closes) the writer without its end marker.
+                    *slot = Err(e.context("recording stopped early"));
                 }
             }
             WriterMsg::Finish => break,
         }
     }
-    (mic.finish(), sys.finish())
+    let [mic, sys] = tracks;
+    (mic.and_then(W::finish), sys.and_then(W::finish))
 }
 
 pub fn now_ms() -> i64 {
