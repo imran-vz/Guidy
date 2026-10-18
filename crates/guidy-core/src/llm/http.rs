@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -75,9 +75,70 @@ impl HttpProvider {
             Err(ChatError::Truncated(e)) => Err(ReplyCutShort(format!("{label}: {e}")).into()),
             Err(ChatError::NoChoices) => Err(anyhow!("{label} returned an empty reply")),
             Err(ChatError::Failed(e)) if e == CANCELLED => Err(anyhow!(CANCELLED)),
+            Err(ChatError::Status { status, body }) => {
+                let message = format!(
+                    "{label}: {}",
+                    ChatError::Status {
+                        status,
+                        body: body.clone()
+                    }
+                );
+                Err(ApiStatusError {
+                    status,
+                    body,
+                    message,
+                }
+                .into())
+            }
             Err(e) => Err(anyhow!("{label}: {e}")),
         }
     }
+}
+
+/// The endpoint answered with an HTTP error status. Typed so `chat_json` can
+/// tell a rejected structured-output request from other failures.
+#[derive(Debug)]
+pub struct ApiStatusError {
+    pub status: u16,
+    pub body: String,
+    message: String,
+}
+
+impl std::fmt::Display for ApiStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiStatusError {}
+
+/// Whether a failed structured-output request was the endpoint rejecting the
+/// `response_format` / JSON schema itself (so a prompt-only retry can work),
+/// rather than an auth, rate-limit, server, network, truncation or
+/// context-overflow failure, which the retry would only repeat.
+fn structured_output_rejected(e: &anyhow::Error) -> bool {
+    let Some(rejection) = e.downcast_ref::<ApiStatusError>() else {
+        return false;
+    };
+    if !matches!(rejection.status, 400 | 422) {
+        return false;
+    }
+    let lower = rejection.body.to_ascii_lowercase();
+    let overflow = [
+        "context length",
+        "context_length",
+        "context window",
+        "too many tokens",
+        "maximum context",
+        "exceeds the context",
+        "prompt too long",
+    ];
+    if overflow.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+    ["response_format", "json_schema", "schema", "structured"]
+        .iter()
+        .any(|p| lower.contains(p))
 }
 
 /// A reply that got through but was cut off at the output token limit or
@@ -101,11 +162,29 @@ impl std::error::Error for ReplyCutShort {}
 pub const DEFAULT_CONTEXT_TOKENS: usize = 16_000;
 
 /// Context windows reported by model lists, per provider (id + base URL) and
-/// model. A provider key with an empty map was listed without metadata (or
-/// the listing failed), so it isn't fetched again.
+/// model. A provider key with an empty map was listed without metadata, so it
+/// isn't fetched again. Failed listings aren't cached here (see
+/// [`failed_listings`]).
 fn context_cache() -> &'static Mutex<HashMap<String, HashMap<String, usize>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, HashMap<String, usize>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// How long after a failed model listing [`HttpProvider::context_tokens`]
+/// waits before trying again.
+const LISTING_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// When each provider's last model listing for context sizes failed.
+fn failed_listings() -> &'static Mutex<HashMap<String, Instant>> {
+    static FAILED: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    FAILED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn listing_backed_off(provider: &PostProcessProvider) -> bool {
+    failed_listings()
+        .lock()
+        .get(&cache_key(provider))
+        .is_some_and(|at| at.elapsed() < LISTING_RETRY_AFTER)
 }
 
 fn cache_key(provider: &PostProcessProvider) -> String {
@@ -218,23 +297,31 @@ impl LlmProvider for HttpProvider {
     fn context_tokens(&self) -> usize {
         if cached_context(&self.provider, &self.model).is_none()
             && lists_context_lengths(&self.provider)
+            && !listing_backed_off(&self.provider)
         {
             // Once per provider: learn the context windows from the model list
-            // (short timeout; a failure falls back to the name table).
+            // (short timeout; a failure falls back to the name table and is
+            // retried after `LISTING_RETRY_AFTER`).
             let provider = self.provider.clone();
             let api_key = self.api_key.clone();
             let listed = block_on(async move {
                 tokio::time::timeout(Duration::from_secs(5), list_models(&provider, api_key)).await
             });
+            let key = cache_key(&self.provider);
             match listed {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    log::debug!("{}: model list for context sizes failed: {e}", self.name())
+                Ok(Ok(_)) => {
+                    // `list_models` cached the result, even one without metadata.
+                    failed_listings().lock().remove(&key);
                 }
-                Err(_) => log::debug!("{}: model list for context sizes timed out", self.name()),
+                Ok(Err(e)) => {
+                    log::debug!("{}: model list for context sizes failed: {e}", self.name());
+                    failed_listings().lock().insert(key, Instant::now());
+                }
+                Err(_) => {
+                    log::debug!("{}: model list for context sizes timed out", self.name());
+                    failed_listings().lock().insert(key, Instant::now());
+                }
             }
-            // Mark the provider as listed even when that failed.
-            remember_model_info(&self.provider, &[]);
         }
         context_tokens_for(&self.provider, &self.model)
     }
@@ -254,17 +341,25 @@ impl LlmProvider for HttpProvider {
         {
             let mut params = self.params(messages, opts);
             params.json_schema = Some(("response".to_string(), json_schema.clone()));
-            match self
-                .send(params, opts)
-                .and_then(|reply| extract_json(&reply))
-                .and_then(|v| validate_json(&v, json_schema).map(|_| v))
-            {
-                Ok(v) => return Ok(v),
-                Err(e) if super::is_cancelled_error(&e) => return Err(e),
-                Err(e) => log::warn!(
-                    "{}: structured output failed ({e}); falling back to prompt-only JSON",
+            match self.send(params, opts) {
+                Ok(reply) => {
+                    // A reply that doesn't match the schema means the endpoint
+                    // accepted `response_format` but didn't enforce it.
+                    match extract_json(&reply)
+                        .and_then(|v| validate_json(&v, json_schema).map(|_| v))
+                    {
+                        Ok(v) => return Ok(v),
+                        Err(e) => log::warn!(
+                            "{}: structured output reply was not valid ({e}); falling back to prompt-only JSON",
+                            self.name()
+                        ),
+                    }
+                }
+                Err(e) if structured_output_rejected(&e) => log::warn!(
+                    "{}: structured output rejected ({e}); falling back to prompt-only JSON",
                     self.name()
                 ),
+                Err(e) => return Err(e),
             }
         }
         json_via_prompt(self, messages, json_schema, opts)
@@ -488,6 +583,132 @@ mod tests {
     }
 
     #[test]
+    fn chat_json_falls_back_when_a_schema_reply_does_not_match() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base = rt.block_on(serve(vec![
+            ("200 OK", completion("not json")),
+            ("200 OK", completion("{\"a\":\"b\"}")),
+        ]));
+        let p = HttpProvider::new(provider("openai", &base, true), "k".into(), "m".into());
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        let v = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap();
+        assert_eq!(v, json!({"a":"b"}));
+    }
+
+    #[test]
+    fn chat_json_propagates_failures_other_than_a_schema_rejection() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        let cases: Vec<(&'static str, String, &str)> = vec![
+            (
+                "401 Unauthorized",
+                "{\"error\":\"invalid api key\"}".into(),
+                "401",
+            ),
+            (
+                "429 Too Many Requests",
+                "{\"error\":\"rate limited\"}".into(),
+                "429",
+            ),
+            (
+                "500 Internal Server Error",
+                "{\"error\":\"boom\"}".into(),
+                "500",
+            ),
+            (
+                "503 Service Unavailable",
+                "schema service down".into(),
+                "503",
+            ),
+            (
+                "400 Bad Request",
+                "{\"error\":\"This model's maximum context length is 8192 tokens (json_schema)\"}"
+                    .into(),
+                "maximum context length",
+            ),
+            (
+                "200 OK",
+                json!({"choices":[{"message":{"content":"{\"a\""},"finish_reason":"length"}]})
+                    .to_string(),
+                "truncated",
+            ),
+        ];
+        for (status, body, expected) in cases {
+            // A prompt-only retry would get this valid reply.
+            let base = rt.block_on(serve(vec![
+                (status, body),
+                ("200 OK", completion("{\"a\":\"b\"}")),
+            ]));
+            let p = HttpProvider::new(provider("openai", &base, true), "k".into(), "m".into());
+            let err = p
+                .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+                .unwrap_err();
+            assert!(err.to_string().contains(expected), "{status}: {err}");
+        }
+        let truncated_base = rt.block_on(serve(vec![(
+            "200 OK",
+            json!({"choices":[{"message":{"content":""},"finish_reason":"length"}]}).to_string(),
+        )]));
+        let p = HttpProvider::new(
+            provider("openai", &truncated_base, true),
+            "k".into(),
+            "m".into(),
+        );
+        let err = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(err.downcast_ref::<ReplyCutShort>().is_some(), "{err}");
+
+        // Network failure: nothing listens on the port.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let p = HttpProvider::new(provider("openai", &base, true), "k".into(), "m".into());
+        assert!(p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .is_err());
+    }
+
+    #[test]
+    fn only_a_rejected_response_format_counts_as_a_schema_rejection() {
+        let status = |status: u16, body: &str| -> anyhow::Error {
+            ApiStatusError {
+                status,
+                body: body.into(),
+                message: String::new(),
+            }
+            .into()
+        };
+        assert!(structured_output_rejected(&status(
+            400,
+            "Invalid parameter: 'response_format' of type 'json_schema' is not supported"
+        )));
+        assert!(structured_output_rejected(&status(
+            422,
+            "structured outputs are not supported by this model"
+        )));
+        assert!(!structured_output_rejected(&status(
+            400,
+            "invalid model id"
+        )));
+        assert!(!structured_output_rejected(&status(401, "response_format")));
+        assert!(!structured_output_rejected(&status(429, "json_schema")));
+        assert!(!structured_output_rejected(&status(500, "json_schema")));
+        assert!(!structured_output_rejected(&status(
+            400,
+            "context_length_exceeded: input plus json_schema too long"
+        )));
+        assert!(!structured_output_rejected(&anyhow!(
+            "openai: response_format unsupported"
+        )));
+        assert!(!structured_output_rejected(
+            &ReplyCutShort("schema truncated".into()).into()
+        ));
+    }
+
+    #[test]
     fn cancel_flag_stops_a_pending_request() {
         // A server that accepts but never answers.
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -623,6 +844,38 @@ mod tests {
         assert_eq!(p.context_tokens(), 202_752);
         // Cached: the mock serves only one connection.
         assert_eq!(p.context_tokens(), 202_752);
+    }
+
+    #[test]
+    fn a_failed_listing_is_retried_after_a_backoff_not_cached() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base = rt.block_on(serve(vec![
+            ("500 Internal Server Error", "down".into()),
+            (
+                "200 OK",
+                json!({"data":[{"id":"z-ai/glm-4.6","context_length":202752}]}).to_string(),
+            ),
+        ]));
+        let p = HttpProvider::new(
+            provider("openrouter", &base, true),
+            "k".into(),
+            "z-ai/glm-4.6".into(),
+        );
+        assert_eq!(p.context_tokens(), DEFAULT_CONTEXT_TOKENS);
+        assert_eq!(cached_context(&p.provider, &p.model), None);
+        // Within the backoff: no request (the next one would succeed).
+        assert_eq!(p.context_tokens(), DEFAULT_CONTEXT_TOKENS);
+        // Once the backoff has passed, the listing is tried again.
+        let long_ago = Instant::now()
+            .checked_sub(LISTING_RETRY_AFTER + Duration::from_secs(1))
+            .unwrap();
+        failed_listings()
+            .lock()
+            .insert(cache_key(&p.provider), long_ago);
+        assert_eq!(p.context_tokens(), 202_752);
+        assert!(!failed_listings()
+            .lock()
+            .contains_key(&cache_key(&p.provider)));
     }
 
     #[test]

@@ -215,6 +215,26 @@ impl std::fmt::Display for WorkerTimeout {
 
 impl std::error::Error for WorkerTimeout {}
 
+/// The helper couldn't turn the JSON schema into a grammar (or the grammar
+/// was rejected). Not fatal: `chat_json` retries without a grammar.
+#[derive(Debug)]
+pub struct GrammarError(String);
+
+impl std::fmt::Display for GrammarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "built-in model: {}", self.0)
+    }
+}
+
+impl std::error::Error for GrammarError {}
+
+/// Whether the helper's error message is about the JSON schema grammar (see
+/// `build_sampler` in crates/guidy-llm/src/main.rs).
+fn is_grammar_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("unsupported json schema") || lower.contains("invalid grammar")
+}
+
 /// Whether `e` (or anything it wraps) is a [`WorkerTimeout`].
 pub fn is_timeout_error(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.is::<WorkerTimeout>())
@@ -392,6 +412,18 @@ pub struct BuiltinChat<'a> {
 /// cancel flag.
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
+/// How long [`BuiltinLlm::ping`] waits for a worker another request holds.
+const PING_LOCK_WAIT: Duration = Duration::from_millis(500);
+
+/// What [`BuiltinLlm::ping`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PingStatus {
+    /// The helper answered.
+    Ready,
+    /// A request is using the helper, so it's running; not probed.
+    Busy,
+}
+
 /// The process-wide `guidy-llm` supervisor.
 pub struct BuiltinLlm {
     worker: Mutex<Option<Worker>>,
@@ -541,12 +573,18 @@ impl BuiltinLlm {
 
     /// Start the helper (if needed) and check it answers. A helper that
     /// doesn't answer in time is killed.
-    pub fn ping(&self) -> Result<()> {
-        let mut guard = self.worker.lock();
+    ///
+    /// Doesn't queue behind a running request (a chat holds the worker for
+    /// the whole generation, possibly minutes): if the worker stays busy for
+    /// [`PING_LOCK_WAIT`], it's running, and [`PingStatus::Busy`] says so.
+    pub fn ping(&self) -> Result<PingStatus> {
+        let Some(mut guard) = self.worker.try_lock_for(PING_LOCK_WAIT) else {
+            return Ok(PingStatus::Busy);
+        };
         self.stop_if_forgotten(&mut guard);
         let result = self.ping_locked(&mut guard);
         self.finish_request(&mut guard, result.as_ref().err());
-        result
+        result.map(|()| PingStatus::Ready)
     }
 
     fn ping_locked(&self, slot: &mut Option<Worker>) -> Result<()> {
@@ -659,6 +697,11 @@ impl BuiltinLlm {
                 }
                 FinishReason::Cancelled => bail!(CANCELLED),
             },
+            Response::Error { message, .. }
+                if req.json_schema.is_some() && is_grammar_message(&message) =>
+            {
+                Err(GrammarError(message).into())
+            }
             Response::Error { message, .. } => Err(anyhow!("built-in model: {message}")),
             other => bail!("unexpected reply to chat: {other:?}"),
         }
@@ -756,8 +799,10 @@ impl LlmProvider for BuiltinProvider {
     }
 
     /// GBNF grammar from the schema (llama.cpp's `json_schema_to_grammar`),
-    /// so the reply is valid JSON by construction; prompt-and-retry if the
-    /// grammar path fails anyway.
+    /// so the reply is valid JSON by construction; prompt-and-retry only if
+    /// the grammar couldn't be built or the reply is invalid anyway. Other
+    /// failures (cut off, cancelled, timed out, the helper died) are returned:
+    /// a retry would hit them again.
     fn chat_json(
         &self,
         messages: &[ChatMessage],
@@ -766,21 +811,21 @@ impl LlmProvider for BuiltinProvider {
     ) -> Result<Value> {
         // The model still needs to know what the fields mean.
         let msgs = super::with_json_instruction(messages, json_schema);
-        match self
-            .run(&msgs, Some(json_schema), opts)
-            .and_then(|reply| extract_json(&reply))
-            .and_then(|v| validate_json(&v, json_schema).map(|_| v))
-        {
-            Ok(v) => Ok(v),
-            Err(e) if super::is_cancelled_error(&e) => Err(e),
-            Err(e) => {
-                log::warn!(
-                    "{}: grammar-constrained JSON failed ({e}); retrying",
-                    self.name()
-                );
-                json_via_prompt(self, messages, json_schema, opts)
+        let error = match self.run(&msgs, Some(json_schema), opts) {
+            Ok(reply) => {
+                match extract_json(&reply).and_then(|v| validate_json(&v, json_schema).map(|_| v)) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => e,
+                }
             }
-        }
+            Err(e) if e.chain().any(|c| c.is::<GrammarError>()) => e,
+            Err(e) => return Err(e),
+        };
+        log::warn!(
+            "{}: grammar-constrained JSON failed ({error}); retrying",
+            self.name()
+        );
+        json_via_prompt(self, messages, json_schema, opts)
     }
 }
 
@@ -992,6 +1037,17 @@ mod tests {
         }
 
         fn protocol(chat_delay: &str, on_ping: &str) -> Self {
+            Self::with_chat(
+                &format!(
+                    r#"sleep {chat_delay}; echo "{{\"type\":\"done\",\"id\":$id,\"text\":\"ok\",\"finish_reason\":\"stop\",\"prompt_tokens\":1,\"completion_tokens\":1}}""#
+                ),
+                on_ping,
+            )
+        }
+
+        /// Like [`Self::protocol`], with `on_chat` (shell, `$line` is the
+        /// request, `$id` its id) answering `chat`.
+        fn with_chat(on_chat: &str, on_ping: &str) -> Self {
             let pong = r#"echo "{\"type\":\"pong\",\"id\":$id}""#;
             let on_ping = if on_ping.is_empty() { pong } else { on_ping };
             Self::script(
@@ -1000,12 +1056,12 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/^{"op":"[a-z]*","id":\([0-9]*\).*/\1/p')
   case "$line" in
     '{"op":"load"'*) echo "{\"type\":\"loaded\",\"id\":$id,\"n_ctx\":512,\"n_ctx_train\":512}" ;;
-    '{"op":"chat"'*) sleep CHAT_DELAY; echo "{\"type\":\"done\",\"id\":$id,\"text\":\"ok\",\"finish_reason\":\"stop\",\"prompt_tokens\":1,\"completion_tokens\":1}" ;;
+    '{"op":"chat"'*) ON_CHAT ;;
     '{"op":"ping"'*) ON_PING ;;
     '{"op":"shutdown"'*) exit 0 ;;
   esac
 done"#
-                    .replace("CHAT_DELAY", chat_delay)
+                    .replace("ON_CHAT", on_chat)
                     .replace("ON_PING", on_ping),
             )
         }
@@ -1149,6 +1205,128 @@ done"#
         assert!(llm.worker.lock().as_ref().unwrap().loaded.is_none());
         assert_ne!(helper.pid(), first);
         llm.shutdown();
+    }
+
+    #[test]
+    fn ping_does_not_wait_for_a_running_chat() {
+        let llm = BuiltinLlm::new(Duration::from_secs(60));
+        // A chat holds the worker for the whole generation.
+        let held = llm.worker.lock();
+        let start = Instant::now();
+        assert_eq!(llm.ping().unwrap(), PingStatus::Busy);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        drop(held);
+    }
+
+    /// A [`BuiltinProvider`] on a fake helper whose `chat` runs `on_chat`
+    /// (see [`FakeHelper::with_chat`]) after counting the request in the
+    /// returned file.
+    #[cfg(unix)]
+    fn fake_provider(on_chat: &str) -> (FakeHelper, BuiltinProvider, PathBuf) {
+        let count = tempfile::NamedTempFile::new()
+            .unwrap()
+            .into_temp_path()
+            .keep()
+            .unwrap();
+        let helper =
+            FakeHelper::with_chat(&format!("echo x >> '{}'; {on_chat}", count.display()), "");
+        let llm: &'static BuiltinLlm =
+            Box::leak(Box::new(fake_llm(&helper, Duration::from_secs(5))));
+        let provider = BuiltinProvider {
+            entry: &local_models::CATALOG[0],
+            path: PathBuf::from("/models/fake.gguf"),
+            n_ctx: 512,
+            llm,
+        };
+        (helper, provider, count)
+    }
+
+    #[cfg(unix)]
+    fn chats(count: &Path) -> usize {
+        std::fs::read_to_string(count)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// Shell printing a `done` reply with `text` (JSON-escaped, no `'`).
+    #[cfg(unix)]
+    fn done(text: &str, finish_reason: &str) -> String {
+        format!(
+            r#"printf '{{"type":"done","id":%s,"text":"%s","finish_reason":"{finish_reason}","prompt_tokens":1,"completion_tokens":1}}\n' "$id" '{text}'"#
+        )
+    }
+
+    #[cfg(unix)]
+    fn schema() -> Value {
+        serde_json::json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}})
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chat_json_returns_a_cut_off_reply_without_retrying() {
+        let (_helper, provider, count) = fake_provider(&done(r#"{\"a"#, "length"));
+        let err = provider
+            .chat_json(
+                &[ChatMessage::user("x")],
+                &schema(),
+                &ChatOptions::default(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("cut off"), "{err:#}");
+        assert_eq!(chats(&count), 1);
+        provider.llm.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chat_json_returns_a_dead_worker_without_retrying() {
+        let (_helper, provider, count) = fake_provider("exit 1");
+        let err = provider
+            .chat_json(
+                &[ChatMessage::user("x")],
+                &schema(),
+                &ChatOptions::default(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("exited"), "{err:#}");
+        assert_eq!(chats(&count), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chat_json_retries_without_a_grammar_for_schema_problems() {
+        let valid = done(r#"{\"a\":\"b\"}"#, "stop");
+        // The grammar can't be built; the prompt-only request succeeds.
+        let (_helper, provider, count) = fake_provider(&format!(
+            r#"if printf '%s' "$line" | grep -q '"json_schema":null'; then {valid}; else echo "{{\"type\":\"error\",\"id\":$id,\"message\":\"unsupported JSON schema: bad\"}}"; fi"#
+        ));
+        let v = provider
+            .chat_json(
+                &[ChatMessage::user("x")],
+                &schema(),
+                &ChatOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(v, serde_json::json!({"a":"b"}));
+        assert_eq!(chats(&count), 2);
+        provider.llm.shutdown();
+
+        // Invalid JSON despite the grammar.
+        let (_helper, provider, count) = fake_provider(&format!(
+            r#"if printf '%s' "$line" | grep -q '"json_schema":null'; then {valid}; else {}; fi"#,
+            done("nope", "stop")
+        ));
+        let v = provider
+            .chat_json(
+                &[ChatMessage::user("x")],
+                &schema(),
+                &ChatOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(v, serde_json::json!({"a":"b"}));
+        assert_eq!(chats(&count), 2);
+        provider.llm.shutdown();
     }
 
     /// End-to-end with a real GGUF. Run with

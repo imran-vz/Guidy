@@ -42,7 +42,10 @@ pub enum ChatError {
     Truncated(String),
     /// A successful response with an empty `choices` array.
     NoChoices,
-    /// Anything else (HTTP, transport, parse errors).
+    /// The endpoint answered with a non-success HTTP status. `body` is the
+    /// error response text.
+    Status { status: u16, body: String },
+    /// Anything else (transport, parse errors).
     Failed(String),
 }
 
@@ -51,6 +54,12 @@ impl fmt::Display for ChatError {
         match self {
             Self::Truncated(m) | Self::Failed(m) => f.write_str(m),
             Self::NoChoices => f.write_str("The response contained no choices"),
+            Self::Status { status, body } => {
+                let status = reqwest::StatusCode::from_u16(*status)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| status.to_string());
+                write!(f, "API request failed with status {}: {}", status, body)
+            }
         }
     }
 }
@@ -893,10 +902,10 @@ async fn send_openai_chat(
             .await
             .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
         let fail = || {
-            Err(ChatError::Failed(format!(
-                "API request failed with status {}: {}",
-                status, error_text
-            )))
+            Err(ChatError::Status {
+                status: status.as_u16(),
+                body: error_text.clone(),
+            })
         };
         if !matches!(status.as_u16(), 400 | 422) || retries >= MAX_RETRIES {
             return fail();
@@ -994,10 +1003,10 @@ async fn send_anthropic_message(
             .text()
             .await
             .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
-        return Err(ChatError::Failed(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        )));
+        return Err(ChatError::Status {
+            status: status.as_u16(),
+            body: error_text,
+        });
     }
 
     let message: AnthropicMessagesResponse = response

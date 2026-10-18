@@ -301,8 +301,15 @@ pub fn test_connection(app: &AppHandle, provider_id: &str, feature: Feature) -> 
         Some(ProviderRef::Builtin) => {
             let model = feature_model(&settings, feature, provider_id);
             let provider = builtin::BuiltinProvider::new(app, &model)?;
-            builtin::BuiltinLlm::global().ping()?;
-            return Ok(format!("Built-in model ready: {}", provider.model_label()));
+            return Ok(match builtin::BuiltinLlm::global().ping()? {
+                builtin::PingStatus::Ready => {
+                    format!("Built-in model ready: {}", provider.model_label())
+                }
+                builtin::PingStatus::Busy => format!(
+                    "Built-in model is busy generating; it is running ({})",
+                    provider.model_label()
+                ),
+            });
         }
         Some(ProviderRef::Configured(p)) => p.clone(),
         None => bail!("unknown LLM provider '{provider_id}'"),

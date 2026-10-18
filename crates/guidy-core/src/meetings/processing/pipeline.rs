@@ -443,6 +443,9 @@ impl<'a> Pipeline<'a> {
         let clustering = cache.clustering.clone().unwrap_or_default();
         let (speakers, segments, unit_of_segment) =
             build_transcript(cache, &clustering, &self.config);
+        // From the new transcript to its voiceprints: a person deletion
+        // dropping segments from this sidecar waits (and then sees both).
+        let _lock = sidecar::lock_embeddings(self.meetings_dir, self.meeting_id);
         let (stored_speakers, stored_segments) =
             self.store
                 .replace_transcript(self.meeting_id, &speakers, &segments)?;

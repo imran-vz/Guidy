@@ -140,10 +140,66 @@ fn write_at<T: Serialize + ?Sized>(
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
     let sealed = seal(key, kind, meeting_id, &serde_json::to_vec(value)?)?;
-    let tmp = path.with_extension("bin.tmp");
-    write_private(&tmp, &sealed).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
-    Ok(())
+    let tmp = temp_path(path);
+    let written = write_private(&tmp, &sealed)
+        .with_context(|| format!("write {}", tmp.display()))
+        .and_then(|()| {
+            std::fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// A temp file next to `path` no other writer uses (`<name>.<pid>-<n>.tmp`):
+/// two concurrent writes never share (and tear) one temp file.
+fn temp_path(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!("{name}.{}-{n}.tmp", std::process::id()))
+}
+
+/// Held while a meeting's embeddings sidecar is rewritten from database
+/// state: by a processing run from replacing the transcript to writing the
+/// new voiceprints, and by a person deletion from finding their segments to
+/// dropping them. So a deletion never filters a stale copy over a run's new
+/// file (or drops segment ids the new transcript reuses).
+pub struct EmbeddingsLock {
+    key: (PathBuf, MeetingId),
+}
+
+/// The held [`EmbeddingsLock`]s, and the condvar their release signals.
+type EmbeddingsLocks = (
+    parking_lot::Mutex<HashSet<(PathBuf, MeetingId)>>,
+    parking_lot::Condvar,
+);
+
+fn embeddings_locks() -> &'static EmbeddingsLocks {
+    static LOCKS: std::sync::OnceLock<EmbeddingsLocks> = std::sync::OnceLock::new();
+    LOCKS.get_or_init(Default::default)
+}
+
+/// Wait for and take meeting `id`'s [`EmbeddingsLock`]. Not reentrant; a
+/// caller taking several takes them in ascending meeting order.
+pub fn lock_embeddings(meetings_dir: &Path, id: MeetingId) -> EmbeddingsLock {
+    let key = (meetings_dir.to_path_buf(), id);
+    let (held, freed) = embeddings_locks();
+    let mut held = held.lock();
+    while held.contains(&key) {
+        freed.wait(&mut held);
+    }
+    held.insert(key.clone());
+    EmbeddingsLock { key }
+}
+
+impl Drop for EmbeddingsLock {
+    fn drop(&mut self) {
+        let (held, freed) = embeddings_locks();
+        held.lock().remove(&self.key);
+        freed.notify_all();
+    }
 }
 
 /// Read a sidecar. `Ok(None)` when the file doesn't exist.
@@ -217,13 +273,16 @@ pub fn read_embeddings(
 
 /// Remove the per-segment voiceprints of `segment_ids` from meeting `id`'s
 /// embeddings sidecar (e.g. a deleted person's). Returns how many were
-/// removed; a missing sidecar is fine.
+/// removed; a missing sidecar is fine. The caller holds `lock` (taken before
+/// it read `segment_ids` from the database).
 pub fn drop_segment_embeddings(
+    lock: &EmbeddingsLock,
     meetings_dir: &Path,
     id: MeetingId,
     key: &[u8; 32],
     segment_ids: &HashSet<i64>,
 ) -> Result<usize> {
+    debug_assert!(lock.key == (meetings_dir.to_path_buf(), id));
     let Some(mut all) = read_embeddings(meetings_dir, id, key)? else {
         return Ok(0);
     };
@@ -414,16 +473,72 @@ mod tests {
             embedding: vec![id as f32],
         };
         write_embeddings(dir.path(), 5, &key, &[e(1), e(2), e(3)]).unwrap();
-        let n = drop_segment_embeddings(dir.path(), 5, &key, &HashSet::from([1, 3, 9])).unwrap();
+        let lock = lock_embeddings(dir.path(), 5);
+        let n =
+            drop_segment_embeddings(&lock, dir.path(), 5, &key, &HashSet::from([1, 3, 9])).unwrap();
         assert_eq!(n, 2);
         assert_eq!(
             read_embeddings(dir.path(), 5, &key).unwrap(),
             Some(vec![e(2)])
         );
+        let lock = lock_embeddings(dir.path(), 6);
         assert_eq!(
-            drop_segment_embeddings(dir.path(), 6, &key, &HashSet::from([1])).unwrap(),
+            drop_segment_embeddings(&lock, dir.path(), 6, &key, &HashSet::from([1])).unwrap(),
             0
         );
+    }
+
+    /// Concurrent writers each use their own temp file: every rename lands
+    /// a whole file, and no temp file is left behind.
+    #[test]
+    fn concurrent_writes_never_tear_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        let e = |id| SegmentEmbedding {
+            segment_id: id,
+            duration_ms: 1000,
+            embedding: vec![id as f32; 256],
+        };
+        assert_ne!(
+            temp_path(&embeddings_path(dir.path(), 1)),
+            temp_path(&embeddings_path(dir.path(), 1))
+        );
+        std::thread::scope(|s| {
+            for t in 0..4 {
+                let dir = dir.path();
+                s.spawn(move || {
+                    for _ in 0..20 {
+                        write_embeddings(dir, 1, &key, &[e(t)]).unwrap();
+                    }
+                });
+            }
+        });
+        let back = read_embeddings(dir.path(), 1, &key).unwrap().unwrap();
+        assert_eq!(back.len(), 1);
+        let files: Vec<_> = std::fs::read_dir(dir.path().join("embeddings"))
+            .unwrap()
+            .map(|f| f.unwrap().file_name())
+            .collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("1.bin")]);
+    }
+
+    #[test]
+    fn the_embeddings_lock_is_exclusive_per_meeting() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = lock_embeddings(dir.path(), 1);
+        // Another meeting's lock is independent.
+        drop(lock_embeddings(dir.path(), 2));
+        let taken = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let _second = lock_embeddings(dir.path(), 1);
+                taken.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!taken.load(std::sync::atomic::Ordering::SeqCst));
+            drop(first);
+        });
+        assert!(taken.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[cfg(unix)]
