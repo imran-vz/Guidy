@@ -404,7 +404,7 @@ impl MeetingRecorder {
         let errors = capture_errors.clone();
         let on_error: CaptureErrorSink = Arc::new(move |track, message: String| {
             log::error!("meetings: {track:?} capture of meeting {id} failed: {message}");
-            let msg = format!("{} capture: {message}", track_name(track));
+            let msg = format!("{} capture: {message}", track.as_str());
             let mut errors = errors.lock();
             if !errors.contains(&msg) {
                 errors.push(msg);
@@ -455,7 +455,7 @@ impl MeetingRecorder {
         match session.writer.take().map(|w| w.join()) {
             Some(Ok((mic, sys))) => {
                 for (track, r) in [(Track::Mic, mic), (Track::System, sys)] {
-                    let track = track_name(track);
+                    let track = track.as_str();
                     match r {
                         Ok(s) => log::info!(
                             "meetings: {track} track of meeting {id}: {} ms",
@@ -489,9 +489,20 @@ impl MeetingRecorder {
             std::thread::sleep(delay);
             result = self.finish_one(&pending);
         }
-        // Earlier stops whose finish failed.
-        if let Err(e) = self.retry_pending() {
-            log::warn!("meetings: finishing a previous recording failed again: {e:#}");
+        // Earlier stops whose finish failed. This one is still pending if
+        // its own retries failed; a finish here is this stop's result (so
+        // it's returned, not also reported through `on_recording_finished`).
+        let (finished, error) = self.finish_pending();
+        for fid in finished {
+            if fid == id {
+                result = Ok(());
+            } else {
+                log::info!("meetings: finished stopped recording {fid} on retry");
+                (self.deps.on_recording_finished)(fid);
+            }
+        }
+        if let Some(e) = error {
+            log::warn!("meetings: finishing a stopped recording failed again: {e:#}");
         }
         // Capture is stopped either way.
         self.set_state(RecorderState::Idle);
@@ -814,13 +825,6 @@ fn reminder_state(s: &Session, interval_minutes: u32) -> ReminderState {
     }
 }
 
-fn track_name(track: Track) -> &'static str {
-    match track {
-        Track::Mic => "mic",
-        Track::System => "system",
-    }
-}
-
 /// What the writer thread needs from a track file ([`TrackWriter`]; tests
 /// use a failing fake).
 trait TrackOutput: Send {
@@ -854,7 +858,7 @@ fn writer_loop<W: TrackOutput>(rx: Receiver<WriterMsg>, mic: W, sys: W) -> Write
                 if let Err(e) = w.push(&samples) {
                     log::error!(
                         "meetings: writing the {} track failed, stopping it: {e:#}",
-                        track_name(track)
+                        track.as_str()
                     );
                     // Drops (closes) the writer without its end marker.
                     *slot = Err(e.context("recording stopped early"));

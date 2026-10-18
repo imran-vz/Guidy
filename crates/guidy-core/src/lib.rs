@@ -355,17 +355,24 @@ pub fn reset_meetings_data(app: &AppHandle) -> anyhow::Result<()> {
     if !meetings::is_supported() {
         anyhow::bail!("meeting notes need macOS 14.2 or later");
     }
-    reset_meetings_data_files(app, |stamp| {
-        secrets::replace_meetings_data_key(&format!("backup-{stamp}")).map(|_| ())
-    })?;
+    reset_meetings_data_files(
+        app,
+        || secrets::get(secrets::MEETINGS_DATA_KEY).map(|_| ()),
+        |stamp| secrets::replace_meetings_data_key(&format!("backup-{stamp}")).map(|_| ()),
+    )?;
     spawn_meetings_init(app, true);
     Ok(())
 }
 
-/// The file and key part of [`reset_meetings_data`], with the key
-/// replacement injected (tests must not replace the process-wide key).
+/// The file and key part of [`reset_meetings_data`], with the Keychain read
+/// check and the key replacement injected (tests must not touch the
+/// process-wide key).
+///
+/// A failure before anything changed keeps the status (Reset can be tried
+/// again); one after files may have moved is [`MeetingsInitStatus::Failed`].
 fn reset_meetings_data_files(
     app: &AppHandle,
+    check_key_readable: impl FnOnce() -> anyhow::Result<()>,
     replace_key: impl FnOnce(&str) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     if app
@@ -375,7 +382,7 @@ fn reset_meetings_data_files(
         anyhow::bail!("meeting notes are running: there is nothing to reset");
     }
     let cell = meetings_init_cell(app);
-    {
+    let before = {
         let mut status = cell.0.lock();
         match *status {
             MeetingsInitStatus::DataKeyMissing(_) => {}
@@ -386,14 +393,17 @@ fn reset_meetings_data_files(
             _ => anyhow::bail!("meeting notes don't need a reset"),
         }
         // Keeps a concurrent start away while files move.
-        *status = MeetingsInitStatus::Starting;
-    }
+        std::mem::replace(&mut *status, MeetingsInitStatus::Starting)
+    };
+    // Whether a failure may have changed anything (files moved, a new key).
+    let mut touched = false;
     let result = (|| {
         // An unreadable Keychain is not a missing key: change nothing.
-        secrets::get(secrets::MEETINGS_DATA_KEY)?;
+        check_key_readable()?;
         let data_dir =
             portable::app_data_dir(app).map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        touched = true;
         // Data first: if the key can't be replaced afterwards, the next
         // start finds no data and may still create or use a key.
         meetings::manager::move_meeting_data_aside(&data_dir, &stamp)?;
@@ -401,6 +411,9 @@ fn reset_meetings_data_files(
     })();
     *cell.0.lock() = match &result {
         Ok(()) => MeetingsInitStatus::Off,
+        // Nothing changed: the reset can simply be tried again.
+        Err(_) if !touched => before,
+        // Partly done (some files may have moved): Retry sorts it out.
         Err(e) => MeetingsInitStatus::Failed(format!("{e:#}")),
     };
     result
@@ -421,6 +434,10 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
         }
         *status = MeetingsInitStatus::Starting;
     }
+    if retry {
+        // The user may have restored the key in the Keychain since.
+        secrets::forget_meetings_data_key();
+    }
     let app = app_handle.clone();
     let set = |app: &AppHandle, s: MeetingsInitStatus| *meetings_init_cell(app).0.lock() = s;
     let spawned = std::thread::Builder::new()
@@ -438,6 +455,8 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
                     let error = format!("{e:#}");
                     log::error!("Meeting notes unavailable: {error}");
                     if is_meetings_key_problem(&e) {
+                        // Never reuse a key that didn't decrypt the data.
+                        secrets::forget_meetings_data_key();
                         set(&app, MeetingsInitStatus::DataKeyMissing(error.clone()));
                         let _ = app.emit(MEETINGS_DATA_KEY_MISSING_EVENT, error);
                     } else {
@@ -995,19 +1014,35 @@ mod meetings_init_tests {
             MeetingsInitStatus::Failed("database is locked".into()),
         ] {
             set_status(&t, s.clone());
-            assert!(reset_meetings_data_files(&t.app, |_| panic!("no reset")).is_err());
+            assert!(reset_meetings_data_files(&t.app, || Ok(()), |_| panic!("no reset")).is_err());
             assert_eq!(status(&t), s);
         }
         assert!(meetings::manager::has_meeting_data(&dir));
 
-        set_status(&t, MeetingsInitStatus::DataKeyMissing("gone".into()));
+        // An unreadable Keychain changes nothing: Reset stays offered.
+        let missing = MeetingsInitStatus::DataKeyMissing("gone".into());
+        set_status(&t, missing.clone());
+        let e = reset_meetings_data_files(
+            &t.app,
+            || Err(anyhow::anyhow!("keychain locked")),
+            |_| panic!("no reset"),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("keychain locked"));
+        assert_eq!(status(&t), missing);
+        assert!(meetings::manager::has_meeting_data(&dir));
+
         let mut stamp = None;
-        reset_meetings_data_files(&t.app, |s| {
-            // The data is already out of the way when the key changes.
-            assert!(!meetings::manager::has_meeting_data(&dir));
-            stamp = Some(s.to_string());
-            Ok(())
-        })
+        reset_meetings_data_files(
+            &t.app,
+            || Ok(()),
+            |s| {
+                // The data is already out of the way when the key changes.
+                assert!(!meetings::manager::has_meeting_data(&dir));
+                stamp = Some(s.to_string());
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(status(&t), MeetingsInitStatus::Off);
         let moved = dir.join(format!("meetings-unreadable-{}", stamp.unwrap()));
@@ -1020,8 +1055,12 @@ mod meetings_init_tests {
 
         // A failed key replacement is reported, and Retry stays possible.
         set_status(&t, MeetingsInitStatus::DataKeyMissing("wrong key".into()));
-        let e = reset_meetings_data_files(&t.app, |_| Err(anyhow::anyhow!("keychain write")))
-            .unwrap_err();
+        let e = reset_meetings_data_files(
+            &t.app,
+            || Ok(()),
+            |_| Err(anyhow::anyhow!("keychain write")),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("keychain write"));
         assert!(matches!(status(&t), MeetingsInitStatus::Failed(_)));
     }

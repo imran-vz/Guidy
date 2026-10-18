@@ -848,7 +848,7 @@ impl AppState {
     /// Move unreadable meeting data aside, make a new data key and start the
     /// meetings manager again (after a missing key or a failed start).
     pub fn reset_meetings_data(&mut self, cx: &mut Context<Self>) {
-        let before = std::mem::replace(&mut self.meetings_init, MeetingsInit::Starting);
+        self.meetings_init = MeetingsInit::Starting;
         cx.notify();
         let meetings = self.meetings.clone();
         cx.spawn(async move |this, cx| {
@@ -863,14 +863,7 @@ impl AppState {
                     return; // the ready / failure event got here first
                 }
                 match result {
-                    // Nothing moved: keep showing what was wrong, with the reason.
-                    Err(e) => s.set_meetings_init(
-                        match before {
-                            MeetingsInit::DataKeyMissing(_) => MeetingsInit::DataKeyMissing(e),
-                            _ => MeetingsInit::Failed(e),
-                        },
-                        cx,
-                    ),
+                    Err(e) => s.set_meetings_init(MeetingsInit::after_failed_reset(status, e), cx),
                     Ok(()) if status != MeetingsInit::Starting => s.set_meetings_init(status, cx),
                     Ok(()) => {}
                 }

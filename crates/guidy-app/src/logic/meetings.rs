@@ -139,6 +139,18 @@ impl MeetingsInit {
             guidy_core::MeetingsInitStatus::DataKeyMissing(e) => Self::DataKeyMissing(e),
         }
     }
+
+    /// The status to show after a failed reset: core's (`status`), with the
+    /// reset's error as the reason. Core keeps `DataKeyMissing` when nothing
+    /// changed (Reset is offered again) and is `Failed` when the reset
+    /// partly happened (Retry only).
+    pub fn after_failed_reset(status: Self, error: String) -> Self {
+        match status {
+            Self::DataKeyMissing(_) => Self::DataKeyMissing(error),
+            Self::Failed(_) => Self::Failed(error),
+            other => other,
+        }
+    }
 }
 
 /// Summary progress fraction (0..=1), `None` before the plan is known.
@@ -394,6 +406,23 @@ pub fn apply_progress(meetings: &mut [Meeting], p: &ProcessingProgress) {
 mod tests {
     use super::*;
     use guidy_core::meetings::types::{ProcessingStage, Track};
+
+    #[test]
+    fn a_failed_reset_shows_cores_status_with_the_error() {
+        let after = |s| MeetingsInit::after_failed_reset(s, "keychain locked".into());
+        // Nothing changed: Reset is still offered.
+        assert_eq!(
+            after(MeetingsInit::DataKeyMissing("gone".into())),
+            MeetingsInit::DataKeyMissing("keychain locked".into())
+        );
+        // Partly done: Retry only.
+        assert_eq!(
+            after(MeetingsInit::Failed("x".into())),
+            MeetingsInit::Failed("keychain locked".into())
+        );
+        assert_eq!(after(MeetingsInit::Starting), MeetingsInit::Starting);
+        assert_eq!(after(MeetingsInit::Ready), MeetingsInit::Ready);
+    }
 
     fn seg(id: i64, t0: i64, spk: Option<i64>) -> Segment {
         Segment {

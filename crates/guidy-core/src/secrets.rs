@@ -12,8 +12,9 @@
 //! variable can't silently divert keys away from the Keychain.
 //! [`set_backend`] swaps the backend explicitly.
 //!
-//! Keychain reads are cached in-process (including misses), because callers
-//! such as the settings UI read keys on every refresh.
+//! Keychain reads are cached in-process (including misses, except for the
+//! meetings data key), because callers such as the settings UI read keys on
+//! every refresh. [`forget_meetings_data_key`] drops the cached data key.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -47,6 +48,8 @@ pub trait SecretsBackend: Send + Sync {
     fn set(&self, key: &str, value: &str) -> Result<()>;
     /// Deleting a missing key is not an error.
     fn delete(&self, key: &str) -> Result<()>;
+    /// Forget any cached value of `key`, so the next read asks the store.
+    fn invalidate(&self, _key: &str) {}
 }
 
 /// The OS credential store through `keyring` (Keychain on macOS).
@@ -118,35 +121,88 @@ impl SecretsBackend for MemoryBackend {
     }
 }
 
-/// Wraps a slow backend (the Keychain) with an in-process read cache. Only
-/// successful reads are cached; writes update the cache after they succeed.
+/// Wraps a slow backend (the Keychain) with an in-process read cache. Reads
+/// are cached, misses too (except for [`MEETINGS_DATA_KEY`], so restoring it
+/// in the Keychain is seen on the next read); writes update the cache after
+/// they succeed.
+///
+/// Backend reads run outside the lock, so every write or invalidation bumps
+/// the key's generation, and a read only caches its value if the generation
+/// is unchanged since it started: a slow read can't overwrite a newer write.
 struct Cached<B> {
     inner: B,
-    cache: Mutex<HashMap<String, Option<String>>>,
+    cache: Mutex<CacheState>,
+}
+
+#[derive(Default)]
+struct CacheState {
+    values: HashMap<String, Option<String>>,
+    generations: HashMap<String, u64>,
+}
+
+impl CacheState {
+    fn generation(&self, key: &str) -> u64 {
+        self.generations.get(key).copied().unwrap_or(0)
+    }
+
+    /// Record a write (`Some(value)`: the stored value; `None`: unknown).
+    fn written(&mut self, key: &str, value: Option<Option<String>>) {
+        *self.generations.entry(key.to_string()).or_default() += 1;
+        match value {
+            Some(v) => self.values.insert(key.to_string(), v),
+            None => self.values.remove(key),
+        };
+    }
+}
+
+impl<B> Cached<B> {
+    fn new(inner: B) -> Self {
+        Self {
+            inner,
+            cache: Mutex::new(CacheState::default()),
+        }
+    }
 }
 
 impl<B: SecretsBackend> SecretsBackend for Cached<B> {
     fn get(&self, key: &str) -> Result<Option<String>> {
-        if let Some(v) = self.cache.lock().get(key) {
-            return Ok(v.clone());
-        }
+        let generation = {
+            let cache = self.cache.lock();
+            if let Some(v) = cache.values.get(key) {
+                return Ok(v.clone());
+            }
+            cache.generation(key)
+        };
         let v = self.inner.get(key)?;
-        self.cache.lock().insert(key.to_string(), v.clone());
+        let mut cache = self.cache.lock();
+        if cache.generation(key) != generation {
+            // Written meanwhile: that value is newer than this read.
+            if let Some(newer) = cache.values.get(key) {
+                return Ok(newer.clone());
+            }
+        } else if v.is_some() || key != MEETINGS_DATA_KEY {
+            cache.values.insert(key.to_string(), v.clone());
+        }
         Ok(v)
     }
 
     fn set(&self, key: &str, value: &str) -> Result<()> {
-        self.inner.set(key, value)?;
-        self.cache
-            .lock()
-            .insert(key.to_string(), Some(value.to_string()));
-        Ok(())
+        let result = self.inner.set(key, value);
+        // A failed write may or may not have landed: forget the key.
+        let stored = result.is_ok().then(|| Some(value.to_string()));
+        self.cache.lock().written(key, stored);
+        result
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        self.inner.delete(key)?;
-        self.cache.lock().insert(key.to_string(), None);
-        Ok(())
+        let result = self.inner.delete(key);
+        let stored = result.is_ok().then_some(None);
+        self.cache.lock().written(key, stored);
+        result
+    }
+
+    fn invalidate(&self, key: &str) {
+        self.cache.lock().written(key, None);
     }
 }
 
@@ -182,10 +238,7 @@ fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
             }
             Arc::new(memory)
         } else {
-            Arc::new(Cached {
-                inner: KeychainBackend::new(SERVICE),
-                cache: Mutex::new(HashMap::new()),
-            })
+            Arc::new(Cached::new(KeychainBackend::new(SERVICE)))
         };
         RwLock::new(backend)
     })
@@ -284,30 +337,47 @@ fn replace_data_key(backend: &dyn SecretsBackend, backup_suffix: &str) -> Result
     Ok(k)
 }
 
+/// The key in `cache`, else the stored one (see [`load_data_key`]), cached.
+fn cached_data_key(
+    cache: &Mutex<Option<[u8; 32]>>,
+    backend: &dyn SecretsBackend,
+    may_create: bool,
+) -> Result<[u8; 32]> {
+    let mut cache = cache.lock();
+    if let Some(k) = *cache {
+        return Ok(k);
+    }
+    let key = load_data_key(backend, may_create)?;
+    *cache = Some(key);
+    Ok(key)
+}
+
+fn forget_data_key(cache: &Mutex<Option<[u8; 32]>>, backend: &dyn SecretsBackend) {
+    let mut cache = cache.lock();
+    *cache = None;
+    backend.invalidate(MEETINGS_DATA_KEY);
+}
+
 /// The 32-byte meetings data key, cached in-process. Never generates one:
 /// [`MeetingsDataKeyMissing`] when none is stored (only
 /// [`open_meetings_data_key`] creates it). A read error is returned as is.
 pub fn meetings_data_key() -> Result<[u8; 32]> {
-    let mut cache = data_key_cache().lock();
-    if let Some(k) = *cache {
-        return Ok(k);
-    }
-    let key = load_data_key(backend().as_ref(), false)?;
-    *cache = Some(key);
-    Ok(key)
+    cached_data_key(data_key_cache(), backend().as_ref(), false)
 }
 
 /// [`meetings_data_key`], generating and storing a key when none exists, but
 /// only if `has_encrypted_data` is false. With existing data a missing key is
 /// [`MeetingsDataKeyMissing`]: a fresh key would make that data unreadable.
 pub fn open_meetings_data_key(has_encrypted_data: bool) -> Result<[u8; 32]> {
-    let mut cache = data_key_cache().lock();
-    if let Some(k) = *cache {
-        return Ok(k);
-    }
-    let key = load_data_key(backend().as_ref(), !has_encrypted_data)?;
-    *cache = Some(key);
-    Ok(key)
+    cached_data_key(data_key_cache(), backend().as_ref(), !has_encrypted_data)
+}
+
+/// Forget the cached meetings data key (in-process and the Keychain read
+/// cache), so the next use reads the Keychain again: before a Retry (the
+/// user may have restored the key), and when the key didn't decrypt the
+/// meeting data.
+pub fn forget_meetings_data_key() {
+    forget_data_key(data_key_cache(), backend().as_ref());
 }
 
 /// Store a new meetings data key. Call only once the data encrypted with the
@@ -383,10 +453,7 @@ mod tests {
                 self.1.delete(key)
             }
         }
-        let c = Cached {
-            inner: Counting(Mutex::new(0), MemoryBackend::new()),
-            cache: Mutex::new(HashMap::new()),
-        };
+        let c = Cached::new(Counting(Mutex::new(0), MemoryBackend::new()));
         assert_eq!(c.get("k").unwrap(), None);
         assert_eq!(c.get("k").unwrap(), None);
         assert_eq!(*c.inner.0.lock(), 1);
@@ -395,6 +462,96 @@ mod tests {
         c.delete("k").unwrap();
         assert_eq!(c.get("k").unwrap(), None);
         assert_eq!(*c.inner.0.lock(), 1);
+        // An invalidated key is read again.
+        c.inner.1.set("k", "outside").unwrap();
+        c.invalidate("k");
+        assert_eq!(c.get("k").unwrap().as_deref(), Some("outside"));
+        assert_eq!(*c.inner.0.lock(), 2);
+        // A missing data key is never cached: restoring it is seen.
+        assert_eq!(c.get(MEETINGS_DATA_KEY).unwrap(), None);
+        c.inner.1.set(MEETINGS_DATA_KEY, "restored").unwrap();
+        assert_eq!(
+            c.get(MEETINGS_DATA_KEY).unwrap().as_deref(),
+            Some("restored")
+        );
+    }
+
+    #[test]
+    fn a_slow_read_never_overwrites_a_newer_write() {
+        use std::sync::mpsc;
+        /// `get` reads, then waits for a go-ahead before returning.
+        struct Slow {
+            map: MemoryBackend,
+            read: Mutex<mpsc::Sender<()>>,
+            go: Mutex<mpsc::Receiver<()>>,
+        }
+        impl SecretsBackend for Slow {
+            fn get(&self, key: &str) -> Result<Option<String>> {
+                let v = self.map.get(key);
+                self.read.lock().send(()).unwrap();
+                self.go.lock().recv().unwrap();
+                v
+            }
+            fn set(&self, key: &str, value: &str) -> Result<()> {
+                self.map.set(key, value)
+            }
+            fn delete(&self, key: &str) -> Result<()> {
+                self.map.delete(key)
+            }
+        }
+        let (read_tx, read_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let c = Arc::new(Cached::new(Slow {
+            map: MemoryBackend::new(),
+            read: Mutex::new(read_tx),
+            go: Mutex::new(go_rx),
+        }));
+
+        for write_new in [true, false] {
+            c.invalidate("k");
+            c.inner.map.set("k", "old").unwrap();
+            let reader = {
+                let c = c.clone();
+                std::thread::spawn(move || c.get("k").unwrap())
+            };
+            read_rx.recv().unwrap(); // the reader has the old value
+            if write_new {
+                c.set("k", "new").unwrap();
+            } else {
+                c.delete("k").unwrap();
+            }
+            go_tx.send(()).unwrap();
+            let expected = write_new.then(|| "new".to_string());
+            assert_eq!(reader.join().unwrap(), expected, "the newer value wins");
+            // Cached: no backend read (it would block).
+            assert_eq!(c.get("k").unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn forgetting_the_data_key_rereads_the_keychain() {
+        let backend = Cached::new(MemoryBackend::new());
+        let cache = Mutex::new(None);
+        // Missing (with encrypted data): nothing generated.
+        let e = cached_data_key(&cache, &backend, false).unwrap_err();
+        assert!(e.downcast_ref::<MeetingsDataKeyMissing>().is_some(), "{e}");
+        // The user restores the key in the Keychain: Retry sees it.
+        let restored = generate_data_key(&backend.inner).unwrap();
+        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), restored);
+
+        // A key that turns out not to decrypt the data is reused until
+        // forgotten, then the Keychain is read again.
+        let right = [7u8; 32];
+        backend
+            .inner
+            .set(
+                MEETINGS_DATA_KEY,
+                &base64::engine::general_purpose::STANDARD.encode(right),
+            )
+            .unwrap();
+        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), restored);
+        forget_data_key(&cache, &backend);
+        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), right);
     }
 
     #[test]

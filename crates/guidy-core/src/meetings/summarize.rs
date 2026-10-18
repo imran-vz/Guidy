@@ -177,9 +177,39 @@ fn text_cost(s: &str) -> usize {
     s.chars().map(char_cost).sum()
 }
 
+/// The `[mm:ss] Speaker: ` prefix of a rendered [`TranscriptLine`] and the
+/// rest of it. The prefix is empty when the line has none.
+fn split_line_prefix(line: &str) -> (&str, &str) {
+    let prefix_len = line
+        .strip_prefix('[')
+        .and_then(|rest| {
+            let ts_end = rest.find("] ")?;
+            parse_ts(&rest[..ts_end])?;
+            let name_end = rest[ts_end + 2..].find(": ")?;
+            Some(1 + ts_end + 2 + name_end + 2)
+        })
+        .unwrap_or(0);
+    line.split_at(prefix_len)
+}
+
+/// Marks the text of a piece split off the end of a line.
+const CONTINUATION: &str = "… ";
+
+/// The prefix for a piece split off `line`'s text: its `[mm:ss] Speaker: `
+/// (so every piece keeps its attribution) and [`CONTINUATION`]. Empty when
+/// the line has no prefix.
+fn continuation_prefix(prefix: &str) -> String {
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}{CONTINUATION}")
+    }
+}
+
 /// Greedy chunks of whole lines, each at most `budget_tokens` (estimated at
 /// ~4 chars/token, or ~1 char/token for CJK and similar scripts). A single
-/// line longer than the budget is split on character boundaries.
+/// line longer than the budget is split on character boundaries, each piece
+/// repeating the line's `[mm:ss] Speaker: ` prefix.
 pub fn chunk_lines(lines: &[String], budget_tokens: usize) -> Vec<String> {
     // In quarter tokens (see `char_cost`).
     let budget = budget_tokens.max(64) * 4;
@@ -190,18 +220,32 @@ pub fn chunk_lines(lines: &[String], budget_tokens: usize) -> Vec<String> {
         let mut pieces: Vec<(String, usize)> = Vec::new();
         let line_cost = text_cost(line);
         if line_cost > budget {
-            let mut piece = String::new();
-            let mut piece_cost = 0usize;
-            for c in line.chars() {
+            let (mut prefix, mut text) = split_line_prefix(line);
+            let mut next_prefix = continuation_prefix(prefix);
+            // A prefix taking half the budget (an absurd speaker name) isn't
+            // repeated: the line is split as plain text.
+            if text_cost(&next_prefix) * 2 > budget {
+                (prefix, text) = ("", line.as_str());
+                next_prefix.clear();
+            }
+            let next_prefix_cost = text_cost(&next_prefix);
+            let mut piece = prefix.to_string();
+            let mut piece_cost = text_cost(prefix);
+            let mut piece_has_text = false;
+            for c in text.chars() {
                 let cost = char_cost(c);
-                if !piece.is_empty() && piece_cost + cost > budget {
-                    pieces.push((std::mem::take(&mut piece), piece_cost));
-                    piece_cost = 0;
+                if piece_has_text && piece_cost + cost > budget {
+                    pieces.push((
+                        std::mem::replace(&mut piece, next_prefix.clone()),
+                        piece_cost,
+                    ));
+                    piece_cost = next_prefix_cost;
                 }
                 piece.push(c);
                 piece_cost += cost;
+                piece_has_text = true;
             }
-            if !piece.is_empty() {
+            if piece_has_text {
                 pieces.push((piece, piece_cost));
             }
         } else {
@@ -229,9 +273,12 @@ pub fn chunk_lines(lines: &[String], budget_tokens: usize) -> Vec<String> {
 /// Chunks of fewer characters than this are never split further.
 const MIN_SPLIT_CHARS: usize = 32;
 
-/// Split a single-line chunk in two near its middle, preferring a break
-/// after whitespace or punctuation. `None` when it is too short to split.
-fn split_line_in_half(text: &str) -> Option<(String, String)> {
+/// Split a single-line chunk in two near the middle of its text, preferring
+/// a break after whitespace or punctuation. Both halves keep the line's
+/// `[mm:ss] Speaker: ` prefix (the second marked as a continuation). `None`
+/// when the text is too short to split.
+fn split_line_in_half(line: &str) -> Option<(String, String)> {
+    let (prefix, text) = split_line_prefix(line);
     let chars: Vec<char> = text.chars().collect();
     if chars.len() < MIN_SPLIT_CHARS * 2 {
         return None;
@@ -247,7 +294,10 @@ fn split_line_in_half(text: &str) -> Option<(String, String)> {
         .unwrap_or(mid);
     let a: String = chars[..at].iter().collect();
     let b: String = chars[at..].iter().collect();
-    Some((a.trim_end().to_string(), b.trim_start().to_string()))
+    Some((
+        format!("{prefix}{}", a.trim_end()),
+        format!("{}{}", continuation_prefix(prefix), b.trim_start()),
+    ))
 }
 
 /// Output tokens reserved per call for a context size.
@@ -1690,6 +1740,38 @@ mod tests {
     }
 
     #[test]
+    fn every_piece_of_a_split_line_keeps_its_speaker() {
+        let text = "word ".repeat(400);
+        let line = format!("[01:05] Alice Johnson: {}", text.trim_end());
+        let chunks = chunk_lines(std::slice::from_ref(&line), 128); // 512 chars
+        assert!(chunks.len() >= 4, "{}", chunks.len());
+        assert!(chunks.iter().all(|c| c.chars().count() <= 512));
+        assert!(chunks[0].starts_with("[01:05] Alice Johnson: word"));
+        for c in &chunks[1..] {
+            assert!(c.starts_with("[01:05] Alice Johnson: … "), "{c}");
+        }
+        // Nothing lost: the texts rejoin to the original.
+        let rejoined: String = chunks
+            .iter()
+            .map(|c| split_line_prefix(c).1.trim_start_matches(CONTINUATION))
+            .collect();
+        assert_eq!(rejoined, text.trim_end());
+
+        // Halving keeps it too, without stacking continuation marks.
+        let (a, b) = split_line_in_half(&line).unwrap();
+        assert!(a.starts_with("[01:05] Alice Johnson: word"), "{a}");
+        assert!(b.starts_with("[01:05] Alice Johnson: … word"), "{b}");
+        let (c, d) = split_line_in_half(&b).unwrap();
+        assert!(c.starts_with("[01:05] Alice Johnson: … word"), "{c}");
+        assert!(d.starts_with("[01:05] Alice Johnson: … word"), "{d}");
+        // Too little text to split, however long the prefix.
+        let short = format!("[01:05] {}: {}", "N".repeat(80), "字".repeat(40));
+        assert!(split_line_in_half(&short).is_none());
+        // Not a transcript line: no prefix.
+        assert_eq!(split_line_prefix("plain: text"), ("", "plain: text"));
+    }
+
+    #[test]
     fn single_lines_split_near_the_middle_at_a_break() {
         let text = format!("{}。{}", "甲".repeat(40), "乙".repeat(44));
         let (a, b) = split_line_in_half(&text).unwrap();
@@ -1731,6 +1813,13 @@ mod tests {
             .collect();
         assert!(chunks.len() >= 4, "{}", chunks.len());
         assert!(chunks.iter().all(|c| c.len() <= 1000));
+        // Every piece is still attributed.
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.starts_with("<transcript>\n[00:00] Imran: ")),
+            "{chunks:?}"
+        );
     }
 
     #[test]
