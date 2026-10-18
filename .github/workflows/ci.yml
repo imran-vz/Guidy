@@ -24,31 +24,13 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # macOS only for now: Windows and Linux builds come back once there are
+  # machines to test them on (CI alone isn't enough to fix platform code).
   gate:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev libssl-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
-            libfontconfig-dev libvulkan-dev glslc spirv-headers
-      # transcribe-cpp builds its Vulkan backend on Windows x64: CMake needs
-      # the SDK's headers, import library and glslc.
-      - name: Install Vulkan SDK
-        if: runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          install_runtime: true
-          cache: true
       - uses: swatinem/rust-cache@v2
       # Unit, UI (headless GPUI test platform) and CLI tests, then the
       # parity check (tests, commands, events, PARITY.md rows).
@@ -56,41 +38,15 @@ jobs:
 
   package:
     needs: gate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            formats: app,dmg
-          - os: windows-latest
-            formats: nsis
-          - os: ubuntu-24.04
-            formats: deb,appimage
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev libssl-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
-            libfontconfig-dev libvulkan-dev glslc spirv-headers
-      # transcribe-cpp builds its Vulkan backend on Windows x64: CMake needs
-      # the SDK's headers, import library and glslc.
-      - name: Install Vulkan SDK
-        if: runner.os == 'Windows'
-        uses: jakoch/install-vulkan-sdk-action@v1
-        with:
-          install_runtime: true
-          cache: true
       - uses: swatinem/rust-cache@v2
       - run: cargo install cargo-packager --locked
       # Unsigned packages. Code signing and notarization are not set up.
-      - run: cargo packager --release -p guidy-app --formats ${{ matrix.formats }}
+      - run: cargo packager --release -p guidy-app --formats app,dmg
       - uses: actions/upload-artifact@v4
         with:
-          name: guidy-${{ matrix.os }}
+          name: guidy-macos
           path: target/packages/*
