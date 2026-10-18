@@ -98,6 +98,20 @@ struct Session {
     capture_errors: Arc<Mutex<Vec<String>>>,
 }
 
+/// A stopped recording whose row is still `Recording` because the database
+/// update failed at stop. Retried by the next stop, start, tick and
+/// [`MeetingRecorder::recover_interrupted`], so it never waits for a restart.
+#[derive(Debug, Clone)]
+struct PendingFinish {
+    meeting_id: MeetingId,
+    ended_at: i64,
+    error: Option<String>,
+}
+
+/// Waits between the attempts to finalize the row at stop (transient
+/// errors such as a busy database).
+const FINISH_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
+
 #[derive(Default)]
 struct Prompts {
     /// Event id -> start time, for every event already prompted.
@@ -157,6 +171,7 @@ pub struct MeetingRecorder {
     /// Serializes start/stop/crash recovery.
     op: Mutex<()>,
     session: Mutex<Option<Session>>,
+    pending: Mutex<Option<PendingFinish>>,
     state: Mutex<RecorderState>,
     prompts: Mutex<Prompts>,
 }
@@ -176,6 +191,7 @@ impl MeetingRecorder {
             deps,
             op: Mutex::new(()),
             session: Mutex::new(None),
+            pending: Mutex::new(None),
             state: Mutex::new(RecorderState::Idle),
             prompts: Mutex::new(Prompts::default()),
         }
@@ -230,6 +246,9 @@ impl MeetingRecorder {
         let _op = self.op.lock();
         if self.session.lock().is_some() {
             bail!("a meeting is already being recorded");
+        }
+        if let Err(e) = self.finish_pending() {
+            log::warn!("meetings: finishing the previous recording failed again: {e:#}");
         }
         let key = (self.deps.data_key)().context("meetings data key")?;
 
@@ -383,10 +402,15 @@ impl MeetingRecorder {
     }
 
     /// Stop recording at `now`. Returns the meeting id, or `None` when idle.
+    ///
+    /// The row is finished (with retries) before the state goes `Idle`. If it
+    /// still can't be, capture stays stopped and the finish is kept pending:
+    /// the next `stop` (even when idle), `start`, tick or recovery retries
+    /// it, so the meeting isn't stuck `Recording` until a restart.
     pub fn stop(&self, now: i64) -> Result<Option<MeetingId>> {
         let _op = self.op.lock();
         let Some(mut session) = self.session.lock().take() else {
-            return Ok(None);
+            return self.finish_pending();
         };
         let id = session.meeting_id;
         if let Some(capture) = session.capture.take() {
@@ -412,27 +436,56 @@ impl MeetingRecorder {
             Some(Err(_)) => errors.push("audio writer panicked".into()),
             None => {}
         }
-        self.set_state(RecorderState::Idle);
-
-        let meeting = self
-            .deps
-            .repo
-            .get_meeting(id)?
-            .ok_or_else(|| anyhow!("meeting {id} disappeared while recording"))?;
         let error = (!errors.is_empty()).then(|| errors.join("; "));
         if let Some(e) = &error {
             log::error!("meetings: meeting {id}: {e}");
         }
+        *self.pending.lock() = Some(PendingFinish {
+            meeting_id: id,
+            ended_at: now,
+            error,
+        });
+        let mut result = self.finish_pending();
+        for delay in FINISH_RETRY_DELAYS {
+            // Stop once it worked, or there's nothing left to retry.
+            let Err(e) = &result else { break };
+            if self.pending.lock().is_none() {
+                break;
+            }
+            log::warn!("meetings: finishing meeting {id} failed, retrying: {e:#}");
+            std::thread::sleep(delay);
+            result = self.finish_pending();
+        }
+        // Capture is stopped either way.
+        self.set_state(RecorderState::Idle);
+        if result.is_ok() {
+            log::info!("meetings: stopped recording meeting {id}");
+        }
+        result.with_context(|| format!("finish recording meeting {id}"))
+    }
+
+    /// Finish the row of a stopped recording ([`PendingFinish`]), if any.
+    /// Returns its id once finished; on error it stays pending (unless the
+    /// meeting is gone). Callers hold `op`.
+    fn finish_pending(&self) -> Result<Option<MeetingId>> {
+        let Some(p) = self.pending.lock().clone() else {
+            return Ok(None);
+        };
+        let id = p.meeting_id;
+        let Some(meeting) = self.deps.repo.get_meeting(id)? else {
+            *self.pending.lock() = None;
+            bail!("meeting {id} disappeared while recording");
+        };
         // Targeted update: the title (renamed while recording) is untouched.
-        if !self
-            .deps
-            .repo
-            .finish_recording(id, now.max(meeting.started_at), error.as_deref())?
-        {
+        if !self.deps.repo.finish_recording(
+            id,
+            p.ended_at.max(meeting.started_at),
+            p.error.as_deref(),
+        )? {
             log::warn!("meetings: meeting {id} was no longer recording at stop");
         }
+        *self.pending.lock() = None;
         (self.deps.on_meeting_changed)(id);
-        log::info!("meetings: stopped recording meeting {id}");
         Ok(Some(id))
     }
 
@@ -465,6 +518,14 @@ impl MeetingRecorder {
     /// One scheduler step: post a due reminder, and (at most once a minute)
     /// poll the calendar for events starting now.
     pub fn tick(&self, now: i64) {
+        // Retry a stop whose row update failed (never waits on start/stop).
+        if self.pending.lock().is_some() {
+            if let Some(_op) = self.op.try_lock() {
+                if let Err(e) = self.finish_pending() {
+                    log::warn!("meetings: finishing a stopped recording failed: {e:#}");
+                }
+            }
+        }
         let settings = (self.deps.settings)();
         let strings = (self.deps.strings)();
 
@@ -557,7 +618,9 @@ impl MeetingRecorder {
     }
 
     /// Meetings left in `Recording` by a crash: mark them `Recorded`, with
-    /// `ended_at` = the newest track file's last-write time. Returns their ids.
+    /// `ended_at` = the newest track file's last-write time. A stop whose row
+    /// update failed is finished with its own end time and error instead.
+    /// Returns their ids.
     /// Runs under the start/stop lock, so a recording that is just starting
     /// (already in the table, not yet the active session) is never taken for
     /// one.
@@ -570,8 +633,15 @@ impl MeetingRecorder {
         let _op = self.op.lock();
         let active = self.current_meeting_id();
         let mut ids = Vec::new();
+        match self.finish_pending() {
+            Ok(Some(id)) => ids.push(id),
+            Ok(None) => {}
+            Err(e) => log::warn!("meetings: finishing a stopped recording failed: {e:#}"),
+        }
+        let pending = self.pending.lock().as_ref().map(|p| p.meeting_id);
         for m in self.deps.repo.list_meetings()? {
-            if m.status != MeetingStatus::Recording || Some(m.id) == active {
+            if m.status != MeetingStatus::Recording || Some(m.id) == active || Some(m.id) == pending
+            {
                 continue;
             }
             let last_write = [&m.mic_audio_path, &m.system_audio_path]

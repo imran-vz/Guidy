@@ -649,8 +649,9 @@ pub struct RetentionOutcome {
 /// (`processing_stage = done`) lose their audio: recording, processing,
 /// queued/running in the processor (`is_busy`), failed or never-processed
 /// meetings keep it, since processing needs it. Paths are cleared with a
-/// status-guarded targeted update *before* the files are deleted, so a
-/// meeting that started processing meanwhile is left alone. Unreferenced
+/// status-guarded targeted update *before* the files are deleted; queueing
+/// a meeting marks it `Processing` first, so one queued after the checks
+/// here is still left alone. Unreferenced
 /// `.gopus` files older than the cutoff (left by a failed start) are removed
 /// too. Voiceprints are never touched: they live in the database, not here.
 pub fn apply_retention(
@@ -670,19 +671,15 @@ pub fn apply_retention(
     let candidates = repo.meetings_with_audio_older_than(cutoff)?;
     let referenced: std::collections::HashSet<String> = repo.audio_paths()?.into_iter().collect();
 
+    // Candidates have audio, aren't recording and are past the cutoff.
     for meeting in &candidates {
-        let in_use = matches!(
-            meeting.status,
-            MeetingStatus::Recording | MeetingStatus::Processing
-        );
-        let processed = meeting.processing_stage.as_deref() == Some("done");
-        let has_audio = meeting.mic_audio_path.is_some() || meeting.system_audio_path.is_some();
-        let age_ref = meeting.ended_at.unwrap_or(meeting.started_at);
-        if in_use || !processed || !has_audio || age_ref >= cutoff || is_busy(meeting.id) {
+        let processed = meeting.status != MeetingStatus::Processing
+            && meeting.processing_stage.as_deref() == Some("done");
+        if !processed || is_busy(meeting.id) {
             continue;
         }
-        // Guarded by status in SQL: false when it started processing (or
-        // was deleted) since the list was read.
+        // Guarded by status in SQL: false when it was queued or started
+        // processing (or was deleted) since the list was read.
         match repo.clear_audio_paths_if_processed(meeting.id) {
             Ok(true) => {}
             Ok(false) => continue,

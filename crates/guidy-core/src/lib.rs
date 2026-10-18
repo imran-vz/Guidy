@@ -211,10 +211,11 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool) {
 }
 
 /// Register [`meetings::manager::MeetingsManager`] when meeting notes are
-/// supported. Opening the encrypted store touches the Keychain, so it runs
-/// off the main thread; the UI treats a missing manager as "not available
-/// yet". The manager then starts the scheduler (if enabled), recovers
-/// recordings interrupted by a crash, and applies audio retention daily.
+/// supported and wanted ([`meetings_wanted`]), now or once the user turns
+/// them on. Opening the encrypted store touches the Keychain, so it runs off
+/// the main thread; the UI treats a missing manager as "not available yet".
+/// The manager then starts the scheduler (if enabled), recovers recordings
+/// interrupted by a crash, and applies audio retention daily.
 fn init_meetings(app_handle: &AppHandle) {
     if !meetings::is_supported() {
         return;
@@ -225,17 +226,43 @@ fn init_meetings(app_handle: &AppHandle) {
     app_handle.listen(meetings::types::events::RECORDER_STATE, move |_| {
         tray::update_tray_menu(&tray_app);
     });
-    // The `meetings.enabled` switch starts/stops the scheduler and shows or
-    // hides the tray items.
+    // The `meetings.enabled` switch starts the manager the first time it is
+    // turned on, starts/stops the scheduler, and shows or hides the tray
+    // items.
     let settings_app = app_handle.clone();
     app_handle.listen("settings-changed", move |_| {
-        if let Some(m) = settings_app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
-            m.sync_scheduler();
+        match settings_app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
+            Some(m) => m.sync_scheduler(),
+            None => start_meetings_if_wanted(&settings_app),
         }
         tray::update_tray_menu(&settings_app);
     });
 
-    spawn_meetings_init(app_handle);
+    start_meetings_if_wanted(app_handle);
+}
+
+/// Meeting notes are used: turned on, or turned off after use (meeting data
+/// exists, so past notes stay browsable and retention keeps running). Never
+/// used, nothing is opened: no Keychain read, no `meetings.db`, no threads.
+fn meetings_wanted(app: &AppHandle) -> bool {
+    settings::get_settings(app).meetings.enabled
+        || portable::app_data_dir(app).is_ok_and(|d| meetings::manager::has_meeting_data(&d))
+}
+
+/// Start the meetings manager if meeting notes are supported and wanted and
+/// it was never started ([`MeetingsInitStatus::Off`]). After a failure it
+/// waits for [`retry_init_meetings`] / [`reset_meetings_data`] instead, so a
+/// settings change can't re-prompt the Keychain. Idempotent and thread-safe.
+pub fn start_meetings_if_wanted(app: &AppHandle) {
+    if !meetings::is_supported()
+        || app
+            .try_state::<Arc<meetings::manager::MeetingsManager>>()
+            .is_some()
+        || !meetings_wanted(app)
+    {
+        return;
+    }
+    spawn_meetings_init(app, false);
 }
 
 /// Emitted (payload `()`) once the [`meetings::manager::MeetingsManager`] is
@@ -243,22 +270,42 @@ fn init_meetings(app_handle: &AppHandle) {
 pub const MEETINGS_READY_EVENT: &str = "meetings://ready";
 /// Emitted (payload: the error string) when the manager failed to start.
 pub const MEETINGS_INIT_FAILED_EVENT: &str = "meetings://init-failed";
+/// Emitted (payload: the error string) when the manager can't start because
+/// the meetings data key is gone but encrypted meeting data exists
+/// ([`MeetingsInitStatus::DataKeyMissing`]).
+pub const MEETINGS_DATA_KEY_MISSING_EVENT: &str = "meetings://data-key-missing";
 
 /// Where meeting-notes startup is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeetingsInitStatus {
     /// Not supported on this system: never started.
     Unsupported,
+    /// Supported, not started: meeting notes were never used.
+    Off,
     /// Opening the store (Keychain, database) is in progress.
     Starting,
     Ready,
     Failed(String),
+    /// The meetings data key is missing but encrypted meeting data exists.
+    /// Retry (once the key is back) or [`reset_meetings_data`].
+    DataKeyMissing(String),
 }
 
-fn meetings_init_cell() -> &'static parking_lot::Mutex<MeetingsInitStatus> {
-    static CELL: std::sync::OnceLock<parking_lot::Mutex<MeetingsInitStatus>> =
-        std::sync::OnceLock::new();
-    CELL.get_or_init(|| parking_lot::Mutex::new(MeetingsInitStatus::Unsupported))
+/// Per-app startup status (managed on the app handle).
+struct MeetingsInitCell(parking_lot::Mutex<MeetingsInitStatus>);
+
+fn meetings_init_cell(app: &AppHandle) -> host::State<'_, MeetingsInitCell> {
+    if let Some(cell) = app.try_state::<MeetingsInitCell>() {
+        return cell;
+    }
+    let initial = if meetings::is_supported() {
+        MeetingsInitStatus::Off
+    } else {
+        MeetingsInitStatus::Unsupported
+    };
+    // First registration wins if two threads race here.
+    app.manage(MeetingsInitCell(parking_lot::Mutex::new(initial)));
+    app.state::<MeetingsInitCell>()
 }
 
 /// The current meeting-notes startup status (for a UI that missed the
@@ -270,7 +317,7 @@ pub fn meetings_init_status(app: &AppHandle) -> MeetingsInitStatus {
     {
         return MeetingsInitStatus::Ready;
     }
-    meetings_init_cell().lock().clone()
+    meetings_init_cell(app).0.lock().clone()
 }
 
 /// Start the meetings manager again after a failed start (e.g. the Keychain
@@ -284,29 +331,97 @@ pub fn retry_init_meetings(app: &AppHandle) {
         .try_state::<Arc<meetings::manager::MeetingsManager>>()
         .is_some()
     {
-        *meetings_init_cell().lock() = MeetingsInitStatus::Ready;
+        *meetings_init_cell(app).0.lock() = MeetingsInitStatus::Ready;
         let _ = app.emit(MEETINGS_READY_EVENT, ());
         return;
     }
-    spawn_meetings_init(app);
+    spawn_meetings_init(app, true);
 }
 
-fn spawn_meetings_init(app_handle: &AppHandle) {
+/// Recover from [`MeetingsInitStatus::DataKeyMissing`] (or a store that
+/// can't be decrypted): move `meetings.db` and the meeting audio into a
+/// timestamped `meetings-unreadable-*` folder (nothing is deleted), store a
+/// new data key (the old one, if readable, is kept in the Keychain under a
+/// backup name), then start meeting notes afresh.
+///
+/// Refused while the manager is running or starting, and when the Keychain
+/// can't be read.
+pub fn reset_meetings_data(app: &AppHandle) -> anyhow::Result<()> {
+    if !meetings::is_supported() {
+        anyhow::bail!("meeting notes need macOS 14.2 or later");
+    }
+    reset_meetings_data_files(app, |stamp| {
+        secrets::replace_meetings_data_key(&format!("backup-{stamp}")).map(|_| ())
+    })?;
+    spawn_meetings_init(app, true);
+    Ok(())
+}
+
+/// The file and key part of [`reset_meetings_data`], with the key
+/// replacement injected (tests must not replace the process-wide key).
+fn reset_meetings_data_files(
+    app: &AppHandle,
+    replace_key: impl FnOnce(&str) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if app
+        .try_state::<Arc<meetings::manager::MeetingsManager>>()
+        .is_some()
     {
-        let mut status = meetings_init_cell().lock();
-        if *status == MeetingsInitStatus::Starting {
-            return;
+        anyhow::bail!("meeting notes are running: there is nothing to reset");
+    }
+    let cell = meetings_init_cell(app);
+    {
+        let mut status = cell.0.lock();
+        match *status {
+            MeetingsInitStatus::Failed(_) | MeetingsInitStatus::DataKeyMissing(_) => {}
+            MeetingsInitStatus::Starting => anyhow::bail!("meeting notes are starting"),
+            _ => anyhow::bail!("meeting notes don't need a reset"),
+        }
+        // Keeps a concurrent start away while files move.
+        *status = MeetingsInitStatus::Starting;
+    }
+    let result = (|| {
+        // An unreadable Keychain is not a missing key: change nothing.
+        secrets::get(secrets::MEETINGS_DATA_KEY)?;
+        let data_dir =
+            portable::app_data_dir(app).map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        // Data first: if the key can't be replaced afterwards, the next
+        // start finds no data and may still create or use a key.
+        meetings::manager::move_meeting_data_aside(&data_dir, &stamp)?;
+        replace_key(&stamp)
+    })();
+    *cell.0.lock() = match &result {
+        Ok(()) => MeetingsInitStatus::Off,
+        Err(e) => MeetingsInitStatus::Failed(format!("{e:#}")),
+    };
+    result
+}
+
+/// `retry`: also start after a failure (an explicit Retry / reset), not just
+/// from [`MeetingsInitStatus::Off`].
+fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
+    let cell = meetings_init_cell(app_handle);
+    {
+        let mut status = cell.0.lock();
+        match *status {
+            MeetingsInitStatus::Starting | MeetingsInitStatus::Ready => return,
+            MeetingsInitStatus::Failed(_) | MeetingsInitStatus::DataKeyMissing(_) if !retry => {
+                return
+            }
+            _ => {}
         }
         *status = MeetingsInitStatus::Starting;
     }
     let app = app_handle.clone();
+    let set = |app: &AppHandle, s: MeetingsInitStatus| *meetings_init_cell(app).0.lock() = s;
     let spawned = std::thread::Builder::new()
         .name("meetings-init".into())
         .spawn(
             move || match meetings::manager::MeetingsManager::new(&app) {
                 Ok(manager) => {
                     app.manage(manager.clone());
-                    *meetings_init_cell().lock() = MeetingsInitStatus::Ready;
+                    set(&app, MeetingsInitStatus::Ready);
                     let _ = app.emit(MEETINGS_READY_EVENT, ());
                     manager.start_background();
                     tray::update_tray_menu(&app);
@@ -314,15 +429,22 @@ fn spawn_meetings_init(app_handle: &AppHandle) {
                 Err(e) => {
                     let error = format!("{e:#}");
                     log::error!("Meeting notes unavailable: {error}");
-                    *meetings_init_cell().lock() = MeetingsInitStatus::Failed(error.clone());
-                    let _ = app.emit(MEETINGS_INIT_FAILED_EVENT, error);
+                    if e.downcast_ref::<secrets::MeetingsDataKeyMissing>()
+                        .is_some()
+                    {
+                        set(&app, MeetingsInitStatus::DataKeyMissing(error.clone()));
+                        let _ = app.emit(MEETINGS_DATA_KEY_MISSING_EVENT, error);
+                    } else {
+                        set(&app, MeetingsInitStatus::Failed(error.clone()));
+                        let _ = app.emit(MEETINGS_INIT_FAILED_EVENT, error);
+                    }
                 }
             },
         );
     if let Err(e) = spawned {
         let error = format!("Failed to start meeting notes: {e}");
         log::error!("{error}");
-        *meetings_init_cell().lock() = MeetingsInitStatus::Failed(error.clone());
+        set(app_handle, MeetingsInitStatus::Failed(error.clone()));
         let _ = app_handle.emit(MEETINGS_INIT_FAILED_EVENT, error);
     }
 }
@@ -770,4 +892,116 @@ fn run_headless_transcription(app: &AppHandle, args: &CliArgs) -> i32 {
         println!("text: {}", text);
     }
     0
+}
+
+#[cfg(test)]
+mod meetings_init_tests {
+    use super::*;
+    use crate::host::testing::TestApp;
+
+    fn status(t: &TestApp) -> MeetingsInitStatus {
+        meetings_init_status(&t.app)
+    }
+
+    fn set_status(t: &TestApp, s: MeetingsInitStatus) {
+        *meetings_init_cell(&t.app).0.lock() = s;
+    }
+
+    fn data_dir(t: &TestApp) -> std::path::PathBuf {
+        portable::app_data_dir(&t.app).unwrap()
+    }
+
+    #[test]
+    fn meetings_are_wanted_once_enabled_or_used() {
+        let t = TestApp::new();
+        assert!(!meetings_wanted(&t.app));
+        settings::update_settings(&t.app, |s| s.meetings.enabled = true);
+        assert!(meetings_wanted(&t.app));
+        settings::update_settings(&t.app, |s| s.meetings.enabled = false);
+        std::fs::create_dir_all(data_dir(&t)).unwrap();
+        std::fs::write(data_dir(&t).join(meetings::store::MEETINGS_DB_FILE), b"x").unwrap();
+        assert!(meetings_wanted(&t.app), "turned off after use");
+    }
+
+    #[test]
+    fn never_used_meeting_notes_are_not_started() {
+        if !meetings::is_supported() {
+            return;
+        }
+        let t = TestApp::new();
+        init_meetings(&t.app);
+        assert_eq!(status(&t), MeetingsInitStatus::Off);
+        assert!(!data_dir(&t)
+            .join(meetings::store::MEETINGS_DB_FILE)
+            .exists());
+        // Other settings changes don't start it either.
+        let _ = t.app.emit("settings-changed", ());
+        assert_eq!(status(&t), MeetingsInitStatus::Off);
+        assert!(t
+            .app
+            .try_state::<Arc<meetings::manager::MeetingsManager>>()
+            .is_none());
+    }
+
+    #[test]
+    fn turning_on_after_a_failure_waits_for_retry() {
+        if !meetings::is_supported() {
+            return;
+        }
+        let t = TestApp::new();
+        init_meetings(&t.app);
+        settings::update_settings(&t.app, |s| s.meetings.enabled = true);
+        for s in [
+            MeetingsInitStatus::Failed("keychain denied".into()),
+            MeetingsInitStatus::DataKeyMissing("gone".into()),
+            MeetingsInitStatus::Starting,
+        ] {
+            set_status(&t, s.clone());
+            let _ = t.app.emit("settings-changed", ());
+            start_meetings_if_wanted(&t.app);
+            assert_eq!(status(&t), s);
+        }
+    }
+
+    #[test]
+    fn reset_moves_data_aside_then_replaces_the_key() {
+        let t = TestApp::new();
+        let dir = data_dir(&t);
+        std::fs::create_dir_all(dir.join("meetings").join("audio")).unwrap();
+        std::fs::write(dir.join(meetings::store::MEETINGS_DB_FILE), b"db").unwrap();
+        std::fs::write(dir.join("meetings").join("audio").join("1-mic.gopus"), b"a").unwrap();
+
+        // Only a failed start can be reset.
+        for s in [MeetingsInitStatus::Off, MeetingsInitStatus::Starting] {
+            set_status(&t, s.clone());
+            assert!(reset_meetings_data_files(&t.app, |_| panic!("no reset")).is_err());
+            assert_eq!(status(&t), s);
+        }
+        assert!(meetings::manager::has_meeting_data(&dir));
+
+        set_status(&t, MeetingsInitStatus::DataKeyMissing("gone".into()));
+        let mut stamp = None;
+        reset_meetings_data_files(&t.app, |s| {
+            // The data is already out of the way when the key changes.
+            assert!(!meetings::manager::has_meeting_data(&dir));
+            stamp = Some(s.to_string());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(status(&t), MeetingsInitStatus::Off);
+        let moved = dir.join(format!("meetings-unreadable-{}", stamp.unwrap()));
+        assert_eq!(std::fs::read(moved.join("meetings.db")).unwrap(), b"db");
+        assert!(moved
+            .join("meetings")
+            .join("audio")
+            .join("1-mic.gopus")
+            .exists());
+
+        // A failed key replacement is reported, and Retry stays possible.
+        set_status(&t, MeetingsInitStatus::Failed("wrong key".into()));
+        let e = reset_meetings_data_files(&t.app, |_| Err(anyhow::anyhow!("keychain write")))
+            .unwrap_err();
+        assert!(e.to_string().contains("keychain write"));
+        assert!(matches!(status(&t), MeetingsInitStatus::Failed(_)));
+    }
 }

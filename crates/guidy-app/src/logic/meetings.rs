@@ -31,6 +31,9 @@ pub enum MeetingsEvent {
     Ready,
     /// The meetings manager failed to start (the error text).
     InitFailed(String),
+    /// The meetings manager can't start: the data key is gone but meeting
+    /// data exists (the error text). Offers a reset.
+    DataKeyMissing(String),
     /// LLM calls of a running summary: `done` of `total`.
     SummaryProgress {
         meeting_id: MeetingId,
@@ -66,12 +69,12 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
         events::MEETING_CHANGED => payload.as_i64().map(MeetingsEvent::MeetingChanged),
         events::PEOPLE_CHANGED => Some(MeetingsEvent::PeopleChanged),
         guidy_core::MEETINGS_READY_EVENT => Some(MeetingsEvent::Ready),
-        guidy_core::MEETINGS_INIT_FAILED_EVENT => Some(MeetingsEvent::InitFailed(
-            payload
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| payload.to_string()),
-        )),
+        guidy_core::MEETINGS_INIT_FAILED_EVENT => {
+            Some(MeetingsEvent::InitFailed(payload_text(payload)))
+        }
+        guidy_core::MEETINGS_DATA_KEY_MISSING_EVENT => {
+            Some(MeetingsEvent::DataKeyMissing(payload_text(payload)))
+        }
         SUMMARY_PROGRESS_EVENT => {
             let p: guidy_core::meetings::summarize::SummaryProgress =
                 serde_json::from_value(payload.clone()).ok()?;
@@ -102,12 +105,23 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
     }
 }
 
+fn payload_text(payload: &Value) -> String {
+    payload
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| payload.to_string())
+}
+
 /// Where meeting-notes startup is, as the UI tracks it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeetingsInit {
+    /// Never used: core starts it when meeting notes are turned on.
+    NotStarted,
     Starting,
     Ready,
     Failed(String),
+    /// The data key is gone but meeting data exists: Retry or reset.
+    DataKeyMissing(String),
 }
 
 impl MeetingsInit {
@@ -118,6 +132,8 @@ impl MeetingsInit {
             // Unsupported systems hide the section; treat as ready.
             guidy_core::MeetingsInitStatus::Unsupported => Self::Ready,
             guidy_core::MeetingsInitStatus::Starting => Self::Starting,
+            guidy_core::MeetingsInitStatus::Off => Self::NotStarted,
+            guidy_core::MeetingsInitStatus::DataKeyMissing(e) => Self::DataKeyMissing(e),
         }
     }
 }
@@ -642,6 +658,19 @@ mod tests {
                 &serde_json::json!("keychain denied")
             ),
             Some(MeetingsEvent::InitFailed("keychain denied".into()))
+        );
+        assert_eq!(
+            decode_event(
+                guidy_core::MEETINGS_DATA_KEY_MISSING_EVENT,
+                &serde_json::json!("key gone")
+            ),
+            Some(MeetingsEvent::DataKeyMissing("key gone".into()))
+        );
+        use guidy_core::MeetingsInitStatus as S;
+        assert_eq!(MeetingsInit::from_core(S::Off), MeetingsInit::NotStarted);
+        assert_eq!(
+            MeetingsInit::from_core(S::DataKeyMissing("k".into())),
+            MeetingsInit::DataKeyMissing("k".into())
         );
         assert_eq!(
             decode_event(

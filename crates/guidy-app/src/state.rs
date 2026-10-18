@@ -845,6 +845,41 @@ impl AppState {
         .detach();
     }
 
+    /// Move unreadable meeting data aside, make a new data key and start the
+    /// meetings manager again (after a missing key or a failed start).
+    pub fn reset_meetings_data(&mut self, cx: &mut Context<Self>) {
+        let before = std::mem::replace(&mut self.meetings_init, MeetingsInit::Starting);
+        cx.notify();
+        let meetings = self.meetings.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, status) = cx
+                .background_spawn(async move {
+                    let result = meetings.reset_data();
+                    (result, meetings.init_status())
+                })
+                .await;
+            this.update(cx, |s, cx| {
+                if s.meetings_init != MeetingsInit::Starting {
+                    return; // the ready / failure event got here first
+                }
+                match result {
+                    // Nothing moved: keep showing what was wrong, with the reason.
+                    Err(e) => s.set_meetings_init(
+                        match before {
+                            MeetingsInit::DataKeyMissing(_) => MeetingsInit::DataKeyMissing(e),
+                            _ => MeetingsInit::Failed(e),
+                        },
+                        cx,
+                    ),
+                    Ok(()) if status != MeetingsInit::Starting => s.set_meetings_init(status, cx),
+                    Ok(()) => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn set_meetings_init(&mut self, status: MeetingsInit, cx: &mut Context<Self>) {
         let ready = status == MeetingsInit::Ready && self.meetings_init != MeetingsInit::Ready;
         self.meetings_init = status;
@@ -1017,6 +1052,10 @@ impl AppState {
                     Some(MeetingsEvent::InitFailed(e)) => {
                         self.set_meetings_init(MeetingsInit::Failed(e.clone()), cx);
                         cx.emit(AppEvent::Meetings(MeetingsEvent::InitFailed(e)));
+                    }
+                    Some(MeetingsEvent::DataKeyMissing(e)) => {
+                        self.set_meetings_init(MeetingsInit::DataKeyMissing(e.clone()), cx);
+                        cx.emit(AppEvent::Meetings(MeetingsEvent::DataKeyMissing(e)));
                     }
                     Some(ev) => cx.emit(AppEvent::Meetings(ev)),
                     None => {}

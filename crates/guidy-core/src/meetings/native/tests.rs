@@ -539,3 +539,31 @@ fn timed_events_keep_linkless_events_but_meeting_events_drop_them() {
     assert_eq!(timed[0].meeting_url, None);
     assert!(timed[1].meeting_url.is_some());
 }
+
+// ----- posted-notification registry ------------------------------------------
+
+#[test]
+fn posted_notifications_are_tracked_by_prefix_until_removed() {
+    // Posting fails in unbundled test binaries, so seed the registry directly.
+    for id in ["native-test.p.1", "native-test.p.2", "native-test.r.1"] {
+        posted_ids().lock().insert(id.to_string());
+    }
+    assert_eq!(
+        posted_notifications("native-test.p."),
+        vec!["native-test.p.1".to_string(), "native-test.p.2".to_string()]
+    );
+    remove_notification("native-test.p.1");
+    assert_eq!(
+        posted_notifications("native-test.p."),
+        vec!["native-test.p.2".to_string()]
+    );
+    remove_notifications("native-test.");
+    assert!(posted_notifications("native-test.").is_empty());
+}
+
+#[test]
+fn a_failed_post_is_not_tracked() {
+    if !post_notification("native-test.failed", "t", "b", &[]) {
+        assert!(posted_notifications("native-test.failed").is_empty());
+    }
+}

@@ -174,7 +174,13 @@ fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
     BACKEND.get_or_init(|| {
         let backend: Arc<dyn SecretsBackend> = if use_memory_by_default() {
             log::debug!("secrets: using the in-memory backend");
-            Arc::new(MemoryBackend::new())
+            let memory = MemoryBackend::new();
+            // Test builds start like an installed app after first use: with a
+            // meetings data key, so code that reads it needs no setup.
+            if cfg!(any(test, feature = "test-support")) {
+                let _ = generate_data_key(&memory);
+            }
+            Arc::new(memory)
         } else {
             Arc::new(Cached {
                 inner: KeychainBackend::new(SERVICE),
@@ -219,31 +225,98 @@ fn data_key_cache() -> &'static Mutex<Option<[u8; 32]>> {
     KEY.get_or_init(|| Mutex::new(None))
 }
 
-/// The 32-byte meetings data key. Generated randomly and stored (base64) on
-/// first use, then cached in-process. A read error is returned as is and
-/// never causes a new key to be generated, so existing data stays readable.
+/// No meetings data key is stored, but encrypted meeting data exists, so a
+/// new key would leave that data unreadable. Nothing is generated: the user
+/// either restores the key (Retry) or moves the old data aside
+/// (`reset_meetings_data`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeetingsDataKeyMissing;
+
+impl std::fmt::Display for MeetingsDataKeyMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the meetings data key is missing from the Keychain, \
+             so existing meeting notes can't be decrypted",
+        )
+    }
+}
+
+impl std::error::Error for MeetingsDataKeyMissing {}
+
+fn decode_data_key(encoded: &str) -> Result<[u8; 32]> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .context("meetings data key is not valid base64")?;
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| anyhow!("meetings data key has {} bytes, not 32", bytes.len()))
+}
+
+fn generate_data_key(backend: &dyn SecretsBackend) -> Result<[u8; 32]> {
+    let mut k = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut k);
+    backend.set(
+        MEETINGS_DATA_KEY,
+        &base64::engine::general_purpose::STANDARD.encode(k),
+    )?;
+    Ok(k)
+}
+
+/// The stored key; a missing one is generated only when `may_create`.
+fn load_data_key(backend: &dyn SecretsBackend, may_create: bool) -> Result<[u8; 32]> {
+    match backend.get(MEETINGS_DATA_KEY)? {
+        Some(encoded) => decode_data_key(&encoded),
+        None if may_create => {
+            let k = generate_data_key(backend)?;
+            log::info!("secrets: generated a new meetings data key");
+            Ok(k)
+        }
+        None => Err(MeetingsDataKeyMissing.into()),
+    }
+}
+
+/// Keep the current key (if any) under a backup name, then store a new one.
+fn replace_data_key(backend: &dyn SecretsBackend, backup_suffix: &str) -> Result<[u8; 32]> {
+    if let Some(old) = backend.get(MEETINGS_DATA_KEY)? {
+        backend.set(&format!("{MEETINGS_DATA_KEY}.{backup_suffix}"), &old)?;
+    }
+    let k = generate_data_key(backend)?;
+    log::info!("secrets: replaced the meetings data key (old one kept as .{backup_suffix})");
+    Ok(k)
+}
+
+/// The 32-byte meetings data key, cached in-process. Never generates one:
+/// [`MeetingsDataKeyMissing`] when none is stored (only
+/// [`open_meetings_data_key`] creates it). A read error is returned as is.
 pub fn meetings_data_key() -> Result<[u8; 32]> {
     let mut cache = data_key_cache().lock();
     if let Some(k) = *cache {
         return Ok(k);
     }
-    let engine = base64::engine::general_purpose::STANDARD;
-    let key = match get(MEETINGS_DATA_KEY)? {
-        Some(encoded) => {
-            let bytes = engine
-                .decode(encoded.trim())
-                .context("meetings data key is not valid base64")?;
-            <[u8; 32]>::try_from(bytes.as_slice())
-                .map_err(|_| anyhow!("meetings data key has {} bytes, not 32", bytes.len()))?
-        }
-        None => {
-            let mut k = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::rng(), &mut k);
-            set(MEETINGS_DATA_KEY, &engine.encode(k))?;
-            log::info!("secrets: generated a new meetings data key");
-            k
-        }
-    };
+    let key = load_data_key(backend().as_ref(), false)?;
+    *cache = Some(key);
+    Ok(key)
+}
+
+/// [`meetings_data_key`], generating and storing a key when none exists, but
+/// only if `has_encrypted_data` is false. With existing data a missing key is
+/// [`MeetingsDataKeyMissing`]: a fresh key would make that data unreadable.
+pub fn open_meetings_data_key(has_encrypted_data: bool) -> Result<[u8; 32]> {
+    let mut cache = data_key_cache().lock();
+    if let Some(k) = *cache {
+        return Ok(k);
+    }
+    let key = load_data_key(backend().as_ref(), !has_encrypted_data)?;
+    *cache = Some(key);
+    Ok(key)
+}
+
+/// Store a new meetings data key. Call only once the data encrypted with the
+/// old key has been moved aside. The old key, if readable, is kept under
+/// `meetings_data_key.<backup_suffix>` so that data stays recoverable; a
+/// Keychain read error aborts without changing anything.
+pub fn replace_meetings_data_key(backup_suffix: &str) -> Result<[u8; 32]> {
+    let mut cache = data_key_cache().lock();
+    let key = replace_data_key(backend().as_ref(), backup_suffix)?;
     *cache = Some(key);
     Ok(key)
 }
@@ -325,15 +398,58 @@ mod tests {
     }
 
     #[test]
-    fn meetings_data_key_is_generated_once_and_stable() {
+    fn meetings_data_key_is_stable() {
         let a = meetings_data_key().unwrap();
-        let b = meetings_data_key().unwrap();
+        let b = open_meetings_data_key(true).unwrap();
         assert_eq!(a, b);
         assert_ne!(a, [0u8; 32]);
         let stored = get(MEETINGS_DATA_KEY).unwrap().unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(stored)
-            .unwrap();
-        assert_eq!(decoded, a);
+        assert_eq!(decode_data_key(&stored).unwrap(), a);
+    }
+
+    #[test]
+    fn a_missing_data_key_is_created_only_without_existing_data() {
+        let b = MemoryBackend::new();
+        let e = load_data_key(&b, false).unwrap_err();
+        assert!(e.downcast_ref::<MeetingsDataKeyMissing>().is_some(), "{e}");
+        assert_eq!(b.get(MEETINGS_DATA_KEY).unwrap(), None, "nothing written");
+
+        let k = load_data_key(&b, true).unwrap();
+        // Once stored it is read back, whatever `may_create` says.
+        assert_eq!(load_data_key(&b, false).unwrap(), k);
+        assert_eq!(load_data_key(&b, true).unwrap(), k);
+    }
+
+    #[test]
+    fn a_read_error_never_creates_a_key() {
+        struct Broken(MemoryBackend);
+        impl SecretsBackend for Broken {
+            fn get(&self, _: &str) -> Result<Option<String>> {
+                Err(anyhow!("keychain locked"))
+            }
+            fn set(&self, key: &str, value: &str) -> Result<()> {
+                self.0.set(key, value)
+            }
+            fn delete(&self, key: &str) -> Result<()> {
+                self.0.delete(key)
+            }
+        }
+        let b = Broken(MemoryBackend::new());
+        assert!(load_data_key(&b, true).is_err());
+        assert!(replace_data_key(&b, "x").is_err());
+        assert_eq!(b.0.get(MEETINGS_DATA_KEY).unwrap(), None);
+    }
+
+    #[test]
+    fn replacing_the_data_key_keeps_the_old_one() {
+        let b = MemoryBackend::new();
+        // No old key: nothing to back up.
+        let first = replace_data_key(&b, "bak1").unwrap();
+        assert_eq!(b.get("meetings_data_key.bak1").unwrap(), None);
+        let second = replace_data_key(&b, "bak2").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(load_data_key(&b, false).unwrap(), second);
+        let backup = b.get("meetings_data_key.bak2").unwrap().unwrap();
+        assert_eq!(decode_data_key(&backup).unwrap(), first);
     }
 }

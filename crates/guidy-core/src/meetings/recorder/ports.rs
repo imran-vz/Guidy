@@ -95,6 +95,8 @@ pub mod fakes {
         pub fail_set_audio_paths: Mutex<bool>,
         /// Make `delete_meeting` fail.
         pub fail_delete: Mutex<bool>,
+        /// Make this many of the next `finish_recording` calls fail.
+        pub fail_finish: Mutex<usize>,
     }
 
     impl MeetingRepo for MemRepo {
@@ -165,6 +167,13 @@ pub mod fakes {
             ended_at: i64,
             error: Option<&str>,
         ) -> Result<bool> {
+            {
+                let mut fail = self.fail_finish.lock();
+                if *fail > 0 {
+                    *fail -= 1;
+                    anyhow::bail!("database is locked");
+                }
+            }
             let mut rows = self.rows.lock();
             match rows
                 .iter_mut()
