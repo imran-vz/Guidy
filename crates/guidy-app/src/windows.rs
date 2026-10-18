@@ -127,11 +127,13 @@ pub fn hide_main(cx: &mut App) {
 }
 
 fn overlay_options(p: &OverlayPlacement, cx: &App) -> WindowOptions {
+    let (x, y, display_id) = overlay_origin(p);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(p.x as f32), px(p.y as f32)),
+            origin: point(px(x as f32), px(y as f32)),
             size: size(px(p.width as f32), px(p.height as f32)),
         })),
+        display_id,
         titlebar: None,
         focus: false,
         show: true,
@@ -144,6 +146,19 @@ fn overlay_options(p: &OverlayPlacement, cx: &App) -> WindowOptions {
         ..Default::default()
     };
     layer_shell_options(options, p, cx)
+}
+
+/// Where to open the overlay window. macOS places a window relative to its
+/// display (the primary one when none is given), so the overlay goes on the
+/// display it was placed for, at coordinates relative to that display.
+/// Elsewhere the placement's global coordinates are used as they are.
+fn overlay_origin(p: &OverlayPlacement) -> (f64, f64, Option<DisplayId>) {
+    #[cfg(target_os = "macos")]
+    if let Some(id) = p.display_id {
+        let (ox, oy) = p.display_origin;
+        return (p.x - ox, p.y - oy, Some(DisplayId::new(id)));
+    }
+    (p.x, p.y, None)
 }
 
 /// Wayland: clients can't place their own windows, so the overlay is a
@@ -200,7 +215,8 @@ fn layer_shell_options(options: WindowOptions, _: &OverlayPlacement, _: &App) ->
 
 pub fn show_overlay(p: OverlayPlacement, cx: &mut App) {
     if let Some((handle, current)) = windows(cx).overlay.clone() {
-        let same_geometry = current.x == p.x
+        let same_geometry = current.display_id == p.display_id
+            && current.x == p.x
             && current.y == p.y
             && current.width == p.width
             && current.height == p.height;
@@ -272,7 +288,7 @@ pub fn hide_overlay(cx: &mut App) {
 }
 
 /// Displays in logical points (GPUI exposes no scale factor; placement math
-/// works in logical units with scale 1).
+/// works in logical units with scale 1), in global coordinates.
 pub fn snapshot_monitors(cx: &App) -> Vec<Monitor> {
     let mut displays = cx.displays();
     if let Some(primary) = cx.primary_display() {
@@ -282,28 +298,75 @@ pub fn snapshot_monitors(cx: &App) -> Vec<Monitor> {
     displays
         .into_iter()
         .map(|d| {
+            let id = u64::from(d.id());
             let b = d.bounds();
             let v = d.visible_bounds();
+            // GPUI's macOS display bounds start at (0, 0) and its visible
+            // bounds are relative to the display; the cursor is in global
+            // coordinates, so both are moved to the display's global origin.
+            let (ox, oy) = display_origin(id)
+                .unwrap_or((f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64));
+            let (vx, vy) = if cfg!(target_os = "macos") {
+                (
+                    ox + f32::from(v.origin.x) as f64,
+                    oy + f32::from(v.origin.y) as f64,
+                )
+            } else {
+                (f32::from(v.origin.x) as f64, f32::from(v.origin.y) as f64)
+            };
             Monitor::new(
-                PhysicalPosition::new(f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32),
+                PhysicalPosition::new(ox as i32, oy as i32),
                 PhysicalSize::new(
                     f32::from(b.size.width) as u32,
                     f32::from(b.size.height) as u32,
                 ),
                 1.0,
                 WorkArea {
-                    position: PhysicalPosition::new(
-                        f32::from(v.origin.x) as i32,
-                        f32::from(v.origin.y) as i32,
-                    ),
+                    position: PhysicalPosition::new(vx as i32, vy as i32),
                     size: PhysicalSize::new(
                         f32::from(v.size.width) as u32,
                         f32::from(v.size.height) as u32,
                     ),
                 },
             )
+            .with_id(id)
         })
         .collect()
+}
+
+/// A display's top-left corner in global coordinates (points, origin at the
+/// primary display's top-left), the space the cursor position is in.
+#[cfg(target_os = "macos")]
+fn display_origin(id: u64) -> Option<(f64, f64)> {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[allow(dead_code)] // only the layout matters
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGDisplayBounds(display: u32) -> CGRect;
+    }
+    let id = u32::try_from(id).ok()?;
+    // SAFETY: a plain C call; an unknown id yields an empty rect.
+    let r = unsafe { CGDisplayBounds(id) };
+    Some((r.origin.x, r.origin.y))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn display_origin(_id: u64) -> Option<(f64, f64)> {
+    None
 }
 
 fn refresh_cache(shell: &GpuiShell, cx: &App) {
@@ -407,4 +470,45 @@ pub fn spawn_shell_loop(
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui_kit's `test` macro would shadow `#[test]`.
+    use super::overlay_origin;
+    #[cfg(target_os = "macos")]
+    use gpui_kit::DisplayId;
+    use guidy_core::host::OverlayPlacement;
+
+    #[test]
+    fn overlay_opens_on_its_display_relative_to_it() {
+        let p = OverlayPlacement {
+            state: "streaming".into(),
+            x: 1728.0 + 1080.0,
+            y: -200.0 + 1305.0,
+            width: 400.0,
+            height: 120.0,
+            top: false,
+            display_id: Some(7),
+            display_origin: (1728.0, -200.0),
+        };
+        let (x, y, display) = overlay_origin(&p);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!((x, y), (1080.0, 1305.0));
+            assert_eq!(display, Some(DisplayId::new(7)));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!((x, y), (p.x, p.y));
+            assert_eq!(display, None);
+        }
+
+        // Without a known display the global position is used as is.
+        let p = OverlayPlacement {
+            display_id: None,
+            ..p
+        };
+        assert_eq!(overlay_origin(&p), (p.x, p.y, None));
+    }
 }
