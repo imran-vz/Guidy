@@ -427,6 +427,131 @@ fn known_voices_are_matched_in_the_next_meeting() {
         .all(|s| s.person_id.is_none()));
 }
 
+/// Run with `hook` called on every progress update (the transcriber and
+/// embedder calls are not counted).
+fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) -> Result<()> {
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let mut hook = hook;
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| hook(&p)),
+    }
+    .run()
+}
+
+/// Process, name Speaker 1 Alice, and queue a reprocess (which matches
+/// her by voice at the cluster stage). Returns Alice.
+fn named_alice(f: &Fixture) -> PersonId {
+    run(f, None).result.unwrap();
+    let speaker1 = f.store.speakers(f.id).unwrap()[1].clone();
+    let alice = naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        speaker1.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Done))
+        .unwrap();
+    alice
+}
+
+fn speaker_1(f: &Fixture) -> MeetingSpeaker {
+    f.store
+        .speakers(f.id)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.cluster_label == "Speaker 1")
+        .unwrap()
+}
+
+/// Stop a run once clustering (which matched Alice) is checkpointed: the
+/// merge finds the meeting no longer processing. Then `change` the people
+/// and resume, which starts at the merge.
+fn resume_at_merge_after(f: &Fixture, change: impl FnOnce()) {
+    let stopped = run_hooked(f, |p| {
+        if p.stage == ProcessingStage::Merge {
+            f.store
+                .set_meeting_status(f.id, MeetingStatus::Recorded, None)
+                .unwrap();
+        }
+    });
+    assert!(super::super::is_cancelled(&stopped.unwrap_err()));
+    assert_eq!(stage(f), Some(ProcessingStage::Cluster));
+    change();
+    f.store
+        .set_meeting_status(f.id, MeetingStatus::Processing, None)
+        .unwrap();
+    let r = run(f, None);
+    r.result.unwrap();
+    assert_eq!(r.transcribe_calls, 0, "resumed at the merge");
+    assert_eq!(stage(f), Some(ProcessingStage::Done));
+}
+
+/// A person deleted after the checkpoint matched them: the speaker is
+/// stored unknown instead of failing the merge on every retry.
+#[test]
+fn resuming_after_the_matched_person_is_deleted_leaves_the_speaker_unknown() {
+    let f = fixture();
+    let alice = named_alice(&f);
+    resume_at_merge_after(&f, || assert!(f.store.delete_person(alice).unwrap()));
+    let s1 = speaker_1(&f);
+    assert_eq!(s1.person_id, None);
+    assert_eq!(s1.match_confidence, None);
+    assert!(!s1.confirmed);
+}
+
+/// A person merged away after the checkpoint matched them: the speaker
+/// links whom they were merged into.
+#[test]
+fn resuming_after_the_matched_person_is_merged_links_the_merge_target() {
+    let f = fixture();
+    let alice = named_alice(&f);
+    let into = f.store.insert_person("Alice Smith", None).unwrap();
+    resume_at_merge_after(&f, || f.store.merge_people(alice, into.id).unwrap());
+    let s1 = speaker_1(&f);
+    assert_eq!(s1.person_id, Some(into.id));
+    assert!(s1.confirmed);
+}
+
+/// The matched person deleted between the cluster and merge stages of one
+/// run: the run still completes.
+#[test]
+fn a_person_deleted_between_cluster_and_merge_does_not_fail_the_run() {
+    let f = fixture();
+    let alice = named_alice(&f);
+    run_hooked(&f, |p| {
+        if p.stage == ProcessingStage::Merge {
+            f.store.delete_person(alice).unwrap();
+        }
+    })
+    .unwrap();
+    assert_eq!(speaker_1(&f).person_id, None);
+    assert_eq!(stage(&f), Some(ProcessingStage::Done));
+}
+
 #[test]
 fn reassigning_moves_the_voiceprints() {
     let f = fixture();

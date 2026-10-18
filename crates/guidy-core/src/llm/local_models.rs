@@ -128,6 +128,15 @@ fn in_flight() -> &'static Mutex<HashMap<String, CancellationToken>> {
     MAP.get_or_init(Default::default)
 }
 
+/// Serializes a download's finalization (cancel check, rename, outcome
+/// event) against [`LocalModels::delete`], so a delete can't be undone by a
+/// download that was already verifying when it ran.
+static FINALIZE: Mutex<()> = Mutex::new(());
+
+/// How long a delete waits for a cancelled download to wind down (it may be
+/// mid-SHA256 over several GB) before removing the files regardless.
+const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Total physical memory in GB, when known.
 pub fn system_ram_gb() -> Option<u32> {
     #[cfg(target_os = "macos")]
@@ -290,7 +299,29 @@ impl LocalModels {
             token
         };
         self.emit_state(entry.id, DownloadState::Started, None);
-        let result = self.download_inner(entry, url, &token).await;
+        let verified = self.download_inner(entry, url, &token).await;
+        self.finish(entry, &token, verified)
+    }
+
+    /// Move a verified download into place unless it was cancelled (or
+    /// deleted) meanwhile, then report the outcome. Runs under [`FINALIZE`].
+    fn finish(
+        &self,
+        entry: &'static CatalogEntry,
+        token: &CancellationToken,
+        verified: Result<bool>,
+    ) -> Result<bool> {
+        let _finalize = FINALIZE.lock();
+        let result = match verified {
+            Ok(true) if token.is_cancelled() => Ok(false),
+            Ok(true) => std::fs::rename(self.partial_for(entry), self.path_for(entry))
+                .context("finalize the downloaded model")
+                .map(|()| {
+                    log::info!("Downloaded local LLM {}", entry.id);
+                    true
+                }),
+            other => other,
+        };
         in_flight().lock().remove(entry.id);
         match &result {
             Ok(true) => self.emit_state(entry.id, DownloadState::Completed, None),
@@ -329,13 +360,8 @@ impl LocalModels {
             )
             .await
             {
-                Ok(true) => {
-                    std::fs::rename(&partial, self.path_for(entry))
-                        .context("finalize the downloaded model")?;
-                    log::info!("Downloaded local LLM {}", entry.id);
-                    return Ok(true);
-                }
-                Ok(false) => return Ok(false),
+                // Verified in `partial`; `finish` renames it.
+                Ok(done) => return Ok(done),
                 Err(e) => {
                     log::warn!(
                         "Download of {} failed (attempt {attempt}/{ATTEMPTS}): {e:#}",
@@ -385,13 +411,30 @@ impl LocalModels {
         }
     }
 
-    /// Delete a downloaded model and any partial download. Unloads it from
-    /// the built-in worker first.
+    /// Delete a downloaded model and any partial download. Cancels an
+    /// in-flight download and waits (bounded) for it to finish, and unloads
+    /// the model from the built-in worker first. Blocks.
     pub fn delete(&self, id: &str) -> Result<()> {
-        let entry = Self::entry(id)?;
-        self.cancel_download(id);
+        self.delete_entry(Self::entry(id)?, DELETE_WAIT)
+    }
+
+    fn delete_entry(&self, entry: &'static CatalogEntry, wait: std::time::Duration) -> Result<()> {
+        let id = entry.id;
+        if self.cancel_download(id) {
+            let deadline = std::time::Instant::now() + wait;
+            while self.is_downloading(id) {
+                if std::time::Instant::now() >= deadline {
+                    // Still stuck (e.g. on the network). Its finish sees the
+                    // cancelled token under FINALIZE and won't rename.
+                    log::warn!("Deleting {id} while its cancelled download is still running");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         let path = self.path_for(entry);
         super::builtin::BuiltinLlm::global().forget_model(&path);
+        let _finalize = FINALIZE.lock();
         for p in [path, self.partial_for(entry)] {
             match std::fs::remove_file(&p) {
                 Ok(()) => {}
@@ -484,5 +527,79 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), body);
         assert!(!dir.path().join("test-model.gguf.partial").exists());
         assert!(!in_flight().lock().contains_key("test-model"));
+    }
+
+    fn fake_entry(id: &'static str, body: &[u8]) -> &'static CatalogEntry {
+        let sha: &'static str = Box::leak(format!("{:x}", Sha256::digest(body)).into_boxed_str());
+        Box::leak(Box::new(CatalogEntry {
+            id,
+            name: "Test",
+            description: "",
+            repo: "",
+            filename: Box::leak(format!("{id}.gguf").into_boxed_str()),
+            size_bytes: body.len() as u64,
+            sha256: sha,
+            n_ctx: 4096,
+            recommended_min_ram_gb: None,
+            is_default: false,
+        }))
+    }
+
+    /// A delete landing while a download is past verification (about to
+    /// rename) waits for it, and the download never renames afterwards.
+    #[test]
+    fn delete_waits_for_a_finishing_download_and_wins() {
+        let body = b"verified fake model bytes";
+        let entry = fake_entry("test-model-delete-race", body);
+        let dir = tempfile::tempdir().unwrap();
+        let models = LocalModels::at(dir.path());
+        // The download has verified the partial and is about to finish.
+        std::fs::write(models.partial_for(entry), body).unwrap();
+        let token = CancellationToken::new();
+        in_flight()
+            .lock()
+            .insert(entry.id.to_string(), token.clone());
+
+        let deleter = {
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                LocalModels::at(dir).delete_entry(entry, std::time::Duration::from_secs(10))
+            })
+        };
+        while !token.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Delete is waiting on the download, not racing past it.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!deleter.is_finished());
+        assert!(models.partial_for(entry).exists());
+
+        // The download finishes: cancelled, so no rename (and no Completed).
+        assert!(!models.finish(entry, &token, Ok(true)).unwrap());
+        deleter.join().unwrap().unwrap();
+        assert!(!models.path_for(entry).exists());
+        assert!(!models.partial_for(entry).exists());
+        assert!(!models.is_downloading(entry.id));
+    }
+
+    /// A download that finished first is simply deleted afterwards.
+    #[test]
+    fn delete_after_a_finished_download_removes_it() {
+        let body = b"verified fake model bytes";
+        let entry = fake_entry("test-model-delete-after", body);
+        let dir = tempfile::tempdir().unwrap();
+        let models = LocalModels::at(dir.path());
+        std::fs::write(models.partial_for(entry), body).unwrap();
+        let token = CancellationToken::new();
+        in_flight()
+            .lock()
+            .insert(entry.id.to_string(), token.clone());
+        assert!(models.finish(entry, &token, Ok(true)).unwrap());
+        assert!(models.path_for(entry).exists());
+        models
+            .delete_entry(entry, std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(!models.path_for(entry).exists());
+        assert!(!token.is_cancelled());
     }
 }

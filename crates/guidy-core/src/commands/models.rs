@@ -78,7 +78,7 @@ pub async fn delete_model(
             .map_err(|e| format!("Failed to unload model: {}", e))?
             .map_err(|e| format!("Failed to unload model: {}", e))?;
 
-        update_settings(&app_handle, |s| s.selected_model = String::new());
+        clear_selected_model_if(&app_handle, &model_id);
     }
 
     model_manager.delete_model(&model_id).map_err(|e| {
@@ -86,6 +86,16 @@ pub async fn delete_model(
         error!("Model delete failed for {}: {}", model_id, e);
         e.to_string()
     })
+}
+
+/// Clear the selection if it is still `model_id`: the unload before it can
+/// take a while, and a model selected meanwhile must survive the delete.
+fn clear_selected_model_if(app: &AppHandle, model_id: &str) {
+    update_settings(app, |s| {
+        if s.selected_model == model_id {
+            s.selected_model = String::new();
+        }
+    });
 }
 
 /// Shared logic for switching the active model, used by both the Tauri command
@@ -188,4 +198,23 @@ pub async fn cancel_download(
     model_manager
         .cancel_download(&model_id)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::testing::TestApp;
+
+    #[test]
+    fn delete_keeps_a_selection_made_during_the_unload() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.selected_model = "deleted".to_string());
+        // Another model was selected while the deleted one was unloading.
+        update_settings(&t.app, |s| s.selected_model = "other".to_string());
+        clear_selected_model_if(&t.app, "deleted");
+        assert_eq!(get_settings(&t.app).selected_model, "other");
+
+        clear_selected_model_if(&t.app, "other");
+        assert_eq!(get_settings(&t.app).selected_model, "");
+    }
 }

@@ -337,8 +337,9 @@ impl MeetingsManager {
     }
 
     /// Startup work: route notification responses, start the scheduler,
-    /// recover recordings interrupted by a crash, then apply retention now
-    /// and once a day on a background thread.
+    /// recover recordings interrupted by a crash, then apply retention (and
+    /// sweep stale sidecar temp files) now and once a day on a background
+    /// thread.
     pub fn start_background(self: &Arc<Self>) {
         crate::meetings::recorder::adapters::install_notification_handler(&self.app);
         // The one place notifications made moot are withdrawn: every start
@@ -382,6 +383,15 @@ impl MeetingsManager {
                         Some(m) => {
                             if let Err(e) = m.apply_retention() {
                                 log::error!("meetings: retention failed: {e:#}");
+                            }
+                            // Temp files a crash left mid-write.
+                            if let Err(e) =
+                                crate::meetings::processing::sidecar::sweep_stale_temp_files(
+                                    &m.meetings_dir,
+                                    std::time::Duration::from_secs(60 * 60),
+                                )
+                            {
+                                log::warn!("meetings: sweeping sidecar temp files: {e:#}");
                             }
                         }
                         None => return,
@@ -528,15 +538,21 @@ impl MeetingsManager {
     /// meetings' embeddings sidecars (found through the segments' speakers).
     ///
     /// The sidecars are rewritten under their [`EmbeddingsLock`]s, taken
-    /// before the segments are looked up: a processing run replacing a
-    /// meeting's transcript and sidecar meanwhile goes entirely before (its
-    /// segments are the ones dropped) or after (the person is gone by then).
+    /// for every meeting the person is in before the person is deleted; the
+    /// check that no other meeting has their segments and the deletion are
+    /// one transaction ([`MeetingsStore::delete_person_within`]), retried
+    /// with the new set if it grew. So a processing run of a meeting (which
+    /// holds its lock from replacing the transcript to writing the sidecar)
+    /// either linked them first, and the deletion waits for it and drops its
+    /// new segments, or stores its transcript after the deletion, which
+    /// leaves that speaker unknown ([`MeetingsStore::replace_transcript`]
+    /// drops a deleted person). A meeting deleted meanwhile is skipped:
+    /// its sidecars are deleted under the same lock, never written back.
     ///
     /// [`EmbeddingsLock`]: crate::meetings::processing::sidecar::EmbeddingsLock
     pub fn delete_person(&self, id: PersonId) -> Result<()> {
         use crate::meetings::processing::sidecar;
-        // Lock the meetings the person is in, then check the set is still
-        // the same (a run may have linked them in another meeting meanwhile).
+        use crate::meetings::store::PersonDeletion;
         let mut meetings: std::collections::BTreeSet<MeetingId> =
             self.store.person_segments(id)?.into_keys().collect();
         let (segments, locks) = loop {
@@ -545,18 +561,24 @@ impl MeetingsManager {
                 .iter()
                 .map(|m| (*m, sidecar::lock_embeddings(&self.meetings_dir, *m)))
                 .collect();
-            let segments = self.store.person_segments(id)?;
-            if segments.keys().all(|m| locks.contains_key(m)) {
-                break (segments, locks);
+            match self.store.delete_person_within(id, &meetings)? {
+                PersonDeletion::Deleted(segments) => break (segments, locks),
+                // A run linked them in another meeting meanwhile.
+                PersonDeletion::InMoreMeetings(more) => {
+                    drop(locks);
+                    meetings = more;
+                }
             }
-            drop(locks);
-            meetings = segments.into_keys().collect();
         };
-        self.store.delete_person(id)?;
         if !segments.is_empty() {
             match crate::secrets::meetings_data_key() {
                 Ok(key) => {
                     for (meeting_id, ids) in &segments {
+                        // Under its lock: a meeting deleted meanwhile has (or
+                        // will have) its sidecars deleted; never recreate them.
+                        if !matches!(self.store.get_meeting(*meeting_id), Ok(Some(_))) {
+                            continue;
+                        }
                         let ids: std::collections::HashSet<i64> = ids.iter().copied().collect();
                         if let Err(e) = sidecar::drop_segment_embeddings(
                             &locks[meeting_id],
@@ -664,7 +686,9 @@ impl MeetingsManager {
     ///
     /// Waits (up to 10 s) for a running job to stop first, so it can't write
     /// a sidecar after they are deleted; a job that outlives the wait finds
-    /// the meeting gone and removes its own files when it finishes.
+    /// the meeting gone and removes its own files when it finishes. The
+    /// sidecars go under the meeting's embeddings lock, so a concurrent
+    /// [`Self::delete_person`] can't write the voiceprints back.
     pub fn forget_processing(&self, id: MeetingId) -> Result<()> {
         if !self
             .processing
@@ -677,14 +701,7 @@ impl MeetingsManager {
 
     /// Wait (up to `timeout`) for no summary of `id` to be running.
     fn wait_for_summary(&self, id: MeetingId, timeout: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while self.is_summarizing(id) {
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        true
+        crate::meetings::summarize::wait_until_idle(id, std::time::Instant::now() + timeout)
     }
 
     fn creating_tickets_for(&self, meeting_id: MeetingId) -> bool {
@@ -1643,6 +1660,30 @@ mod store_section_tests {
             .unwrap();
         assert_eq!(left, vec![e(new[1].id), e(new[2].id)]);
         assert!(mgr.list_people().unwrap().is_empty());
+    }
+
+    /// Deleting a meeting while a person deletion holds its embeddings lock
+    /// (filtering the sidecar): the sidecar goes after it, not before (where
+    /// the person deletion would write it back, orphaned).
+    #[test]
+    fn deleting_a_meeting_waits_for_a_person_deletion_rewriting_its_voiceprints() {
+        use crate::meetings::processing::sidecar;
+        let t = TestApp::new();
+        let mgr = MeetingsManager::new(&t.app).unwrap();
+        let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
+        let key = crate::secrets::meetings_data_key().unwrap();
+        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+        let rewriting = sidecar::lock_embeddings(mgr.meetings_dir(), m);
+        std::thread::scope(|s| {
+            let deletion = s.spawn(|| mgr.delete_meeting(m));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!deletion.is_finished(), "the deletion waits for the lock");
+            sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+            drop(rewriting);
+            deletion.join().unwrap().unwrap();
+        });
+        assert!(!sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
+        assert!(mgr.get_meeting(m).unwrap().is_none());
     }
 
     #[test]

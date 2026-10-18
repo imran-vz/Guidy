@@ -153,7 +153,9 @@ fn write_at<T: Serialize + ?Sized>(
 }
 
 /// A temp file next to `path` no other writer uses (`<name>.<pid>-<n>.tmp`):
-/// two concurrent writes never share (and tear) one temp file.
+/// two concurrent writes never share (and tear) one temp file. One a crash
+/// leaves behind is never reused: [`delete_sidecars`] and
+/// [`sweep_stale_temp_files`] remove it.
 fn temp_path(path: &Path) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -315,15 +317,79 @@ pub fn delete_cache(meetings_dir: &Path, id: MeetingId) -> Result<()> {
     remove(&cache_path(meetings_dir, id))
 }
 
-/// Delete both sidecars of a meeting. Call when the meeting is deleted.
+/// The sidecar directories (they hold the sidecars and their temp files).
+fn sidecar_dirs(meetings_dir: &Path) -> [PathBuf; 2] {
+    [
+        meetings_dir.join("processing"),
+        meetings_dir.join("embeddings"),
+    ]
+}
+
+/// The files of `dir` (none when it doesn't exist).
+fn dir_files(dir: &Path) -> Result<Vec<std::fs::DirEntry>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(entries
+            .collect::<std::io::Result<_>>()
+            .with_context(|| format!("list {}", dir.display()))?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("list {}", dir.display())),
+    }
+}
+
+/// Delete both sidecars of a meeting, and any temp files of them a crash
+/// left. Call when the meeting is deleted. Takes the meeting's
+/// [`EmbeddingsLock`] (so the caller must not hold it): a person deletion
+/// filtering the embeddings sidecar can't write it back afterwards.
 pub fn delete_sidecars(meetings_dir: &Path, id: MeetingId) -> Result<()> {
+    let _lock = lock_embeddings(meetings_dir, id);
     remove(&cache_path(meetings_dir, id))?;
-    remove(&embeddings_path(meetings_dir, id))
+    remove(&embeddings_path(meetings_dir, id))?;
+    let prefix = format!("{id}.bin.");
+    for dir in sidecar_dirs(meetings_dir) {
+        for file in dir_files(&dir)? {
+            let name = file.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".tmp") {
+                remove(&file.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove sidecar temp files (`*.tmp`) last written more than `max_age`
+/// ago: a crash mid-write leaves one, and its unique name is never written
+/// again. A write in progress is far younger than any sensible `max_age`.
+/// Returns how many were removed; one that can't be is logged and skipped.
+pub fn sweep_stale_temp_files(meetings_dir: &Path, max_age: std::time::Duration) -> Result<usize> {
+    let mut removed = 0;
+    for dir in sidecar_dirs(meetings_dir) {
+        for file in dir_files(&dir)? {
+            if !file.file_name().to_string_lossy().ends_with(".tmp") {
+                continue;
+            }
+            let stale = file
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > max_age));
+            if !stale {
+                continue;
+            }
+            match remove(&file.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => log::warn!("meetings: {e:#}"),
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Bumped when [`ProcessingCache`] changes incompatibly; an old cache is
 /// then discarded and processing restarts.
-pub const CACHE_VERSION: u32 = 1;
+/// 2: `embeddings` entries keep "skipped" apart from "not looked at" (in 1
+/// both were `null`, so a checkpoint past the voiceprint stage never
+/// resumed).
+pub const CACHE_VERSION: u32 = 2;
 
 /// One unit of work: a VAD segment of one track.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +432,7 @@ pub struct ProcessingCache {
     pub transcripts: Vec<Option<UnitTranscript>>,
     /// Per unit, once the voiceprint stage looked at it: `Some(None)` means
     /// skipped (mic, too short, or no speech).
+    #[serde(with = "unit_embeddings")]
     pub embeddings: Vec<Option<Option<Vec<f32>>>>,
     pub clustering: Option<Clustering>,
 }
@@ -392,6 +459,35 @@ impl ProcessingCache {
     }
 }
 
+/// [`ProcessingCache::embeddings`] in JSON, where `Some(None)` and `None`
+/// would both be `null`: an entry is `null` (not looked at yet), `[]`
+/// (skipped) or `[voiceprint]`.
+mod unit_embeddings {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    type Entry = Option<Option<Vec<f32>>>;
+
+    pub fn serialize<S: Serializer>(v: &[Entry], s: S) -> Result<S::Ok, S::Error> {
+        v.iter()
+            .map(|e| e.as_ref().map(|e| e.iter().collect::<Vec<_>>()))
+            .collect::<Vec<_>>()
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Entry>, D::Error> {
+        let raw = Vec::<Option<Vec<Vec<f32>>>>::deserialize(d)?;
+        raw.into_iter()
+            .map(|e| match e {
+                None => Ok(None),
+                Some(mut v) if v.len() <= 1 => Ok(Some(v.pop())),
+                Some(_) => Err(serde::de::Error::custom(
+                    "a unit has more than one voiceprint",
+                )),
+            })
+            .collect()
+    }
+}
+
 /// A stored segment's voiceprint (the embeddings sidecar).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SegmentEmbedding {
@@ -415,6 +511,8 @@ mod tests {
             track: Track::System,
             span: Span::new(1, 2),
         });
+        // Not looked at, skipped and embedded stay apart.
+        cache.embeddings = vec![None, Some(None), Some(Some(vec![0.5, 0.25]))];
         write_cache(dir.path(), 3, &key, &cache).unwrap();
         let back = read_cache(dir.path(), 3, &key).unwrap().unwrap();
         assert_eq!(back, cache);
@@ -428,6 +526,87 @@ mod tests {
         delete_sidecars(dir.path(), 3).unwrap();
         assert!(!path.exists() && !embeddings_path(dir.path(), 3).exists());
         delete_sidecars(dir.path(), 3).unwrap();
+    }
+
+    /// Temp files a crash left: deleting the meeting removes its own (not
+    /// another meeting's, e.g. 1 vs 12).
+    #[test]
+    fn delete_sidecars_removes_left_over_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        write_cache(dir.path(), 1, &key, &ProcessingCache::new()).unwrap();
+        write_embeddings(dir.path(), 1, &key, &[]).unwrap();
+        let left = [
+            temp_path(&cache_path(dir.path(), 1)),
+            temp_path(&embeddings_path(dir.path(), 1)),
+        ];
+        let other = temp_path(&embeddings_path(dir.path(), 12));
+        for f in left.iter().chain([&other]) {
+            std::fs::write(f, b"partial").unwrap();
+        }
+        delete_sidecars(dir.path(), 1).unwrap();
+        assert!(left.iter().all(|f| !f.exists()));
+        assert!(other.exists());
+    }
+
+    #[test]
+    fn the_sweep_removes_only_old_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        write_embeddings(dir.path(), 1, &key, &[]).unwrap();
+        let old = [
+            temp_path(&cache_path(dir.path(), 1)),
+            temp_path(&embeddings_path(dir.path(), 2)),
+        ];
+        let fresh = temp_path(&embeddings_path(dir.path(), 3));
+        std::fs::create_dir_all(cache_path(dir.path(), 1).parent().unwrap()).unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for f in &old {
+            std::fs::write(f, b"partial").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(f)
+                .unwrap()
+                .set_modified(two_hours_ago)
+                .unwrap();
+        }
+        std::fs::write(&fresh, b"in progress").unwrap();
+        // An old sidecar itself is not a temp file.
+        std::fs::File::options()
+            .write(true)
+            .open(embeddings_path(dir.path(), 1))
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+
+        let hour = std::time::Duration::from_secs(3600);
+        assert_eq!(sweep_stale_temp_files(dir.path(), hour).unwrap(), 2);
+        assert!(old.iter().all(|f| !f.exists()));
+        assert!(fresh.exists());
+        assert!(embeddings_path(dir.path(), 1).exists());
+        // No sidecar directories yet: nothing to do.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(sweep_stale_temp_files(empty.path(), hour).unwrap(), 0);
+    }
+
+    /// Deleting the sidecars waits for a holder of the embeddings lock (a
+    /// person deletion filtering the file), so it can't be written back.
+    #[test]
+    fn delete_sidecars_waits_for_the_embeddings_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        write_embeddings(dir.path(), 1, &key, &[]).unwrap();
+        let held = lock_embeddings(dir.path(), 1);
+        std::thread::scope(|s| {
+            let deletion = s.spawn(|| delete_sidecars(dir.path(), 1));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!deletion.is_finished());
+            // The holder rewrites the file, then lets go.
+            write_embeddings(dir.path(), 1, &key, &[]).unwrap();
+            drop(held);
+            deletion.join().unwrap().unwrap();
+        });
+        assert!(!embeddings_path(dir.path(), 1).exists());
     }
 
     #[test]
