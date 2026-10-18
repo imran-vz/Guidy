@@ -958,19 +958,11 @@ pub fn change_post_process_api_key_setting(
     provider_id: String,
     api_key: String,
 ) -> Result<(), String> {
-    let mut settings = settings::get_settings(&app);
+    let settings = settings::get_settings(&app);
     validate_provider_exists(&settings, &provider_id)?;
-    let had_legacy = settings.post_process_api_keys.contains_key(&provider_id);
-    // Keys live in the Keychain, never in settings_store.json (D14). The
-    // Keychain write may block on an access prompt, so it runs outside the
-    // settings lock, on the snapshot; only the legacy copy's removal is
-    // persisted, on fresh settings.
-    settings::set_provider_api_key(&mut settings, &provider_id, &api_key)
-        .map_err(|e| format!("Failed to save the API key: {e}"))?;
-    if had_legacy {
-        settings::update_settings(&app, |s| s.post_process_api_keys.remove(&provider_id));
-    }
-    Ok(())
+    // Keys live in the Keychain, never in settings_store.json (D14).
+    settings::set_provider_api_key(&provider_id, &api_key)
+        .map_err(|e| format!("Failed to save the API key: {e}"))
 }
 pub fn change_post_process_model_setting(
     app: AppHandle,
@@ -1082,7 +1074,7 @@ pub async fn fetch_post_process_models(
     }
 
     // Get API key
-    let api_key = settings::provider_api_key(&settings, &provider_id);
+    let api_key = settings::provider_api_key(&provider_id);
 
     // Skip fetching if no API key for providers that typically need one
     if api_key.trim().is_empty() && provider.id != "custom" {
