@@ -14,6 +14,8 @@ struct Rig {
     settings: Arc<Mutex<MeetingSettings>>,
     states: Arc<Mutex<Vec<RecorderState>>>,
     changed: Arc<Mutex<Vec<MeetingId>>>,
+    /// `on_recording_finished` calls.
+    finished: Arc<Mutex<Vec<MeetingId>>>,
     dir: tempfile::TempDir,
 }
 
@@ -29,7 +31,13 @@ fn rig() -> Rig {
     }));
     let states = Arc::new(Mutex::new(Vec::new()));
     let changed = Arc::new(Mutex::new(Vec::new()));
-    let (s, st, ch) = (settings.clone(), states.clone(), changed.clone());
+    let finished = Arc::new(Mutex::new(Vec::new()));
+    let (s, st, ch, fin) = (
+        settings.clone(),
+        states.clone(),
+        changed.clone(),
+        finished.clone(),
+    );
     let rec = MeetingRecorder::new(RecorderDeps {
         repo: repo.clone(),
         capture: capture.clone(),
@@ -41,6 +49,7 @@ fn rig() -> Rig {
         strings: Arc::new(NotificationStrings::default),
         on_state: Arc::new(move |state: &RecorderState| st.lock().push(state.clone())),
         on_meeting_changed: Arc::new(move |id| ch.lock().push(id)),
+        on_recording_finished: Arc::new(move |id| fin.lock().push(id)),
     });
     Rig {
         rec,
@@ -51,6 +60,7 @@ fn rig() -> Rig {
         settings,
         states,
         changed,
+        finished,
         dir,
     }
 }
@@ -216,11 +226,41 @@ fn explicit_event_id_is_linked_and_snapshotted() {
     assert_eq!(m.calendar_event.unwrap().end_at, T0 + 40 * M);
     r.rec.stop(T0 + M).unwrap();
 
-    // An id the calendar no longer knows is still recorded, unsnapshotted.
+    // An id the calendar doesn't know is a plain start (nothing on now).
     let id = r.rec.start(Some("gone".into()), T0 + 2 * M).unwrap();
     let m = r.repo.get_meeting(id).unwrap().unwrap();
-    assert_eq!(m.calendar_event_id.as_deref(), Some("gone"));
+    assert_eq!(m.calendar_event_id, None);
     assert!(m.calendar_event.is_none());
+    assert!(m.title.starts_with("Meeting "), "{}", m.title);
+}
+
+#[test]
+fn a_late_prompt_start_is_not_linked_to_its_ended_event() {
+    let r = rig();
+    *r.calendar.events.lock() = vec![ev("sync", T0, T0 + 30 * M)];
+    r.rec.tick(T0 + 30_000);
+    assert_eq!(r.notifier.posted.lock().len(), 1);
+    let end = T0 + 30 * M;
+
+    // Clicked within the grace period after the event: linked.
+    let id = r
+        .rec
+        .start(Some("sync".into()), end + schedule::START_LINK_GRACE_MS)
+        .unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id.as_deref(), Some("sync"));
+    r.rec.stop(end + schedule::START_LINK_GRACE_MS + M).unwrap();
+
+    // Hours later: a plain start, linked to whatever is on now.
+    let later = end + 3 * 60 * M;
+    r.calendar
+        .events
+        .lock()
+        .push(ev("now", later - 5 * M, later + 25 * M));
+    let id = r.rec.start(Some("sync".into()), later).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id.as_deref(), Some("now"));
+    assert_eq!(m.title, "Event now");
 }
 
 #[test]
@@ -546,13 +586,16 @@ fn a_failed_finish_at_stop_is_retried_by_the_next_stop() {
     // Still failing: stays pending.
     assert!(r.rec.stop(T0 + 5_000).is_err());
     *r.repo.fail_finish.lock() = 0;
-    // A later stop (while idle) finishes it, with the original end and error.
-    assert_eq!(r.rec.stop(T0 + 9_000).unwrap(), Some(id));
+    assert!(r.finished.lock().is_empty());
+    // A later stop (while idle) finishes it, with the original end and error,
+    // and reports it so it gets queued for processing.
+    assert_eq!(r.rec.stop(T0 + 9_000).unwrap(), None);
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.status, MeetingStatus::Recorded);
     assert_eq!(m.ended_at, Some(T0 + 1_000));
     assert_eq!(m.error.as_deref(), Some("system capture: tap stopped"));
     assert!(r.changed.lock().contains(&id));
+    assert_eq!(*r.finished.lock(), vec![id]);
     // Nothing left to retry.
     assert_eq!(r.rec.stop(T0 + 10_000).unwrap(), None);
 }
@@ -569,6 +612,8 @@ fn a_failed_finish_at_stop_is_retried_by_tick_start_and_recovery() {
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.status, MeetingStatus::Recorded);
     assert_eq!(m.ended_at, Some(T0 + 1_000));
+    // Reported, so it is queued for processing like a normal stop.
+    assert_eq!(*r.finished.lock(), vec![id]);
 
     // The next start.
     let r = rig();
@@ -581,7 +626,10 @@ fn a_failed_finish_at_stop_is_retried_by_tick_start_and_recovery() {
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.status, MeetingStatus::Recorded);
     assert_eq!(m.ended_at, Some(T0 + 1_000));
-    r.rec.stop(T0 + 3_000).unwrap();
+    assert_eq!(*r.finished.lock(), vec![id]);
+    // The new recording's own stop is returned, not reported.
+    assert_eq!(r.rec.stop(T0 + 3_000).unwrap(), Some(next));
+    assert_eq!(*r.finished.lock(), vec![id]);
 
     // Recovery: finished with the stop's end time, not the files' mtime,
     // and returned so it gets queued for processing.
@@ -595,6 +643,75 @@ fn a_failed_finish_at_stop_is_retried_by_tick_start_and_recovery() {
         r.repo.get_meeting(id).unwrap().unwrap().ended_at,
         Some(T0 + 1_000)
     );
+    // Returned to the caller, which queues it: not reported twice.
+    assert!(r.finished.lock().is_empty());
+}
+
+#[test]
+fn every_failed_finish_is_kept_and_retried_on_its_own() {
+    let r = rig();
+    let a = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    // The user can still record while it keeps failing.
+    let b = r.rec.start(None, T0 + 2_000).unwrap();
+    assert!(r.rec.stop(T0 + 3_000).is_err());
+    let c = r.rec.start(None, T0 + 4_000).unwrap();
+    assert!(r.rec.stop(T0 + 5_000).is_err());
+    assert!(r.rec.has_pending_finish());
+
+    // Only the first retry fails (meeting a): the others still finish.
+    *r.repo.fail_finish.lock() = 1;
+    r.rec.tick(T0 + 6_000);
+    assert_eq!(*r.finished.lock(), vec![b, c]);
+    assert!(r.rec.has_pending_finish());
+    r.rec.tick(T0 + 7_000);
+    assert_eq!(*r.finished.lock(), vec![b, c, a]);
+    assert!(!r.rec.has_pending_finish());
+    for (id, end) in [(a, T0 + 1_000), (b, T0 + 3_000), (c, T0 + 5_000)] {
+        let m = r.repo.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Recorded);
+        assert_eq!(m.ended_at, Some(end), "meeting {id}");
+    }
+}
+
+#[test]
+fn a_stop_during_a_reminder_post_waits_for_it() {
+    let r = rig();
+    let rec = Arc::new(MeetingRecorder::new(r.rec.deps.clone()));
+    let id = rec.start(None, T0).unwrap();
+    let stopper = Arc::new(Mutex::new(None));
+    let (weak, slot, states) = (Arc::downgrade(&rec), stopper.clone(), r.states.clone());
+    *r.notifier.during_post.lock() = Some(Box::new(move || {
+        // "Stop" pressed while the reminder is being posted.
+        let rec = weak.upgrade().unwrap();
+        let stop = std::thread::spawn(move || rec.stop(T0 + 61 * M));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!stop.is_finished(), "the stop must wait for the post");
+        // Not idle yet, so the reminders are withdrawn after this one.
+        assert!(!states.lock().contains(&RecorderState::Idle));
+        *slot.lock() = Some(stop);
+    }));
+    rec.tick(T0 + 60 * M);
+    let stop = stopper.lock().take().expect("reminder posted");
+    assert_eq!(stop.join().unwrap().unwrap(), Some(id));
+    assert_eq!(r.notifier.posted.lock().len(), 1);
+    assert_eq!(r.states.lock().last(), Some(&RecorderState::Idle));
+}
+
+#[test]
+fn a_recording_started_during_the_calendar_poll_gets_no_prompt() {
+    let r = rig();
+    let rec = Arc::new(MeetingRecorder::new(r.rec.deps.clone()));
+    *r.calendar.events.lock() = vec![ev("sync", T0, T0 + 30 * M)];
+    let weak = Arc::downgrade(&rec);
+    *r.calendar.during_query.lock() = Some(Box::new(move || {
+        // "Start" from the UI while the calendar is being polled.
+        weak.upgrade().unwrap().start(None, T0 + 30_000).unwrap();
+    }));
+    rec.tick(T0 + 30_000);
+    assert!(rec.is_recording());
+    assert!(r.notifier.posted.lock().is_empty());
 }
 
 #[test]

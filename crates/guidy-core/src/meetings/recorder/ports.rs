@@ -269,10 +269,22 @@ pub mod fakes {
         }
     }
 
+    /// Runs once, inside the next call (to interleave another operation).
+    pub type Hook = Mutex<Option<Box<dyn FnOnce() + Send>>>;
+
+    fn run_hook(hook: &Hook) {
+        let hook = hook.lock().take();
+        if let Some(f) = hook {
+            f();
+        }
+    }
+
     #[derive(Default)]
     pub struct FakeCalendar {
         pub events: Mutex<Vec<CalendarEvent>>,
         pub queries: Mutex<usize>,
+        /// Runs during the next query, before it answers.
+        pub during_query: Hook,
     }
 
     impl CalendarSource for FakeCalendar {
@@ -286,6 +298,7 @@ pub mod fakes {
         }
         fn timed_events_between(&self, start_ms: i64, end_ms: i64) -> Result<Vec<CalendarEvent>> {
             *self.queries.lock() += 1;
+            run_hook(&self.during_query);
             Ok(self
                 .events
                 .lock()
@@ -307,6 +320,8 @@ pub mod fakes {
     #[derive(Default)]
     pub struct FakeNotifier {
         pub posted: Mutex<Vec<Posted>>,
+        /// Runs during the next post, before it is recorded.
+        pub during_post: Hook,
     }
 
     impl Notifier for FakeNotifier {
@@ -317,6 +332,7 @@ pub mod fakes {
             body: &str,
             actions: &[NotificationAction],
         ) -> Result<()> {
+            run_hook(&self.during_post);
             self.posted.lock().push(Posted {
                 id: id.into(),
                 title: title.into(),

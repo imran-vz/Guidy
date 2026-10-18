@@ -271,8 +271,8 @@ pub const MEETINGS_READY_EVENT: &str = "meetings://ready";
 /// Emitted (payload: the error string) when the manager failed to start.
 pub const MEETINGS_INIT_FAILED_EVENT: &str = "meetings://init-failed";
 /// Emitted (payload: the error string) when the manager can't start because
-/// the meetings data key is gone but encrypted meeting data exists
-/// ([`MeetingsInitStatus::DataKeyMissing`]).
+/// of the meetings data key: it is gone but encrypted meeting data exists, or
+/// it doesn't decrypt `meetings.db` ([`MeetingsInitStatus::DataKeyMissing`]).
 pub const MEETINGS_DATA_KEY_MISSING_EVENT: &str = "meetings://data-key-missing";
 
 /// Where meeting-notes startup is.
@@ -285,9 +285,13 @@ pub enum MeetingsInitStatus {
     /// Opening the store (Keychain, database) is in progress.
     Starting,
     Ready,
+    /// Any other start failure (Keychain denied, a busy or locked database,
+    /// a migration error, a full disk...): Retry only, never a reset, since
+    /// the data may be perfectly readable.
     Failed(String),
-    /// The meetings data key is missing but encrypted meeting data exists.
-    /// Retry (once the key is back) or [`reset_meetings_data`].
+    /// A key problem: the meetings data key is missing but encrypted meeting
+    /// data exists, or the key doesn't decrypt `meetings.db`. Retry (once the
+    /// right key is back) or [`reset_meetings_data`].
     DataKeyMissing(String),
 }
 
@@ -338,14 +342,15 @@ pub fn retry_init_meetings(app: &AppHandle) {
     spawn_meetings_init(app, true);
 }
 
-/// Recover from [`MeetingsInitStatus::DataKeyMissing`] (or a store that
-/// can't be decrypted): move `meetings.db` and the meeting audio into a
+/// Recover from [`MeetingsInitStatus::DataKeyMissing`] (a missing key, or a
+/// store the key can't decrypt): move `meetings.db` and the meeting audio into a
 /// timestamped `meetings-unreadable-*` folder (nothing is deleted), store a
 /// new data key (the old one, if readable, is kept in the Keychain under a
 /// backup name), then start meeting notes afresh.
 ///
-/// Refused while the manager is running or starting, and when the Keychain
-/// can't be read.
+/// Refused for any other state (including [`MeetingsInitStatus::Failed`]:
+/// a start that failed for another reason doesn't make the notes
+/// unreadable), and when the Keychain can't be read.
 pub fn reset_meetings_data(app: &AppHandle) -> anyhow::Result<()> {
     if !meetings::is_supported() {
         anyhow::bail!("meeting notes need macOS 14.2 or later");
@@ -373,8 +378,11 @@ fn reset_meetings_data_files(
     {
         let mut status = cell.0.lock();
         match *status {
-            MeetingsInitStatus::Failed(_) | MeetingsInitStatus::DataKeyMissing(_) => {}
+            MeetingsInitStatus::DataKeyMissing(_) => {}
             MeetingsInitStatus::Starting => anyhow::bail!("meeting notes are starting"),
+            MeetingsInitStatus::Failed(_) => {
+                anyhow::bail!("meeting notes failed to start for another reason than their key: retry instead")
+            }
             _ => anyhow::bail!("meeting notes don't need a reset"),
         }
         // Keeps a concurrent start away while files move.
@@ -429,9 +437,7 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
                 Err(e) => {
                     let error = format!("{e:#}");
                     log::error!("Meeting notes unavailable: {error}");
-                    if e.downcast_ref::<secrets::MeetingsDataKeyMissing>()
-                        .is_some()
-                    {
+                    if is_meetings_key_problem(&e) {
                         set(&app, MeetingsInitStatus::DataKeyMissing(error.clone()));
                         let _ = app.emit(MEETINGS_DATA_KEY_MISSING_EVENT, error);
                     } else {
@@ -447,6 +453,16 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
         set(app_handle, MeetingsInitStatus::Failed(error.clone()));
         let _ = app_handle.emit(MEETINGS_INIT_FAILED_EVENT, error);
     }
+}
+
+/// Whether a failed meetings start is about the data key (missing, or not
+/// the one `meetings.db` was encrypted with): the only failures a reset of
+/// the meeting data can fix.
+fn is_meetings_key_problem(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<secrets::MeetingsDataKeyMissing>()
+        .is_some()
+        || e.downcast_ref::<meetings::store::MeetingsDbUndecryptable>()
+            .is_some()
 }
 
 /// What the UI should do once the backend is initialized.
@@ -971,8 +987,13 @@ mod meetings_init_tests {
         std::fs::write(dir.join(meetings::store::MEETINGS_DB_FILE), b"db").unwrap();
         std::fs::write(dir.join("meetings").join("audio").join("1-mic.gopus"), b"a").unwrap();
 
-        // Only a failed start can be reset.
-        for s in [MeetingsInitStatus::Off, MeetingsInitStatus::Starting] {
+        // Only a key problem can be reset: a start that failed otherwise
+        // (e.g. a locked database) keeps its readable notes in place.
+        for s in [
+            MeetingsInitStatus::Off,
+            MeetingsInitStatus::Starting,
+            MeetingsInitStatus::Failed("database is locked".into()),
+        ] {
             set_status(&t, s.clone());
             assert!(reset_meetings_data_files(&t.app, |_| panic!("no reset")).is_err());
             assert_eq!(status(&t), s);
@@ -998,10 +1019,29 @@ mod meetings_init_tests {
             .exists());
 
         // A failed key replacement is reported, and Retry stays possible.
-        set_status(&t, MeetingsInitStatus::Failed("wrong key".into()));
+        set_status(&t, MeetingsInitStatus::DataKeyMissing("wrong key".into()));
         let e = reset_meetings_data_files(&t.app, |_| Err(anyhow::anyhow!("keychain write")))
             .unwrap_err();
         assert!(e.to_string().contains("keychain write"));
         assert!(matches!(status(&t), MeetingsInitStatus::Failed(_)));
+    }
+
+    #[test]
+    fn only_key_problems_are_resettable() {
+        let missing = anyhow::Error::new(secrets::MeetingsDataKeyMissing).context("open");
+        assert!(is_meetings_key_problem(&missing));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(meetings::store::MEETINGS_DB_FILE);
+        drop(meetings::store::MeetingsStore::open(&path, &[1u8; 32]).unwrap());
+        let wrong_key = meetings::store::MeetingsStore::open(&path, &[2u8; 32])
+            .err()
+            .unwrap();
+        assert!(is_meetings_key_problem(&wrong_key));
+        assert!(!is_meetings_key_problem(&anyhow::anyhow!(
+            "database is locked"
+        )));
+        assert!(!is_meetings_key_problem(
+            &anyhow::anyhow!("disk full").context("migrate meetings.db")
+        ));
     }
 }
