@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn error_toasts_match_handy() {
+    fn error_toasts_match_the_spec() {
         let t = toast_for_event(
             "recording-error",
             &json!({"error_type": "no_input_device", "detail": null}),
