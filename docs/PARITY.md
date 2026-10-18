@@ -1,4 +1,4 @@
-# Parity matrix: Handy 0.9.8 (`9e57a0d`) → Guidy
+# Feature matrix
 
 Every row is covered by passing tests (`test: <name>`, a test function name) and/or a manual check (`manual: HW-xx`). `cargo xtask parity` verifies every referenced test exists, that all 300 baseline unit tests (`docs/baseline/`) survive, and that every baseline command and event has a counterpart.
 
@@ -14,7 +14,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 |---|---|---|---|
 | C-01 | Bindings | change_binding, reset_binding, suspend_all_bindings, resume_all_bindings | test: reset_restores_default, test: binding_rollback_restores_the_original, test: system_recorder_suspends_bindings |
 | C-02 | Keyboard impl | change_keyboard_implementation_setting (returns reset_bindings), get_keyboard_implementation | test: experimental_group_only_when_enabled, test: compound_shortcut_keys_parse_on_both_backends |
-| C-03 | HandyKeys recorder | start_handy_keys_recording (fails with `secure-input-active`), stop_handy_keys_recording | test: handy_keys_recording_commits_on_key_release |
+| C-03 | NativeKeys recorder | start_native_keys_recording (fails with `secure-input-active`), stop_native_keys_recording | test: native_keys_recording_commits_on_key_release |
 | C-04 | Simple setting setters | all ~50 `change_*_setting` in `shortcut/mod.rs` | test: simple_settings_persist_through_core, test: every_updatable_key_has_a_handler, test: invalid_values_are_rejected_not_written |
 | C-05 | Theme | change_theme_setting → ThemeChanged event + window appearance | test: theme_change_emits_theme_changed, test: explicit_settings_ignore_the_os |
 | C-06 | Debug / start / autostart / updates / what's-new setters → SettingsChanged event | | test: debug_mode_change_emits_settings_changed, test: sidebar_sections_follow_settings |
@@ -47,7 +47,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | E-10 | settings-changed {setting, value, reset_bindings?} | Refetch; refresh devices when `selected_microphone` changes | test: debug_mode_change_emits_settings_changed, test: sidebar_sections_follow_settings |
 | E-11 | theme-changed | Main window and overlay re-theme | test: theme_change_emits_theme_changed |
 | E-12 | secure-input-changed | Banner | test: secure_input_banner_follows_events_and_dismisses_per_episode |
-| E-13 | handy-keys-event | Shortcut recorder | test: handy_keys_recording_commits_on_key_release |
+| E-13 | native-keys-event | Shortcut recorder | test: native_keys_recording_commits_on_key_release |
 | E-14 | check-for-updates (from the tray) | Manual update check | test: tray_update_check_event_runs_a_manual_check |
 | E-15 | log stream | Debug live log viewer | test: live_logs_buffer_and_clear, test: level_numbers_match_the_log_viewer |
 
@@ -59,7 +59,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | S-02 | Headless `-f/--transcribe-file`, `--model`, `--device-index`, `--list-devices`, `--list-models`, `--repeat`, `--json`; exit codes; JSON matches the golden output | test: help_lists_the_cli_flags, test: list_models_json_is_the_model_registry, test: missing_wav_is_a_usage_error, test: transcription_matches_golden_output |
 | S-03 | `--start-hidden`, `--no-tray`, `--debug` (forces debug mode + trace logging) | test: start_hidden_with_tray_hides_and_runs_as_accessory, test: start_hidden_without_tray_still_shows_window, test: help_lists_the_cli_flags |
 | S-04 | Single instance: a second launch with `--toggle-transcription` / `--toggle-post-process` / `--cancel` forwards the action; with no flags it shows the window (and on mac recreates the tray) | test: second_launch_forwards_args_to_the_primary, test: forward_fails_without_a_primary, manual: HW-12, test: after_shutdown_a_new_launch_becomes_primary |
-| S-05 | Signals: SIGUSR2 = transcribe; SIGUSR1 = post-process (all Unix: Handy skipped Linux only because of WebKitGTK) | manual: HW-12 |
+| S-05 | Signals: SIGUSR2 = transcribe; SIGUSR1 = post-process (all Unix, Linux included) | manual: HW-12 |
 | S-06 | Portable mode: `portable` marker file → `<exe>/Data`, HF_HOME, empty-marker upgrade [win] | test: test_valid_magic_string_enables_portable, test: test_hugging_face_home_is_inside_portable_data, manual: HW-08 |
 | S-07 | Main window 680×570 min, starts hidden; shown unless start_hidden && tray available; shown if Windows mic is denied | test: shows_window_by_default, test: permission_onboarding_forces_window |
 | S-08 | Close hides the window; Accessory activation policy when the tray is visible [mac] (a start-hidden launch *launches* as Accessory); Reopen shows it [mac] | manual: HW-13 |
@@ -129,7 +129,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 
 | ID | Behavior | Cover |
 |---|---|---|
-| G-01 | Shortcut recorder `transcribe` | test: shortcut_rows, test: handy_keys_recording_commits_on_key_release |
+| G-01 | Shortcut recorder `transcribe` | test: shortcut_rows, test: native_keys_recording_commits_on_key_release |
 | G-02 | shortcut_activation select with descriptions | test: shortcut_rows |
 | G-03 | Shortcut recorder `cancel` (hidden on [lin]) | test: shortcut_rows |
 | G-04 | Model settings card only when the model supports language selection or translation | test: model_settings_card_follows_model_capabilities |
@@ -218,7 +218,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | B-02 | Theme select system/light/dark applies immediately | test: about_rows, test: system_follows_the_os |
 | B-03 | Version; show_whats_new_on_update toggle | test: about_rows |
 | B-04 | App data dir and log dir paths with Open buttons | test: about_rows |
-| B-05 | Acknowledgments (ggml). Handy's donate/source links are replaced by Guidy's own links (branding) | test: about_rows |
+| B-05 | Acknowledgments (ggml). Donate/source links point to Guidy's own pages (branding) | test: about_rows |
 
 ## F. Flows
 
@@ -239,7 +239,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | K-01 | get_key_name mapping (code first; modifiers per OS; named + punctuation maps; fallbacks) incl. the ported keyboard.test.ts cases | test: compound_keys_store_compact_and_display_spaced, test: key_fallback_and_unknown_codes, test: os_specific_modifiers |
 | K-02 | format_key_combination (Left/Right, compound names, upper-case single chars, `fn`) | test: formats_sides_function_keys_and_fn |
 | K-03 | System recorder: suspend bindings, record until all released, modifiers first, error toast + restore, resume; click outside cancels | test: system_recorder_suspends_bindings, test: system_recorder_commits_when_all_keys_are_released, test: system_recorder_resumes_after_the_binding_write, test: closing_while_recording_resumes_bindings |
-| K-04 | HandyKeys recorder: commit on main-key release; modifier-only commits after full release without a main key (#1578); secure-input-blocked toast | test: handy_keys_recording_commits_on_key_release, test: handy_keys_modifier_only_after_full_release |
+| K-04 | NativeKeys recorder: commit on main-key release; modifier-only commits after full release without a main key (#1578); secure-input-blocked toast | test: native_keys_recording_commits_on_key_release, test: native_keys_modifier_only_after_full_release |
 
 ## I. i18n, theme, accessibility
 
