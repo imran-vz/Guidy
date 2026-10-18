@@ -2201,6 +2201,48 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn refused_cancel_keeps_the_job_and_shows_its_error(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().ai.cancel_refused = true;
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+
+        // A job running elsewhere is already storing: Cancel is refused and
+        // the spinner stays until the job ends.
+        meetings.data.lock().ai.summarizing = vec![1];
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        dispatch(
+            cx,
+            &state,
+            "meetings://summary-progress",
+            serde_json::json!({"meeting_id": 1, "done": 2, "total": 3}),
+        );
+        with_window(cx, w, |window, cx| {
+            window.click("summary-cancel-generate", cx)
+        });
+        assert!(meetings.called("cancel_summarize 1"));
+        assert!(view.read_with(cx, |v, _| v.is_generating()));
+        assert!(exists(cx, w, "summary-progress"));
+        meetings.data.lock().ai.summarizing.clear();
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        assert!(!view.read_with(cx, |v, _| v.is_generating()));
+
+        // This view's own job: still generating after the refusal, and its
+        // store error is shown rather than taken for the cancel.
+        meetings.data.lock().ai.fail_summarize = Some("could not store".into());
+        view.update(cx, |v, cx| {
+            v.generate(None, cx);
+            v.cancel(cx);
+            v.finish_cancel(false, cx);
+            assert!(v.is_generating());
+        });
+        cx.run_until_parked();
+        assert!(!view.read_with(cx, |v, _| v.is_generating()));
+        assert!(exists(cx, w, "summary-error"));
+    }
+
+    #[gpui_kit::test]
     fn summary_job_state_follows_the_shown_meeting(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());

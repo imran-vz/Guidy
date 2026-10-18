@@ -949,22 +949,34 @@ impl MeetingsManager {
     }
 }
 
-/// Encrypted meeting data exists under `data_dir`: `meetings.db` (or its
-/// journal) or any file below `meetings/` (audio, processing sidecars).
+/// Encrypted meeting data exists under `data_dir`: `meetings.db`, a
+/// recorded track (`meetings/audio/*.gopus`) or a processing sidecar
+/// (`meetings/{processing,embeddings}/*.bin`). Anything else (`.DS_Store`,
+/// temp files, stray SQLite side files without a database) is not data a
+/// new key would orphan.
 pub fn has_meeting_data(data_dir: &std::path::Path) -> bool {
-    fn any_file(dir: &std::path::Path) -> bool {
+    fn any_file_with_extension(dir: &std::path::Path, extension: &str) -> bool {
         std::fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|e| {
                 let path = e.path();
-                if path.is_dir() {
-                    any_file(&path)
-                } else {
-                    true
-                }
+                let hidden = e.file_name().to_string_lossy().starts_with('.');
+                !hidden
+                    && path.is_file()
+                    && path.extension().and_then(|x| x.to_str()) == Some(extension)
             })
         })
     }
-    meeting_db_files(data_dir).iter().any(|p| p.exists()) || any_file(&data_dir.join("meetings"))
+    let meetings = data_dir.join("meetings");
+    data_dir
+        .join(crate::meetings::store::MEETINGS_DB_FILE)
+        .is_file()
+        || any_file_with_extension(
+            &crate::meetings::audio_store::audio_dir(data_dir),
+            crate::meetings::audio_store::FILE_EXTENSION,
+        )
+        || ["processing", "embeddings"]
+            .iter()
+            .any(|sub| any_file_with_extension(&meetings.join(sub), "bin"))
 }
 
 /// `meetings.db` and its SQLite side files.
@@ -976,14 +988,29 @@ fn meeting_db_files(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+/// [`move_meeting_data_aside`] failed. `moved_any`: something was already
+/// moved before the failure (otherwise nothing changed on disk).
+#[derive(Debug)]
+pub struct MoveAsideError {
+    pub moved_any: bool,
+    error: anyhow::Error,
+}
+
+impl std::fmt::Display for MoveAsideError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for MoveAsideError {}
+
 /// Move the encrypted meeting data (`meetings.db*` and `meetings/`) into a
 /// new `meetings-unreadable-<stamp>/` folder under `data_dir`. Nothing is
 /// deleted. Returns the folder, or `None` when there was nothing to move.
 pub fn move_meeting_data_aside(
     data_dir: &std::path::Path,
     stamp: &str,
-) -> Result<Option<std::path::PathBuf>> {
-    use anyhow::Context as _;
+) -> std::result::Result<Option<std::path::PathBuf>, MoveAsideError> {
     let mut sources = meeting_db_files(data_dir);
     sources.push(data_dir.join("meetings"));
     sources.retain(|p| p.exists());
@@ -996,11 +1023,26 @@ pub fn move_meeting_data_aside(
         n += 1;
         dest = data_dir.join(format!("meetings-unreadable-{stamp}-{n}"));
     }
-    std::fs::create_dir(&dest).with_context(|| format!("create {}", dest.display()))?;
-    for src in sources {
+    std::fs::create_dir(&dest).map_err(|e| MoveAsideError {
+        moved_any: false,
+        error: anyhow::Error::new(e).context(format!("create {}", dest.display())),
+    })?;
+    for (i, src) in sources.iter().enumerate() {
         let to = dest.join(src.file_name().unwrap_or_default());
-        std::fs::rename(&src, &to)
-            .with_context(|| format!("move {} to {}", src.display(), to.display()))?;
+        if let Err(e) = std::fs::rename(src, &to) {
+            if i == 0 {
+                // Nothing moved yet: leave no empty folder behind either.
+                let _ = std::fs::remove_dir(&dest);
+            }
+            return Err(MoveAsideError {
+                moved_any: i > 0,
+                error: anyhow::Error::new(e).context(format!(
+                    "move {} to {}",
+                    src.display(),
+                    to.display()
+                )),
+            });
+        }
     }
     log::info!(
         "meetings: moved unreadable meeting data to {}",
@@ -1511,5 +1553,88 @@ mod store_section_tests {
         let again = move_meeting_data_aside(data, stamp).unwrap().unwrap();
         assert_eq!(again, data.join(format!("meetings-unreadable-{stamp}-2")));
         assert_eq!(std::fs::read(moved.join("meetings.db")).unwrap(), b"db");
+    }
+
+    #[test]
+    fn only_real_meeting_data_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let meetings = data.join("meetings");
+        let audio = meetings.join("audio");
+        std::fs::create_dir_all(&audio).unwrap();
+        std::fs::create_dir_all(meetings.join("processing")).unwrap();
+        // Finder / temp / unknown files, and SQLite side files without a
+        // database, are not data a new key would orphan.
+        std::fs::write(meetings.join(".DS_Store"), b"x").unwrap();
+        std::fs::write(audio.join(".DS_Store"), b"x").unwrap();
+        std::fs::write(audio.join(".1-mic.gopus"), b"x").unwrap();
+        std::fs::write(audio.join("notes.txt"), b"x").unwrap();
+        std::fs::write(meetings.join("processing").join("1.bin.tmp"), b"x").unwrap();
+        std::fs::write(data.join("meetings.db-wal"), b"x").unwrap();
+        std::fs::create_dir(audio.join("x.gopus")).unwrap();
+        assert!(!has_meeting_data(data));
+
+        for (sub, file) in [
+            ("audio", "1-system.gopus"),
+            ("processing", "1.bin"),
+            ("embeddings", "1.bin"),
+        ] {
+            let d = meetings.join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(file), b"x").unwrap();
+            assert!(has_meeting_data(data), "{sub}/{file}");
+            std::fs::remove_file(d.join(file)).unwrap();
+            assert!(!has_meeting_data(data));
+        }
+        std::fs::write(data.join(crate::meetings::store::MEETINGS_DB_FILE), b"db").unwrap();
+        assert!(has_meeting_data(data));
+    }
+
+    /// Set or clear the macOS user-immutable flag (renames then fail).
+    #[cfg(target_os = "macos")]
+    fn set_immutable(path: &std::path::Path, on: bool) {
+        let status = std::process::Command::new("chflags")
+            .arg(if on { "uchg" } else { "nouchg" })
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failed_move_aside_reports_whether_anything_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let db = data.join(crate::meetings::store::MEETINGS_DB_FILE);
+        let meetings = data.join("meetings");
+        std::fs::write(&db, b"db").unwrap();
+        std::fs::create_dir_all(&meetings).unwrap();
+        let unreadable = || {
+            std::fs::read_dir(data)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("meetings-unreadable-")
+                })
+                .count()
+        };
+
+        // The first move fails: nothing changed, no empty folder left.
+        set_immutable(&db, true);
+        let e = move_meeting_data_aside(data, "s").unwrap_err();
+        set_immutable(&db, false);
+        assert!(!e.moved_any, "{e}");
+        assert!(db.exists() && meetings.exists());
+        assert_eq!(unreadable(), 0);
+
+        // A later move fails: the database already moved.
+        set_immutable(&meetings, true);
+        let e = move_meeting_data_aside(data, "s").unwrap_err();
+        set_immutable(&meetings, false);
+        assert!(e.moved_any, "{e}");
+        assert!(!db.exists() && meetings.exists());
     }
 }

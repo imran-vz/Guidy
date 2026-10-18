@@ -1115,7 +1115,7 @@ pub mod fake {
         }
         fn cancel_summarize(&self, id: MeetingId) -> bool {
             self.rec(format!("cancel_summarize {id}"));
-            true
+            !self.data.lock().ai.cancel_refused
         }
         fn is_summarizing(&self, id: MeetingId) -> bool {
             self.data.lock().ai.summarizing.contains(&id)
@@ -1332,6 +1332,8 @@ pub mod fake {
         pub fail_summarize: Option<String>,
         /// Meetings `is_summarizing` reports as running.
         pub summarizing: Vec<MeetingId>,
+        /// `cancel_summarize` returns false (the job is already storing).
+        pub cancel_refused: bool,
         pub llm_models: Vec<String>,
         pub local_models: Vec<LocalLlmModel>,
     }

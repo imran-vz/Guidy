@@ -5,7 +5,7 @@
 # Ad-hoc signatures pin TCC grants to the binary's hash, so every rebuild
 # silently invalidates them. If a code-signing identity named
 # $GUIDY_SIGN_IDENTITY (default "Guidy Local Dev") is in the keychain, the app
-# is re-signed with it; otherwise the ad-hoc signature is kept.
+# is re-signed with it; otherwise it is re-signed ad-hoc.
 #
 # Usage: scripts/package-macos.sh [--install]
 #   --install  replace /Applications/Guidy.app with the new build
@@ -20,34 +20,37 @@ cargo packager --release -p guidy-app --formats app
 
 # The built-in llama.cpp helper must sit next to the main executable.
 HELPER="$APP/Contents/MacOS/guidy-llm"
-HELPER_COPIED=0
 if [[ ! -x "$HELPER" ]]; then
   # cargo-packager didn't bundle it (non-main binary): copy it in.
   echo "Copying guidy-llm into the bundle"
   cp "$ROOT/target/release/guidy-llm" "$HELPER"
-  HELPER_COPIED=1
 fi
 
 if security find-identity -p codesigning | grep -q "\"$IDENTITY\""; then
   echo "Signing with \"$IDENTITY\""
-  # Nested executables are signed first (inside-out); the helper needs no
-  # entitlements of its own.
-  codesign --force --options runtime -s "$IDENTITY" "$HELPER"
-  codesign --force --deep --options runtime \
-    --entitlements "$ROOT/assets/Entitlements.plist" \
-    -s "$IDENTITY" "$APP"
-  codesign --verify --strict "$APP"
+  SIGN_ID="$IDENTITY"
 else
-  if [[ "$HELPER_COPIED" == 1 ]]; then
-    # The copied helper isn't covered by the packager's ad-hoc signature:
-    # sign it and reseal the bundle.
-    codesign --force -s - "$HELPER"
-    codesign --force --deep -s - \
-      --entitlements "$ROOT/assets/Entitlements.plist" "$APP"
-  fi
-  echo "No \"$IDENTITY\" identity found; keeping the ad-hoc signature." >&2
+  echo "No \"$IDENTITY\" identity found; re-signing ad-hoc." >&2
   echo "Privacy grants will reset on every rebuild." >&2
+  SIGN_ID="-"
 fi
+
+# cargo-packager signs every binary with the app's entitlements, the helper
+# included, and `codesign --deep` would do the same. So nested code is signed
+# first, one by one (inside-out) and without entitlements, then the bundle on
+# its own (no --deep), which seals the nested signatures as they are.
+NESTED=("$HELPER")
+while IFS= read -r -d '' f; do
+  NESTED+=("$f")
+done < <(find "$APP/Contents" -type d -name '*.framework' -prune -print0 \
+  -o -type f -name '*.dylib' -print0)
+for f in "${NESTED[@]}"; do
+  codesign --force --options runtime -s "$SIGN_ID" "$f"
+done
+codesign --force --options runtime \
+  --entitlements "$ROOT/assets/Entitlements.plist" \
+  -s "$SIGN_ID" "$APP"
+codesign --verify --strict --deep "$APP"
 
 if [[ "${1:-}" == "--install" ]]; then
   osascript -e 'quit app "Guidy"' 2>/dev/null || true

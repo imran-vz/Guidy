@@ -314,24 +314,42 @@ impl SummaryView {
         self.run(
             cx,
             move |b| b.cancel_summarize(id),
-            move |this, cancelled, _| {
+            move |this, cancelled, cx| {
                 if this.meeting_id != id {
                     return;
                 }
-                this.cancelling = false;
-                if !cancelled {
-                    // Nothing was running (any more).
-                    this.generating = false;
-                    this.progress = None;
-                }
+                this.cancel_finished(cancelled, cx);
             },
         );
         cx.notify();
     }
 
+    /// `cancel_summarize` returned `cancelled`. False means the job wasn't
+    /// stopped: it already finished, or it is storing its result (too late
+    /// to stop). Either way its own completion ends the spinner, and its
+    /// outcome (e.g. a store error) is shown as usual.
+    fn cancel_finished(&mut self, cancelled: bool, cx: &mut Context<Self>) {
+        self.cancelling = false;
+        if !cancelled {
+            self.cancelled = false;
+            if !self.own_job {
+                // Seen through `is_summarizing`: ask again rather than wait
+                // for an event that may already have been sent.
+                self.reload(cx);
+            }
+        }
+    }
+
     #[cfg(test)]
     pub fn is_generating(&self) -> bool {
         self.generating
+    }
+
+    /// Apply a `cancel_summarize` result now (the real call's completion
+    /// can't be ordered against the job's in tests).
+    #[cfg(test)]
+    pub fn finish_cancel(&mut self, cancelled: bool, cx: &mut Context<Self>) {
+        self.cancel_finished(cancelled, cx);
     }
 
     /// Hook for the detail view: seek the transcript to `t_ms` and play.

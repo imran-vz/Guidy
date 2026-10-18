@@ -174,7 +174,9 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(15);
 
 impl<'a> Pipeline<'a> {
     /// Run (or resume) to the end. Errors with [`Cancelled`] when cancelled;
-    /// the completed stages stay recorded either way.
+    /// the completed stages stay recorded either way. The meeting must be
+    /// `Processing`: once it isn't, nothing more is saved and the run stops
+    /// as cancelled.
     pub fn run(mut self) -> Result<()> {
         let id = self.meeting_id;
         let Some(meeting) = self.store.get_meeting(id)? else {
@@ -194,7 +196,7 @@ impl<'a> Pipeline<'a> {
         let (mut cache, mut stage) = resume_point(completed, cached);
         if completed.is_some() && stage == ProcessingStage::Decode {
             // Starting over: forget the recorded stage too.
-            self.store.set_processing_stage(id, None)?;
+            self.record_stage(None)?;
         }
         log::info!("meeting {id}: processing from stage {}", stage.as_str());
 
@@ -213,11 +215,10 @@ impl<'a> Pipeline<'a> {
             if stage != ProcessingStage::Merge {
                 self.save(&cache)?;
             }
-            self.store.set_processing_stage(id, Some(stage))?;
+            self.record_stage(Some(stage))?;
             stage = next_stage(stage);
         }
-        self.store
-            .set_processing_stage(id, Some(ProcessingStage::Done))?;
+        self.record_stage(Some(ProcessingStage::Done))?;
         if let Err(e) = sidecar::delete_cache(self.meetings_dir, id) {
             log::warn!("meeting {id}: {e:#}");
         }
@@ -243,16 +244,33 @@ impl<'a> Pipeline<'a> {
     }
 
     /// Fail when the meeting was deleted mid-run, so a save point never
-    /// recreates sidecars (voiceprints) for a meeting that no longer exists.
-    fn ensure_meeting_exists(&self) -> Result<()> {
-        if self.store.get_meeting(self.meeting_id)?.is_none() {
-            bail!("meeting {} was deleted", self.meeting_id);
+    /// recreates sidecars (voiceprints) for a meeting that no longer exists;
+    /// and stop (as [`Cancelled`]) when it is no longer `Processing`: this
+    /// run was cancelled and its status already restored, so its stage and
+    /// checkpoint must stay as they were put back.
+    fn ensure_still_processing(&self) -> Result<()> {
+        match self.store.get_meeting(self.meeting_id)? {
+            None => bail!("meeting {} was deleted", self.meeting_id),
+            Some(m) if m.status != MeetingStatus::Processing => Err(Cancelled.into()),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Record the last completed stage, only while the meeting is
+    /// `Processing` (see [`Self::ensure_still_processing`]).
+    fn record_stage(&self, stage: Option<ProcessingStage>) -> Result<()> {
+        if !self
+            .store
+            .set_processing_stage_if_processing(self.meeting_id, stage)?
+        {
+            self.ensure_still_processing()?;
+            bail!("could not record the processing stage");
         }
         Ok(())
     }
 
     fn save(&self, cache: &ProcessingCache) -> Result<()> {
-        self.ensure_meeting_exists()?;
+        self.ensure_still_processing()?;
         sidecar::write_cache(self.meetings_dir, self.meeting_id, &self.key, cache)
     }
 
@@ -421,6 +439,7 @@ impl<'a> Pipeline<'a> {
     }
 
     fn merge(&mut self, cache: &ProcessingCache) -> Result<()> {
+        self.ensure_still_processing()?;
         let clustering = cache.clustering.clone().unwrap_or_default();
         let (speakers, segments, unit_of_segment) =
             build_transcript(cache, &clustering, &self.config);
@@ -456,7 +475,7 @@ impl<'a> Pipeline<'a> {
                 })
             })
             .collect();
-        self.ensure_meeting_exists()?;
+        self.ensure_still_processing()?;
         sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)?;
         Ok(())
     }

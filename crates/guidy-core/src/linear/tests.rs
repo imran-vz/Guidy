@@ -374,8 +374,12 @@ mod service {
         fn action_item(&self, id: ActionItemId) -> anyhow::Result<Option<ActionItem>> {
             self.items.action_item(id)
         }
-        fn begin_create(&self, id: ActionItemId) -> anyhow::Result<String> {
-            self.items.begin_create(id)
+        fn begin_create(
+            &self,
+            id: ActionItemId,
+            draft: &TicketDraft,
+        ) -> anyhow::Result<(String, Option<TicketDraft>)> {
+            self.items.begin_create(id, draft)
         }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             self.items.set_linear_issue(id, issue)
@@ -691,7 +695,10 @@ mod idempotent {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn store_with_approved() -> (MeetingsStore, i64) {
-        let store = MeetingsStore::open_in_memory(&[4u8; 32]).unwrap();
+        add_approved(MeetingsStore::open_in_memory(&[4u8; 32]).unwrap())
+    }
+
+    fn add_approved(store: MeetingsStore) -> (MeetingsStore, i64) {
         let meeting_id = store
             .insert_meeting(&Meeting {
                 id: 0,
@@ -794,9 +801,13 @@ mod idempotent {
         .await;
         let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
         let (store, id) = store_with_approved();
-        let before = store.ensure_linear_client_id(id).unwrap();
+        let ticket = store.get_action_item(id).unwrap().unwrap().ticket;
+        let (before, _) = store.ensure_linear_client_id(id, &ticket).unwrap();
         // Idempotent: the same id comes back.
-        assert_eq!(store.ensure_linear_client_id(id).unwrap(), before);
+        assert_eq!(
+            store.ensure_linear_client_id(id, &ticket).unwrap().0,
+            before
+        );
 
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert_eq!(out.results[0].result, Ok("ENG-8".into()));
@@ -840,19 +851,21 @@ mod idempotent {
         assert!(store.linear_client_id(id).unwrap().is_some());
     }
 
-    #[tokio::test]
-    async fn retry_after_an_edit_updates_the_existing_issue() {
-        // The first create reaches Linear but times out, and the lookup fails
-        // too. The user then edits the draft and retries: the issue that
-        // exists (with the old content) is updated to the edited draft.
+    /// Linear for a create that reaches Linear but times out, with a lookup
+    /// that fails until the returned flag is cleared. Later creates are
+    /// rejected as duplicates; the lookup returns `issue`; updates succeed
+    /// when `update_ok`.
+    async fn timed_out_create(
+        issue: Value,
+        update_ok: bool,
+    ) -> (Mock, Arc<std::sync::atomic::AtomicBool>) {
         let lookups_fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let fail = lookups_fail.clone();
         let creates = Arc::new(AtomicUsize::new(0));
-        let n = creates.clone();
         let m = mock(move |r| {
             let q = r.query();
             if q.contains("issueCreate") {
-                if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                if creates.fetch_add(1, Ordering::SeqCst) == 0 {
                     (504, json!({}))
                 } else {
                     (
@@ -864,18 +877,50 @@ mod idempotent {
                 if fail.load(Ordering::SeqCst) {
                     (503, json!({}))
                 } else {
-                    let id = r.vars()["id"].as_str().unwrap();
-                    ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
+                    let mut issue = issue.clone();
+                    issue["id"] = r.vars()["id"].clone();
+                    ok(json!({ "issue": issue }))
                 }
-            } else if q.contains("issueUpdate") {
+            } else if q.contains("issueUpdate") && update_ok {
                 let id = r.vars()["id"].as_str().unwrap();
                 ok(json!({ "issueUpdate": { "success": true, "issue": {
                     "id": id, "identifier": "ENG-5", "url": "u5" } } }))
             } else {
-                (500, json!({}))
+                (
+                    200,
+                    json!({ "errors": [{ "message": "assignee is not a team member" }] }),
+                )
             }
         })
         .await;
+        (m, lookups_fail)
+    }
+
+    /// [`stored_issue`] after changes made in Linear: a teammate assigned
+    /// it, an automation added a label and moved it to another project, and
+    /// Linear normalised the description.
+    fn issue_changed_in_linear() -> Value {
+        json!({
+            "id": "", "identifier": "ENG-5", "url": "u5",
+            "title": "item 0", "description": "Normalised\n", "priority": 0, "dueDate": null,
+            "team": { "id": "team-1" }, "project": { "id": "proj-other" },
+            "assignee": { "id": "u-teammate" }, "labels": { "nodes": [{ "id": "l-auto" }] },
+        })
+    }
+
+    fn update_input(m: &Mock) -> Option<Value> {
+        m.requests()
+            .into_iter()
+            .find(|r| r.query().contains("issueUpdate"))
+            .map(|r| r.vars()["input"].clone())
+    }
+
+    #[tokio::test]
+    async fn retry_after_an_edit_applies_only_the_edited_fields() {
+        // The first create reaches Linear but times out, and the lookup fails
+        // too. The user then edits the draft and retries: the issue that
+        // exists gets the user's edits, and nothing else.
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
         let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
         let (store, id) = store_with_approved();
 
@@ -886,8 +931,8 @@ mod idempotent {
         let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
         edited.title = "Edited title".into();
         edited.description = "More detail".into();
-        edited.project_id = None;
-        edited.assignee_id = Some("u-2".into());
+        edited.label_ids = vec!["l-mine".into()];
+        edited.due_date = Some("2026-11-02".into());
         store.update_ticket_draft(id, &edited).unwrap();
         lookups_fail.store(false, Ordering::SeqCst);
 
@@ -901,54 +946,156 @@ mod idempotent {
             .find(|r| r.query().contains("issueUpdate"))
             .unwrap();
         assert_eq!(update.vars()["id"], json!(client_id));
-        let input = &update.vars()["input"];
-        assert_eq!(input["title"], "Edited title");
-        assert_eq!(input["description"], "More detail");
-        assert_eq!(input["assigneeId"], "u-2");
-        assert_eq!(input["projectId"], Value::Null);
-        assert!(input.get("id").is_none());
+        // Only what the user changed; the project and assignee set in Linear
+        // and its label are left alone.
+        assert_eq!(
+            update.vars()["input"],
+            json!({
+                "title": "Edited title",
+                "description": "More detail",
+                "dueDate": "2026-11-02",
+                "addedLabelIds": ["l-mine"],
+            })
+        );
         let saved = store.get_action_item(id).unwrap().unwrap();
         assert_eq!(saved.ticket_state, TicketState::Created);
         assert_eq!(saved.linear_issue_identifier.as_deref(), Some("ENG-5"));
     }
 
     #[tokio::test]
-    async fn failed_update_of_an_edited_issue_is_reported_and_retryable() {
-        let m = mock(|r| {
-            let q = r.query();
-            if q.contains("issueCreate") {
-                (
-                    200,
-                    json!({ "errors": [{ "message": "Entity already exists" }] }),
-                )
-            } else if q.contains("issue(id:") {
-                let id = r.vars()["id"].as_str().unwrap();
-                ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
-            } else {
-                (
-                    200,
-                    json!({ "errors": [{ "message": "assignee is not a team member" }] }),
-                )
-            }
-        })
-        .await;
+    async fn retry_after_a_restart_applies_only_the_edited_fields() {
+        // The create times out and the app quits. After a restart (new
+        // service and store instances on the same database) the user edits
+        // the draft and retries: only that edit reaches the issue.
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::meetings::store::MEETINGS_DB_FILE);
+        let key = [5u8; 32];
+        let id = {
+            let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+            let (store, id) = add_approved(MeetingsStore::open(&path, &key).unwrap());
+            let first = s.create_tickets(&store, &[id]).await.unwrap();
+            assert!(first.results[0].result.is_err());
+            id
+        };
+
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let store = MeetingsStore::open(&path, &key).unwrap();
+        let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
+        edited.title = "Edited after restart".into();
+        store.update_ticket_draft(id, &edited).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert!(out.results[0].already_existed);
+        assert_eq!(
+            update_input(&m),
+            Some(json!({ "title": "Edited after restart" }))
+        );
+        let saved = store.get_action_item(id).unwrap().unwrap();
+        assert_eq!(saved.ticket_state, TicketState::Created);
+    }
+
+    #[tokio::test]
+    async fn unedited_retry_after_a_restart_sends_no_update() {
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::meetings::store::MEETINGS_DB_FILE);
+        let key = [6u8; 32];
+        let id = {
+            let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+            let (store, id) = add_approved(MeetingsStore::open(&path, &key).unwrap());
+            assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+                .result
+                .is_err());
+            id
+        };
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let store = MeetingsStore::open(&path, &key).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert_eq!(m.count("issueUpdate"), 0);
+    }
+
+    #[tokio::test]
+    async fn emptied_fields_are_cleared_and_removed_labels_removed() {
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
         let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
         let (store, id) = store_with_approved();
+        let mut draft = store.get_action_item(id).unwrap().unwrap().ticket;
+        draft.label_ids = vec!["l-1".into(), "l-2".into()];
+        draft.assignee_id = Some("u-1".into());
+        store.update_ticket_draft(id, &draft).unwrap();
+
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        draft.label_ids = vec!["l-2".into()];
+        draft.project_id = None;
+        store.update_ticket_draft(id, &draft).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert_eq!(
+            update_input(&m),
+            Some(json!({ "projectId": null, "removedLabelIds": ["l-1"] }))
+        );
+    }
+
+    #[tokio::test]
+    async fn unedited_retry_keeps_changes_made_in_linear() {
+        // The issue was changed in Linear after the lost create; the draft
+        // wasn't edited, so nothing is sent back.
+        let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
+        lookups_fail.store(false, Ordering::SeqCst);
+
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert_eq!(out.results[0].result, Ok("ENG-5".into()));
+        assert!(out.results[0].already_existed);
+        assert_eq!(m.count("issueUpdate"), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_update_of_an_edited_issue_is_reported_and_retryable() {
+        let (m, lookups_fail) = timed_out_create(stored_issue("", "ENG-5", "u5"), false).await;
+        let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
+        let (store, id) = store_with_approved();
+        assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
+            .result
+            .is_err());
         let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
         edited.assignee_id = Some("u-x".into());
         store.update_ticket_draft(id, &edited).unwrap();
+        lookups_fail.store(false, Ordering::SeqCst);
 
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         let err = out.results[0].result.clone().unwrap_err();
         assert!(err.contains("ENG-5 already exists"), "{err}");
         assert!(err.contains("assignee is not a team member"), "{err}");
+        assert_eq!(update_input(&m), Some(json!({ "assigneeId": "u-x" })));
         let item = store.get_action_item(id).unwrap().unwrap();
         assert_eq!(item.linear_issue_id, None);
         assert_eq!(item.ticket_state, TicketState::Approved);
+
+        // The next retry still compares against the first attempt's draft.
+        let out = s.create_tickets(&store, &[id]).await.unwrap();
+        assert!(out.results[0].result.is_err());
+        assert_eq!(m.count("issueUpdate"), 2);
     }
 
     #[tokio::test]
-    async fn unchanged_existing_issue_is_not_updated() {
+    async fn existing_issue_without_an_earlier_attempt_is_not_updated() {
+        // No earlier attempt is recorded (e.g. it was made before the sent
+        // draft was persisted): what this attempt sent is the baseline, so
+        // the issue is left as Linear has it.
         let m = mock(|r| {
             let q = r.query();
             if q.contains("issueCreate") {
@@ -957,8 +1104,9 @@ mod idempotent {
                     json!({ "errors": [{ "message": "Entity already exists" }] }),
                 )
             } else if q.contains("issue(id:") {
-                let id = r.vars()["id"].as_str().unwrap();
-                ok(json!({ "issue": stored_issue(id, "ENG-5", "u5") }))
+                let mut issue = issue_changed_in_linear();
+                issue["id"] = r.vars()["id"].clone();
+                ok(json!({ "issue": issue }))
             } else {
                 (500, json!({}))
             }

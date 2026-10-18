@@ -166,24 +166,36 @@ impl<B> Cached<B> {
 
 impl<B: SecretsBackend> SecretsBackend for Cached<B> {
     fn get(&self, key: &str) -> Result<Option<String>> {
-        let generation = {
-            let cache = self.cache.lock();
-            if let Some(v) = cache.values.get(key) {
-                return Ok(v.clone());
+        /// Reads a key that keeps changing during the read gets before the
+        /// last one is returned (uncached) anyway.
+        const MAX_READS: usize = 3;
+        let mut reads = 0;
+        loop {
+            let generation = {
+                let cache = self.cache.lock();
+                if let Some(v) = cache.values.get(key) {
+                    return Ok(v.clone());
+                }
+                cache.generation(key)
+            };
+            let v = self.inner.get(key)?;
+            reads += 1;
+            let mut cache = self.cache.lock();
+            if cache.generation(key) == generation {
+                if v.is_some() || key != MEETINGS_DATA_KEY {
+                    cache.values.insert(key.to_string(), v.clone());
+                }
+                return Ok(v);
             }
-            cache.generation(key)
-        };
-        let v = self.inner.get(key)?;
-        let mut cache = self.cache.lock();
-        if cache.generation(key) != generation {
-            // Written meanwhile: that value is newer than this read.
+            // Written meanwhile: that value is newer than this read. With
+            // none cached (invalidated, or a failed write), read again.
             if let Some(newer) = cache.values.get(key) {
                 return Ok(newer.clone());
             }
-        } else if v.is_some() || key != MEETINGS_DATA_KEY {
-            cache.values.insert(key.to_string(), v.clone());
+            if reads >= MAX_READS {
+                return Ok(v);
+            }
         }
-        Ok(v)
     }
 
     fn set(&self, key: &str, value: &str) -> Result<()> {
@@ -525,6 +537,73 @@ mod tests {
             assert_eq!(reader.join().unwrap(), expected, "the newer value wins");
             // Cached: no backend read (it would block).
             assert_eq!(c.get("k").unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn an_invalidation_during_a_slow_read_rereads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        /// `get` reads, then waits for a go-ahead before returning; `set`
+        /// fails (after writing) while `fail_writes` is on.
+        struct Slow {
+            map: MemoryBackend,
+            read: Mutex<mpsc::Sender<()>>,
+            go: Mutex<mpsc::Receiver<()>>,
+            fail_writes: AtomicBool,
+        }
+        impl SecretsBackend for Slow {
+            fn get(&self, key: &str) -> Result<Option<String>> {
+                let v = self.map.get(key);
+                self.read.lock().send(()).unwrap();
+                self.go.lock().recv().unwrap();
+                v
+            }
+            fn set(&self, key: &str, value: &str) -> Result<()> {
+                self.map.set(key, value)?;
+                if self.fail_writes.load(Ordering::SeqCst) {
+                    return Err(anyhow!("write failed"));
+                }
+                Ok(())
+            }
+            fn delete(&self, key: &str) -> Result<()> {
+                self.map.delete(key)
+            }
+        }
+        let (read_tx, read_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let c = Arc::new(Cached::new(Slow {
+            map: MemoryBackend::new(),
+            read: Mutex::new(read_tx),
+            go: Mutex::new(go_rx),
+            fail_writes: AtomicBool::new(false),
+        }));
+
+        for failed_write in [false, true] {
+            c.invalidate("k");
+            c.inner.map.set("k", "old").unwrap();
+            let reader = {
+                let c = c.clone();
+                std::thread::spawn(move || c.get("k").unwrap())
+            };
+            read_rx.recv().unwrap(); // the reader has the old value
+            if failed_write {
+                c.inner.fail_writes.store(true, Ordering::SeqCst);
+                assert!(c.set("k", "new").is_err());
+                c.inner.fail_writes.store(false, Ordering::SeqCst);
+            } else {
+                c.inner.map.set("k", "new").unwrap();
+                c.invalidate("k");
+            }
+            go_tx.send(()).unwrap();
+            // Nothing cached for the key: the reader reads it again.
+            read_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the stale read is not returned");
+            go_tx.send(()).unwrap();
+            assert_eq!(reader.join().unwrap().as_deref(), Some("new"));
+            // Cached: no backend read (it would block).
+            assert_eq!(c.get("k").unwrap().as_deref(), Some("new"));
         }
     }
 

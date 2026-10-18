@@ -125,15 +125,22 @@ static MIGRATIONS: &[M] = &[
     ALTER TABLE action_items ADD COLUMN linear_client_id TEXT;
     UPDATE action_items SET manual = 1 WHERE trim(source_quote) = '';",
     ),
-    // 3: the status, error and processing stage a meeting had before it was
-    // queued for processing, so a cancel (or a failed resume after a
-    // restart) can put them back. NULL while not processing, and for a
-    // meeting a crash left in `processing` before these columns existed.
+    // 3: the status and error a meeting had before it was queued for
+    // processing, so a cancel (or a failed resume after a restart) can put
+    // them back. NULL while not processing, and for a meeting a crash left
+    // in `processing` before this column existed.
     M::up(
         "ALTER TABLE meetings ADD COLUMN status_before_processing TEXT;
-    ALTER TABLE meetings ADD COLUMN error_before_processing TEXT;
-    ALTER TABLE meetings ADD COLUMN stage_before_processing TEXT;",
+    ALTER TABLE meetings ADD COLUMN error_before_processing TEXT;",
     ),
+    // 4: the processing stage it had then too, so a cancelled reprocess
+    // gets its `done` stage back. NULL like the columns of 3.
+    M::up("ALTER TABLE meetings ADD COLUMN stage_before_processing TEXT;"),
+    // 5: `linear_sent_ticket`: the ticket draft (JSON) the first create
+    // attempt with `linear_client_id` sent, so a retry (also after a
+    // restart) applies only the user's later edits to an issue that
+    // attempt created. Cleared once the issue is recorded.
+    M::up("ALTER TABLE action_items ADD COLUMN linear_sent_ticket TEXT;"),
 ];
 
 /// File name of the database inside the app data dir.
@@ -627,6 +634,20 @@ impl MeetingsStore {
             params![id, stage.map(|s| s.as_str())],
         )?;
         expect_one(n, "meeting", id)
+    }
+
+    /// [`Self::set_processing_stage`], only while the meeting is
+    /// `Processing`: a run that was cancelled (its meeting's status already
+    /// restored) can't move the stage afterwards. Returns whether it changed.
+    pub fn set_processing_stage_if_processing(
+        &self,
+        id: MeetingId,
+        stage: Option<ProcessingStage>,
+    ) -> Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE meetings SET processing_stage = ?2 WHERE id = ?1 AND status = 'processing'",
+            params![id, stage.map(|s| s.as_str())],
+        )? > 0)
     }
 
     /// Set both audio paths (relative to `<app_data_dir>/meetings/audio/`).
@@ -1308,27 +1329,46 @@ impl MeetingsStore {
     /// generating and persisting one first if needed. Persisting it before
     /// the create call is the "creating" state: a crash or timeout after it
     /// leaves an id that a retry reuses, so Linear rejects the duplicate.
-    pub fn ensure_linear_client_id(&self, id: ActionItemId) -> Result<String> {
+    ///
+    /// Also returns the draft an earlier attempt with this id sent; when
+    /// there is none, `draft` (what this attempt sends) is recorded as that
+    /// and `None` is returned. Only the first attempt's draft is kept (a
+    /// later failed one may not have reached Linear).
+    pub fn ensure_linear_client_id(
+        &self,
+        id: ActionItemId,
+        draft: &TicketDraft,
+    ) -> Result<(String, Option<TicketDraft>)> {
+        let json = to_json(draft)?;
         self.with_tx(|tx| {
-            let current: Option<Option<String>> = tx
+            let current: Option<(Option<String>, Option<String>)> = tx
                 .query_row(
-                    "SELECT linear_client_id FROM action_items WHERE id = ?1",
+                    "SELECT linear_client_id, linear_sent_ticket FROM action_items WHERE id = ?1",
                     [id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            match current {
-                None => bail!("action item {id} not found"),
-                Some(Some(existing)) if !existing.is_empty() => Ok(existing),
-                Some(_) => {
-                    let fresh = new_uuid_v4();
-                    tx.execute(
-                        "UPDATE action_items SET linear_client_id = ?2 WHERE id = ?1",
-                        params![id, fresh],
-                    )?;
-                    Ok(fresh)
+            let Some((client_id, sent)) = current else {
+                bail!("action item {id} not found");
+            };
+            let client_id = client_id
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(new_uuid_v4);
+            let sent = sent.and_then(|s| match serde_json::from_str::<TicketDraft>(&s) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    log::warn!("action item {id}: unreadable sent ticket ({e}); replacing it");
+                    None
                 }
+            });
+            if sent.is_none() {
+                tx.execute(
+                    "UPDATE action_items SET linear_client_id = ?2, linear_sent_ticket = ?3
+                     WHERE id = ?1",
+                    params![id, client_id, json],
+                )?;
             }
+            Ok((client_id, sent))
         })
     }
 
@@ -1384,7 +1424,7 @@ impl MeetingsStore {
     ) -> Result<()> {
         let n = self.conn.lock().execute(
             "UPDATE action_items SET linear_issue_id = ?2, linear_issue_identifier = ?3,
-                linear_issue_url = ?4, ticket_state = ?5
+                linear_issue_url = ?4, ticket_state = ?5, linear_sent_ticket = NULL
              WHERE id = ?1",
             params![id, issue_id, identifier, url, TicketState::Created.as_str()],
         )?;
@@ -2078,7 +2118,8 @@ mod tests {
         e.owner_name = Some("Dana".into());
         s.update_action_item(&e).unwrap();
         let creating = s.insert_action_item(&item(m, "creating")).unwrap();
-        s.ensure_linear_client_id(creating.id).unwrap();
+        s.ensure_linear_client_id(creating.id, &creating.ticket)
+            .unwrap();
         let guarded = s.insert_action_item(&item(m, "guarded")).unwrap();
         let plain = s.insert_action_item(&item(m, "plain")).unwrap();
         // Saving an unchanged copy is not an edit.
@@ -2120,8 +2161,9 @@ mod tests {
         let m = s.insert_meeting(&meeting("t", 0)).unwrap();
         let a = s.insert_action_item(&item(m, "x")).unwrap();
         assert_eq!(s.linear_client_id(a.id).unwrap(), None);
-        let id = s.ensure_linear_client_id(a.id).unwrap();
-        assert_eq!(s.ensure_linear_client_id(a.id).unwrap(), id);
+        let (id, sent) = s.ensure_linear_client_id(a.id, &a.ticket).unwrap();
+        assert_eq!(sent, None);
+        assert_eq!(s.ensure_linear_client_id(a.id, &a.ticket).unwrap().0, id);
         assert_eq!(s.linear_client_id(a.id).unwrap().as_deref(), Some(&*id));
         assert_eq!(id.len(), 36);
         let parts: Vec<_> = id.split('-').map(str::len).collect();
@@ -2129,7 +2171,44 @@ mod tests {
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
         assert_ne!(new_uuid_v4(), new_uuid_v4());
-        assert!(s.ensure_linear_client_id(999).is_err());
+        assert!(s
+            .ensure_linear_client_id(999, &TicketDraft::default())
+            .is_err());
+    }
+
+    #[test]
+    fn first_sent_ticket_is_kept_until_the_issue_is_recorded() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_action_item(&item(m, "x")).unwrap();
+        let first = TicketDraft {
+            title: "First".into(),
+            ..Default::default()
+        };
+        let edited = TicketDraft {
+            title: "Edited".into(),
+            ..Default::default()
+        };
+        let (id, sent) = s.ensure_linear_client_id(a.id, &first).unwrap();
+        assert_eq!(sent, None);
+        // A retry with an edited draft gets the first attempt's draft back,
+        // and keeps it.
+        for _ in 0..2 {
+            let (again, sent) = s.ensure_linear_client_id(a.id, &edited).unwrap();
+            assert_eq!(again, id);
+            assert_eq!(sent.as_ref(), Some(&first));
+        }
+        s.set_linear_issue(a.id, "iss", "ENG-1", "u").unwrap();
+        let sent: Option<String> = s
+            .conn
+            .lock()
+            .query_row(
+                "SELECT linear_sent_ticket FROM action_items WHERE id = ?1",
+                [a.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sent, None);
     }
 
     #[test]
@@ -2296,6 +2375,105 @@ mod tests {
         let got = s.get_meeting(id).unwrap().unwrap();
         assert_eq!(got.status, MeetingStatus::Recorded);
         assert_eq!(got.processing_stage.as_deref(), Some("vad"));
+    }
+
+    #[test]
+    fn the_stage_is_kept_only_while_processing() {
+        let s = store();
+        let id = s.insert_meeting(&meeting("m", 0)).unwrap();
+        assert!(!s
+            .set_processing_stage_if_processing(id, Some(ProcessingStage::Vad))
+            .unwrap());
+        assert_eq!(s.get_meeting(id).unwrap().unwrap().processing_stage, None);
+        assert!(s.mark_processing(id, false).unwrap());
+        assert!(s
+            .set_processing_stage_if_processing(id, Some(ProcessingStage::Vad))
+            .unwrap());
+        assert_eq!(
+            s.get_meeting(id)
+                .unwrap()
+                .unwrap()
+                .processing_stage
+                .as_deref(),
+            Some("vad")
+        );
+    }
+
+    /// An item a version 4 database left "creating" (client id, no sent
+    /// draft) keeps its id; the next attempt's draft becomes the sent one.
+    #[test]
+    fn a_version_4_creating_item_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            apply_key(&conn, &KEY).unwrap();
+            Migrations::new(MIGRATIONS[..4].to_vec())
+                .to_latest(&mut conn)
+                .unwrap();
+            conn.execute(
+                "INSERT INTO meetings (title, started_at, ended_at, status)
+                 VALUES ('old', 0, 1, 'processed')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO action_items (meeting_id, text, ticket, linear_client_id)
+                 VALUES (1, 'x', ?1, 'old-client-id')",
+                [to_json(&TicketDraft::default()).unwrap()],
+            )
+            .unwrap();
+        }
+        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let id = s.action_items(1).unwrap()[0].id;
+        let draft = TicketDraft {
+            title: "Now".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.ensure_linear_client_id(id, &draft).unwrap(),
+            ("old-client-id".to_string(), None)
+        );
+        assert_eq!(
+            s.ensure_linear_client_id(id, &TicketDraft::default())
+                .unwrap()
+                .1,
+            Some(draft)
+        );
+    }
+
+    /// A database created when migration 3 was the last one gets the stage
+    /// column from migration 4.
+    #[test]
+    fn a_version_3_database_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            apply_key(&conn, &KEY).unwrap();
+            Migrations::new(MIGRATIONS[..3].to_vec())
+                .to_latest(&mut conn)
+                .unwrap();
+            let v: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 3);
+            conn.execute(
+                "INSERT INTO meetings (title, started_at, ended_at, status, processing_stage)
+                 VALUES ('old', 0, 1, 'processed', 'done')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let id = s.list_meetings().unwrap()[0].id;
+        assert!(s.mark_processing(id, false).unwrap());
+        s.set_processing_stage(id, Some(ProcessingStage::Vad))
+            .unwrap();
+        assert!(s.restore_status_before_processing(id).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(got.status, MeetingStatus::Processed);
+        assert_eq!(got.processing_stage.as_deref(), Some("done"));
     }
 
     #[test]
