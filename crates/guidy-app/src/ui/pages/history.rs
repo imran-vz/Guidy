@@ -5,10 +5,11 @@ use crate::logic::flows::format_history_date;
 use crate::logic::history::{HistoryList, PAGE_SIZE};
 use crate::playback::{format_time, Playback};
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, page, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::managers::history::HistoryEntry;
@@ -252,7 +253,7 @@ impl HistoryPage {
     }
 
     fn render_player(&self, entry: &HistoryEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let tone = design::tone(cx);
         let st = Playback::global().state();
         let active = self
             .audio_paths
@@ -270,8 +271,12 @@ impl HistoryPage {
         let duration = st.duration;
         let e = entry.clone();
         h_flex()
-            .gap_2()
+            .gap(px(10.))
             .w_full()
+            .px(px(10.))
+            .py(px(8.))
+            .border_t_1()
+            .border_color(tone.hairline)
             .child(
                 Button::new(SharedString::from(format!("play-{id}")))
                     .ghost()
@@ -280,29 +285,26 @@ impl HistoryPage {
                     .on_click(cx.listener(move |this, _, _, cx| this.play(&e, cx))),
             )
             .child(
-                div()
-                    .text_xs()
-                    .font_family(crate::theme::MONO_FONT)
-                    .text_color(theme.muted_foreground)
-                    .child(if active {
-                        format_time(st.position)
-                    } else {
-                        "0:00".into()
-                    }),
+                design::mono(if active {
+                    format_time(st.position)
+                } else {
+                    "0:00".into()
+                })
+                .text_color(tone.text_muted),
             )
             .child(
                 div()
                     .id(SharedString::from(format!("seek-{id}")))
                     .flex_1()
-                    .h(px(6.))
+                    .h(px(4.))
                     .rounded_full()
-                    .bg(theme.muted)
+                    .bg(tone.raised)
                     .cursor_pointer()
                     .child(
                         div()
                             .h_full()
                             .rounded_full()
-                            .bg(theme.primary)
+                            .bg(tone.accent)
                             .w(relative(fraction)),
                     )
                     .child(
@@ -326,20 +328,16 @@ impl HistoryPage {
                     }),
             )
             .child(
-                div()
-                    .text_xs()
-                    .font_family(crate::theme::MONO_FONT)
-                    .text_color(theme.muted_foreground)
-                    .child(if active {
-                        format_time(st.duration)
-                    } else {
-                        "--:--".into()
-                    }),
+                design::mono(if active {
+                    format_time(st.duration)
+                } else {
+                    "--:--".into()
+                })
+                .text_color(tone.text_muted),
             )
     }
 
     fn render_entry(&self, entry: &HistoryEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
         let id = entry.id;
         let retrying = self.retrying.contains(&id);
         let has_text = !entry.transcription_text.trim().is_empty();
@@ -352,21 +350,19 @@ impl HistoryPage {
                 .icon(icon(name))
                 .tooltip(label)
         };
-        v_flex()
+        let tone = design::tone(cx);
+        design::panel(cx)
             .id(SharedString::from(format!("history-entry-{id}")))
-            .px_4()
-            .pt_2()
-            .pb_4()
-            .gap_3()
             .child(
                 h_flex()
+                    .pl(design::SECTION_X)
+                    .pr(px(10.))
+                    .pt(px(10.))
                     .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_semibold()
-                            .child(format_history_date(entry.timestamp, &lang)),
-                    )
+                    .child(design::eyebrow(
+                        format_history_date(entry.timestamp, &lang),
+                        cx,
+                    ))
                     .child(
                         h_flex()
                             .child(
@@ -395,7 +391,7 @@ impl HistoryPage {
                                     "star",
                                 )
                                 .disabled(retrying)
-                                .when(entry.saved, |b| b.text_color(theme.primary))
+                                .when(entry.saved, |b| b.text_color(tone.accent_text))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.toggle_saved(id, cx)),
                                 ),
@@ -421,26 +417,43 @@ impl HistoryPage {
             )
             .child(
                 div()
-                    .text_sm()
-                    .italic()
+                    .px(design::SECTION_X)
+                    .pt(px(6.))
+                    .pb(px(12.))
+                    .text_size(design::TEXT_BODY)
+                    .line_height(relative(1.6))
                     .when(retrying, |d| {
-                        d.child(
+                        // Skeleton lines under a passing sheen stand in for
+                        // the text that's on its way.
+                        let line = |w: f32, i: usize| {
                             div()
-                                .child(t("settings.history.transcribing"))
-                                .with_animation(
-                                    ("transcribe-pulse", id as usize),
-                                    Animation::new(Duration::from_secs(3)).repeat(),
-                                    |el, delta| {
-                                        el.opacity(0.4 + 0.5 * (delta * std::f32::consts::PI).sin())
-                                    },
-                                ),
+                                .relative()
+                                .h(px(8.))
+                                .w(relative(w))
+                                .rounded_full()
+                                .bg(tone.raised)
+                                .overflow_hidden()
+                                .child(design::sheen(("skeleton", id as usize * 2 + i), px(4.), cx))
+                        };
+                        d.child(
+                            v_flex()
+                                .gap(px(9.))
+                                .child(h_flex().child(design::chip("", true, cx).child(
+                                    design::shimmer_text(
+                                        ("transcribing", id as usize),
+                                        t("settings.history.transcribing"),
+                                        cx,
+                                    ),
+                                )))
+                                .child(line(0.72, 0))
+                                .child(line(0.48, 1)),
                         )
                     })
                     .when(!retrying && has_text, |d| {
                         d.child(entry.transcription_text.clone())
                     })
                     .when(!retrying && !has_text, |d| {
-                        d.text_color(theme.muted_foreground)
+                        d.text_color(tone.text_muted)
                             .child(t("settings.history.transcriptionFailed"))
                     }),
             )
@@ -451,35 +464,50 @@ impl HistoryPage {
 
 impl Render for HistoryPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let content: AnyElement = if self.list.loading {
-            div()
-                .px_4()
-                .py_3()
-                .text_center()
-                .text_color(theme.muted_foreground)
-                .child(t("settings.history.loading"))
+        let tone = design::tone(cx);
+        let notice = |text: SharedString| {
+            design::panel(cx)
+                .child(
+                    div()
+                        .px(design::SECTION_X)
+                        .py(px(18.))
+                        .text_center()
+                        .text_size(design::TEXT_BODY)
+                        .text_color(tone.text_muted)
+                        .child(text),
+                )
                 .into_any_element()
+        };
+        let content: AnyElement = if self.list.loading {
+            notice(t("settings.history.loading"))
         } else if self.list.entries.is_empty() {
-            div()
-                .px_4()
-                .py_3()
-                .text_center()
-                .text_color(theme.muted_foreground)
-                .child(t("settings.history.empty"))
+            design::panel(cx)
+                .child(
+                    design::blueprint(px(150.), cx).child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(design::illustration("waveform", px(220.), px(96.), cx)),
+                    ),
+                )
+                .child(
+                    div()
+                        .px(design::SECTION_X)
+                        .pb(px(16.))
+                        .text_center()
+                        .text_size(design::TEXT_BODY)
+                        .text_color(tone.text_muted)
+                        .child(t("settings.history.empty")),
+                )
                 .into_any_element()
         } else {
             let entries = self.list.entries.clone();
-            let count = entries.len();
             let rows: Vec<AnyElement> = entries
                 .iter()
-                .enumerate()
-                .map(|(i, e)| {
-                    div()
-                        .when(i + 1 < count, |d| d.border_b_1().border_color(theme.border))
-                        .child(self.render_entry(e, cx))
-                        .into_any_element()
-                })
+                .map(|e| self.render_entry(e, cx).into_any_element())
                 .collect();
             // Sentinel: when it's laid out inside the window, fetch the next page.
             let entity = cx.entity().downgrade();
@@ -500,28 +528,32 @@ impl Render for HistoryPage {
             )
             .w_full()
             .h(px(4.));
-            v_flex().children(rows).child(sentinel).into_any_element()
+            v_flex()
+                .gap(px(12.))
+                .children(rows)
+                .child(sentinel)
+                .into_any_element()
         };
         page()
             .id("page-history")
             .child(
                 v_flex()
-                    .gap_2()
+                    .gap(px(14.))
                     .child(
                         h_flex()
-                            .px_1()
                             .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(theme.muted_foreground)
-                                    .child(t("settings.history.title").to_uppercase()),
-                            )
+                            .items_center()
+                            .child(crate::ui::kit::crumb_title(
+                                t("settings.history.title"),
+                                None,
+                                design::TEXT_HEADLINE,
+                                cx,
+                            ))
                             .child(
                                 Button::new("open-recordings")
-                                    .outline()
+                                    .secondary()
                                     .small()
+                                    .pill()
                                     .icon(icon("folder-open"))
                                     .label(t("settings.history.openFolder"))
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -537,14 +569,7 @@ impl Render for HistoryPage {
                                     })),
                             ),
                     )
-                    .child(
-                        div()
-                            .rounded(theme.radius_lg)
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.sidebar)
-                            .child(content),
-                    ),
+                    .child(content),
             )
             .test_support()
     }

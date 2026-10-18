@@ -5,6 +5,7 @@ use crate::logic::flows::{
     find_latest_release_note, find_release_note_to_show, is_allowed_note_link,
 };
 use crate::state::AppState;
+use crate::ui::design::Pill;
 use crate::ui::kit::t_args;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogAction, DialogFooter};
@@ -123,6 +124,7 @@ pub fn open_note_dialog(
                     DialogAction::new().child(
                         Button::new("whats-new-close")
                             .primary()
+                            .pill()
                             .label(crate::ui::kit::t("common.close")),
                     ),
                 ),

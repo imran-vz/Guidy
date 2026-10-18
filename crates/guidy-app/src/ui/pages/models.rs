@@ -7,15 +7,14 @@ use crate::logic::models::{
 };
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, page, page_header, spinner, t, t_args};
 use crate::ui::model_card::ModelCard;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, Toggle};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
-};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::managers::model::RetiredModel;
@@ -192,25 +191,26 @@ impl ModelsPage {
                 .id("retired-notice")
                 .w_full()
                 .gap_3()
-                .px_3()
-                .py_2()
-                .rounded(theme.radius_lg)
+                .pl(px(14.))
+                .pr(px(10.))
+                .py(px(10.))
+                .rounded(design::RADIUS_PANEL)
                 .border_1()
-                .border_color(theme.warning.opacity(0.4))
-                .bg(theme.warning.opacity(0.1))
+                .border_color(theme.warning.opacity(0.3))
+                .bg(theme.warning.opacity(0.08))
                 .child(icon("triangle-alert").text_color(theme.warning))
                 .child(
                     v_flex()
                         .flex_1()
                         .child(
                             div()
-                                .text_sm()
-                                .font_semibold()
+                                .text_size(design::TEXT_BODY)
+                                .font_weight(FontWeight::MEDIUM)
                                 .child(t("settings.models.retiredNotice.title")),
                         )
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(px(12.))
                                 .text_color(theme.muted_foreground)
                                 .child(t_args(
                                     "settings.models.retiredNotice.description",
@@ -222,6 +222,7 @@ impl ModelsPage {
                     Button::new("retired-delete")
                         .warning()
                         .small()
+                        .pill()
                         .icon(icon("trash"))
                         .loading(self.deleting_retired)
                         .label(t("settings.models.retiredNotice.delete"))
@@ -284,7 +285,7 @@ impl ModelsPage {
                             .rounded(px(4.))
                             .text_sm()
                             .cursor_pointer()
-                            .when(active, |d| d.font_semibold())
+                            .when(active, |d| d.font_weight(FontWeight::MEDIUM))
                             .hover(move |s| s.bg(hover))
                             .child(label)
                             .on_click(move |_, window, cx| {
@@ -389,16 +390,21 @@ impl Render for ModelsPage {
         let available: Vec<_> = available.into_iter().cloned().collect();
         let rescanning = m.rescanning;
 
-        // Hide the "recommended" badge on models you already have.
+        // Hide the "recommended" badge on models you already have. Every
+        // model but the active one is a row in a shared panel.
+        let current_model = m.current_model.clone();
         let make_cards = |models: &[guidy_core::managers::model::ModelInfo],
                           show_recommended: bool,
                           cx: &mut Context<Self>|
-         -> Vec<AnyElement> {
+         -> Vec<(AnyElement, bool)> {
             models
                 .iter()
                 .map(|model| {
                     let entity = entity.clone();
-                    self.card(model, cx)
+                    let is_row = model.id != current_model;
+                    let card = self
+                        .card(model, cx)
+                        .compact(true)
                         .show_recommended(show_recommended)
                         .on_select(move |id, _, cx| {
                             let id = id.to_string();
@@ -419,7 +425,8 @@ impl Render for ModelsPage {
                                 })
                                 .ok();
                         })
-                        .into_any_element()
+                        .into_any_element();
+                    (card, is_row)
                 })
                 .collect()
         };
@@ -429,13 +436,7 @@ impl Render for ModelsPage {
         let header = h_flex()
             .w_full()
             .justify_between()
-            .child(
-                div()
-                    .text_sm()
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child(t("settings.models.yourModels").to_uppercase()),
-            )
+            .child(design::eyebrow(t("settings.models.yourModels"), cx))
             .child(
                 h_flex()
                     .gap_1()
@@ -451,7 +452,7 @@ impl Render for ModelsPage {
                                 AppState::global(cx).update(cx, |s, cx| s.rescan_models(cx))
                             }),
                     )
-                    .child(div().w(px(1.)).h(px(16.)).bg(theme.border))
+                    .child(div().w(px(1.)).h(px(16.)).bg(design::tone(cx).hairline))
                     .child(
                         Toggle::new("filter-streaming")
                             .small()
@@ -491,22 +492,17 @@ impl Render for ModelsPage {
                     .cleanable(true),
             )
             .child(header)
-            .child(v_flex().gap_2().children(downloaded_cards))
+            .child(rows_panel(downloaded_cards, cx))
             .when(!available.is_empty(), |p| {
-                p.child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .text_color(theme.muted_foreground)
-                        .child(t("settings.models.availableModels").to_uppercase()),
-                )
-                .child(v_flex().gap_2().children(available_cards))
+                p.child(design::eyebrow(t("settings.models.availableModels"), cx))
+                    .child(rows_panel(available_cards, cx))
             })
             .when(!any, |p| {
                 p.child(
                     div()
                         .p_6()
                         .text_center()
+                        .text_size(design::TEXT_BODY)
                         .text_color(theme.muted_foreground)
                         .child(t("settings.models.noModelsMatch")),
                 )
@@ -514,4 +510,34 @@ impl Render for ModelsPage {
             .test_support()
             .into_any_element()
     }
+}
+
+/// The active model keeps its own card; the rest share one hairline panel.
+fn rows_panel(cards: Vec<(AnyElement, bool)>, cx: &App) -> Div {
+    let hairline = design::tone(cx).hairline;
+    let mut out = v_flex().w_full().gap(px(10.));
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let flush = |out: Div, rows: &mut Vec<AnyElement>| {
+        if rows.is_empty() {
+            return out;
+        }
+        let count = rows.len();
+        out.child(
+            design::panel(cx).children(rows.drain(..).enumerate().map(move |(i, row)| {
+                div()
+                    .w_full()
+                    .when(i + 1 < count, |d| d.border_b_1().border_color(hairline))
+                    .child(row)
+            })),
+        )
+    };
+    for (card, is_row) in cards {
+        if is_row {
+            rows.push(card);
+        } else {
+            out = flush(out, &mut rows);
+            out = out.child(card);
+        }
+    }
+    flush(out, &mut rows)
 }

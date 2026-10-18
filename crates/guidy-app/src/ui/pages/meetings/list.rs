@@ -7,14 +7,12 @@ use crate::logic::meetings::{
     MeetingsEvent,
 };
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
-};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::types::{Meeting, MeetingId, MeetingStatus, ProcessingProgress};
@@ -232,63 +230,54 @@ impl MeetingList {
 
     fn render_status(&self, m: &Meeting, cx: &App) -> AnyElement {
         let theme = cx.theme();
+        let tone = design::tone(cx);
         if m.status == MeetingStatus::Processing {
             let p = self.progress.get(&m.id);
             let fraction = p.map(|p| p.fraction).unwrap_or(0.0).clamp(0.0, 1.0);
             let stage = p
                 .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
                 .unwrap_or_else(|| t("meetings.status.processing"));
-            return h_flex()
-                .gap_2()
+            return v_flex()
                 .w_full()
+                .gap(px(8.))
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .flex_none()
-                        .child(stage),
+                    h_flex().child(design::chip("", true, cx).child(design::shimmer_text(
+                        SharedString::from(format!("meeting-stage-{}", m.id)),
+                        format!("{stage} · {:.0}%", fraction * 100.0),
+                        cx,
+                    ))),
                 )
-                .child(
-                    div().flex_1().child(
-                        Progress::new(SharedString::from(format!("meeting-progress-{}", m.id)))
-                            .value(fraction * 100.0),
-                    ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .font_family(crate::theme::MONO_FONT)
-                        .text_color(theme.muted_foreground)
-                        .child(format!("{:.0}%", fraction * 100.0)),
-                )
+                .child(design::track(
+                    SharedString::from(format!("meeting-progress-{}", m.id)),
+                    Some(fraction),
+                    cx,
+                ))
                 .into_any_element();
         }
-        let color = match m.status {
-            MeetingStatus::Failed => theme.danger,
-            MeetingStatus::Recording => theme.danger,
-            MeetingStatus::Processed => theme.success,
-            _ => theme.muted_foreground,
-        };
+        let failed = m.status == MeetingStatus::Failed;
+        let live = m.status == MeetingStatus::Recording;
         h_flex()
-            .gap_1p5()
-            .child(div().size(px(6.)).rounded_full().bg(color))
+            .gap(px(8.))
+            .min_w_0()
             .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(t(status_key(m.status))),
+                design::chip(t(status_key(m.status)), live, cx).when(failed, |d| {
+                    d.bg(theme.danger.opacity(0.12)).text_color(theme.danger)
+                }),
             )
-            .when_some(
-                m.error
-                    .clone()
-                    .filter(|_| m.status == MeetingStatus::Failed),
-                |d, e| d.child(div().text_xs().text_color(theme.danger).truncate().child(e)),
-            )
+            .when_some(m.error.clone().filter(|_| failed), |d, e| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .text_color(tone.text_muted)
+                        .truncate()
+                        .child(e),
+                )
+            })
             .into_any_element()
     }
 
     fn render_row(&self, m: &Meeting, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
         let id = m.id;
         let lang = guidy_i18n::language();
         let busy = self.busy.contains(&id);
@@ -315,6 +304,7 @@ impl MeetingList {
                     Button::new(SharedString::from(format!("meeting-rename-save-{id}")))
                         .primary()
                         .xsmall()
+                        .pill()
                         .label(t("meetings.list.save"))
                         .on_click(cx.listener(|this, _, _, cx| this.save_rename(cx))),
                 )
@@ -322,6 +312,7 @@ impl MeetingList {
                     Button::new(SharedString::from(format!("meeting-rename-cancel-{id}")))
                         .ghost()
                         .xsmall()
+                        .pill()
                         .label(t("meetings.list.cancel"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.renaming = None;
@@ -332,8 +323,8 @@ impl MeetingList {
         } else {
             div()
                 .id(SharedString::from(format!("meeting-title-{id}")))
-                .text_sm()
-                .font_semibold()
+                .text_size(design::TEXT_BODY)
+                .font_weight(FontWeight::MEDIUM)
                 .truncate()
                 .cursor_pointer()
                 .hover(|s| s.underline())
@@ -348,20 +339,16 @@ impl MeetingList {
             .id(SharedString::from(format!("meeting-{id}")))
             .w_full()
             .gap_3()
-            .px_3()
-            .py_2()
+            .pl(design::SECTION_X)
+            .pr(px(10.))
+            .py(px(12.))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
+                    .gap(px(6.))
                     .child(title)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(meta),
-                    )
+                    .child(design::eyebrow(meta, cx))
                     .child(self.render_status(m, cx)),
             )
             .when(!renaming, |d| {
@@ -419,7 +406,7 @@ impl MeetingList {
 
 impl Render for MeetingList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+        let tone = design::tone(cx);
         let needs_model = meeting_settings(cx).enabled
             || self
                 .meetings
@@ -428,23 +415,20 @@ impl Render for MeetingList {
         let model_banner = meeting_model_missing(cx)
             .filter(|_| needs_model)
             .map(|m| render_model_download("list", &m, cx));
+        let notice = |text: SharedString| {
+            div()
+                .px(design::SECTION_X)
+                .py(px(18.))
+                .text_center()
+                .text_size(design::TEXT_BODY)
+                .text_color(tone.text_muted)
+                .child(text)
+        };
         let content: AnyElement = if self.loading {
-            div()
-                .px_4()
-                .py_3()
-                .text_center()
-                .text_color(theme.muted_foreground)
-                .child(t("meetings.list.loading"))
-                .into_any_element()
+            notice(t("meetings.list.loading")).into_any_element()
         } else if self.meetings.is_empty() {
-            div()
+            notice(t("meetings.list.empty"))
                 .id("meetings-empty")
-                .px_4()
-                .py_3()
-                .text_center()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(t("meetings.list.empty"))
                 .test_support()
                 .into_any_element()
         } else {
@@ -453,7 +437,9 @@ impl Render for MeetingList {
             v_flex()
                 .children(meetings.iter().enumerate().map(|(i, m)| {
                     div()
-                        .when(i + 1 < count, |d| d.border_b_1().border_color(theme.border))
+                        .when(i + 1 < count, |d| {
+                            d.border_b_1().border_color(tone.hairline)
+                        })
                         .child(self.render_row(m, cx))
                 }))
                 .into_any_element()
@@ -461,25 +447,14 @@ impl Render for MeetingList {
         v_flex()
             .id("meetings-list")
             .w_full()
-            .gap_1p5()
+            .gap(px(8.))
             .child(
                 div()
-                    .px_1()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child(t("meetings.list.title").to_uppercase()),
+                    .px(px(2.))
+                    .child(design::eyebrow(t("meetings.list.title"), cx)),
             )
             .children(model_banner)
-            .child(
-                div()
-                    .w_full()
-                    .rounded(theme.radius_lg)
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.sidebar)
-                    .child(content),
-            )
+            .child(design::panel(cx).child(content))
             .test_support()
     }
 }

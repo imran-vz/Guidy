@@ -24,7 +24,7 @@ guidy/                          (cargo workspace)
 │       logic/* (pure, tested UI logic), ui/* (gpui-kit views),
 │       windows.rs, shell.rs, playback.rs, updater.rs, ui_tests.rs
 ├─ xtask/           `cargo xtask test [--full] | parity | gate [--full]`
-├─ assets/          themes/zed-one.json, fonts/, icons/, resources/ (sounds, tray, VAD), locales/
+├─ assets/          themes/guidy.json, fonts/, icons/, illustrations/, resources/ (sounds, tray, VAD), locales/
 └─ docs/            ARCHITECTURE.md, PARITY.md, baseline/ (tests, commands, events)
 ```
 
@@ -55,14 +55,19 @@ guidy/                          (cargo workspace)
 | Logging | `log` → file (500 KB, keep one) + stdout + in-memory channel for the Debug page's live viewer |
 | Bundling | `cargo-packager`: .app/.dmg (Info.plist mic string, entitlements), NSIS, deb/AppImage. Packages are unsigned for now. |
 
-### 1.3 Design system (Zed look)
+### 1.3 Design system
+
+The design language is technical drawing: graphite surfaces, hairline grids, uppercase mono labels and a single signal-yellow accent. Tokens and building blocks live in `crates/guidy-app/src/ui/design.rs`; colours the stock components need live in `assets/themes/guidy.json`. A clickable mock of the main screens is in `docs/design/guidy-mock.html`.
 
 - **Licensing.** Zed's `ui`, `theme` and `settings_ui` crates are **GPL-3.0**. Do not depend on them or copy code from them. Use gpui-kit (Apache-2.0) and gpui-pre (Apache-2.0) only.
-- **Themes.** `assets/themes/zed-one.json` contains One Dark and One Light (MIT, from Atom), translated from Zed's `one.json` into gpui-kit's schema. The theme setting (system/light/dark) follows the OS appearance. Fonts are IBM Plex Sans for UI text and Lilex for monospace (both OFL).
-- **Window chrome.** A Zed-style title bar with inline traffic lights on macOS. A 200 px left nav styled like Zed's project panel (icon + label, selected row uses `element.selected`). A content column with grouped setting rows, like Zed's settings editor.
-- **Status bar.** Model status indicator on the left, update status and version on the right.
-- **Controls.** gpui-kit `Switch`, `Select`, `Slider`, `Input`, `Button` (ghost/subtle variants), `Kbd` for shortcuts, `Notification` for toasts, `Dialog`, `Tooltip`.
-- **Overlay.** A floating Zed-style panel: elevated surface, 1 px border, accent dot, Lilex for live text (PARITY §O).
+- **Themes.** `assets/themes/guidy.json` contains Guidy Dark and Guidy Light. The theme setting (system/light/dark) follows the OS appearance. `design::tone` adds the surface, line and accent tones the theme schema has no slot for. Fonts are Geist for UI text and Geist Mono for labels and numbers (both OFL).
+- **Type.** Body 13 px, titles 15 px, page headlines 17 px. Section names, column heads and metadata are `design::eyebrow` (10.5 px uppercase mono). Numbers are `design::mono`.
+- **Window chrome.** The title bar reads "Guidy / <page>". The sidebar and status bar share the frame colour, and pages sit in an ink "well" inset into the frame (`WELL_INSET`, `RADIUS_WELL`).
+- **Surfaces.** `design::panel` (hairline border, rim light on the top edge) holds sections divided by hairlines; settings groups are an eyebrow over a panel. Facts are a `stat_grid` (eyebrow over mono value).
+- **Glass and motion.** Every panel has a rim light. In-progress work gets `design::sheen` (a slow sweep) on its surface or track, and `design::shimmer_text` on its label. All of it is static when macOS asks for reduced motion.
+- **Drawings.** `design::blueprint` is a grid stage with crosshair marks; `design::illustration` stacks three single-colour SVG layers (lines, soft fill, accent) from `assets/illustrations/`, and `design::callout` hangs a label off a dashed leader. Drawings are used where they explain something: onboarding (what each permission is for), About and empty History. They are generated from 3D geometry by `scripts/illustrations.py` so every object shares one camera.
+- **Controls.** gpui-kit controls. Actions are pill buttons (`design::Pill`): primary in the accent, secondary filled. Shortcuts render as key caps. Tabs are `design::segmented`.
+- **Overlay.** A floating glass panel: near-opaque surface, hairline edge, rim light, signal dot, Geist for live text, Geist Mono for the timer (PARITY §O).
 - **Brand assets.** App icon, tray glyphs (idle, recording, transcribing, warning, each with a dark variant), and feedback sounds. The sound themes are named `marimba` and `pop` in settings.
 
 ---

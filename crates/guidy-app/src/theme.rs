@@ -1,20 +1,20 @@
-//! Zed One Dark / One Light themes, Zed's UI fonts, and theme switching.
+//! Guidy Dark / Guidy Light themes, the Geist fonts, and theme switching.
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Window, WindowAppearance};
 use guidy_core::settings::Theme as ThemeSetting;
 
-pub const UI_FONT: &str = "IBM Plex Sans";
-pub const MONO_FONT: &str = "Lilex";
-pub const DARK_THEME: &str = "One Dark";
-pub const LIGHT_THEME: &str = "One Light";
+pub const UI_FONT: &str = "Geist";
+pub const MONO_FONT: &str = "Geist Mono";
+pub const DARK_THEME: &str = "Guidy Dark";
+pub const LIGHT_THEME: &str = "Guidy Light";
 
-/// Register fonts and the Zed One theme set; call once after `gpui_kit::init`.
+/// Register fonts and the Guidy theme set; call once after `gpui_kit::init`.
 pub fn init(cx: &mut App) {
     if let Err(e) = cx.text_system().add_fonts(crate::assets::fonts()) {
         log::warn!("Failed to register fonts: {e}");
     }
-    let json = crate::assets::text("themes/zed-one.json").expect("theme json is embedded");
+    let json = crate::assets::text("themes/guidy.json").expect("theme json is embedded");
     if let Err(e) = ThemeRegistry::global_mut(cx).load_themes_from_str(&json) {
         log::error!("Failed to load themes: {e}");
         return;

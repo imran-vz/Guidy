@@ -2,7 +2,7 @@
 
 Offline speech-to-text for the desktop. Press a shortcut, speak, and Guidy pastes the transcript into the focused app. Transcription runs locally.
 
-Guidy is pure Rust on GPUI, with [gpui-kit](https://gpui-kit.com) components and a Zed-style look (One Dark/Light, IBM Plex Sans, Lilex). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/PARITY.md`](docs/PARITY.md) for the feature-by-feature test record, and [`NOTICE.md`](NOTICE.md) for third-party credits.
+Guidy is pure Rust on GPUI, with [gpui-kit](https://gpui-kit.com) components and its own look (Guidy Dark/Light, Geist, Geist Mono; see `docs/ARCHITECTURE.md` §1.3). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/PARITY.md`](docs/PARITY.md) for the feature-by-feature test record, and [`NOTICE.md`](NOTICE.md) for third-party credits.
 
 ## Layout
 
@@ -30,6 +30,7 @@ Debug builds also read these variables:
 | `GUIDY_DEV_SKIP_PERMISSIONS=1` | Skip the macOS permission onboarding |
 | `GUIDY_DEV_START_SECTION=<general\|models\|advanced\|history\|postprocessing\|debug\|about>` | Open on a page |
 | `GUIDY_DEV_OVERLAY_DEMO=1` | Cycle the recording overlay through its states |
+| `GUIDY_DEV_PROFILE_DIR=<dir>` | Keep data and logs under `<dir>`, with a separate single-instance lock and Keychain service (`dev.guidy.app.dev`), so a dev build runs beside an installed Guidy |
 | `GUIDY_RESOURCE_DIR=<dir>` | Override where `resources/` is looked up |
 
 ## Tests
