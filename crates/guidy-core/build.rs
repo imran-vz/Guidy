@@ -19,7 +19,7 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/guidy:$ORIGIN/../lib");
     }
 
-    // CPAL (handy-recorder's and rodio's) links two CoreAudio functions that
+    // CPAL (the recorder crate's and rodio's) links two CoreAudio functions that
     // only exist on macOS 14.2+. Weak-link the framework so Guidy still
     // launches on older macOS (minimumSystemVersion is 10.15).
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {

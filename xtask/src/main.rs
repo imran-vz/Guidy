@@ -2,7 +2,7 @@
 //!
 //!   cargo xtask test          full workspace test suite
 //!   cargo xtask test --full   also the model-gated tests (real model + worker)
-//!   cargo xtask parity        PARITY.md / Handy-coverage gate
+//!   cargo xtask parity        PARITY.md / baseline-coverage gate (docs/baseline/)
 //!   cargo xtask gate          test + parity (what CI runs)
 
 use regex::Regex;
@@ -115,7 +115,7 @@ fn source_text(dirs: &[&str]) -> String {
     s
 }
 
-/// Does a test gated to `platform` (see docs/handy-platform-tests.txt) build
+/// Does a test gated to `platform` (see docs/baseline/platform-tests.txt) build
 /// on this host? xtask runs on the platform it tests.
 fn built_here(platform: &str) -> bool {
     match platform {
@@ -123,13 +123,13 @@ fn built_here(platform: &str) -> bool {
         "macos" => cfg!(target_os = "macos"),
         "unix" => cfg!(unix),
         "not-linux" => !cfg!(target_os = "linux"),
-        other => panic!("handy-platform-tests.txt: unknown platform `{other}`"),
+        other => panic!("baseline/platform-tests.txt: unknown platform `{other}`"),
     }
 }
 
 /// Platform-gated tests that don't build on this host (full paths).
 fn not_built_here() -> BTreeSet<String> {
-    read("docs/handy-platform-tests.txt")
+    read("docs/baseline/platform-tests.txt")
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -152,8 +152,8 @@ fn parity() -> bool {
         .map(|t| t.rsplit("::").next().unwrap().to_string())
         .collect();
 
-    // 1. Every Handy unit test survives (renamed module only).
-    let baseline = read("docs/handy-baseline-tests.txt");
+    // 1. Every baseline unit test survives (renamed module only).
+    let baseline = read("docs/baseline/tests.txt");
     let missing: Vec<_> = baseline
         .lines()
         .filter(|t| !elsewhere.contains(*t))
@@ -163,7 +163,7 @@ fn parity() -> bool {
     if missing.is_empty() {
         let skipped = baseline.lines().filter(|t| elsewhere.contains(*t)).count();
         println!(
-            "✓ all {} Handy tests are present{}",
+            "✓ all {} baseline tests are present{}",
             baseline.lines().count() - skipped,
             if skipped > 0 {
                 format!(" ({skipped} more only build on other platforms)")
@@ -173,12 +173,12 @@ fn parity() -> bool {
         );
     } else {
         ok = false;
-        println!("✗ Handy tests missing: {missing:?}");
+        println!("✗ baseline tests missing: {missing:?}");
     }
 
-    // 2. Every Handy command has an implementation.
+    // 2. Every baseline command has an implementation.
     let src = source_text(&["crates/guidy-core/src", "crates/guidy-app/src"]);
-    let commands = read("docs/handy-commands.txt");
+    let commands = read("docs/baseline/commands.txt");
     let missing: Vec<&str> = commands
         .lines()
         .filter(|c| {
@@ -189,7 +189,7 @@ fn parity() -> bool {
         .collect();
     if missing.is_empty() {
         println!(
-            "✓ all {} Handy commands are implemented",
+            "✓ all {} baseline commands are implemented",
             commands.lines().count()
         );
     } else {
@@ -197,14 +197,17 @@ fn parity() -> bool {
         println!("✗ commands without an implementation: {missing:?}");
     }
 
-    // 3. Every Handy event is still emitted.
-    let events = read("docs/handy-events.txt");
+    // 3. Every baseline event is still emitted.
+    let events = read("docs/baseline/events.txt");
     let missing: Vec<&str> = events
         .lines()
         .filter(|e| !e.is_empty() && !src.contains(&format!("\"{e}\"")))
         .collect();
     if missing.is_empty() {
-        println!("✓ all {} Handy events are emitted", events.lines().count());
+        println!(
+            "✓ all {} baseline events are emitted",
+            events.lines().count()
+        );
     } else {
         ok = false;
         println!("✗ events never emitted: {missing:?}");

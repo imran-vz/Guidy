@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn language_resolution_matches_handy() {
+    fn language_resolution_follows_locale_rules() {
         assert_eq!(get_supported_language("en-US"), Some("en"));
         assert_eq!(get_supported_language("de_DE"), Some("de"));
         assert_eq!(get_supported_language("zh-TW"), Some("zh-TW"));

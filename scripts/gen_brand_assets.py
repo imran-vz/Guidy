@@ -185,7 +185,7 @@ def main():
     write_tray_icons()
     write_app_icon()
     write_sounds()
-    for stale in ["handy.png", "handy_warning.png", "recording.png", "transcribing.png", "default_settings.json"]:
+    for stale in ["recording.png", "transcribing.png", "default_settings.json"]:
         p = os.path.join(RES, stale)
         if os.path.exists(p):
             os.remove(p)

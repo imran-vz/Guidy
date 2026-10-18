@@ -1,9 +1,9 @@
 //! Shortcut recorder row (picking the system or
-//! handy-keys implementation from the `keyboard_implementation` setting).
+//! native-keys implementation from the `keyboard_implementation` setting).
 
 use crate::logic::flows::SECURE_INPUT_HELP_URL;
 use crate::logic::keyboard::{
-    format_key_combination, gpui_key_name, modifier_names, HandyKeysInput, HandyKeysRecorder,
+    format_key_combination, gpui_key_name, modifier_names, NativeKeysInput, NativeKeysRecorder,
     OsType, SystemRecorder,
 };
 use crate::state::{AppEvent, AppState};
@@ -19,7 +19,7 @@ use guidy_core::settings::KeyboardImplementation;
 enum Mode {
     Idle,
     System,
-    HandyKeys,
+    NativeKeys,
 }
 
 pub struct ShortcutInput {
@@ -28,7 +28,7 @@ pub struct ShortcutInput {
     mode: Mode,
     original: String,
     system: SystemRecorder,
-    handy_keys: HandyKeysRecorder,
+    native_keys: NativeKeysRecorder,
     held_modifiers: Vec<&'static str>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -44,15 +44,15 @@ impl ShortcutInput {
         let mut subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| {
-                if let AppEvent::HandyKeys(k) = event {
-                    if this.mode == Mode::HandyKeys {
-                        let input = HandyKeysInput {
+                if let AppEvent::NativeKeys(k) = event {
+                    if this.mode == Mode::NativeKeys {
+                        let input = NativeKeysInput {
                             modifiers: &k.modifiers,
                             key: k.key.as_deref(),
                             is_key_down: k.is_key_down,
                             hotkey_string: &k.hotkey_string,
                         };
-                        if let Some(commit) = this.handy_keys.on_event(&input) {
+                        if let Some(commit) = this.native_keys.on_event(&input) {
                             this.commit(commit, window, cx);
                         }
                         cx.notify();
@@ -61,7 +61,7 @@ impl ShortcutInput {
             }),
         ];
         // Closing the window mid-recording must not leave every shortcut
-        // suspended (or the handy-keys recorder running).
+        // suspended (or the native-keys recorder running).
         subs.push(cx.on_release(|this: &mut Self, cx: &mut App| {
             let backend = this.state.read(cx).backend.clone();
             release(this.mode, backend, cx);
@@ -72,7 +72,7 @@ impl ShortcutInput {
             mode: Mode::Idle,
             original: String::new(),
             system: SystemRecorder::default(),
-            handy_keys: HandyKeysRecorder::default(),
+            native_keys: NativeKeysRecorder::default(),
             held_modifiers: Vec::new(),
             focus: cx.focus_handle(),
             _subs: subs,
@@ -103,14 +103,14 @@ impl ShortcutInput {
             .and_then(|s| s.bindings.get(&id).map(|b| b.current_binding.clone()))
             .unwrap_or_default();
         self.system = SystemRecorder::default();
-        self.handy_keys = HandyKeysRecorder::default();
+        self.native_keys = NativeKeysRecorder::default();
         self.held_modifiers.clear();
         match self.implementation(cx) {
-            KeyboardImplementation::HandyKeys => {
+            KeyboardImplementation::NativeKeys => {
                 let backend = self.state.read(cx).backend.clone();
-                let result = backend.start_handy_keys_recording(&id);
+                let result = backend.start_native_keys_recording(&id);
                 match result {
-                    Ok(()) => self.mode = Mode::HandyKeys,
+                    Ok(()) => self.mode = Mode::NativeKeys,
                     Err(e) if e.contains("secure-input-active") => {
                         window.push_notification(
                             Notification::new()
@@ -156,7 +156,7 @@ impl ShortcutInput {
         let mode = self.mode;
         self.mode = Mode::Idle;
         self.system = SystemRecorder::default();
-        self.handy_keys = HandyKeysRecorder::default();
+        self.native_keys = NativeKeysRecorder::default();
         self.held_modifiers.clear();
         self.original.clear();
         cx.notify();
@@ -364,8 +364,8 @@ impl Render for ShortcutInput {
         let display: SharedString = if recording {
             let current = match self.mode {
                 Mode::System => self.system.display(),
-                Mode::HandyKeys => (!self.handy_keys.current.is_empty())
-                    .then(|| format_key_combination(&self.handy_keys.current)),
+                Mode::NativeKeys => (!self.native_keys.current.is_empty())
+                    .then(|| format_key_combination(&self.native_keys.current)),
                 Mode::Idle => None,
             };
             current
@@ -421,12 +421,12 @@ impl Render for ShortcutInput {
 }
 
 /// Give the keyboard back: resume suspended bindings (system recorder) or
-/// stop the handy-keys recorder.
+/// stop the native-keys recorder.
 fn release(mode: Mode, backend: crate::backend::SharedBackend, cx: &mut App) {
     match mode {
-        Mode::HandyKeys => cx
+        Mode::NativeKeys => cx
             .background_spawn(async move {
-                let _ = backend.stop_handy_keys_recording();
+                let _ = backend.stop_native_keys_recording();
             })
             .detach(),
         Mode::System => cx

@@ -19,7 +19,7 @@ mod download;
 
 use download::{HttpDownloadOutcome, DOWNLOAD_STALL_TIMEOUT};
 
-/// Where a model comes from and how Handy obtains it — the routing discriminant
+/// Where a model comes from and how Guidy obtains it — the routing discriminant
 /// for downloading and on-disk resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelSource {
@@ -382,7 +382,7 @@ fn local_caps(probe: &CapabilityProbe) -> LocalCaps {
     }
 }
 
-/// Bridges hf-hub's async download progress to Handy's `model-download-progress`
+/// Bridges hf-hub's async download progress to Guidy's `model-download-progress`
 /// event. hf-hub clones the reporter, so shared state lives behind an `Arc`.
 #[derive(Clone)]
 struct HfDownloadProgress {
@@ -897,7 +897,7 @@ impl ModelManager {
     }
 
     /// Re-run the local discovery scans (custom models dir + shared HF cache) so
-    /// models dropped in or downloaded outside Handy show up without a restart.
+    /// models dropped in or downloaded outside Guidy show up without a restart.
     /// The merge is additive: only new ids are inserted, so existing entries keep
     /// their values — including runtime-probed capabilities from
     /// [`Self::set_runtime_capabilities`]. It then runs [`Self::update_download_status`],
@@ -1349,7 +1349,7 @@ impl ModelManager {
 
             // Probe GGUF headers for advertised capabilities so a dropped-in
             // model surfaces streaming / translation / languages just like a
-            // Handy-downloaded one. Legacy `.bin` files have no GGUF header, so
+            // Guidy-downloaded one. Legacy `.bin` files have no GGUF header, so
             // they stay "unknown" until transcribe-cpp reconciles them at load.
             let probe = if is_gguf {
                 GgufHeaderProber.probe_file(&path)
@@ -1393,8 +1393,8 @@ impl ModelManager {
     }
 
     /// Discover transcribe-cpp-compatible GGUF models already present in the
-    /// shared Hugging Face cache, so models downloaded by Handy (or any other
-    /// tool) appear in "Your Models" without re-downloading. Only architectures
+    /// shared Hugging Face cache, so models downloaded by other apps or tools
+    /// appear in "Your Models" without re-downloading. Only architectures
     /// transcribe-cpp recognises are surfaced; arbitrary (e.g. LLM) GGUFs that
     /// share the cache are ignored.
     fn discover_hf_cache_models(available_models: &mut HashMap<String, ModelInfo>) {
@@ -2011,7 +2011,7 @@ impl ModelManager {
                     deleted = true;
                 }
             }
-            // Files already missing (e.g. removed outside Handy) is not a failure —
+            // Files already missing (e.g. removed outside Guidy) is not a failure —
             // deleting is idempotent, so this still needs to fall through and clear
             // the stale "Downloaded" entry rather than erroring out and leaving it stuck.
             if !deleted {
@@ -2056,7 +2056,7 @@ impl ModelManager {
             deleted_something = true;
         }
 
-        // Files already missing (e.g. removed outside Handy) is not a failure —
+        // Files already missing (e.g. removed outside Guidy) is not a failure —
         // deleting is idempotent, so this still needs to fall through and clear
         // the stale "Downloaded" entry rather than erroring out and leaving it stuck.
         if !deleted_something {
