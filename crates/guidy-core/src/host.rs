@@ -157,6 +157,8 @@ pub struct Monitor {
     size: PhysicalSize<u32>,
     scale_factor: f64,
     work_area: WorkArea,
+    /// The platform display id, when the UI layer knows it.
+    id: Option<u64>,
 }
 
 impl Monitor {
@@ -171,7 +173,15 @@ impl Monitor {
             size,
             scale_factor,
             work_area,
+            id: None,
         }
+    }
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = Some(id);
+        self
+    }
+    pub fn id(&self) -> Option<u64> {
+        self.id
     }
     pub fn position(&self) -> &PhysicalPosition<i32> {
         &self.position
@@ -188,16 +198,21 @@ impl Monitor {
 }
 
 /// Where and how big the overlay window should be, in logical points.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OverlayPlacement {
     /// `"recording" | "streaming" | "transcribing" | "processing"`.
     pub state: String,
+    /// Position in global (all-displays) coordinates.
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
     /// Top or bottom anchoring, for layer-shell style placement.
     pub top: bool,
+    /// The display the overlay belongs on and that display's global origin,
+    /// when known: windows are placed relative to their display.
+    pub display_id: Option<u64>,
+    pub display_origin: (f64, f64),
 }
 
 // ---------------------------------------------------------------------------

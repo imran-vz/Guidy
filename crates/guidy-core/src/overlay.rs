@@ -162,8 +162,10 @@ fn placement_for(app_handle: &AppHandle, state: &str) -> OverlayPlacement {
         let _ = (&mut width, &mut height);
     }
     let position = settings::get_settings(app_handle).overlay_position;
-    let (x, y) = get_monitor_with_cursor(app_handle)
-        .map(|m| overlay_position_on_monitor(&m, width, height, position))
+    let monitor = get_monitor_with_cursor(app_handle);
+    let (x, y) = monitor
+        .as_ref()
+        .map(|m| overlay_position_on_monitor(m, width, height, position))
         .unwrap_or((0.0, 0.0));
     OverlayPlacement {
         state: state.to_string(),
@@ -172,7 +174,18 @@ fn placement_for(app_handle: &AppHandle, state: &str) -> OverlayPlacement {
         width,
         height,
         top: position == OverlayPosition::Top,
+        display_id: monitor.as_ref().and_then(Monitor::id),
+        display_origin: monitor.as_ref().map(logical_origin).unwrap_or_default(),
     }
+}
+
+/// `monitor`'s top-left corner in global logical coordinates.
+fn logical_origin(monitor: &Monitor) -> (f64, f64) {
+    let scale = monitor.scale_factor();
+    (
+        monitor.position().x as f64 / scale,
+        monitor.position().y as f64 / scale,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -504,6 +517,35 @@ mod tests {
                 size: PhysicalSize::new(w, h - (50.0 * scale) as u32),
             },
         )
+    }
+
+    #[test]
+    fn overlay_on_a_secondary_display_uses_its_global_bounds() {
+        // A 2560x1440 display to the right of a 1728-wide primary, raised
+        // 200pt; its work area is the full display (Dock elsewhere).
+        let m = Monitor::new(
+            PhysicalPosition::new(1728, -200),
+            PhysicalSize::new(2560, 1440),
+            1.0,
+            WorkArea {
+                position: PhysicalPosition::new(1728, -200),
+                size: PhysicalSize::new(2560, 1440),
+            },
+        )
+        .with_id(7);
+        let (x, y) = overlay_position_on_monitor(
+            &m,
+            OVERLAY_STREAM_WIDTH,
+            OVERLAY_STREAM_HEIGHT,
+            OverlayPosition::Bottom,
+        );
+        assert_eq!(x, 1728.0 + (2560.0 - OVERLAY_STREAM_WIDTH) / 2.0);
+        assert_eq!(
+            y,
+            -200.0 + 1440.0 - OVERLAY_STREAM_HEIGHT - OVERLAY_BOTTOM_OFFSET
+        );
+        assert_eq!(logical_origin(&m), (1728.0, -200.0));
+        assert_eq!(m.id(), Some(7));
     }
 
     #[test]
