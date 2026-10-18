@@ -825,3 +825,91 @@ fn no_audio_is_an_error() {
     .unwrap_err();
     assert!(err.to_string().contains("no recorded audio"));
 }
+
+/// A cancel that reaches the run once it is merging lets it complete: the
+/// transcript and its voiceprints sidecar are stored together.
+#[test]
+fn a_cancel_during_the_merge_lets_it_complete() {
+    let f = fixture();
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let flag = &cancel;
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig::default(),
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| {
+            if p.stage == ProcessingStage::Merge {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }),
+    }
+    .run()
+    .unwrap();
+    assert_eq!(stage(&f), Some(ProcessingStage::Done));
+    let ids: Vec<i64> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    let embeddings = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
+        .unwrap()
+        .unwrap();
+    assert!(!embeddings.is_empty());
+    assert!(embeddings.iter().all(|e| ids.contains(&e.segment_id)));
+}
+
+/// A merge failing after it replaced the transcript drops the old
+/// voiceprints sidecar (keyed by the deleted segments) instead of leaving
+/// it next to the new transcript.
+#[test]
+fn a_merge_failing_after_the_transcript_drops_the_old_sidecar() {
+    let f = fixture();
+    let stopped = run_hooked(&f, |p| {
+        if p.stage == ProcessingStage::Merge {
+            f.store
+                .set_meeting_status(f.id, MeetingStatus::Recorded, None)
+                .unwrap();
+        }
+    });
+    assert!(super::super::is_cancelled(&stopped.unwrap_err()));
+    let stale = SegmentEmbedding {
+        segment_id: 999_999,
+        duration_ms: 1000,
+        embedding: vec![1.0],
+    };
+    sidecar::write_embeddings(f.dir.path(), f.id, &KEY, &[stale]).unwrap();
+    f.store
+        .set_meeting_status(f.id, MeetingStatus::Processing, None)
+        .unwrap();
+    f.store
+        .execute_batch_for_tests(
+            "CREATE TEMP TRIGGER fail_centroid BEFORE UPDATE OF embedding ON meeting_speakers
+             BEGIN SELECT RAISE(ABORT, 'boom'); END",
+        )
+        .unwrap();
+
+    assert!(run(&f, None).result.is_err());
+    assert_eq!(
+        f.store.segments(f.id).unwrap().len(),
+        7,
+        "transcript stored"
+    );
+    assert!(!sidecar::embeddings_path(f.dir.path(), f.id).exists());
+}

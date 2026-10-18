@@ -106,8 +106,11 @@ impl Drop for InFlightGuard {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CreateOutcome {
     pub results: Vec<TicketResult>,
-    /// Team/project of the last issue created in this batch (as Linear has
-    /// them), to remember as the defaults. `None` when nothing was created.
+    /// Team/project to remember as the defaults (as Linear has them): the
+    /// last freshly created issue's in this batch, else the last
+    /// already-existing issue's. Items that report none never clear it, so
+    /// the result doesn't hinge on the batch order. `None` when no issue
+    /// reported one.
     pub used_team_project: Option<(String, Option<String>)>,
 }
 
@@ -148,6 +151,8 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
     ids: &[ActionItemId],
 ) -> CreateOutcome {
     let mut out = CreateOutcome::default();
+    // Whether `out.used_team_project` came from a freshly created issue.
+    let mut used_is_fresh = false;
     let mut seen = HashSet::new();
     for &id in ids {
         if !seen.insert(id) {
@@ -194,7 +199,14 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                                 already_existed = existed;
                                 // Persist before anything else, so retries see it.
                                 let saved = store.set_linear_issue(id, &issue);
-                                out.used_team_project = used_team_project(&issue, existed, &item);
+                                if let Some(used) = used_team_project(&issue, existed, &item) {
+                                    // A fresh issue beats an existing one,
+                                    // which may have been created long ago.
+                                    if !existed || !used_is_fresh {
+                                        out.used_team_project = Some(used);
+                                        used_is_fresh |= !existed;
+                                    }
+                                }
                                 match saved {
                                     Ok(()) => Ok(issue.identifier),
                                     Err(e) => {
@@ -350,6 +362,72 @@ pub(crate) mod tests {
             store.0.lock()[&1].linear_issue_identifier.as_deref(),
             Some("ENG-1")
         );
+    }
+
+    /// Creates each draft as Linear would report it: a fresh issue (team left
+    /// out, so the draft's is used), or for team "existing" an issue that
+    /// already existed and was moved since, or for team "silent" one that
+    /// already existed and reports no team.
+    #[derive(Default)]
+    struct TeamCreator(AtomicUsize);
+
+    impl IssueCreator for TeamCreator {
+        async fn create_issue(
+            &self,
+            d: &TicketDraft,
+            _client_id: &str,
+            _sent: &SentDraft,
+        ) -> Result<(CreatedIssue, bool), LinearError> {
+            let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            let team = d.team_id.as_deref();
+            let existed = matches!(team, Some("existing" | "silent"));
+            Ok((
+                CreatedIssue {
+                    id: format!("id-{n}"),
+                    identifier: format!("ENG-{n}"),
+                    url: format!("https://linear.app/x/issue/ENG-{n}"),
+                    team_id: (team == Some("existing")).then(|| "team-moved".to_string()),
+                    project_id: None,
+                },
+                existed,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn remembered_team_does_not_depend_on_the_last_item() {
+        let store = MemStore::default();
+        let mut existing = approved_item(1);
+        existing.ticket.team_id = Some("existing".into());
+        let fresh = approved_item(2);
+        // An existing issue reporting no team: nothing to remember.
+        let mut no_team = approved_item(3);
+        no_team.ticket.team_id = Some("silent".into());
+        let mut existing_later = approved_item(4);
+        existing_later.ticket.team_id = Some("existing".into());
+        for it in [existing, fresh, no_team, existing_later] {
+            store.0.lock().insert(it.id, it);
+        }
+        let creator = TeamCreator::default();
+        let out = create_tickets(&store, &creator, &InFlight::default(), &[1, 2, 3, 4]).await;
+        assert!(out.results.iter().all(|r| r.result.is_ok()));
+        // The fresh issue's, not cleared by item 3 nor replaced by item 4.
+        assert_eq!(
+            out.used_team_project,
+            Some(("team-1".into(), Some("proj-1".into())))
+        );
+
+        // With no fresh issue, an existing one's is kept over a later None.
+        let store = MemStore::default();
+        let mut existing = approved_item(1);
+        existing.ticket.team_id = Some("existing".into());
+        let mut no_team = approved_item(2);
+        no_team.ticket.team_id = Some("silent".into());
+        for it in [existing, no_team] {
+            store.0.lock().insert(it.id, it);
+        }
+        let out = create_tickets(&store, &creator, &InFlight::default(), &[1, 2]).await;
+        assert_eq!(out.used_team_project, Some(("team-moved".into(), None)));
     }
 
     #[tokio::test]

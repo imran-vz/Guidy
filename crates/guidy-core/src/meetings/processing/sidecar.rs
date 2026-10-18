@@ -317,6 +317,12 @@ pub fn delete_cache(meetings_dir: &Path, id: MeetingId) -> Result<()> {
     remove(&cache_path(meetings_dir, id))
 }
 
+/// Delete a meeting's embeddings sidecar. The caller holds its
+/// [`EmbeddingsLock`].
+pub fn delete_embeddings(meetings_dir: &Path, id: MeetingId) -> Result<()> {
+    remove(&embeddings_path(meetings_dir, id))
+}
+
 /// The sidecar directories (they hold the sidecars and their temp files).
 fn sidecar_dirs(meetings_dir: &Path) -> [PathBuf; 2] {
     [

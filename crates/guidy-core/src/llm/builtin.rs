@@ -218,7 +218,7 @@ impl std::error::Error for WorkerTimeout {}
 /// The helper couldn't turn the JSON schema into a grammar (or the grammar
 /// was rejected). Not fatal: `chat_json` retries without a grammar.
 #[derive(Debug)]
-pub struct GrammarError(String);
+pub struct GrammarError(pub(crate) String);
 
 impl std::fmt::Display for GrammarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

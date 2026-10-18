@@ -269,7 +269,12 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
+    /// Write the checkpoint. The check and the write hold the embeddings
+    /// lock, which [`sidecar::delete_sidecars`] takes after the meeting row
+    /// is deleted: a run either writes first (and the file is deleted) or
+    /// finds the meeting gone.
     fn save(&self, cache: &ProcessingCache) -> Result<()> {
+        let _lock = sidecar::lock_embeddings(self.meetings_dir, self.meeting_id);
         self.ensure_still_processing()?;
         sidecar::write_cache(self.meetings_dir, self.meeting_id, &self.key, cache)
     }
@@ -438,24 +443,48 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
+    /// Store the transcript and its per-segment voiceprints.
+    ///
+    /// The last cancel/deletion check is before the transcript is replaced:
+    /// once it is committed the run completes the merge (the sidecar always
+    /// matches the stored segments), and a failure after it drops the old
+    /// sidecar, whose segment ids are gone.
     fn merge(&mut self, cache: &ProcessingCache) -> Result<()> {
-        self.ensure_still_processing()?;
         let clustering = cache.clustering.clone().unwrap_or_default();
-        let (speakers, segments, unit_of_segment) =
-            build_transcript(cache, &clustering, &self.config);
-        // From the new transcript to its voiceprints: a person deletion
-        // dropping segments from this sidecar waits (and then sees both).
+        let built = build_transcript(cache, &clustering, &self.config);
+        // From the check to the new transcript's voiceprints: a person
+        // deletion dropping segments from this sidecar waits (and then sees
+        // both), and a meeting deletion (row, then sidecars under this lock)
+        // either stops the run here or deletes the file written.
         let _lock = sidecar::lock_embeddings(self.meetings_dir, self.meeting_id);
+        self.ensure_still_processing()?;
         // The clustering's matches may name people deleted or merged away
         // since (also before a resume from the checkpoint): this resolves
         // them in its transaction (a deleted one leaves the speaker unknown),
         // so a stale id never fails the merge on every retry.
-        let (stored_speakers, stored_segments) =
-            self.store
-                .replace_transcript(self.meeting_id, &speakers, &segments)?;
+        let stored = self
+            .store
+            .replace_transcript(self.meeting_id, &built.0, &built.1)?;
+        let written = self.store_voiceprints(cache, &clustering, &built, &stored);
+        if written.is_err() {
+            if let Err(e) = sidecar::delete_embeddings(self.meetings_dir, self.meeting_id) {
+                log::warn!("meeting {}: {e:#}", self.meeting_id);
+            }
+        }
+        written
+    }
 
+    /// [`Self::merge`] after the transcript is stored: speaker centroids and
+    /// the embeddings sidecar, keyed by the stored ids. No cancel check.
+    fn store_voiceprints(
+        &self,
+        cache: &ProcessingCache,
+        clustering: &Clustering,
+        (speakers, segments, unit_of_segment): &(Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>),
+        (stored_speakers, stored_segments): &(Vec<MeetingSpeaker>, Vec<Segment>),
+    ) -> Result<()> {
         // Cluster centroids on the stored speakers, for naming suggestions.
-        for (local, stored) in speakers.iter().zip(&stored_speakers) {
+        for (local, stored) in speakers.iter().zip(stored_speakers) {
             if local.is_user {
                 continue;
             }
@@ -467,7 +496,7 @@ impl<'a> Pipeline<'a> {
 
         // Per-segment voiceprints, keyed by the stored segment ids.
         let mut by_time: HashMap<(Track, i64, i64), usize> = HashMap::new();
-        for (seg, unit) in segments.iter().zip(&unit_of_segment) {
+        for (seg, unit) in segments.iter().zip(unit_of_segment) {
             by_time.insert((seg.track, seg.t0_ms, seg.t1_ms), *unit);
         }
         let embeddings: Vec<SegmentEmbedding> = stored_segments
@@ -482,9 +511,7 @@ impl<'a> Pipeline<'a> {
                 })
             })
             .collect();
-        self.ensure_still_processing()?;
-        sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)?;
-        Ok(())
+        sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)
     }
 }
 

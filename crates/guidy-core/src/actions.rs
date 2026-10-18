@@ -197,6 +197,42 @@ impl Drop for CancelOnDrop {
 /// HTTP providers and Apple Intelligence keep their direct paths below, whose
 /// request shapes (structured-output schema name, legacy prompt mode, Apple's
 /// token limit) existing setups depend on.
+/// Asks `provider` for the structured `{transcription}` reply, retrying as
+/// plain chat only when structured output itself is the problem: the
+/// built-in runtime couldn't use the schema grammar (`GrammarError`) or the
+/// JSON lacks the field. Every other failure (cancelled, timed out, the
+/// helper died, a cut-off reply) is returned: a plain retry would respawn the
+/// helper or reload the model just to hit it again, and the caller falls back
+/// to the raw transcript.
+fn structured_then_plain(
+    provider: &dyn crate::llm::LlmProvider,
+    messages: &[crate::llm::ChatMessage],
+    opts: &crate::llm::ChatOptions,
+) -> anyhow::Result<String> {
+    match provider.chat_json(messages, &transcription_schema(), opts) {
+        Ok(json) => {
+            if let Some(text) = json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str()) {
+                return Ok(text.to_string());
+            }
+            warn!(
+                "{}: structured reply missing 'transcription'; retrying as plain chat",
+                provider.name()
+            );
+        }
+        Err(e)
+            if e.chain()
+                .any(|c| c.is::<crate::llm::builtin::GrammarError>()) =>
+        {
+            warn!(
+                "{}: structured post-processing failed ({e}); retrying as plain chat",
+                provider.name()
+            )
+        }
+        Err(e) => return Err(e),
+    }
+    provider.chat(messages, opts)
+}
+
 async fn post_process_with_provider_layer(
     app: &AppHandle,
     settings: &AppSettings,
@@ -219,23 +255,7 @@ async fn post_process_with_provider_layer(
     let result = crate::host::async_runtime::spawn_blocking(move || {
         let provider =
             crate::llm::provider_for_feature(&app, &settings, Feature::PostProcess, None)?;
-        match provider.chat_json(&messages, &transcription_schema(), &opts) {
-            Ok(json) => {
-                if let Some(text) = json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str()) {
-                    return Ok(text.to_string());
-                }
-                warn!(
-                    "{}: structured reply missing 'transcription'",
-                    provider.name()
-                );
-            }
-            Err(e) if crate::llm::is_cancelled_error(&e) => return Err(e),
-            Err(e) => warn!(
-                "{}: structured post-processing failed ({e}); retrying as plain chat",
-                provider.name()
-            ),
-        }
-        provider.chat(&messages, &opts)
+        structured_then_plain(provider.as_ref(), &messages, &opts)
     })
     .await;
     match result {
@@ -1010,7 +1030,7 @@ mod tests {
     use super::{
         complete_unless_cancelled, is_blank_transcription, provider_layer_messages,
         selected_post_process_prompt, should_use_streaming_overlay, strip_think_block,
-        transcription_schema, TRANSCRIPTION_FIELD,
+        structured_then_plain, transcription_schema, TRANSCRIPTION_FIELD,
     };
     use crate::llm::Role;
     use crate::settings::OverlayStyle;
@@ -1131,5 +1151,82 @@ mod tests {
         assert!(!should_use_streaming_overlay(OverlayStyle::Live, false));
         assert!(!should_use_streaming_overlay(OverlayStyle::Minimal, true));
         assert!(!should_use_streaming_overlay(OverlayStyle::None, true));
+    }
+
+    /// `chat_json` returns a scripted result; `chat` counts calls.
+    struct JsonFake {
+        json: std::sync::Mutex<Option<anyhow::Result<serde_json::Value>>>,
+        plain_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl JsonFake {
+        fn new(json: anyhow::Result<serde_json::Value>) -> Self {
+            Self {
+                json: std::sync::Mutex::new(Some(json)),
+                plain_calls: Default::default(),
+            }
+        }
+    }
+
+    impl crate::llm::LlmProvider for JsonFake {
+        fn name(&self) -> String {
+            "fake/json".into()
+        }
+        fn context_tokens(&self) -> usize {
+            4096
+        }
+        fn chat(
+            &self,
+            _: &[crate::llm::ChatMessage],
+            _: &crate::llm::ChatOptions,
+        ) -> anyhow::Result<String> {
+            self.plain_calls.fetch_add(1, Ordering::SeqCst);
+            Ok("plain".into())
+        }
+        fn chat_json(
+            &self,
+            _: &[crate::llm::ChatMessage],
+            _: &serde_json::Value,
+            _: &crate::llm::ChatOptions,
+        ) -> anyhow::Result<serde_json::Value> {
+            self.json.lock().unwrap().take().unwrap()
+        }
+    }
+
+    fn run_structured(fake: &JsonFake) -> anyhow::Result<String> {
+        structured_then_plain(fake, &[], &Default::default())
+    }
+
+    #[test]
+    fn structured_reply_is_used_without_a_plain_retry() {
+        let fake = JsonFake::new(Ok(serde_json::json!({ (TRANSCRIPTION_FIELD): "clean" })));
+        assert_eq!(run_structured(&fake).unwrap(), "clean");
+        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn grammar_error_or_missing_field_falls_back_to_plain_chat() {
+        let grammar = crate::llm::builtin::GrammarError("unsupported JSON schema".into());
+        let fake = JsonFake::new(Err(anyhow::Error::new(grammar).context("post-processing")));
+        assert_eq!(run_structured(&fake).unwrap(), "plain");
+        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 1);
+
+        let fake = JsonFake::new(Ok(serde_json::json!({ "other": "x" })));
+        assert_eq!(run_structured(&fake).unwrap(), "plain");
+        assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn other_structured_failures_propagate_without_a_plain_retry() {
+        for error in [
+            anyhow::Error::new(crate::llm::builtin::WorkerTimeout),
+            anyhow::anyhow!("the built-in model runtime exited"),
+            anyhow::anyhow!(crate::llm::CANCELLED),
+        ] {
+            let message = error.to_string();
+            let fake = JsonFake::new(Err(error));
+            assert_eq!(run_structured(&fake).unwrap_err().to_string(), message);
+            assert_eq!(fake.plain_calls.load(Ordering::SeqCst), 0);
+        }
     }
 }
