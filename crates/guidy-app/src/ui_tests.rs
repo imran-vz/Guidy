@@ -864,10 +864,10 @@ mod shortcut_recorder {
 
     /// PARITY K-04, C-03
     #[gpui_kit::test]
-    fn handy_keys_recording_commits_on_key_release(cx: &mut TestAppContext) {
+    fn native_keys_recording_commits_on_key_release(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
         backend.with_settings(|s| {
-            s.keyboard_implementation = guidy_core::settings::KeyboardImplementation::HandyKeys
+            s.keyboard_implementation = guidy_core::settings::KeyboardImplementation::NativeKeys
         });
         let state = setup(cx, backend.clone());
         let (w, _) = open(cx, |window, cx| {
@@ -876,24 +876,24 @@ mod shortcut_recorder {
         with_window(cx, w, |window, cx| {
             window.click("shortcut-chip-transcribe", cx)
         });
-        assert!(backend.called("start_handy_keys_recording transcribe"));
+        assert!(backend.called("start_native_keys_recording transcribe"));
         let key = |mods: &[&str], key: Option<&str>, down: bool, s: &str| serde_json::json!({"modifiers": mods, "key": key, "is_key_down": down, "hotkey_string": s});
         dispatch(
             cx,
             &state,
-            "handy-keys-event",
+            "native-keys-event",
             key(&["ctrl"], None, true, "ctrl"),
         );
         dispatch(
             cx,
             &state,
-            "handy-keys-event",
+            "native-keys-event",
             key(&["ctrl"], Some("k"), true, "ctrl+k"),
         );
         dispatch(
             cx,
             &state,
-            "handy-keys-event",
+            "native-keys-event",
             key(&["ctrl"], Some("k"), false, "ctrl+k"),
         );
         assert!(
@@ -901,7 +901,7 @@ mod shortcut_recorder {
             "{:?}",
             backend.calls()
         );
-        assert!(backend.called("stop_handy_keys_recording"));
+        assert!(backend.called("stop_native_keys_recording"));
     }
 
     /// PARITY K-03
@@ -1087,7 +1087,7 @@ mod banners_and_events {
         let backend = FakeBackend::new();
         backend.data.lock().accessibility = false;
         setup(cx, backend.clone());
-        let (w, _) = open(cx, |window, cx| AccessibilityBanner::new(window, cx));
+        let (w, _) = open(cx, AccessibilityBanner::new);
         cx.run_until_parked();
         let mac = OsType::current() == OsType::MacOs;
         assert_eq!(exists(cx, w, "accessibility-banner"), mac);
