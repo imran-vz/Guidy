@@ -446,6 +446,10 @@ impl<'a> Pipeline<'a> {
         // From the new transcript to its voiceprints: a person deletion
         // dropping segments from this sidecar waits (and then sees both).
         let _lock = sidecar::lock_embeddings(self.meetings_dir, self.meeting_id);
+        // The clustering's matches may name people deleted or merged away
+        // since (also before a resume from the checkpoint): this resolves
+        // them in its transaction (a deleted one leaves the speaker unknown),
+        // so a stale id never fails the merge on every retry.
         let (stored_speakers, stored_segments) =
             self.store
                 .replace_transcript(self.meeting_id, &speakers, &segments)?;

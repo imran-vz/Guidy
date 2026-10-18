@@ -1030,10 +1030,15 @@ pub fn summarize_meeting(
 
 // ----- running jobs ----------------------------------------------------------
 
-fn jobs() -> &'static parking_lot::Mutex<HashMap<MeetingId, crate::llm::CancelFlag>> {
-    static JOBS: std::sync::OnceLock<
-        parking_lot::Mutex<HashMap<MeetingId, crate::llm::CancelFlag>>,
-    > = std::sync::OnceLock::new();
+/// The running jobs, and the condvar a job's end signals.
+#[derive(Default)]
+struct Jobs {
+    running: parking_lot::Mutex<HashMap<MeetingId, crate::llm::CancelFlag>>,
+    ended: parking_lot::Condvar,
+}
+
+fn jobs() -> &'static Jobs {
+    static JOBS: std::sync::OnceLock<Jobs> = std::sync::OnceLock::new();
     JOBS.get_or_init(Default::default)
 }
 
@@ -1045,13 +1050,15 @@ pub struct JobGuard {
 
 impl Drop for JobGuard {
     fn drop(&mut self) {
-        jobs().lock().remove(&self.meeting_id);
+        let jobs = jobs();
+        jobs.running.lock().remove(&self.meeting_id);
+        jobs.ended.notify_all();
     }
 }
 
 /// Register a summary job (one per meeting at a time).
 pub fn begin_job(meeting_id: MeetingId) -> Result<JobGuard> {
-    let mut map = jobs().lock();
+    let mut map = jobs().running.lock();
     if map.contains_key(&meeting_id) {
         bail!("this meeting is already being summarized");
     }
@@ -1062,7 +1069,7 @@ pub fn begin_job(meeting_id: MeetingId) -> Result<JobGuard> {
 
 /// Cancel a running summary job. Returns false when none is running.
 pub fn cancel_job(meeting_id: MeetingId) -> bool {
-    match jobs().lock().get(&meeting_id) {
+    match jobs().running.lock().get(&meeting_id) {
         Some(flag) => {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
             true
@@ -1072,7 +1079,20 @@ pub fn cancel_job(meeting_id: MeetingId) -> bool {
 }
 
 pub fn is_running(meeting_id: MeetingId) -> bool {
-    jobs().lock().contains_key(&meeting_id)
+    jobs().running.lock().contains_key(&meeting_id)
+}
+
+/// Wait (until `deadline`) for no job of `meeting_id` to be running.
+/// Returns false on timeout.
+pub fn wait_until_idle(meeting_id: MeetingId, deadline: std::time::Instant) -> bool {
+    let jobs = jobs();
+    let mut running = jobs.running.lock();
+    while running.contains_key(&meeting_id) {
+        if jobs.ended.wait_until(&mut running, deadline).timed_out() {
+            return !running.contains_key(&meeting_id);
+        }
+    }
+    true
 }
 
 /// Store a summarizer result: replace the summary and the regenerable
@@ -1678,6 +1698,29 @@ mod tests {
         drop(guard);
         assert!(!is_running(4242));
         assert!(!cancel_job(4242));
+    }
+
+    /// The wait wakes when the job's guard drops, and gives up at the
+    /// deadline while it runs.
+    #[test]
+    fn wait_until_idle_wakes_when_the_job_ends() {
+        use std::time::{Duration, Instant};
+        assert!(wait_until_idle(4343, Instant::now()));
+        let guard = begin_job(4343).unwrap();
+        assert!(!wait_until_idle(
+            4343,
+            Instant::now() + Duration::from_millis(30)
+        ));
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                drop(guard);
+            });
+            let start = Instant::now();
+            assert!(wait_until_idle(4343, start + Duration::from_secs(10)));
+            assert!(start.elapsed() < Duration::from_secs(5));
+        });
+        assert!(!is_running(4343));
     }
 
     /// Rejects prompts over a character limit, like a real context overflow.

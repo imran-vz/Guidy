@@ -9,12 +9,13 @@
 //! - deleting a meeting deletes its segments, speakers, summary and action
 //!   items; its voiceprints stay (`source_meeting_id` becomes NULL);
 //! - deleting a person deletes their voiceprints and clears speaker links and
-//!   action-item owners that pointed at them.
+//!   action-item owners that pointed at them, and the `person_merges` rows
+//!   that resolve people merged into them.
 //!
 //! Lists are ordered: meetings newest first, segments by time, speakers by id,
 //! people by name, action items by id.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -142,6 +143,17 @@ static MIGRATIONS: &[M] = &[
     // restart) applies only the user's later edits to an issue that
     // attempt created. Cleared once the issue is recorded.
     M::up("ALTER TABLE action_items ADD COLUMN linear_sent_ticket TEXT;"),
+    // 6: `person_merges`: whom each merged-away person went into, so a
+    // speaker matched to them before the merge (a processing checkpoint)
+    // links the merged person. A row goes with its target person; a chain
+    // of merges is kept flat (every row points at a live person).
+    M::up(
+        "CREATE TABLE person_merges (
+        from_id INTEGER PRIMARY KEY,
+        into_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE
+    );
+    CREATE INDEX person_merges_into ON person_merges(into_id);",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -375,6 +387,59 @@ pub(crate) fn restrict_file(path: &Path) -> Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+/// Who person `id` is now: themselves while they exist, else whom they were
+/// merged into (see [`MeetingsStore::merge_people`]), else `None` (deleted).
+fn resolve_person_tx(conn: &Connection, id: PersonId) -> Result<Option<PersonId>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM people WHERE id = ?1
+             UNION ALL SELECT into_id FROM person_merges WHERE from_id = ?1
+             LIMIT 1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Segments attributed to `person_id` (through their meeting speakers),
+/// grouped by meeting: `meeting id -> segment ids`.
+fn person_segments_tx(
+    conn: &Connection,
+    person_id: PersonId,
+) -> Result<HashMap<MeetingId, Vec<i64>>> {
+    let mut stmt = conn.prepare(
+        "SELECT g.meeting_id, g.id FROM meeting_segments g
+         JOIN meeting_speakers s ON s.id = g.speaker_id
+         WHERE s.person_id = ?1 ORDER BY g.meeting_id, g.id",
+    )?;
+    let mut out: HashMap<MeetingId, Vec<i64>> = HashMap::new();
+    let rows = stmt.query_map([person_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    for row in rows {
+        let (m, seg): (MeetingId, i64) = row?;
+        out.entry(m).or_default().push(seg);
+    }
+    Ok(out)
+}
+
+fn delete_person_tx(conn: &Connection, id: PersonId) -> Result<bool> {
+    conn.execute(
+        "UPDATE meeting_speakers SET embedding = NULL WHERE person_id = ?1",
+        [id],
+    )?;
+    Ok(conn.execute("DELETE FROM people WHERE id = ?1", [id])? > 0)
+}
+
+/// What [`MeetingsStore::delete_person_within`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersonDeletion {
+    /// Deleted (or already gone). Their segments, by meeting, as they were
+    /// just before.
+    Deleted(HashMap<MeetingId, Vec<i64>>),
+    /// They are (now) in meetings outside the given set: nothing changed.
+    /// Every meeting they are in.
+    InMoreMeetings(BTreeSet<MeetingId>),
 }
 
 /// Why an action-item ticket change was refused.
@@ -814,6 +879,12 @@ impl MeetingsStore {
     /// segment's `speaker_id` refers to one of those local ids; both are
     /// remapped to the new row ids. `meeting_id` fields are ignored. Returns
     /// the stored speakers and segments.
+    ///
+    /// A speaker's `person_id` is resolved in the same transaction (so a
+    /// concurrent deletion or merge can't slip in between): a person merged
+    /// away links whom they were merged into; a deleted one is dropped, and
+    /// that speaker is stored as an unknown one (no match, unconfirmed).
+    /// E.g. a processing checkpoint matched speakers before the change.
     pub fn replace_transcript(
         &self,
         meeting_id: MeetingId,
@@ -837,12 +908,21 @@ impl MeetingsStore {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )?;
                 for s in speakers {
+                    let person = match s.person_id {
+                        Some(p) => resolve_person_tx(tx, p)?,
+                        None => None,
+                    };
+                    let (confidence, confirmed) = if person.is_none() && s.person_id.is_some() {
+                        (None, false)
+                    } else {
+                        (s.match_confidence, s.confirmed)
+                    };
                     stmt.execute(params![
                         meeting_id,
                         s.cluster_label,
-                        s.person_id,
-                        s.match_confidence.map(f64::from),
-                        s.confirmed,
+                        person,
+                        confidence.map(f64::from),
+                        confirmed,
                         s.is_user,
                     ])?;
                     if ids.insert(s.id, tx.last_insert_rowid()).is_some() {
@@ -1024,38 +1104,43 @@ impl MeetingsStore {
     /// are their voice too. Returns false if they didn't exist.
     ///
     /// Per-segment voiceprints live in the encrypted embeddings sidecars;
-    /// call [`Self::person_segments`] first to find the ones to drop.
+    /// [`Self::delete_person_within`] also returns the segments whose ones to
+    /// drop.
     pub fn delete_person(&self, id: PersonId) -> Result<bool> {
+        self.with_tx(|tx| delete_person_tx(tx, id))
+    }
+
+    /// [`Self::delete_person`], only if every meeting they are in (has a
+    /// segment of theirs) is one of `meetings`, checked in the same
+    /// transaction: a caller holding those meetings' sidecar locks knows no
+    /// other meeting has segments of theirs when they are gone.
+    pub fn delete_person_within(
+        &self,
+        id: PersonId,
+        meetings: &BTreeSet<MeetingId>,
+    ) -> Result<PersonDeletion> {
         self.with_tx(|tx| {
-            tx.execute(
-                "UPDATE meeting_speakers SET embedding = NULL WHERE person_id = ?1",
-                [id],
-            )?;
-            Ok(tx.execute("DELETE FROM people WHERE id = ?1", [id])? > 0)
+            let segments = person_segments_tx(tx, id)?;
+            if !segments.keys().all(|m| meetings.contains(m)) {
+                return Ok(PersonDeletion::InMoreMeetings(
+                    segments.into_keys().collect(),
+                ));
+            }
+            delete_person_tx(tx, id)?;
+            Ok(PersonDeletion::Deleted(segments))
         })
     }
 
     /// Segments attributed to `person_id` (through their meeting speakers),
     /// grouped by meeting: `meeting id -> segment ids`.
     pub fn person_segments(&self, person_id: PersonId) -> Result<HashMap<MeetingId, Vec<i64>>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT g.meeting_id, g.id FROM meeting_segments g
-             JOIN meeting_speakers s ON s.id = g.speaker_id
-             WHERE s.person_id = ?1 ORDER BY g.meeting_id, g.id",
-        )?;
-        let mut out: HashMap<MeetingId, Vec<i64>> = HashMap::new();
-        let rows = stmt.query_map([person_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        for row in rows {
-            let (m, seg): (MeetingId, i64) = row?;
-            out.entry(m).or_default().push(seg);
-        }
-        Ok(out)
+        person_segments_tx(&self.conn.lock(), person_id)
     }
 
     /// Move voiceprints, speaker links and action-item owners from `from` to
     /// `into` (which keeps its name; it takes `from`'s email if it has none),
-    /// then delete `from`. One transaction.
+    /// then delete `from`. One transaction. `from` is recorded as merged
+    /// into `into` (see [`Self::replace_transcript`]).
     pub fn merge_people(&self, from: PersonId, into: PersonId) -> Result<()> {
         if from == into {
             bail!("cannot merge a person into themselves");
@@ -1088,6 +1173,16 @@ impl MeetingsStore {
             tx.execute(
                 "UPDATE people SET email = (SELECT email FROM people WHERE id = ?1)
                  WHERE id = ?2 AND (email IS NULL OR email = '')",
+                params![from, into],
+            )?;
+            // Before `from` goes (its rows would cascade): those merged into
+            // `from` now resolve to `into`.
+            tx.execute(
+                "UPDATE person_merges SET into_id = ?2 WHERE into_id = ?1",
+                params![from, into],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO person_merges (from_id, into_id) VALUES (?1, ?2)",
                 params![from, into],
             )?;
             tx.execute("DELETE FROM people WHERE id = ?1", [from])?;
@@ -1964,6 +2059,88 @@ mod tests {
 
         assert!(s.merge_people(into.id, into.id).is_err());
         assert!(s.merge_people(from.id, into.id).is_err());
+    }
+
+    /// Speakers matched to people merged away or deleted since (a
+    /// processing checkpoint) are stored linked to the merge target, or
+    /// unknown: never a dangling person id.
+    #[test]
+    fn replace_transcript_resolves_merged_and_deleted_people() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        let a = s.insert_person("A", None).unwrap();
+        let b = s.insert_person("B", None).unwrap();
+        let c = s.insert_person("C", None).unwrap();
+        let gone = s.insert_person("Gone", None).unwrap();
+        let mut confirmed = speaker(3, "Speaker 3", Some(gone.id));
+        confirmed.confirmed = true;
+        s.merge_people(a.id, b.id).unwrap();
+        // A chain of merges resolves to the last target.
+        s.merge_people(b.id, c.id).unwrap();
+        assert!(s.delete_person(gone.id).unwrap());
+
+        let (sp, _) = s
+            .replace_transcript(
+                m,
+                &[
+                    speaker(1, "Speaker 1", Some(a.id)),
+                    speaker(2, "Speaker 2", Some(b.id)),
+                    confirmed,
+                    speaker(4, "Speaker 4", None),
+                ],
+                &[],
+            )
+            .unwrap();
+        let got: Vec<_> = sp
+            .iter()
+            .map(|s| (s.person_id, s.match_confidence, s.confirmed))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (Some(c.id), Some(0.5), false),
+                (Some(c.id), Some(0.5), false),
+                (None, None, false),
+                (None, Some(0.5), false),
+            ]
+        );
+
+        // Deleting the target forgets the merges into it.
+        assert!(s.delete_person(c.id).unwrap());
+        let (sp, _) = s
+            .replace_transcript(m, &[speaker(1, "Speaker 1", Some(a.id))], &[])
+            .unwrap();
+        assert_eq!(sp[0].person_id, None);
+    }
+
+    #[test]
+    fn delete_person_within_refuses_people_in_other_meetings() {
+        let s = store();
+        let m1 = s.insert_meeting(&meeting("one", 0)).unwrap();
+        let m2 = s.insert_meeting(&meeting("two", 0)).unwrap();
+        let ann = s.insert_person("Ann", None).unwrap();
+        for m in [m1, m2] {
+            s.replace_transcript(
+                m,
+                &[speaker(0, "Speaker 1", Some(ann.id))],
+                &[segment(0, Some(0), Track::System)],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            s.delete_person_within(ann.id, &BTreeSet::from([m1]))
+                .unwrap(),
+            PersonDeletion::InMoreMeetings(BTreeSet::from([m1, m2]))
+        );
+        assert!(s.get_person(ann.id).unwrap().is_some());
+        let PersonDeletion::Deleted(segments) = s
+            .delete_person_within(ann.id, &BTreeSet::from([m1, m2]))
+            .unwrap()
+        else {
+            panic!("not deleted");
+        };
+        assert_eq!(segments.len(), 2);
+        assert!(s.get_person(ann.id).unwrap().is_none());
     }
 
     #[test]
