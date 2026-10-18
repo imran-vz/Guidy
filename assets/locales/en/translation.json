@@ -401,7 +401,7 @@
         },
         "builtin": {
           "label": "Built-in model (on this Mac)",
-          "description": "Runs a local model on this Mac. Nothing leaves your computer. Download models in Meetings > Settings.",
+          "description": "Runs a local model on this Mac. Nothing leaves your computer.",
           "manage": "Manage built-in models"
         },
         "apiFormat": {
@@ -1031,6 +1031,7 @@
       "modelPlaceholder": "Model id",
       "pickModel": "Select a model",
       "noLocalModels": "Download a model below",
+      "usingPostProcessModel": "Using the post-processing model ({{model}})",
       "refreshModels": "Refresh models",
       "testConnection": "Test connection",
       "testDescription": "Check that the provider, key and model work.",

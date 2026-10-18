@@ -2108,6 +2108,37 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn meeting_model_download_finishing_during_onboarding_is_cleaned_up(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.data.lock().models =
+            vec![crate::logic::models::test_model(DEFAULT_MEETING_MODEL_ID)];
+        let state = setup_meetings(cx, backend.clone(), meetings);
+        state.update(cx, |s, cx| {
+            s.download_meeting_model(DEFAULT_MEETING_MODEL_ID, cx)
+        });
+        cx.run_until_parked();
+        assert!(state.read_with(cx, |s, _| s
+            .meeting_model_downloads
+            .contains(DEFAULT_MEETING_MODEL_ID)));
+        // Onboarding (re)starts while the download runs.
+        state.update(cx, |s, _| {
+            s.startup.step = Some(crate::logic::flows::OnboardingStep::Model)
+        });
+        backend.data.lock().models[0].is_downloaded = true;
+        dispatch(
+            cx,
+            &state,
+            "model-download-complete",
+            serde_json::json!(DEFAULT_MEETING_MODEL_ID),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert!(state.read_with(cx, |s, _| s.meeting_model_downloads.is_empty()));
+        assert!(!backend.called("set_active_model"));
+    }
+
+    #[gpui_kit::test]
     fn processing_with_a_missing_model_is_a_typed_error(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         meetings.data.lock().fail_process = Some(
@@ -2585,5 +2616,126 @@ mod meetings_fixes {
         cx.run_until_parked();
         assert_eq!(main.read_with(cx, |m, _| m.section), Section::Meetings);
         assert!(exists(cx, w, "meetings-settings"));
+    }
+
+    #[gpui_kit::test]
+    fn pp_test_connection_saves_typed_key_and_base_url_first(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        // The backend tests what is stored: fail unless both were saved.
+        let b = backend.clone();
+        meetings.data.lock().ai.llm_test = Some(Arc::new(move |pid| {
+            let key = b.called(&format!("change_post_process_api_key {pid} sk-typed"));
+            let url = b.called(&format!(
+                "change_post_process_base_url {pid} https://typed.example/v1"
+            ));
+            match (key, url) {
+                (true, true) => Ok("Connected".into()),
+                (false, _) => Err("no API key set".into()),
+                (_, false) => Err("old base URL".into()),
+            }
+        }));
+        let state = setup_meetings(cx, backend.clone(), meetings.clone());
+        state.update(cx, |s, cx| s.set_post_process_provider("custom", cx));
+        cx.run_until_parked();
+        let (w, page) = open(cx, PostProcessingPage::new);
+        // Typed, never blurred: the test saves them, then runs.
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| {
+                p.type_base_url("https://typed.example/v1", window, cx);
+                p.type_api_key("sk-typed", window, cx);
+            })
+        })
+        .unwrap();
+        with_window(cx, w, |window, cx| {
+            window.click("pp-test-connection-button", cx)
+        });
+        assert!(meetings.called("llm_test_connection custom PostProcess"));
+        assert_eq!(
+            page.read_with(cx, |p, _| p.test_outcome().cloned()),
+            Some(Ok("Connected".into()))
+        );
+    }
+
+    #[gpui_kit::test]
+    fn pp_test_connection_waits_for_an_in_flight_key_save(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let b = backend.clone();
+        meetings.data.lock().ai.llm_test = Some(Arc::new(move |pid| {
+            if b.called(&format!("change_post_process_api_key {pid} sk-blurred")) {
+                Ok("Connected".into())
+            } else {
+                Err("no API key set".into())
+            }
+        }));
+        let state = setup_meetings(cx, backend.clone(), meetings.clone());
+        state.update(cx, |s, cx| s.set_post_process_provider("custom", cx));
+        cx.run_until_parked();
+        let (w, page) = open(cx, PostProcessingPage::new);
+        // The blur's save is still in flight when the test is clicked.
+        cx.update_window(w, |_, window, cx| {
+            page.update(cx, |p, cx| p.enter_api_key("sk-blurred", window, cx));
+            window.render_frame(cx);
+            window.click("pp-test-connection-button", cx);
+            // Chained after the save, not racing it.
+            assert!(page.read(cx).test_waiting());
+            assert!(page.read(cx).saving_api_key("custom"));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!page.read_with(cx, |p, _| p.test_waiting()));
+        assert_eq!(
+            page.read_with(cx, |p, _| p.test_outcome().cloned()),
+            Some(Ok("Connected".into()))
+        );
+    }
+
+    #[gpui_kit::test]
+    fn builtin_models_are_managed_from_post_processing_without_meetings(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        {
+            let mut d = meetings.data.lock();
+            d.supported = false;
+            d.ai.local_models = vec![crate::meetings_backend::LocalLlmModel {
+                id: "qwen3-4b".into(),
+                name: "Qwen3 4B".into(),
+                description: String::new(),
+                size_mb: 2500,
+                is_default: true,
+                recommended_ram_gb: None,
+                fits_this_mac: true,
+                downloaded: false,
+                download_progress: None,
+            }];
+        }
+        let state = setup_meetings(cx, backend.clone(), meetings.clone());
+        assert!(!state.read_with(cx, |s, _| s.meetings_supported));
+        let (w, _) = open(cx, PostProcessingPage::new);
+        state.update(cx, |s, cx| s.set_post_process_provider("guidy_local", cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "pp-builtin-manage"));
+        assert!(!exists(cx, w, "local-models"));
+        with_window(cx, w, |window, cx| window.click("pp-builtin-manage", cx));
+        assert!(exists(cx, w, "local-download-qwen3-4b"));
+        with_window(cx, w, |window, cx| {
+            window.click("local-download-qwen3-4b", cx)
+        });
+        assert!(meetings.called("download_local_llm_model qwen3-4b"));
+        // A finished download refreshes the built-in model choices.
+        let fetches = || {
+            backend
+                .calls()
+                .iter()
+                .filter(|c| *c == "fetch_post_process_models guidy_local")
+                .count()
+        };
+        let before = fetches();
+        meetings.data.lock().ai.local_models[0].downloaded = true;
+        dispatch(cx, &state, "llm-models://changed", serde_json::json!(null));
+        assert_eq!(fetches(), before + 1);
+        assert!(exists(cx, w, "local-delete-qwen3-4b"));
+        // Hidden again for another provider.
+        state.update(cx, |s, cx| s.set_post_process_provider("custom", cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "local-models"));
     }
 }

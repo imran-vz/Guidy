@@ -18,7 +18,7 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use guidy_core::llm::{is_builtin_provider, resolve_provider, ProviderRef};
+use guidy_core::llm::{feature_model, is_builtin_provider, resolve_provider, Feature, ProviderRef};
 use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
 use guidy_core::settings::AppSettings;
 use std::collections::HashMap;
@@ -30,7 +30,11 @@ const APPLE_PROVIDER_ID: &str = crate::logic::flows::APPLE_PROVIDER_ID;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeetingsLlmChoice {
     pub provider_id: String,
+    /// The meetings model set for the provider (empty when none).
     pub model: String,
+    /// The model summaries actually use ([`feature_model`]): `model`, or
+    /// the provider's post-processing model when none is set.
+    pub effective_model: String,
 }
 
 impl MeetingsLlmChoice {
@@ -46,7 +50,18 @@ impl MeetingsLlmChoice {
             .get(&provider_id)
             .cloned()
             .unwrap_or_default();
-        Self { provider_id, model }
+        let effective_model = feature_model(s, Feature::Meetings, &provider_id);
+        Self {
+            provider_id,
+            model,
+            effective_model,
+        }
+    }
+
+    /// The post-processing model used because none is set for meetings.
+    pub fn fallback_model(&self) -> Option<&str> {
+        (self.model.trim().is_empty() && !self.effective_model.is_empty())
+            .then_some(self.effective_model.as_str())
     }
 }
 
@@ -103,14 +118,14 @@ pub struct AiSettingsView {
     apple_available: bool,
     model_input: Entity<InputState>,
     models: HashMap<String, Vec<String>>,
-    fetching_models: bool,
+    /// The provider whose model list is being fetched.
+    fetching_models: Option<String>,
+    /// The last failed model listing: (provider id, message). Shown by the
+    /// model field, apart from the connection test.
+    models_error: Option<(String, String)>,
     testing: bool,
     test_result: Option<Result<String, String>>,
-    local: Vec<LocalLlmModel>,
-    local_error: Option<String>,
-    /// A local-model reload is running / another was asked for meanwhile.
-    refreshing: bool,
-    refresh_again: bool,
+    local: Entity<LocalModelsView>,
     linear_key: Entity<InputState>,
     has_linear_key: bool,
     linear_testing: bool,
@@ -137,24 +152,10 @@ impl AiSettingsView {
                 this.sync_model_input(false, window, cx);
                 cx.notify();
             }),
-            // Built-in model downloads report progress and state changes as
-            // events (no polling).
-            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
-                AppEvent::Meetings(MeetingsEvent::LocalModelProgress { model_id, fraction }) => {
-                    match this.local.iter_mut().find(|m| &m.id == model_id) {
-                        Some(m) => {
-                            m.download_progress = Some(*fraction);
-                            cx.notify();
-                        }
-                        None => this.refresh(cx),
-                    }
-                }
-                AppEvent::Meetings(MeetingsEvent::LocalModelsChanged) => this.refresh(cx),
-                AppEvent::Meetings(MeetingsEvent::Ready) => {
-                    this.refresh(cx);
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
+                if let AppEvent::Meetings(MeetingsEvent::Ready) = ev {
                     this.load_linear_key_status(cx);
                 }
-                _ => {}
             }),
             cx.subscribe(&model_input, |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
@@ -171,19 +172,22 @@ impl AiSettingsView {
                 }
             }),
         ];
+        let local = cx.new(LocalModelsView::new);
+        // A downloaded/deleted built-in model changes the model choices.
+        let local_sub = cx.observe(&local, |_, _, cx| cx.notify());
+        let mut subs = subs;
+        subs.push(local_sub);
         let mut this = Self {
             state,
             backend,
             apple_available,
             model_input,
             models: HashMap::new(),
-            fetching_models: false,
+            fetching_models: None,
+            models_error: None,
             testing: false,
             test_result: None,
-            local: Vec::new(),
-            local_error: None,
-            refreshing: false,
-            refresh_again: false,
+            local,
             linear_key,
             has_linear_key: false,
             linear_testing: false,
@@ -192,7 +196,6 @@ impl AiSettingsView {
             _subs: subs,
         };
         this.sync_model_input(true, window, cx);
-        this.refresh(cx);
         this.load_linear_key_status(cx);
         this
     }
@@ -232,38 +235,19 @@ impl AiSettingsView {
             self.model_input
                 .update(cx, |s, cx| s.set_value(m, window, cx));
         }
+        // No meetings model: the placeholder shows the one used instead.
+        let placeholder = match c.fallback_model() {
+            Some(m) => SharedString::from(m.to_string()),
+            None => t("meetingsAi.llm.modelPlaceholder"),
+        };
+        self.model_input
+            .update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
         if provider_changed {
             self.synced_provider = c.provider_id.clone();
             self.test_result = None;
+            self.models_error = None;
             self.fetch_models(c.provider_id, cx);
         }
-    }
-
-    /// Re-read the built-in models (one read at a time; events arriving
-    /// meanwhile coalesce into one more read).
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.refreshing {
-            self.refresh_again = true;
-            return;
-        }
-        self.refreshing = true;
-        self.run(
-            cx,
-            |b| b.local_llm_models(),
-            |this, local, cx| {
-                this.refreshing = false;
-                match local {
-                    Ok(l) => {
-                        this.local = l;
-                        this.local_error = None;
-                    }
-                    Err(e) => this.local_error = Some(error_message(&e)),
-                }
-                if std::mem::take(&mut this.refresh_again) {
-                    this.refresh(cx);
-                }
-            },
-        );
     }
 
     /// Whether a Linear key is stored (a Keychain read: on open and after
@@ -311,6 +295,8 @@ impl AiSettingsView {
         let model = (is_builtin_provider(&id) && !s.meetings.llm_models.contains_key(&id))
             .then(|| {
                 self.local
+                    .read(cx)
+                    .models
                     .iter()
                     .find(|m| m.downloaded)
                     .map(|m| m.id.clone())
@@ -334,18 +320,25 @@ impl AiSettingsView {
     }
 
     fn fetch_models(&mut self, provider_id: String, cx: &mut Context<Self>) {
-        self.fetching_models = true;
+        self.fetching_models = Some(provider_id.clone());
         let pid = provider_id.clone();
         self.run(
             cx,
             move |b| b.llm_models(&pid),
-            move |this, r, _| {
-                this.fetching_models = false;
+            move |this, r, cx| {
+                if this.fetching_models.as_ref() == Some(&provider_id) {
+                    this.fetching_models = None;
+                }
+                // A listing for a provider no longer selected is dropped.
+                if this.choice(cx).provider_id != provider_id {
+                    return;
+                }
                 match r {
                     Ok(m) => {
+                        this.models_error = None;
                         this.models.insert(provider_id, m);
                     }
-                    Err(e) => this.test_result = Some(Err(error_message(&e))),
+                    Err(e) => this.models_error = Some((provider_id, error_message(&e))),
                 }
             },
         );
@@ -361,23 +354,6 @@ impl AiSettingsView {
             |this, r, _| {
                 this.testing = false;
                 this.test_result = Some(r.map_err(|e| error_message(&e)));
-            },
-        );
-    }
-
-    fn local_action(&mut self, action: &'static str, id: String, cx: &mut Context<Self>) {
-        self.run(
-            cx,
-            move |b| match action {
-                "download" => b.download_local_llm_model(&id),
-                "cancel" => b.cancel_local_llm_download(&id),
-                _ => b.delete_local_llm_model(&id),
-            },
-            |this, r, cx| {
-                if let Err(e) = r {
-                    this.local_error = Some(error_message(&e));
-                }
-                this.refresh(cx);
             },
         );
     }
@@ -468,6 +444,12 @@ impl AiSettingsView {
         ];
 
         let models = self.models.get(&c.provider_id).cloned().unwrap_or_default();
+        let fetching = self.fetching_models.as_ref() == Some(&c.provider_id);
+        let models_error = self
+            .models_error
+            .as_ref()
+            .filter(|(p, _)| *p == c.provider_id)
+            .map(|(_, e)| e.clone());
         let weak = cx.entity().downgrade();
         let model_dropdown = Dropdown::new("meetings-llm-model-options")
             .options(
@@ -476,14 +458,14 @@ impl AiSettingsView {
                     .map(|m| DropdownOption::new(m.clone(), model_label(m)))
                     .collect(),
             )
-            .selected(Some(c.model.clone()))
+            .selected(Some(c.effective_model.clone()))
             .placeholder(if is_builtin && models.is_empty() {
                 t("meetingsAi.llm.noLocalModels")
             } else {
                 t("meetingsAi.llm.pickModel")
             })
             .menu_width(px(320.))
-            .loading(self.fetching_models)
+            .loading(fetching)
             .disabled(updating)
             .on_select(move |v, window, cx| {
                 let v = v.to_string();
@@ -496,30 +478,63 @@ impl AiSettingsView {
             });
         if !is_apple {
             let pid = c.provider_id.clone();
+            let theme = cx.theme().clone();
+            let fallback = c.fallback_model().map(|m| {
+                div()
+                    .id("meetings-llm-model-fallback")
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(t_args(
+                        "meetingsAi.llm.usingPostProcessModel",
+                        &[("model", m)],
+                    ))
+                    .test_support()
+            });
+            let error = models_error.map(|e| {
+                h_flex()
+                    .id("meetings-llm-models-error")
+                    .gap_1()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(icon("circle-alert").xsmall())
+                    .child(div().min_w_0().truncate().child(e))
+                    .test_support()
+            });
             rows.push(
                 SettingRow::new("meetings-llm-model", t("meetingsAi.llm.model"))
                     .description(t("meetingsAi.llm.modelDescription"))
                     .stacked()
                     .control(
-                        h_flex()
+                        v_flex()
                             .w_full()
-                            .gap_2()
-                            .when(!is_builtin, |d| {
-                                d.child(div().flex_1().child(Input::new(&self.model_input).small()))
-                            })
-                            .child(model_dropdown)
+                            .gap_1()
                             .child(
-                                Button::new("meetings-llm-refresh-models")
-                                    .ghost()
-                                    .small()
-                                    .icon(icon("refresh-ccw"))
-                                    .tooltip(t("meetingsAi.llm.refreshModels"))
-                                    .loading(self.fetching_models)
-                                    .disabled(self.fetching_models)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.fetch_models(pid.clone(), cx)
-                                    })),
-                            ),
+                                h_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .when(!is_builtin, |d| {
+                                        d.child(
+                                            div()
+                                                .flex_1()
+                                                .child(Input::new(&self.model_input).small()),
+                                        )
+                                    })
+                                    .child(model_dropdown)
+                                    .child(
+                                        Button::new("meetings-llm-refresh-models")
+                                            .ghost()
+                                            .small()
+                                            .icon(icon("refresh-ccw"))
+                                            .tooltip(t("meetingsAi.llm.refreshModels"))
+                                            .loading(fetching)
+                                            .disabled(fetching)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.fetch_models(pid.clone(), cx)
+                                            })),
+                                    ),
+                            )
+                            .children(fallback)
+                            .children(error),
                     )
                     .into_any_element(),
             );
@@ -566,18 +581,213 @@ impl AiSettingsView {
         rows
     }
 
+    fn linear_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let muted = cx.theme().muted_foreground;
+        vec![
+            SettingRow::new("meetings-linear-key", t("meetingsAi.linear.key"))
+                .description(t("meetingsAi.linear.keyDescription"))
+                .stacked()
+                .control(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(Input::new(&self.linear_key).small().mask_toggle()),
+                                )
+                                .when(self.has_linear_key, |d| {
+                                    d.child(
+                                        Button::new("meetings-linear-remove-key")
+                                            .ghost()
+                                            .small()
+                                            .label(t("meetingsAi.linear.removeKey"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.remove_linear_key(window, cx)
+                                            })),
+                                    )
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(if self.has_linear_key {
+                                    t("meetingsAi.linear.keySaved")
+                                } else {
+                                    t("meetingsAi.linear.noKey")
+                                })
+                                .child(
+                                    Button::new("meetings-linear-get-key")
+                                        .link()
+                                        .xsmall()
+                                        .label(t("meetingsAi.linear.getKey"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.open_url(LINEAR_API_KEY_URL, cx)
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+            SettingRow::new("meetings-linear-test", t("meetingsAi.linear.test"))
+                .description(t("meetingsAi.linear.testDescription"))
+                .control(
+                    h_flex()
+                        .gap_2()
+                        .children(self.linear_result.as_ref().map(|r| {
+                            let r = r
+                                .as_ref()
+                                .map(|name| {
+                                    guidy_i18n::t_args(
+                                        "meetingsAi.linear.connectedAs",
+                                        &[("name", name)],
+                                    )
+                                })
+                                .map_err(Clone::clone);
+                            result_line("meetings-linear-test-result", &r, cx)
+                        }))
+                        .child(
+                            Button::new("meetings-linear-test-button")
+                                .outline()
+                                .small()
+                                .label(t("meetingsAi.linear.test"))
+                                .loading(self.linear_testing)
+                                .disabled(self.linear_testing || !self.has_linear_key)
+                                .on_click(cx.listener(|this, _, _, cx| this.test_linear(cx))),
+                        ),
+                )
+                .into_any_element(),
+        ]
+    }
+}
+
+/// The built-in llama.cpp models: download, cancel, delete. Shared by the
+/// meetings AI settings and the post-processing page (built-in provider),
+/// so built-in models can be managed where meeting notes aren't available.
+pub struct LocalModelsView {
+    backend: SharedMeetingsBackend,
+    pub models: Vec<LocalLlmModel>,
+    error: Option<String>,
+    /// A reload is running / another was asked for meanwhile.
+    refreshing: bool,
+    refresh_again: bool,
+    _subs: Vec<Subscription>,
+}
+
+impl LocalModelsView {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let state = AppState::global(cx);
+        let backend = state.read(cx).meetings.clone();
+        let subs = vec![
+            // Downloads report progress and state changes as events (no
+            // polling).
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
+                AppEvent::Meetings(MeetingsEvent::LocalModelProgress { model_id, fraction }) => {
+                    match this.models.iter_mut().find(|m| &m.id == model_id) {
+                        Some(m) => {
+                            m.download_progress = Some(*fraction);
+                            cx.notify();
+                        }
+                        None => this.refresh(cx),
+                    }
+                }
+                AppEvent::Meetings(MeetingsEvent::LocalModelsChanged | MeetingsEvent::Ready) => {
+                    this.refresh(cx)
+                }
+                _ => {}
+            }),
+        ];
+        let mut this = Self {
+            backend,
+            models: Vec::new(),
+            error: None,
+            refreshing: false,
+            refresh_again: false,
+            _subs: subs,
+        };
+        this.refresh(cx);
+        this
+    }
+
+    fn run<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&dyn MeetingsBackend) -> T + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    ) {
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_spawn(async move { f(&*backend) }).await;
+            this.update(cx, |s, cx| {
+                done(s, r, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Re-read the built-in models (one read at a time; events arriving
+    /// meanwhile coalesce into one more read).
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.refreshing {
+            self.refresh_again = true;
+            return;
+        }
+        self.refreshing = true;
+        self.run(
+            cx,
+            |b| b.local_llm_models(),
+            |this, local, cx| {
+                this.refreshing = false;
+                match local {
+                    Ok(l) => {
+                        this.models = l;
+                        this.error = None;
+                    }
+                    Err(e) => this.error = Some(error_message(&e)),
+                }
+                if std::mem::take(&mut this.refresh_again) {
+                    this.refresh(cx);
+                }
+            },
+        );
+    }
+
+    fn local_action(&mut self, action: &'static str, id: String, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            move |b| match action {
+                "download" => b.download_local_llm_model(&id),
+                "cancel" => b.cancel_local_llm_download(&id),
+                _ => b.delete_local_llm_model(&id),
+            },
+            |this, r, cx| {
+                if let Err(e) = r {
+                    this.error = Some(error_message(&e));
+                }
+                this.refresh(cx);
+            },
+        );
+    }
+
     fn local_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let mut rows: Vec<AnyElement> = Vec::new();
-        if let Some(e) = &self.local_error {
+        if let Some(e) = &self.error {
             rows.push(
                 error_box("meetings-local-error", e.clone(), cx)
                     .test_support()
                     .into_any_element(),
             );
         }
-        if self.local.is_empty() {
+        if self.models.is_empty() {
             rows.push(
                 div()
                     .id("meetings-local-empty")
@@ -589,7 +799,7 @@ impl AiSettingsView {
                     .into_any_element(),
             );
         }
-        for m in &self.local {
+        for m in &self.models {
             let id = m.id.clone();
             let mut tags = h_flex().gap_2().flex_wrap();
             if m.is_default {
@@ -725,89 +935,16 @@ impl AiSettingsView {
         }
         rows
     }
+}
 
-    fn linear_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let muted = cx.theme().muted_foreground;
-        vec![
-            SettingRow::new("meetings-linear-key", t("meetingsAi.linear.key"))
-                .description(t("meetingsAi.linear.keyDescription"))
-                .stacked()
-                .control(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&self.linear_key).small().mask_toggle()),
-                                )
-                                .when(self.has_linear_key, |d| {
-                                    d.child(
-                                        Button::new("meetings-linear-remove-key")
-                                            .ghost()
-                                            .small()
-                                            .label(t("meetingsAi.linear.removeKey"))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.remove_linear_key(window, cx)
-                                            })),
-                                    )
-                                }),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(if self.has_linear_key {
-                                    t("meetingsAi.linear.keySaved")
-                                } else {
-                                    t("meetingsAi.linear.noKey")
-                                })
-                                .child(
-                                    Button::new("meetings-linear-get-key")
-                                        .link()
-                                        .xsmall()
-                                        .label(t("meetingsAi.linear.getKey"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.open_url(LINEAR_API_KEY_URL, cx)
-                                        })),
-                                ),
-                        ),
-                )
-                .into_any_element(),
-            SettingRow::new("meetings-linear-test", t("meetingsAi.linear.test"))
-                .description(t("meetingsAi.linear.testDescription"))
-                .control(
-                    h_flex()
-                        .gap_2()
-                        .children(self.linear_result.as_ref().map(|r| {
-                            let r = r
-                                .as_ref()
-                                .map(|name| {
-                                    guidy_i18n::t_args(
-                                        "meetingsAi.linear.connectedAs",
-                                        &[("name", name)],
-                                    )
-                                })
-                                .map_err(Clone::clone);
-                            result_line("meetings-linear-test-result", &r, cx)
-                        }))
-                        .child(
-                            Button::new("meetings-linear-test-button")
-                                .outline()
-                                .small()
-                                .label(t("meetingsAi.linear.test"))
-                                .loading(self.linear_testing)
-                                .disabled(self.linear_testing || !self.has_linear_key)
-                                .on_click(cx.listener(|this, _, _, cx| this.test_linear(cx))),
-                        ),
-                )
-                .into_any_element(),
-        ]
+impl Render for LocalModelsView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.local_rows(cx);
+        div().id("local-models").w_full().child(group(
+            Some(t("meetingsAi.local.heading")),
+            rows,
+            cx,
+        ))
     }
 }
 
@@ -851,14 +988,13 @@ impl Render for AiSettingsView {
             return v_flex().id("meetings-ai-settings").into_any_element();
         };
         let llm = self.llm_rows(&s, cx);
-        let local = self.local_rows(cx);
         let linear = self.linear_rows(cx);
         v_flex()
             .id("meetings-ai-settings")
             .w_full()
             .gap_6()
             .child(group(Some(t("meetingsAi.llm.heading")), llm, cx))
-            .child(group(Some(t("meetingsAi.local.heading")), local, cx))
+            .child(self.local.clone())
             .child(group(Some(t("meetingsAi.linear.heading")), linear, cx))
             .test_support()
             .into_any_element()
@@ -1024,6 +1160,69 @@ mod ui {
         });
         assert!(mb.called("llm_test_connection guidy_local Meetings"));
         assert!(exists(cx, w, "meetings-llm-test-result"));
+    }
+
+    #[gpui_kit::test]
+    fn model_field_shows_the_post_processing_fallback(cx: &mut TestAppContext) {
+        let mb = FakeMeetingsBackend::new();
+        let fb = crate::testing::FakeBackend::new();
+        fb.with_settings(|s| {
+            s.meetings.llm_provider_id = "openai".into();
+            s.meetings.llm_models.clear();
+            s.post_process_models
+                .insert("openai".into(), "gpt-4o-mini".into());
+        });
+        let state = setup_with(cx, fb.clone(), mb);
+        let (w, view) = open(cx, AiSettingsView::new);
+        let choice = view.read_with(cx, |v, cx| v.choice(cx));
+        assert_eq!(choice.model, "");
+        assert_eq!(choice.effective_model, "gpt-4o-mini");
+        // Same model summaries use.
+        let s = fb.settings();
+        assert_eq!(
+            choice.effective_model,
+            guidy_core::llm::feature_model(&s, guidy_core::llm::Feature::Meetings, "openai")
+        );
+        assert!(exists(cx, w, "meetings-llm-model-fallback"));
+        let placeholder = view.read_with(cx, |v, cx| {
+            v.model_input.read(cx).presentation().placeholder().clone()
+        });
+        assert_eq!(placeholder.as_ref(), "gpt-4o-mini");
+        // A meetings model of its own: no fallback hint.
+        fb.with_settings(|s| {
+            s.meetings
+                .llm_models
+                .insert("openai".into(), "gpt-4.1".into());
+        });
+        state.update(cx, |s, cx| s.refresh_settings(cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "meetings-llm-model-fallback"));
+    }
+
+    #[gpui_kit::test]
+    fn failed_model_listing_is_not_a_test_result(cx: &mut TestAppContext) {
+        let mb = FakeMeetingsBackend::new();
+        mb.data.lock().ai.fail_llm_models = Some("listing failed".into());
+        setup(cx, mb.clone());
+        let (w, view) = open(cx, AiSettingsView::new);
+        assert!(mb.called("llm_models guidy_local"));
+        assert!(exists(cx, w, "meetings-llm-models-error"));
+        assert!(!exists(cx, w, "meetings-llm-test-result"));
+        assert!(view.read_with(cx, |v, _| v.test_result.is_none()));
+        // A listing for a provider no longer selected is dropped.
+        view.update(cx, |v, cx| {
+            v.models_error = None;
+            v.fetch_models("openai".into(), cx);
+        });
+        cx.run_until_parked();
+        assert!(mb.called("llm_models openai"));
+        assert!(view.read_with(cx, |v, _| v.models_error.is_none()));
+        assert!(!exists(cx, w, "meetings-llm-models-error"));
+        // A later success clears the error.
+        mb.data.lock().ai.fail_llm_models = None;
+        view.update(cx, |v, cx| v.fetch_models("guidy_local".into(), cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "meetings-llm-models-error"));
     }
 
     #[gpui_kit::test]

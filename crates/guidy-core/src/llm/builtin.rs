@@ -13,7 +13,9 @@
 //!   So does a timeout (start, load, ping).
 //! - Deleting the loaded model stops the process, at the latest when the
 //!   request using it finishes ([`BuiltinLlm::forget_model`]).
-//! - One request at a time; concurrent callers queue on a mutex.
+//! - One request at a time; concurrent callers queue on a mutex. A caller
+//!   with a bounded wait ([`ChatOptions::max_queue_wait`], dictation) goes
+//!   ahead of unbounded ones and gets [`WorkerBusy`] if the worker stays busy.
 //!
 //! Protocol: newline-delimited JSON, mirrored from
 //! `crates/guidy-llm/src/protocol.rs` (keep them in sync).
@@ -21,7 +23,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -215,6 +217,25 @@ impl std::fmt::Display for WorkerTimeout {
 
 impl std::error::Error for WorkerTimeout {}
 
+/// The worker stayed busy with another request for the caller's whole
+/// [`BuiltinChat::max_queue_wait`]. Not fatal: nothing was sent to the helper
+/// (find it with [`is_busy_error`]).
+#[derive(Debug)]
+pub struct WorkerBusy;
+
+impl std::fmt::Display for WorkerBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the built-in model is busy with another request")
+    }
+}
+
+impl std::error::Error for WorkerBusy {}
+
+/// Whether `e` (or anything it wraps) is a [`WorkerBusy`].
+pub fn is_busy_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<WorkerBusy>())
+}
+
 /// The helper couldn't turn the JSON schema into a grammar (or the grammar
 /// was rejected). Not fatal: `chat_json` retries without a grammar.
 #[derive(Debug)]
@@ -406,6 +427,9 @@ pub struct BuiltinChat<'a> {
     pub max_tokens: u32,
     pub temperature: f32,
     pub json_schema: Option<&'a Value>,
+    /// Give up with [`WorkerBusy`] if another request holds the worker this
+    /// long; `None` waits until it's free.
+    pub max_queue_wait: Option<Duration>,
 }
 
 /// How long a queued request waits for the worker before re-checking its
@@ -436,6 +460,25 @@ pub struct BuiltinLlm {
     /// Model files deleted while a request held the worker (see
     /// [`Self::forget_model`]); consumed by the next lock holder.
     forgotten: Mutex<Vec<PathBuf>>,
+    /// Requests with a bounded wait queued for the worker; unbounded ones
+    /// stand aside while this is non-zero (see [`Self::lock_worker`]).
+    priority_waiters: AtomicUsize,
+}
+
+/// Counts a bounded waiter in [`BuiltinLlm::priority_waiters`] while alive.
+struct PriorityWaiter<'a>(&'a AtomicUsize);
+
+impl<'a> PriorityWaiter<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for PriorityWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl BuiltinLlm {
@@ -448,6 +491,7 @@ impl BuiltinLlm {
             binary: Mutex::new(None),
             startup_timeout: STARTUP_TIMEOUT,
             forgotten: Mutex::new(Vec::new()),
+            priority_waiters: AtomicUsize::new(0),
         }
     }
 
@@ -602,9 +646,10 @@ impl BuiltinLlm {
     /// Requests are serialized: there is one helper process, and a chat holds
     /// it for the whole generation. A request waiting for its turn still
     /// honors `cancel` (it returns [`CANCELLED`] without touching the helper
-    /// or the running request).
+    /// or the running request) and [`BuiltinChat::max_queue_wait`] (it
+    /// returns [`WorkerBusy`]).
     pub fn chat(&self, req: &BuiltinChat<'_>, cancel: Option<&AtomicBool>) -> Result<String> {
-        let mut guard = self.lock_worker(cancel)?;
+        let mut guard = self.lock_worker(cancel, req.max_queue_wait)?;
         *self.last_used.lock() = Instant::now();
         // A model deleted while we queued must not be reused.
         self.stop_if_forgotten(&mut guard);
@@ -616,21 +661,45 @@ impl BuiltinLlm {
 
     /// Wait for the worker lock, giving up with [`CANCELLED`] as soon as
     /// `cancel` is set (checked between short timed waits and once more
-    /// after acquiring).
+    /// after acquiring), or with [`WorkerBusy`] after `max_wait`.
+    ///
+    /// A bounded waiter (an interactive request) goes first: unbounded ones
+    /// don't take the lock while one waits, so a meeting summary's next chunk
+    /// can't starve a dictation queued behind the current one.
     fn lock_worker(
         &self,
         cancel: Option<&AtomicBool>,
+        max_wait: Option<Duration>,
     ) -> Result<parking_lot::MutexGuard<'_, Option<Worker>>> {
         let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+        let deadline = max_wait.map(|w| Instant::now() + w);
+        let _priority = deadline.map(|_| PriorityWaiter::new(&self.priority_waiters));
+        let yield_to_priority =
+            || deadline.is_none() && self.priority_waiters.load(Ordering::SeqCst) > 0;
         loop {
             if cancelled() {
                 bail!(CANCELLED);
             }
-            if let Some(guard) = self.worker.try_lock_for(LOCK_POLL) {
+            if yield_to_priority() {
+                std::thread::sleep(LOCK_POLL);
+                continue;
+            }
+            let wait = deadline.map_or(LOCK_POLL, |d| {
+                d.saturating_duration_since(Instant::now()).min(LOCK_POLL)
+            });
+            if let Some(guard) = self.worker.try_lock_for(wait) {
                 if cancelled() {
                     bail!(CANCELLED);
                 }
+                if yield_to_priority() {
+                    // Hand it straight to the parked bounded waiter.
+                    parking_lot::MutexGuard::unlock_fair(guard);
+                    continue;
+                }
                 return Ok(guard);
+            }
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Err(WorkerBusy.into());
             }
         }
     }
@@ -778,6 +847,7 @@ impl BuiltinProvider {
                 max_tokens: opts.max_tokens.unwrap_or(2048),
                 temperature: opts.temperature.unwrap_or(0.2),
                 json_schema: schema,
+                max_queue_wait: opts.max_queue_wait,
             },
             opts.cancel.as_deref(),
         )
@@ -799,10 +869,11 @@ impl LlmProvider for BuiltinProvider {
     }
 
     /// GBNF grammar from the schema (llama.cpp's `json_schema_to_grammar`),
-    /// so the reply is valid JSON by construction; prompt-and-retry only if
-    /// the grammar couldn't be built or the reply is invalid anyway. Other
-    /// failures (cut off, cancelled, timed out, the helper died) are returned:
-    /// a retry would hit them again.
+    /// so the reply is valid JSON by construction; prompt-and-retry
+    /// ([`json_via_prompt`], up to two requests) only if the grammar couldn't
+    /// be built or the reply is invalid anyway, so at most three requests.
+    /// Other failures (cut off, cancelled, timed out, busy, the helper died)
+    /// are returned: a retry would hit them again.
     fn chat_json(
         &self,
         messages: &[ChatMessage],
@@ -826,6 +897,28 @@ impl LlmProvider for BuiltinProvider {
             self.name()
         );
         json_via_prompt(self, messages, json_schema, opts)
+    }
+}
+
+#[cfg(test)]
+impl BuiltinLlm {
+    /// Hold the worker as a running request would (tests elsewhere in the
+    /// crate).
+    pub(crate) fn hold_worker_for_tests(&self) -> impl Sized + '_ {
+        self.worker.lock()
+    }
+}
+
+#[cfg(test)]
+impl BuiltinProvider {
+    /// A provider for the first catalog model at `path`, on `llm`.
+    pub(crate) fn for_tests(llm: &'static BuiltinLlm, path: PathBuf) -> Self {
+        Self {
+            entry: &local_models::CATALOG[0],
+            path,
+            n_ctx: 512,
+            llm,
+        }
     }
 }
 
@@ -907,6 +1000,7 @@ mod tests {
                     max_tokens: 1,
                     temperature: 0.0,
                     json_schema: None,
+                    max_queue_wait: None,
                 };
                 let _ = tx.send(llm.chat(&req, Some(&cancel)));
             })
@@ -921,8 +1015,66 @@ mod tests {
         waiter.join().unwrap();
         drop(held);
         // Already cancelled: refused right away even when the lock is free.
-        assert!(llm.lock_worker(Some(&AtomicBool::new(true))).is_err());
-        assert!(llm.lock_worker(None).is_ok());
+        assert!(llm.lock_worker(Some(&AtomicBool::new(true)), None).is_err());
+        assert!(llm.lock_worker(None, None).is_ok());
+    }
+
+    #[test]
+    fn a_bounded_wait_gives_up_with_busy_without_retrying() {
+        let llm: &'static BuiltinLlm = Box::leak(Box::new(BuiltinLlm::new(IDLE_TIMEOUT)));
+        let provider = BuiltinProvider::for_tests(llm, PathBuf::from("/models/fake.gguf"));
+        // A meeting summary holds the worker.
+        let held = llm.worker.lock();
+        let opts = ChatOptions {
+            max_queue_wait: Some(Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let schema = serde_json::json!({"type":"object"});
+        let err = provider
+            .chat_json(&[ChatMessage::user("x")], &schema, &opts)
+            .unwrap_err();
+        assert!(is_busy_error(&err), "{err:#}");
+        assert!(!super::super::is_cancelled_error(&err));
+        // One wait, not one per JSON retry.
+        assert!(
+            start.elapsed() < Duration::from_millis(600),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(llm.priority_waiters.load(Ordering::SeqCst), 0);
+        drop(held);
+        // Free: a zero wait still gets it.
+        assert!(llm.lock_worker(None, Some(Duration::ZERO)).is_ok());
+    }
+
+    #[test]
+    fn a_bounded_waiter_goes_ahead_of_unbounded_ones() {
+        let llm = std::sync::Arc::new(BuiltinLlm::new(IDLE_TIMEOUT));
+        let order = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let held = llm.worker.lock();
+        let waiter = |name: &'static str, max_wait: Option<Duration>| {
+            let (llm, order) = (llm.clone(), order.clone());
+            std::thread::spawn(move || {
+                let guard = llm.lock_worker(None, max_wait).unwrap();
+                order.lock().push(name);
+                std::thread::sleep(Duration::from_millis(20));
+                drop(guard);
+            })
+        };
+        // The next summary chunk queues first, then a dictation.
+        let summary = waiter("summary", None);
+        std::thread::sleep(Duration::from_millis(150));
+        let dictation = waiter("dictation", Some(Duration::from_secs(5)));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while llm.priority_waiters.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(held);
+        dictation.join().unwrap();
+        summary.join().unwrap();
+        assert_eq!(*order.lock(), vec!["dictation", "summary"]);
     }
 
     #[test]
@@ -988,6 +1140,7 @@ mod tests {
                     max_tokens: 4,
                     temperature: 0.0,
                     json_schema: None,
+                    max_queue_wait: None,
                 },
                 None,
             )
@@ -1108,6 +1261,7 @@ done"#
             max_tokens: 1,
             temperature: 0.0,
             json_schema: None,
+            max_queue_wait: None,
         }
     }
 
@@ -1329,6 +1483,25 @@ done"#
         provider.llm.shutdown();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn chat_json_makes_at_most_three_requests() {
+        // Grammar rejected, then two invalid prompt-only replies.
+        let (_helper, provider, count) = fake_provider(&format!(
+            r#"if printf '%s' "$line" | grep -q '"json_schema":null'; then {}; else echo "{{\"type\":\"error\",\"id\":$id,\"message\":\"unsupported JSON schema: bad\"}}"; fi"#,
+            done("nope", "stop")
+        ));
+        assert!(provider
+            .chat_json(
+                &[ChatMessage::user("x")],
+                &schema(),
+                &ChatOptions::default(),
+            )
+            .is_err());
+        assert_eq!(chats(&count), 3);
+        provider.llm.shutdown();
+    }
+
     /// End-to-end with a real GGUF. Run with
     /// `GUIDY_LLM_TEST_MODEL=/path/model.gguf cargo test -p guidy-core builtin -- --ignored`
     /// after `cargo build -p guidy-llm`.
@@ -1349,6 +1522,7 @@ done"#
                     max_tokens: 16,
                     temperature: 0.0,
                     json_schema: None,
+                    max_queue_wait: None,
                 },
                 None,
             )
@@ -1375,6 +1549,7 @@ done"#
                     max_tokens: 1024,
                     temperature: 0.0,
                     json_schema: Some(&schema),
+                    max_queue_wait: None,
                 },
                 None,
             )
@@ -1399,6 +1574,7 @@ done"#
                     max_tokens: 3000,
                     temperature: 0.0,
                     json_schema: None,
+                    max_queue_wait: None,
                 },
                 Some(&cancel),
             )
