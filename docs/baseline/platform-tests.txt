@@ -1,4 +1,4 @@
-# Handy baseline tests that only compile on some platforms (the baseline was
+# Baseline tests that only compile on some platforms (the baseline was
 # listed on macOS/aarch64). `cargo xtask parity` requires them only where they
 # build. Format: <platform> <test path>; platform is one of
 # macos-aarch64, macos, unix, not-linux.

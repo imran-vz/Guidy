@@ -2,7 +2,7 @@
 
 Offline speech-to-text for the desktop. Press a shortcut, speak, and Guidy pastes the transcript into the focused app. Transcription runs locally.
 
-Guidy is a GPUI port of [Handy](https://github.com/cjpais/Handy) (MIT). It is pure Rust, with [gpui-kit](https://gpui-kit.com) components and a Zed-style look (One Dark/Light, IBM Plex Sans, Lilex). See [`docs/MIGRATION_PLAN.md`](docs/MIGRATION_PLAN.md) for the design and [`docs/PARITY.md`](docs/PARITY.md) for the feature-by-feature parity record.
+Guidy is pure Rust on GPUI, with [gpui-kit](https://gpui-kit.com) components and a Zed-style look (One Dark/Light, IBM Plex Sans, Lilex). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/PARITY.md`](docs/PARITY.md) for the feature-by-feature test record, and [`NOTICE.md`](NOTICE.md) for third-party credits.
 
 ## Layout
 
@@ -37,7 +37,7 @@ Debug builds also read these variables:
 ```sh
 cargo xtask test          # unit, UI (headless GPUI) and CLI tests
 cargo xtask test --full   # plus the real-model engine tests (needs a downloaded model)
-cargo xtask parity        # every Handy test, command, event and PARITY row is covered
+cargo xtask parity        # every baseline test, command, event and PARITY row is covered
 cargo xtask gate          # test + parity; this is what CI runs
 ```
 

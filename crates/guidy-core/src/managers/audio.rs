@@ -10,7 +10,7 @@ use crate::helpers::clamshell;
 use crate::managers::transcription::StreamRouter;
 use crate::settings::{get_settings, update_settings, AppSettings, VadBackend};
 use crate::utils;
-use handy_recorder::{Channels, EndReason, ErrorKind, Recorder, RecorderConfig, StartError};
+use audio_recorder::{Channels, EndReason, ErrorKind, Recorder, RecorderConfig, StartError};
 use log::{debug, error, info, trace, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -307,8 +307,8 @@ impl OpenMicrophone {
 /// start.
 pub fn recording_error_type(error: &anyhow::Error) -> &'static str {
     match error
-        .downcast_ref::<handy_recorder::Error>()
-        .map(handy_recorder::Error::kind)
+        .downcast_ref::<audio_recorder::Error>()
+        .map(audio_recorder::Error::kind)
     {
         Some(ErrorKind::PermissionDenied) => "microphone_permission_denied",
         // A missing selected microphone falls back to the default, so this
@@ -398,11 +398,11 @@ fn microphone_config(
     }
 }
 
-fn open_microphone(config: RecorderConfig) -> Result<OpenMicrophone, handy_recorder::Error> {
+fn open_microphone(config: RecorderConfig) -> Result<OpenMicrophone, audio_recorder::Error> {
     let failed = Arc::new(AtomicBool::new(false));
     let recorder = Recorder::open_with_failure_handler(config, {
         let failed = Arc::clone(&failed);
-        // handy-recorder logs the failure. The stream is rebuilt on the next
+        // The recorder crate logs the failure. The stream is rebuilt on the next
         // start; a recording in progress keeps the audio captured before it.
         move |_| failed.store(true, Ordering::Release)
     })?;
@@ -415,7 +415,7 @@ fn open_microphone_on_channel(
     device: Option<String>,
     channel: Option<u16>,
     frames_per_chunk: usize,
-) -> Result<OpenMicrophone, handy_recorder::Error> {
+) -> Result<OpenMicrophone, audio_recorder::Error> {
     match open_microphone(microphone_config(device.clone(), channel, frames_per_chunk)) {
         Err(error) if error.kind() == ErrorKind::InvalidChannel => {
             warn!("{error}; averaging all input channels instead");
@@ -595,7 +595,7 @@ impl AudioRecordingManager {
         // itself succeeded. A backend enumeration error may be transient and
         // must not erase the user's persisted preference.
         let enumerate_started = Instant::now();
-        let (device, enumeration_succeeded) = match handy_recorder::list_input_devices() {
+        let (device, enumeration_succeeded) = match audio_recorder::list_input_devices() {
             Ok(devices) => (
                 devices
                     .into_iter()
@@ -1293,7 +1293,7 @@ mod tests {
 
     /// A recorder error, without touching a device: the request is rejected
     /// before one is opened.
-    fn recorder_error() -> handy_recorder::Error {
+    fn recorder_error() -> audio_recorder::Error {
         let config = RecorderConfig {
             sample_rate: Some(0),
             ..RecorderConfig::speech()
@@ -1312,8 +1312,8 @@ mod tests {
         let wrapped = anyhow::Error::new(error).context("Failed to start recorder");
         assert_eq!(
             wrapped
-                .downcast_ref::<handy_recorder::Error>()
-                .map(handy_recorder::Error::kind),
+                .downcast_ref::<audio_recorder::Error>()
+                .map(audio_recorder::Error::kind),
             Some(ErrorKind::UnsupportedFormat)
         );
         assert_eq!(recording_error_type(&wrapped), "unknown");

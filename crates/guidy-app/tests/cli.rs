@@ -80,10 +80,9 @@ fn missing_wav_is_a_usage_error() {
 #[test]
 // IGNORE-REASON: needs the Nemotron streaming model in the HF cache; run by `cargo xtask test --full`.
 #[ignore]
-fn transcription_matches_handy_golden_output() {
+fn transcription_matches_golden_output() {
     let golden: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(workspace().join("fixtures/golden/handy-cli-speech.json"))
-            .unwrap(),
+        &std::fs::read_to_string(workspace().join("fixtures/golden/cli-speech.json")).unwrap(),
     )
     .unwrap();
     let wav = workspace().join("fixtures/audio/speech-16k-mono.wav");

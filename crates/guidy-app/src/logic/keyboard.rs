@@ -344,27 +344,27 @@ pub fn modifier_names(
     v
 }
 
-/// Backend key event (handy-keys) as the recorder sees it.
+/// Backend key event (native-keys) as the recorder sees it.
 #[derive(Clone, Debug)]
-pub struct HandyKeysInput<'a> {
+pub struct NativeKeysInput<'a> {
     pub modifiers: &'a [String],
     pub key: Option<&'a str>,
     pub is_key_down: bool,
     pub hotkey_string: &'a str,
 }
 
-/// handy-keys recorder (HandyKeysShortcutInput): a keyed combo commits on
+/// native-keys recorder (NativeKeysShortcutInput): a keyed combo commits on
 /// its key's release; a modifier-only shortcut only once every modifier is
 /// released and no main key ever went down (issue #1578).
 #[derive(Clone, Debug, Default)]
-pub struct HandyKeysRecorder {
+pub struct NativeKeysRecorder {
     pub keyed: String,
     pub modifier_only: String,
     pub current: String,
 }
 
-impl HandyKeysRecorder {
-    pub fn on_event(&mut self, e: &HandyKeysInput<'_>) -> Option<String> {
+impl NativeKeysRecorder {
+    pub fn on_event(&mut self, e: &NativeKeysInput<'_>) -> Option<String> {
         if e.is_key_down && !e.hotkey_string.is_empty() {
             if e.key.is_some() {
                 self.keyed = e.hotkey_string.to_string();
@@ -518,8 +518,8 @@ mod tests {
         key: Option<&'a str>,
         down: bool,
         s: &'a str,
-    ) -> HandyKeysInput<'a> {
-        HandyKeysInput {
+    ) -> NativeKeysInput<'a> {
+        NativeKeysInput {
             modifiers: mods,
             key,
             is_key_down: down,
@@ -528,10 +528,10 @@ mod tests {
     }
 
     #[test]
-    fn handy_keys_commit_on_main_key_release() {
+    fn native_keys_commit_on_main_key_release() {
         let opt = vec!["option".to_string()];
         let none: Vec<String> = vec![];
-        let mut r = HandyKeysRecorder::default();
+        let mut r = NativeKeysRecorder::default();
         assert_eq!(r.on_event(&ev(&opt, None, true, "option")), None);
         assert_eq!(
             r.on_event(&ev(&opt, Some("space"), true, "option+space")),
@@ -544,18 +544,18 @@ mod tests {
             Some("option+space")
         );
         // modifier release afterwards doesn't commit a modifier-only binding
-        let mut r = HandyKeysRecorder::default();
+        let mut r = NativeKeysRecorder::default();
         r.on_event(&ev(&opt, None, true, "option"));
         r.on_event(&ev(&opt, Some("space"), true, "option+space"));
         assert_eq!(r.on_event(&ev(&none, None, false, "")), None);
     }
 
     #[test]
-    fn handy_keys_modifier_only_after_full_release() {
+    fn native_keys_modifier_only_after_full_release() {
         let opt = vec!["option".to_string()];
         let both = vec!["option".to_string(), "shift".to_string()];
         let none: Vec<String> = vec![];
-        let mut r = HandyKeysRecorder::default();
+        let mut r = NativeKeysRecorder::default();
         r.on_event(&ev(&opt, None, true, "option"));
         r.on_event(&ev(&both, None, true, "option+shift"));
         assert_eq!(

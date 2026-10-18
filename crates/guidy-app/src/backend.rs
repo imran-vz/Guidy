@@ -36,8 +36,8 @@ pub trait Backend: Send + Sync + 'static {
         &self,
         implementation: &str,
     ) -> BackendResult<ImplementationChangeResult>;
-    fn start_handy_keys_recording(&self, binding_id: &str) -> BackendResult<()>;
-    fn stop_handy_keys_recording(&self) -> BackendResult<()>;
+    fn start_native_keys_recording(&self, binding_id: &str) -> BackendResult<()>;
+    fn stop_native_keys_recording(&self) -> BackendResult<()>;
 
     // -- post-processing --------------------------------------------------
     fn set_post_process_provider(&self, provider_id: &str) -> BackendResult<()>;
@@ -379,12 +379,12 @@ impl Backend for CoreBackend {
         )
     }
 
-    fn start_handy_keys_recording(&self, binding_id: &str) -> BackendResult<()> {
-        guidy_core::shortcut::handy_keys::start_handy_keys_recording(self.a(), binding_id.into())
+    fn start_native_keys_recording(&self, binding_id: &str) -> BackendResult<()> {
+        guidy_core::shortcut::native_keys::start_native_keys_recording(self.a(), binding_id.into())
     }
 
-    fn stop_handy_keys_recording(&self) -> BackendResult<()> {
-        guidy_core::shortcut::handy_keys::stop_handy_keys_recording(self.a())
+    fn stop_native_keys_recording(&self) -> BackendResult<()> {
+        guidy_core::shortcut::native_keys::stop_native_keys_recording(self.a())
     }
 
     fn set_post_process_provider(&self, provider_id: &str) -> BackendResult<()> {
