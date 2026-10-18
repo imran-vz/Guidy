@@ -17,7 +17,7 @@ use guidy_core::host::Event as CoreEvent;
 use guidy_core::managers::history::HistoryUpdatePayload;
 use guidy_core::secure_input::SecureInputStatus;
 use guidy_core::settings::AppSettings;
-use guidy_core::shortcut::handy_keys::FrontendKeyEvent;
+use guidy_core::shortcut::native_keys::FrontendKeyEvent;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub enum AppEvent {
     Toast(ToastSpec),
     History(HistoryUpdatePayload),
-    HandyKeys(FrontendKeyEvent),
+    NativeKeys(FrontendKeyEvent),
     CheckForUpdates,
     /// Auto-select candidate (ModelSelector), already delayed 500 ms.
     ModelDownloadCompleted(String),
@@ -900,9 +900,9 @@ impl AppState {
                     self.secure_input = Some(s);
                 }
             }
-            "handy-keys-event" => {
+            "native-keys-event" => {
                 if let Some(k) = event.decode::<FrontendKeyEvent>() {
-                    cx.emit(AppEvent::HandyKeys(k));
+                    cx.emit(AppEvent::NativeKeys(k));
                 }
             }
             "check-for-updates" => cx.emit(AppEvent::CheckForUpdates),

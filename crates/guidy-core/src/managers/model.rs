@@ -1393,8 +1393,8 @@ impl ModelManager {
     }
 
     /// Discover transcribe-cpp-compatible GGUF models already present in the
-    /// shared Hugging Face cache, so models downloaded by Handy (or any other
-    /// tool) appear in "Your Models" without re-downloading. Only architectures
+    /// shared Hugging Face cache, so models downloaded by other apps or tools
+    /// appear in "Your Models" without re-downloading. Only architectures
     /// transcribe-cpp recognises are surfaced; arbitrary (e.g. LLM) GGUFs that
     /// share the cache are ignored.
     fn discover_hf_cache_models(available_models: &mut HashMap<String, ModelInfo>) {

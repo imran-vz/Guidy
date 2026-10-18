@@ -644,7 +644,7 @@ impl AdvancedPage {
         let up = |k: &str| st.settings.is_updating(k);
         let current_impl = match s.keyboard_implementation {
             KeyboardImplementation::Tauri => "tauri",
-            KeyboardImplementation::HandyKeys => "handy_keys",
+            KeyboardImplementation::NativeKeys => "native_keys",
         };
         let acc_options = self
             .accelerators
@@ -681,7 +681,7 @@ impl AdvancedPage {
                 Dropdown::new("keyboard-implementation-dropdown")
                     .options(vec![
                         DropdownOption::new("tauri", "System Global Shortcut"),
-                        DropdownOption::new("handy_keys", "Native Key Listener"),
+                        DropdownOption::new("native_keys", "Native Key Listener"),
                     ])
                     .selected(Some(current_impl))
                     .disabled(up("keyboard_implementation"))
