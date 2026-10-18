@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn learned_params_are_keyed_by_base_url_and_model() {
+    fn rejection_memo_is_keyed_by_base_url_and_model() {
         let deepseek = provider("custom", "https://api.deepseek.com/");
         let key = endpoint_key(&deepseek, "deepseek-chat");
         assert_eq!(key, "https://api.deepseek.com|deepseek-chat");

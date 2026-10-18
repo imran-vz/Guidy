@@ -224,7 +224,6 @@ portable::tests::test_missing_file_does_not_enable_portable
 portable::tests::test_valid_magic_string_enables_portable
 portable::tests::test_wrong_content_does_not_enable_portable
 settings::tests::chinese_script_migration_only_carries_over_legacy_intents
-settings::tests::debug_output_redacts_api_keys
 settings::tests::default_overlay_style_is_live_when_overlay_defaults_on
 settings::tests::default_settings_disable_auto_submit
 settings::tests::empty_store_parses_with_defaults
@@ -242,7 +241,6 @@ settings::tests::salvage_of_non_object_store_falls_back_to_defaults
 settings::tests::salvage_of_poisoned_bindings_keeps_other_fields
 settings::tests::salvage_preserves_valid_fields_when_one_value_is_invalid
 settings::tests::salvage_tolerates_unknown_keys
-settings::tests::secret_map_debug_redacts_values
 settings::tests::shortcut_activation_defaults_to_hold_or_toggle_without_legacy_key
 settings::tests::shortcut_activation_migration_maps_push_to_talk_false
 settings::tests::shortcut_activation_migration_maps_push_to_talk_true
