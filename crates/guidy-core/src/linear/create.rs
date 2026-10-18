@@ -1,7 +1,8 @@
 //! Idempotent ticket creation.
 //!
-//! Only `Approved` items without a `linear_issue_id` are created. Before the
-//! create call, the item's client UUID is persisted ("creating"); it is sent
+//! Only `Approved` items without a `linear_issue_id` are created. The draft
+//! is validated first (an invalid one never gets a client UUID). Right before
+//! the create call, the item's client UUID is persisted ("creating"); it is sent
 //! as `IssueCreateInput.id`, so a retry after a timeout or crash reuses it and
 //! Linear can't create a second issue (the existing one is looked up and
 //! recorded as already existing). The draft the first attempt sent is
@@ -9,16 +10,18 @@
 //! the retry (even across a restart), only their edits are applied to the
 //! existing issue. When that draft is unknown (an attempt made before it
 //! was recorded), the current draft's non-empty fields are applied, so
-//! edits aren't lost and nothing set in Linear is cleared. The issue is persisted on the item right after each
-//! successful create. An in-flight guard stops a double click (two
-//! overlapping calls) from creating the same item twice.
+//! edits aren't lost and nothing set in Linear is cleared. When the request
+//! never reached Linear (no key, no connection), a client UUID and sent
+//! draft this attempt created are dropped again. The issue is persisted on
+//! the item right after each successful create. An in-flight guard stops a
+//! double click (two overlapping calls) from creating the same item twice.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::client::{CreatedIssue, LinearClient, SentDraft};
+use super::client::{issue_create_input, CreatedIssue, LinearClient, LinearError, SentDraft};
 use crate::meetings::manager::TicketResult;
 use crate::meetings::types::{ActionItem, ActionItemId, TicketDraft, TicketState};
 
@@ -28,12 +31,17 @@ pub trait TicketStore {
     /// The item's client UUID for `IssueCreateInput.id`, generated and
     /// persisted first if it has none (the recoverable "creating" state),
     /// and what the first attempt with it sent. Without an earlier attempt,
-    /// `draft` is persisted as that and [`SentDraft::First`] returned.
+    /// `draft` is persisted as that and [`SentDraft::First`] returned. Called
+    /// right before the request is sent, with a draft that passed validation.
     fn begin_create(
         &self,
         id: ActionItemId,
         draft: &TicketDraft,
     ) -> anyhow::Result<(String, SentDraft)>;
+    /// Undo a [`Self::begin_create`] that returned [`SentDraft::First`] when
+    /// its request never reached Linear: drop the client UUID `client_id`
+    /// and the sent draft (if the item still has that id and no issue).
+    fn abort_create(&self, id: ActionItemId, client_id: &str) -> anyhow::Result<()>;
     /// Record the created issue on the item (and mark it `Created`), which
     /// also drops the sent draft.
     fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()>;
@@ -50,7 +58,7 @@ pub trait IssueCreator {
         draft: &TicketDraft,
         client_id: &str,
         sent: &SentDraft,
-    ) -> Result<(CreatedIssue, bool), String>;
+    ) -> Result<(CreatedIssue, bool), LinearError>;
 }
 
 impl IssueCreator for LinearClient {
@@ -59,10 +67,8 @@ impl IssueCreator for LinearClient {
         draft: &TicketDraft,
         client_id: &str,
         sent: &SentDraft,
-    ) -> Result<(CreatedIssue, bool), String> {
-        LinearClient::create_issue_with_id(self, draft, client_id, sent)
-            .await
-            .map_err(|e| e.to_string())
+    ) -> Result<(CreatedIssue, bool), LinearError> {
+        LinearClient::create_issue_with_id(self, draft, client_id, sent).await
     }
 }
 
@@ -100,9 +106,28 @@ impl Drop for InFlightGuard {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CreateOutcome {
     pub results: Vec<TicketResult>,
-    /// Team/project of the last issue created in this batch, to remember as
-    /// the defaults. `None` when nothing was created.
+    /// Team/project of the last issue created in this batch (as Linear has
+    /// them), to remember as the defaults. `None` when nothing was created.
     pub used_team_project: Option<(String, Option<String>)>,
+}
+
+/// The team/project to remember after creating `issue` for `item`: the ones
+/// Linear reports for the issue. If Linear left them out, a fresh issue has
+/// the draft's; an issue that already existed may have been moved since, so
+/// nothing is remembered.
+fn used_team_project(
+    issue: &CreatedIssue,
+    existed: bool,
+    item: &ActionItem,
+) -> Option<(String, Option<String>)> {
+    match &issue.team_id {
+        Some(team) => Some((team.clone(), issue.project_id.clone())),
+        None if !existed => {
+            let team = item.ticket.team_id.as_deref().map(str::trim)?;
+            Some((team.to_string(), item.ticket.project_id.clone()))
+        }
+        None => None,
+    }
 }
 
 fn existing(item: &ActionItem) -> Option<String> {
@@ -140,11 +165,27 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                         Ok(identifier)
                     } else if item.ticket_state != TicketState::Approved {
                         Err("Approve the ticket before creating it.".to_string())
+                    } else if let Err(e) = issue_create_input(&item.ticket) {
+                        // Invalid locally: nothing is sent, so no client id.
+                        Err(LinearError::GraphQl(e).to_string())
                     } else {
                         let created = match store.begin_create(id, &item.ticket) {
                             Err(e) => Err(format!("Could not save the action item: {e}")),
                             Ok((client_id, sent)) => {
-                                creator.create_issue(&item.ticket, &client_id, &sent).await
+                                let created =
+                                    creator.create_issue(&item.ticket, &client_id, &sent).await;
+                                if let Err(e) = &created {
+                                    if e.not_sent() && sent == SentDraft::First {
+                                        // Nothing reached Linear: this attempt
+                                        // is no baseline and created nothing.
+                                        if let Err(e) = store.abort_create(id, &client_id) {
+                                            log::warn!(
+                                                "action item {id}: could not drop the unsent client id: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                created.map_err(|e| e.to_string())
                             }
                         };
                         match created {
@@ -153,10 +194,7 @@ pub async fn create_tickets<S: TicketStore, C: IssueCreator>(
                                 already_existed = existed;
                                 // Persist before anything else, so retries see it.
                                 let saved = store.set_linear_issue(id, &issue);
-                                if let Some(team) = item.ticket.team_id.clone() {
-                                    out.used_team_project =
-                                        Some((team, item.ticket.project_id.clone()));
-                                }
+                                out.used_team_project = used_team_project(&issue, existed, &item);
                                 match saved {
                                     Ok(()) => Ok(issue.identifier),
                                     Err(e) => {
@@ -218,6 +256,10 @@ pub(crate) mod tests {
             };
             Ok((format!("00000000-0000-4000-8000-{id:012}"), earlier))
         }
+        fn abort_create(&self, id: ActionItemId, _client_id: &str) -> anyhow::Result<()> {
+            self.1.lock().remove(&id);
+            Ok(())
+        }
         fn set_linear_issue(&self, id: ActionItemId, issue: &CreatedIssue) -> anyhow::Result<()> {
             let mut items = self.0.lock();
             let it = items
@@ -265,13 +307,15 @@ pub(crate) mod tests {
             _d: &TicketDraft,
             _client_id: &str,
             _sent: &SentDraft,
-        ) -> Result<(CreatedIssue, bool), String> {
+        ) -> Result<(CreatedIssue, bool), LinearError> {
             let n = self.0.fetch_add(1, Ordering::SeqCst) + 1;
             Ok((
                 CreatedIssue {
                     id: format!("id-{n}"),
                     identifier: format!("ENG-{n}"),
                     url: format!("https://linear.app/x/issue/ENG-{n}"),
+                    team_id: None,
+                    project_id: None,
                 },
                 false,
             ))

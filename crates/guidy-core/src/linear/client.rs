@@ -33,7 +33,11 @@ pub enum LinearError {
     GraphQl(String),
     /// A non-success HTTP status without a GraphQL error body.
     Http(u16, String),
-    /// Connection / timeout errors.
+    /// The connection to Linear could not be made (DNS, refused, TLS, connect
+    /// timeout): the request was definitely not sent.
+    Connect(String),
+    /// Other transport errors (e.g. a timeout after the request was sent):
+    /// whether Linear received the request is unknown.
     Network(String),
     /// The response didn't have the expected shape.
     Decode(String),
@@ -51,13 +55,21 @@ impl fmt::Display for LinearError {
             Self::GraphQl(m) => write!(f, "Linear error: {m}"),
             Self::Http(code, body) if body.is_empty() => write!(f, "Linear returned HTTP {code}"),
             Self::Http(code, body) => write!(f, "Linear returned HTTP {code}: {body}"),
-            Self::Network(m) => write!(f, "Could not reach Linear: {m}"),
+            Self::Connect(m) | Self::Network(m) => write!(f, "Could not reach Linear: {m}"),
             Self::Decode(m) => write!(f, "Unexpected response from Linear: {m}"),
         }
     }
 }
 
 impl std::error::Error for LinearError {}
+
+impl LinearError {
+    /// Whether the request definitely never reached Linear (no key, or no
+    /// connection). Any other error may come after Linear received it.
+    pub fn not_sent(&self) -> bool {
+        matches!(self, Self::MissingApiKey | Self::Connect(_))
+    }
+}
 
 pub type LinearResult<T> = std::result::Result<T, LinearError>;
 
@@ -71,10 +83,46 @@ pub struct Viewer {
 
 /// A created issue.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(from = "IssueNode")]
 pub struct CreatedIssue {
     pub id: String,
     pub identifier: String,
     pub url: String,
+    /// The issue's team and project as Linear has them (`None` when the
+    /// response leaves them out).
+    pub team_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+/// The fields every issue query/mutation selects ([`CreatedIssue`]).
+const ISSUE_FIELDS: &str = "id identifier url team { id } project { id }";
+
+#[derive(Deserialize)]
+struct IdNode {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct IssueNode {
+    id: String,
+    identifier: String,
+    url: String,
+    #[serde(default)]
+    team: Option<IdNode>,
+    #[serde(default)]
+    project: Option<IdNode>,
+}
+
+impl From<IssueNode> for CreatedIssue {
+    fn from(n: IssueNode) -> Self {
+        Self {
+            id: n.id,
+            identifier: n.identifier,
+            url: n.url,
+            team_id: n.team.map(|t| t.id),
+            project_id: n.project.map(|p| p.id),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -167,7 +215,13 @@ impl LinearClient {
             .json(&json!({ "query": query, "variables": variables }))
             .send()
             .await
-            .map_err(|e| LinearError::Network(e.to_string()))?;
+            .map_err(|e| {
+                if e.is_connect() {
+                    LinearError::Connect(e.to_string())
+                } else {
+                    LinearError::Network(e.to_string())
+                }
+            })?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(LinearError::Unauthorized);
@@ -329,8 +383,8 @@ impl LinearClient {
     ) -> LinearResult<(CreatedIssue, bool)> {
         let mut input = issue_create_input(draft).map_err(LinearError::GraphQl)?;
         input["id"] = json!(client_id);
-        let q = "mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }";
-        let created = match self.graphql(q, json!({ "input": input })).await {
+        let q = format!("mutation IssueCreate($input: IssueCreateInput!) {{ issueCreate(input: $input) {{ success issue {{ {ISSUE_FIELDS} }} }} }}");
+        let created = match self.graphql(&q, json!({ "input": input })).await {
             Ok(data) => mutation_issue(&data, "issueCreate", "the issue was not created"),
             Err(e) => Err(e),
         };
@@ -371,15 +425,17 @@ impl LinearClient {
 
     /// Apply `input` (an `IssueUpdateInput`) to an existing issue.
     pub async fn update_issue(&self, id: &str, input: &Value) -> LinearResult<CreatedIssue> {
-        let q = "mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id identifier url } } }";
-        let data = self.graphql(q, json!({ "id": id, "input": input })).await?;
+        let q = format!("mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {{ issueUpdate(id: $id, input: $input) {{ success issue {{ {ISSUE_FIELDS} }} }} }}");
+        let data = self
+            .graphql(&q, json!({ "id": id, "input": input }))
+            .await?;
         mutation_issue(&data, "issueUpdate", "the issue was not updated")
     }
 
     /// Look an issue up by id. `Ok(None)` when Linear says it doesn't exist.
     pub async fn issue(&self, id: &str) -> LinearResult<Option<CreatedIssue>> {
-        let q = "query Issue($id: String!) { issue(id: $id) { id identifier url } }";
-        match self.graphql(q, json!({ "id": id })).await {
+        let q = format!("query Issue($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} }} }}");
+        match self.graphql(&q, json!({ "id": id })).await {
             Ok(data) => match data.get("issue") {
                 Some(v) if !v.is_null() => serde_json::from_value(v.clone())
                     .map(Some)
@@ -463,12 +519,7 @@ pub fn issue_changes_input(
         }
     }
     let ids = |d: &TicketDraft| -> std::collections::BTreeSet<String> {
-        d.label_ids
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect()
+        label_ids(d).into_iter().collect()
     };
     let (had_labels, want_labels) = (ids(sent), ids(draft));
     let added: Vec<&String> = want_labels.difference(&had_labels).collect();
@@ -513,13 +564,27 @@ pub fn issue_create_input(draft: &TicketDraft) -> std::result::Result<Value, Str
     if let Some(p) = draft.priority.filter(|p| *p <= 4) {
         input["priority"] = json!(p);
     }
-    if !draft.label_ids.is_empty() {
-        input["labelIds"] = json!(draft.label_ids);
+    let labels = label_ids(draft);
+    if !labels.is_empty() {
+        input["labelIds"] = json!(labels);
     }
     if let Some(d) = non_empty(&draft.due_date) {
         input["dueDate"] = json!(d);
     }
     Ok(input)
+}
+
+/// The draft's label ids, trimmed, without blanks and duplicates (first
+/// occurrence order). Every issue input sends labels through this.
+fn label_ids(draft: &TicketDraft) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    draft
+        .label_ids
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && seen.insert(*s))
+        .map(str::to_string)
+        .collect()
 }
 
 fn pointer<'a>(data: &'a Value, path: &[&str]) -> LinearResult<&'a Value> {

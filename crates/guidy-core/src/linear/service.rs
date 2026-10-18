@@ -257,6 +257,10 @@ impl TicketStore for crate::meetings::store::MeetingsStore {
         self.ensure_linear_client_id(id, draft)
     }
 
+    fn abort_create(&self, id: ActionItemId, client_id: &str) -> Result<()> {
+        self.drop_unsent_linear_client_id(id, client_id)
+    }
+
     fn set_linear_issue(&self, id: ActionItemId, issue: &super::CreatedIssue) -> Result<()> {
         crate::meetings::store::MeetingsStore::set_linear_issue(
             self,

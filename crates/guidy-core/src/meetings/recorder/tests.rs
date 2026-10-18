@@ -815,7 +815,49 @@ fn scheduler_thread_ticks_and_stops() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(*r.calendar.queries.lock() > 0);
-    drop(s); // joins promptly
+    drop(s);
+}
+
+#[test]
+fn dropping_the_scheduler_never_waits_for_its_tick() {
+    let r = rig();
+    let rec = Arc::new(MeetingRecorder::new(r.rec.deps.clone()));
+    // A stop finishing: the tick blocks on `op`.
+    let op = rec.op.lock();
+    let old = Scheduler::start(rec.clone()).unwrap();
+    for _ in 0..200 {
+        if rec.ticking.is_locked() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(rec.ticking.is_locked(), "the old scheduler is mid-tick");
+    let t = std::time::Instant::now();
+    drop(old);
+    assert!(t.elapsed() < Duration::from_millis(100), "drop didn't join");
+
+    // A new scheduler waits for the old tick; the old one never ticks again.
+    let new = Scheduler::start(rec.clone()).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(*r.calendar.queries.lock(), 0, "nothing ticked past `op`");
+    drop(op);
+    for _ in 0..200 {
+        if *r.calendar.queries.lock() > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The old tick polled; the new one is within the poll interval.
+    assert_eq!(*r.calendar.queries.lock(), 1);
+    drop(new);
+    // Both threads exit (each held a recorder reference).
+    for _ in 0..200 {
+        if Arc::strong_count(&rec) == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(Arc::strong_count(&rec), 1);
 }
 
 /// The capture section of `MeetingsManager`, against the real (in-memory
