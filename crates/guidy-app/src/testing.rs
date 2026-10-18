@@ -157,12 +157,12 @@ impl Backend for FakeBackend {
             reset_bindings: vec!["cancel".into()],
         })
     }
-    fn start_handy_keys_recording(&self, binding_id: &str) -> BackendResult<()> {
-        self.rec(format!("start_handy_keys_recording {binding_id}"));
+    fn start_native_keys_recording(&self, binding_id: &str) -> BackendResult<()> {
+        self.rec(format!("start_native_keys_recording {binding_id}"));
         Ok(())
     }
-    fn stop_handy_keys_recording(&self) -> BackendResult<()> {
-        self.rec("stop_handy_keys_recording");
+    fn stop_native_keys_recording(&self) -> BackendResult<()> {
+        self.rec("stop_native_keys_recording");
         Ok(())
     }
     fn set_post_process_provider(&self, provider_id: &str) -> BackendResult<()> {

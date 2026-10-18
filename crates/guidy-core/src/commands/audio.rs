@@ -170,7 +170,7 @@ pub fn get_microphone_mode(app: AppHandle) -> Result<bool, String> {
 pub async fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
     // cpal device enumeration can stall — run it off the webview/main run loop.
     tokio::task::spawn_blocking(|| {
-        let devices = handy_recorder::list_input_devices()
+        let devices = audio_recorder::list_input_devices()
             .map_err(|e| format!("Failed to list audio devices: {}", e))?;
 
         let mut result = vec![AudioDevice {
@@ -278,7 +278,7 @@ pub fn is_recording(app: AppHandle) -> bool {
 pub async fn get_microphone_channels(device_name: String) -> Result<u16, String> {
     // Device enumeration can stall, so keep it off the webview/main run loop.
     tokio::task::spawn_blocking(move || {
-        let devices = handy_recorder::list_input_devices()
+        let devices = audio_recorder::list_input_devices()
             .map_err(|e| format!("Failed to list audio devices: {e}"))?;
         let device = if device_name.eq_ignore_ascii_case("default") {
             devices.into_iter().find(|device| device.is_default)

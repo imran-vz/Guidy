@@ -228,7 +228,9 @@ pub enum RecordingRetentionPeriod {
 #[serde(rename_all = "snake_case")]
 pub enum KeyboardImplementation {
     Tauri,
-    HandyKeys,
+    /// Stored as `native_keys`; `handy_keys` is this value's earlier name.
+    #[serde(alias = "handy_keys")]
+    NativeKeys,
 }
 
 impl Default for KeyboardImplementation {
@@ -236,7 +238,7 @@ impl Default for KeyboardImplementation {
         #[cfg(target_os = "linux")]
         return KeyboardImplementation::Tauri;
         #[cfg(not(target_os = "linux"))]
-        return KeyboardImplementation::HandyKeys;
+        return KeyboardImplementation::NativeKeys;
     }
 }
 
@@ -1442,6 +1444,13 @@ mod tests {
     /// `apply_settings_migrations` so old values keep loading, and only extend
     /// the fixture alongside that.
     #[test]
+    fn native_keys_loads_its_earlier_name_and_saves_the_new_one() {
+        let k: KeyboardImplementation = serde_json::from_str("\"handy_keys\"").unwrap();
+        assert_eq!(k, KeyboardImplementation::NativeKeys);
+        assert_eq!(serde_json::to_string(&k).unwrap(), "\"native_keys\"");
+    }
+
+    #[test]
     fn frozen_v0_9_store_parses_strictly_then_migrates_device_index() {
         // Note "log_level": 2 — the legacy numeric format, kept deliberately.
         let stored: serde_json::Value = serde_json::from_str(
@@ -1907,7 +1916,6 @@ mod tests {
         set_provider_api_key(provider, "").unwrap();
         assert_eq!(provider_api_key(provider), "");
     }
-
 }
 
 /// A legacy tauri-plugin-store settings file loads through Guidy's
@@ -1918,7 +1926,7 @@ mod store_compat_tests {
     use crate::host::testing::TestApp;
 
     #[test]
-    fn handy_store_file_loads_and_migrates() {
+    fn legacy_store_file_loads_and_migrates() {
         let t = TestApp::new();
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),

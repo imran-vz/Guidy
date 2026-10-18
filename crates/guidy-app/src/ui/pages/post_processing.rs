@@ -264,9 +264,7 @@ impl PostProcessingPage {
         cx.spawn(async move |this, cx| {
             let pid = provider_id.clone();
             let key = cx
-                .background_spawn(
-                    async move { guidy_core::settings::provider_api_key(&pid) },
-                )
+                .background_spawn(async move { guidy_core::settings::provider_api_key(&pid) })
                 .await;
             this.update(cx, |this, cx| {
                 this.loading_keys.remove(&provider_id);

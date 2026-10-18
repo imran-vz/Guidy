@@ -107,8 +107,8 @@ set_selected_channel
 set_selected_microphone
 set_selected_output_device
 show_main_window_command
-start_handy_keys_recording
-stop_handy_keys_recording
+start_native_keys_recording
+stop_native_keys_recording
 suspend_all_bindings
 toggle_history_entry_saved
 trigger_update_check

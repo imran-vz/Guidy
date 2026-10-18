@@ -31,7 +31,7 @@ tokio = { version = "1.43.0", features = ["rt-multi-thread", "sync", "time", "ma
 earshot = "1.2.2"
 enigo = "0.6.1"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "flac", "mp3", "vorbis"] }
-handy-recorder = "0.1"
+audio-recorder = { package = "handy-recorder", version = "0.1" }
 reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "deflate"] }
 futures-util = "0.3"
 rustfft = "6.4.0"
@@ -45,7 +45,7 @@ rusqlite_migration = "2.3"
 sha2 = "0.10"
 libc = "0.2"
 transcribe-cpp = { version = "0.4.0", default-features = false, features = ["serde"] }
-handy-keys = "0.3.4"
+key-listener = { package = "handy-keys", version = "0.3.4" }
 ferrous-opencc = "0.2.3"
 clap = { version = "4", features = ["derive"] }
 hf-hub = { git = "https://github.com/cjpais/hf-hub", branch = "cancellable-downloads", features = ["tokio"] }
