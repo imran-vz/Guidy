@@ -204,6 +204,11 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     }
     /// Start the manager again after a failed start.
     fn retry_init(&self) {}
+    /// Move unreadable meeting data aside (nothing is deleted), make a new
+    /// data key and start the manager again.
+    fn reset_data(&self) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
 
     // -- AI + Linear (G2) ---------------------------------------------------
     // Default bodies keep `NoMeetings` (and any other impl) compiling.
@@ -361,13 +366,16 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn is_supported(&self) -> bool {
         guidy_core::meetings::is_supported()
     }
+    // Permissions don't need the manager: turning meeting notes on asks for
+    // them while the manager is still starting.
     fn request_permissions(&self) -> MeetingsResult<PermissionReport> {
-        self.m()?.request_permissions().map_err(err)
+        if !self.is_supported() {
+            return Err(unavailable());
+        }
+        guidy_core::meetings::native::request_permissions().map_err(err)
     }
     fn permission_status(&self) -> PermissionReport {
-        self.manager()
-            .map(|m| m.permission_status())
-            .unwrap_or_default()
+        guidy_core::meetings::native::permission_status()
     }
 
     fn upcoming_events(&self) -> MeetingsResult<Vec<CalendarEvent>> {
@@ -475,6 +483,9 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn retry_init(&self) {
         guidy_core::retry_init_meetings(&self.app)
+    }
+    fn reset_data(&self) -> MeetingsResult<()> {
+        guidy_core::reset_meetings_data(&self.app).map_err(err)
     }
 
     // -- AI + Linear (G2) ---------------------------------------------------
@@ -1095,6 +1106,12 @@ pub mod fake {
         }
         fn retry_init(&self) {
             self.rec("retry_init");
+        }
+        fn reset_data(&self) -> MeetingsResult<()> {
+            self.rec("reset_data");
+            let mut d = self.data.lock();
+            d.init = MeetingsInit::Ready;
+            Ok(())
         }
         fn cancel_summarize(&self, id: MeetingId) -> bool {
             self.rec(format!("cancel_summarize {id}"));

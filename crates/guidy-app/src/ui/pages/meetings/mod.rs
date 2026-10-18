@@ -22,7 +22,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable, StyledExt,
+    h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable, StyledExt, WindowExt,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -311,8 +311,8 @@ impl MeetingsPage {
 
     fn render_init(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
-        match &self.state.read(cx).meetings_init {
-            MeetingsInit::Ready => None,
+        match &self.state.read(cx).meetings_init.clone() {
+            MeetingsInit::Ready | MeetingsInit::NotStarted => None,
             MeetingsInit::Starting => Some(
                 h_flex()
                     .id("meetings-starting")
@@ -330,29 +330,55 @@ impl MeetingsPage {
                     .test_support()
                     .into_any_element(),
             ),
-            MeetingsInit::Failed(e) => Some(
-                v_flex()
-                    .id("meetings-init-failed")
-                    .w_full()
+            MeetingsInit::Failed(e) => Some(self.render_init_error(
+                "meetings-init-failed",
+                t("meetings.init.failed"),
+                None,
+                e,
+                cx,
+            )),
+            MeetingsInit::DataKeyMissing(e) => Some(self.render_init_error(
+                "meetings-init-key-missing",
+                t("meetings.init.keyMissing.title"),
+                Some(t("meetings.init.keyMissing.description")),
+                e,
+                cx,
+            )),
+        }
+    }
+
+    /// A failed start: what happened, the error, Retry, and a reset that
+    /// moves the unreadable meeting data aside (after a confirmation).
+    fn render_init_error(
+        &self,
+        id: &'static str,
+        title: SharedString,
+        description: Option<SharedString>,
+        error: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        v_flex()
+            .id(id)
+            .w_full()
+            .gap_2()
+            .px_3()
+            .py_3()
+            .rounded(theme.radius_lg)
+            .border_1()
+            .border_color(theme.danger.opacity(0.4))
+            .bg(theme.danger.opacity(0.08))
+            .child(div().text_sm().font_semibold().child(title))
+            .when_some(description, |d, text| d.child(div().text_sm().child(text)))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(error.to_string()),
+            )
+            .child(
+                h_flex()
                     .gap_2()
-                    .px_3()
-                    .py_3()
-                    .rounded(theme.radius_lg)
-                    .border_1()
-                    .border_color(theme.danger.opacity(0.4))
-                    .bg(theme.danger.opacity(0.08))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_semibold()
-                            .child(t("meetings.init.failed")),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(e.clone()),
-                    )
                     .child(
                         Button::new("meetings-init-retry")
                             .outline()
@@ -363,10 +389,34 @@ impl MeetingsPage {
                                 this.state.update(cx, |s, cx| s.retry_meetings_init(cx))
                             })),
                     )
-                    .test_support()
-                    .into_any_element(),
-            ),
-        }
+                    .child(
+                        Button::new("meetings-init-reset")
+                            .outline()
+                            .small()
+                            .icon(icon("archive"))
+                            .label(t("meetings.init.reset.action"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_reset(window, cx)),
+                            ),
+                    ),
+            )
+            .test_support()
+            .into_any_element()
+    }
+
+    fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let state = state.clone();
+            alert
+                .title(t("meetings.init.reset.title"))
+                .description(t("meetings.init.reset.confirm"))
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    state.update(cx, |s, cx| s.reset_meetings_data(cx)).ok();
+                    true
+                })
+        });
     }
 
     pub fn set_tab(&mut self, tab: MeetingsTab, cx: &mut Context<Self>) {

@@ -516,26 +516,57 @@ pub fn request_notification_access() -> bool {
     false
 }
 
+/// Ids of the notifications this process posted and hasn't removed, so the
+/// manager can withdraw stale ones (calendar prompts, reminders). Entries for
+/// notifications the user already dismissed are harmless: removing a missing
+/// notification is a no-op.
+fn posted_ids() -> &'static parking_lot::Mutex<std::collections::BTreeSet<String>> {
+    static POSTED: std::sync::OnceLock<parking_lot::Mutex<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    POSTED.get_or_init(Default::default)
+}
+
 /// Show a notification now. `id` identifies it (posting the same id again
 /// replaces it, and the handler receives it back). `actions` are
 /// `(action_id, button title)` pairs. Returns false when notifications are
 /// unavailable (logged), never panics.
 pub fn post_notification(id: &str, title: &str, body: &str, actions: &[(&str, &str)]) -> bool {
     #[cfg(target_os = "macos")]
-    return macos::post_notification(id, title, body, actions);
+    let posted = macos::post_notification(id, title, body, actions);
     #[cfg(not(target_os = "macos"))]
-    {
+    let posted = {
         let _ = (id, title, body, actions);
         false
+    };
+    if posted {
+        posted_ids().lock().insert(id.to_string());
     }
+    posted
 }
 
 /// Remove a pending or delivered notification.
 pub fn remove_notification(id: &str) {
+    posted_ids().lock().remove(id);
     #[cfg(target_os = "macos")]
     macos::remove_notification(id);
-    #[cfg(not(target_os = "macos"))]
-    let _ = id;
+}
+
+/// Ids of the notifications posted by this process (and not removed since)
+/// that start with `prefix`.
+pub fn posted_notifications(prefix: &str) -> Vec<String> {
+    posted_ids()
+        .lock()
+        .iter()
+        .filter(|id| id.starts_with(prefix))
+        .cloned()
+        .collect()
+}
+
+/// Remove every notification from [`posted_notifications`]`(prefix)`.
+pub fn remove_notifications(prefix: &str) {
+    for id in posted_notifications(prefix) {
+        remove_notification(&id);
+    }
 }
 
 /// Register the handler for notification clicks: `(notification_id,

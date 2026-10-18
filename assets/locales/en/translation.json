@@ -727,7 +727,16 @@
     "init": {
       "starting": "Starting meeting notes...",
       "failed": "Meeting notes couldn't start",
-      "retry": "Retry"
+      "retry": "Retry",
+      "keyMissing": {
+        "title": "Meeting notes can't be decrypted",
+        "description": "The meeting notes encryption key is missing from the Keychain, so your existing meeting notes can't be opened. If you can restore the key (for example from a Keychain backup), do that and choose Retry. Otherwise, reset to start fresh: your old meeting notes are moved aside, not deleted."
+      },
+      "reset": {
+        "action": "Reset meeting notes data",
+        "title": "Reset meeting notes data?",
+        "confirm": "Your current meeting notes and recordings will be moved to a \"meetings-unreadable\" folder in Guidy's data folder (nothing is deleted) and a new encryption key will be created. Guidy won't be able to show the old notes."
+      }
     },
     "errors": {
       "unavailable": "Meeting notes aren't available on this Mac.",

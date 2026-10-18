@@ -517,6 +517,97 @@ fn interrupted_recordings_are_recovered() {
 }
 
 #[test]
+fn a_transient_database_error_at_stop_is_retried() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = 2;
+    assert_eq!(r.rec.stop(T0 + 1_000).unwrap(), Some(id));
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.ended_at, Some(T0 + 1_000));
+    assert_eq!(r.rec.state(), RecorderState::Idle);
+}
+
+#[test]
+fn a_failed_finish_at_stop_is_retried_by_the_next_stop() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    r.capture.fail_stream(Track::System, "tap stopped");
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    // Capture is stopped and the UI is idle, but the row is still recording.
+    assert!(!r.rec.is_recording());
+    assert_eq!(r.rec.state(), RecorderState::Idle);
+    assert_eq!(*r.capture.stops.lock(), 1);
+    assert_eq!(
+        r.repo.get_meeting(id).unwrap().unwrap().status,
+        MeetingStatus::Recording
+    );
+    // Still failing: stays pending.
+    assert!(r.rec.stop(T0 + 5_000).is_err());
+    *r.repo.fail_finish.lock() = 0;
+    // A later stop (while idle) finishes it, with the original end and error.
+    assert_eq!(r.rec.stop(T0 + 9_000).unwrap(), Some(id));
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.ended_at, Some(T0 + 1_000));
+    assert_eq!(m.error.as_deref(), Some("system capture: tap stopped"));
+    assert!(r.changed.lock().contains(&id));
+    // Nothing left to retry.
+    assert_eq!(r.rec.stop(T0 + 10_000).unwrap(), None);
+}
+
+#[test]
+fn a_failed_finish_at_stop_is_retried_by_tick_start_and_recovery() {
+    // The scheduler tick.
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    *r.repo.fail_finish.lock() = 0;
+    r.rec.tick(T0 + 2_000);
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.ended_at, Some(T0 + 1_000));
+
+    // The next start.
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    *r.repo.fail_finish.lock() = 0;
+    let next = r.rec.start(None, T0 + 2_000).unwrap();
+    assert_ne!(next, id);
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.ended_at, Some(T0 + 1_000));
+    r.rec.stop(T0 + 3_000).unwrap();
+
+    // Recovery: finished with the stop's end time, not the files' mtime,
+    // and returned so it gets queued for processing.
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    *r.repo.fail_finish.lock() = usize::MAX;
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    *r.repo.fail_finish.lock() = 0;
+    assert_eq!(r.rec.recover_interrupted().unwrap(), vec![id]);
+    assert_eq!(
+        r.repo.get_meeting(id).unwrap().unwrap().ended_at,
+        Some(T0 + 1_000)
+    );
+}
+
+#[test]
+fn a_meeting_deleted_while_recording_is_not_retried() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    r.repo.rows.lock().retain(|m| m.id != id);
+    assert!(r.rec.stop(T0 + 1_000).is_err());
+    assert_eq!(r.rec.state(), RecorderState::Idle);
+    assert_eq!(r.rec.stop(T0 + 2_000).unwrap(), None);
+}
+
+#[test]
 fn recovery_waits_for_a_start_or_stop_in_progress() {
     let r = rig();
     let id = r

@@ -36,6 +36,9 @@ struct JobState {
     queue: VecDeque<MeetingId>,
     current: Option<(MeetingId, Arc<AtomicBool>)>,
     progress: HashMap<MeetingId, ProcessingProgress>,
+    /// Status and error of each queued meeting before [`Processor::enqueue`]
+    /// marked it `Processing`, restored if it is cancelled before it runs.
+    prior: HashMap<MeetingId, (MeetingStatus, Option<String>)>,
     running: bool,
 }
 
@@ -69,6 +72,11 @@ impl Processor {
 
     /// Queue (or resume) processing `id`. A no-op if it is already queued or
     /// running.
+    ///
+    /// The row is marked `Processing` before this returns (by a statement
+    /// that also re-checks the audio is still there), so audio retention,
+    /// which only clears meetings that aren't `Processing`, can never delete
+    /// the audio of a queued meeting.
     pub fn enqueue(&self, id: MeetingId) -> Result<()> {
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
@@ -105,6 +113,23 @@ impl Processor {
         if state.queue.contains(&id) || state.current.as_ref().is_some_and(|(c, _)| *c == id) {
             return Ok(());
         }
+        // Under the queue lock: one enqueue claims it.
+        let needs_audio = next <= ProcessingStage::Voiceprints;
+        if !self.inner.store.mark_processing(id, needs_audio)? {
+            drop(state);
+            // Changed since it was read: deleted, or retention cleared its
+            // audio meanwhile.
+            match self.inner.store.get_meeting(id)? {
+                None => bail!("meeting {id} not found"),
+                Some(m) if m.status == MeetingStatus::Recording => {
+                    bail!("the meeting is still being recorded")
+                }
+                Some(_) => bail!(AUDIO_DELETED),
+            }
+        }
+        state
+            .prior
+            .insert(id, (meeting.status, meeting.error.clone()));
         let queued = ProcessingProgress {
             meeting_id: id,
             stage: next,
@@ -117,16 +142,23 @@ impl Processor {
         state.running = true;
         drop(state);
         self.emit_progress(&queued);
+        self.emit_changed(id);
         if start {
             let this = self.clone();
             if let Err(e) = std::thread::Builder::new()
                 .name("meeting-processing".into())
                 .spawn(move || this.worker_loop())
             {
-                let mut state = self.inner.state.lock();
-                state.running = false;
-                state.queue.retain(|q| *q != id);
-                state.progress.remove(&id);
+                let prior = {
+                    let mut state = self.inner.state.lock();
+                    state.running = false;
+                    state.queue.retain(|q| *q != id);
+                    state.progress.remove(&id);
+                    state.prior.remove(&id)
+                };
+                if let Err(e2) = self.restore_status(id, prior) {
+                    log::warn!("meeting {id}: {e2:#}");
+                }
                 bail!("could not start meeting processing: {e}");
             }
         }
@@ -135,20 +167,17 @@ impl Processor {
 
     /// Cancel `id`: dropped from the queue, or stopped if it is running (its
     /// completed stages are kept, so processing it again resumes). A queued
-    /// meeting left in `Processing` (by a crash, waiting to resume) goes back
-    /// to `Recorded`, so the UI offers "Process" again instead of a spinner.
+    /// meeting gets back the status it had before it was queued; one left in
+    /// `Processing` (by a crash, waiting to resume) goes back to `Recorded`,
+    /// so the UI offers "Process" again instead of a spinner.
     pub fn cancel(&self, id: MeetingId) -> Result<()> {
         let mut state = self.inner.state.lock();
         if let Some(pos) = state.queue.iter().position(|q| *q == id) {
             state.queue.remove(pos);
             state.progress.remove(&id);
+            let prior = state.prior.remove(&id);
             drop(state);
-            if let Some(m) = self.inner.store.get_meeting(id)? {
-                if m.status == MeetingStatus::Processing {
-                    self.inner
-                        .store
-                        .set_meeting_status(id, MeetingStatus::Recorded, None)?;
-                }
+            if self.restore_status(id, prior)? {
                 self.emit_changed(id);
             }
             return Ok(());
@@ -162,6 +191,29 @@ impl Processor {
             }
         }
         Ok(())
+    }
+
+    /// Undo [`Self::enqueue`]'s `Processing` for a meeting that never ran:
+    /// back to `prior` (a crash leftover's `Processing` becomes `Recorded`).
+    /// Returns whether the meeting still exists.
+    fn restore_status(
+        &self,
+        id: MeetingId,
+        prior: Option<(MeetingStatus, Option<String>)>,
+    ) -> Result<bool> {
+        let Some(m) = self.inner.store.get_meeting(id)? else {
+            return Ok(false);
+        };
+        if m.status == MeetingStatus::Processing {
+            let (status, error) = match prior {
+                Some((s, e)) if s != MeetingStatus::Processing => (s, e),
+                _ => (MeetingStatus::Recorded, None),
+            };
+            self.inner
+                .store
+                .set_meeting_status(id, status, error.as_deref())?;
+        }
+        Ok(true)
     }
 
     pub fn progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
@@ -253,6 +305,7 @@ impl Processor {
                 let mut state = self.inner.state.lock();
                 match state.queue.pop_front() {
                     Some(id) => {
+                        state.prior.remove(&id);
                         let flag = Arc::new(AtomicBool::new(false));
                         state.current = Some((id, flag.clone()));
                         Some((id, flag))
@@ -507,9 +560,14 @@ mod tests {
             .unwrap();
 
         p.enqueue(id).unwrap();
+        // Marked before enqueue returns, so retention keeps its audio.
+        assert_ne!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Recorded
+        );
+        // The outcome is recorded before the progress entry goes.
         wait_until("the job to finish", || {
-            !p.is_busy(id)
-                && store.get_meeting(id).unwrap().unwrap().status != MeetingStatus::Recorded
+            !p.is_busy(id) && p.progress(id).is_none()
         });
         // No audio file: it fails with a readable error, and can be retried.
         let m = store.get_meeting(id).unwrap().unwrap();
@@ -580,9 +638,98 @@ mod tests {
         assert_eq!(p.progress(id).unwrap().message.as_deref(), Some("queued"));
         p.enqueue(id).unwrap(); // no duplicate
         assert_eq!(p.inner.state.lock().queue.len(), 1);
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Processing
+        );
         p.cancel(id).unwrap();
         assert!(!p.is_busy(id));
         assert!(p.progress(id).is_none());
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Recorded
+        );
+    }
+
+    #[test]
+    fn cancelling_a_queued_retry_restores_the_failure() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let id = store
+            .insert_meeting(&Meeting {
+                error: Some("boom".into()),
+                ..meeting(MeetingStatus::Failed)
+            })
+            .unwrap();
+        p.inner.state.lock().running = true;
+        p.enqueue(id).unwrap();
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!((m.status, m.error), (MeetingStatus::Processing, None));
+        p.cancel(id).unwrap();
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Failed);
+        assert_eq!(m.error.as_deref(), Some("boom"));
+    }
+
+    /// Retention checks `is_busy`, then clears the paths. A reprocess queued
+    /// in between must still keep its audio.
+    #[test]
+    fn retention_keeps_the_audio_of_a_meeting_queued_meanwhile() {
+        use crate::meetings::recorder::adapters::StoreRepo;
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let audio_dir = dir.path().join("audio");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let file = audio_dir.join("1-mic.gopus");
+        std::fs::write(&file, b"x").unwrap();
+        let now = 100 * DAY;
+        let id = store
+            .insert_meeting(&Meeting {
+                ended_at: Some(now - 9 * DAY),
+                mic_audio_path: Some("1-mic.gopus".into()),
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+        // No worker: the job stays queued.
+        p.inner.state.lock().running = true;
+        let repo = StoreRepo(store.clone());
+
+        // Not busy when retention looks, queued right after.
+        let enqueue_after_check = |m: MeetingId| {
+            p.enqueue(m).unwrap();
+            false
+        };
+        let out =
+            audio_store::apply_retention(&repo, &audio_dir, Some(7), now, &enqueue_after_check)
+                .unwrap();
+        assert!(out.meetings.is_empty());
+        assert!(file.exists());
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.mic_audio_path.as_deref(), Some("1-mic.gopus"));
+        assert_eq!(m.status, MeetingStatus::Processing);
+        assert!(p.is_busy(id));
+
+        // Cancelled before it ran: processed again, so retention applies.
+        p.cancel(id).unwrap();
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Processed
+        );
+        let out =
+            audio_store::apply_retention(&repo, &audio_dir, Some(7), now, &|_| false).unwrap();
+        assert_eq!(out.meetings, vec![id]);
+        assert!(!file.exists());
+        // And a reprocess is now refused, leaving the meeting alone.
+        assert_eq!(p.enqueue(id).unwrap_err().to_string(), AUDIO_DELETED);
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Processed
+        );
     }
 
     #[test]

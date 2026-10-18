@@ -315,7 +315,20 @@ async fn post_process_transcription(
         provider.id, model
     );
 
-    let api_key = crate::settings::provider_api_key(&provider.id);
+    // A Keychain read can block (and may wait on an access prompt), so keep it
+    // off the async worker.
+    let provider_id = provider.id.clone();
+    let api_key = crate::host::async_runtime::spawn_blocking(move || {
+        crate::settings::provider_api_key(&provider_id)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!(
+            "Failed to read the API key for provider '{}': {e}",
+            provider.id
+        );
+        String::new()
+    });
 
     // Ask these providers to skip reasoning/thinking — post-processing rarely
     // benefits from it and it adds seconds of latency. llm_client picks the

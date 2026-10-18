@@ -93,7 +93,9 @@ impl MeetingsManager {
     pub fn new(app: &AppHandle) -> Result<Arc<Self>> {
         let data_dir =
             crate::portable::app_data_dir(app).map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
-        let key = crate::secrets::meetings_data_key()?;
+        // A key is generated only on first use: with data already there, a
+        // missing key is `MeetingsDataKeyMissing` (the UI offers a reset).
+        let key = crate::secrets::open_meetings_data_key(has_meeting_data(&data_dir))?;
         let store = Arc::new(MeetingsStore::open(
             &data_dir.join(crate::meetings::store::MEETINGS_DB_FILE),
             &key,
@@ -198,6 +200,7 @@ impl MeetingsManager {
         let id = self
             .recorder()
             .start(calendar_event_id, crate::meetings::recorder::now_ms())?;
+        withdraw_notifications(true);
         // Reminders need the scheduler even if calendar prompts are off.
         self.sync_scheduler();
         Ok(id)
@@ -209,6 +212,7 @@ impl MeetingsManager {
             return Ok(None);
         };
         let stopped = recorder.stop(crate::meetings::recorder::now_ms())?;
+        withdraw_notifications(false);
         if let Some(id) = stopped {
             if let Err(e) = self.process_meeting(id) {
                 log::info!("meetings: processing of meeting {id} not queued: {e:#}");
@@ -280,7 +284,27 @@ impl MeetingsManager {
                 .recorder()
                 .snooze(id, crate::meetings::recorder::now_ms()),
             NotificationCommand::Start(event_id) => {
-                if let Err(e) = self.start_recording(Some(event_id)) {
+                crate::meetings::native::remove_notification(
+                    &crate::meetings::recorder::prompt_notification_id(&event_id),
+                );
+                // The prompt may be clicked long after it was posted: only
+                // link the recording to its event while that is still on.
+                let now = crate::meetings::recorder::now_ms();
+                let event = crate::meetings::native::events_between(
+                    now - PROMPT_LOOKUP_MS,
+                    now + PROMPT_LOOKUP_MS,
+                )
+                .map_err(|e| log::warn!("meetings: calendar lookup failed: {e:#}"))
+                .ok()
+                .and_then(|events| events.into_iter().find(|e| e.id == event_id));
+                let link = prompt_start_link(&event_id, event.as_ref(), now);
+                if link.is_none() {
+                    log::info!(
+                        "meetings: \"Start\" for calendar event {event_id}, which has ended or \
+                         can't be found: starting without linking to it"
+                    );
+                }
+                if let Err(e) = self.start_recording(link) {
                     log::error!("meetings: start from notification failed: {e:#}");
                 }
             }
@@ -293,7 +317,15 @@ impl MeetingsManager {
     /// and once a day on a background thread.
     pub fn start_background(self: &Arc<Self>) {
         crate::meetings::recorder::adapters::install_notification_handler(&self.app);
+        // Every start/stop (UI, tray, notification, scheduled end) withdraws
+        // the notifications it makes moot.
+        self.app.listen(events::RECORDER_STATE, |e| {
+            if let Ok(state) = serde_json::from_value::<RecorderState>(e.payload) {
+                withdraw_notifications(state != RecorderState::Idle);
+            }
+        });
         self.sync_scheduler();
+        self.start_prompt_sweeper();
         let this = Arc::downgrade(self);
         let spawned = std::thread::Builder::new()
             .name("meetings-maintenance".into())
@@ -332,6 +364,39 @@ impl MeetingsManager {
             });
         if let Err(e) = spawned {
             log::error!("meetings: maintenance thread failed to start: {e}");
+        }
+    }
+
+    /// Once a minute while calendar prompts are showing, remove those whose
+    /// event has ended (or is gone from the calendar).
+    fn start_prompt_sweeper(self: &Arc<Self>) {
+        let this = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("meetings-prompt-sweeper".into())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if this.strong_count() == 0 {
+                    return;
+                }
+                let prompts = posted_prompts();
+                if prompts.is_empty() {
+                    continue;
+                }
+                let now = crate::meetings::recorder::now_ms();
+                match crate::meetings::native::events_between(
+                    now - PROMPT_LOOKUP_MS,
+                    now + PROMPT_LOOKUP_MS,
+                ) {
+                    Ok(events) => {
+                        for id in ended_prompts(&prompts, &events, now) {
+                            crate::meetings::native::remove_notification(&id);
+                        }
+                    }
+                    Err(e) => log::debug!("meetings: prompt sweep skipped: {e:#}"),
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("meetings: prompt sweeper failed to start: {e}");
         }
     }
 
@@ -830,6 +895,144 @@ impl MeetingsManager {
     }
 }
 
+/// Encrypted meeting data exists under `data_dir`: `meetings.db` (or its
+/// journal) or any file below `meetings/` (audio, processing sidecars).
+pub fn has_meeting_data(data_dir: &std::path::Path) -> bool {
+    fn any_file(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                let path = e.path();
+                if path.is_dir() {
+                    any_file(&path)
+                } else {
+                    true
+                }
+            })
+        })
+    }
+    meeting_db_files(data_dir).iter().any(|p| p.exists()) || any_file(&data_dir.join("meetings"))
+}
+
+/// `meetings.db` and its SQLite side files.
+fn meeting_db_files(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let db = crate::meetings::store::MEETINGS_DB_FILE;
+    ["", "-wal", "-shm", "-journal"]
+        .iter()
+        .map(|suffix| data_dir.join(format!("{db}{suffix}")))
+        .collect()
+}
+
+/// Move the encrypted meeting data (`meetings.db*` and `meetings/`) into a
+/// new `meetings-unreadable-<stamp>/` folder under `data_dir`. Nothing is
+/// deleted. Returns the folder, or `None` when there was nothing to move.
+pub fn move_meeting_data_aside(
+    data_dir: &std::path::Path,
+    stamp: &str,
+) -> Result<Option<std::path::PathBuf>> {
+    use anyhow::Context as _;
+    let mut sources = meeting_db_files(data_dir);
+    sources.push(data_dir.join("meetings"));
+    sources.retain(|p| p.exists());
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    let mut dest = data_dir.join(format!("meetings-unreadable-{stamp}"));
+    let mut n = 1;
+    while dest.exists() {
+        n += 1;
+        dest = data_dir.join(format!("meetings-unreadable-{stamp}-{n}"));
+    }
+    std::fs::create_dir(&dest).with_context(|| format!("create {}", dest.display()))?;
+    for src in sources {
+        let to = dest.join(src.file_name().unwrap_or_default());
+        std::fs::rename(&src, &to)
+            .with_context(|| format!("move {} to {}", src.display(), to.display()))?;
+    }
+    log::info!(
+        "meetings: moved unreadable meeting data to {}",
+        dest.display()
+    );
+    Ok(Some(dest))
+}
+
+/// How far around now a clicked calendar prompt's event is looked up.
+const PROMPT_LOOKUP_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// How long after its event ends a calendar prompt's "Start" still links the
+/// recording to that event.
+pub const PROMPT_START_GRACE_MS: i64 = 10 * 60 * 1000;
+
+/// The calendar event a prompt's "Start" links to: `event_id` while the
+/// event (looked up as `event`) hasn't ended more than
+/// [`PROMPT_START_GRACE_MS`] ago; `None` (a normal manual start) once it has
+/// or when it can't be found.
+fn prompt_start_link(event_id: &str, event: Option<&CalendarEvent>, now: i64) -> Option<String> {
+    event
+        .filter(|e| e.id == event_id && now <= e.end_at + PROMPT_START_GRACE_MS)
+        .map(|e| e.id.clone())
+}
+
+/// Posted calendar prompts: `(notification id, event id)`.
+fn posted_prompts() -> Vec<(String, String)> {
+    use crate::meetings::recorder::{parse_notification, NotificationCommand, ACTION_START};
+    crate::meetings::native::posted_notifications("")
+        .into_iter()
+        .filter_map(|id| match parse_notification(&id, ACTION_START) {
+            NotificationCommand::Start(event_id) => Some((id, event_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Posted "still recording" reminders.
+fn posted_reminders() -> Vec<String> {
+    use crate::meetings::recorder::{parse_notification, NotificationCommand, ACTION_STOP};
+    crate::meetings::native::posted_notifications("")
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                parse_notification(id, ACTION_STOP),
+                NotificationCommand::Stop(_)
+            )
+        })
+        .collect()
+}
+
+/// The prompts (notification ids) whose event has ended or is not in
+/// `events` any more.
+fn ended_prompts(prompts: &[(String, String)], events: &[CalendarEvent], now: i64) -> Vec<String> {
+    prompts
+        .iter()
+        .filter(|(_, event_id)| {
+            events
+                .iter()
+                .find(|e| &e.id == event_id)
+                .is_none_or(|e| e.end_at <= now)
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// The notifications a recording starting (`recording`) or stopping makes
+/// moot: calendar prompts either way, "still recording" reminders on stop.
+fn notifications_to_withdraw(
+    recording: bool,
+    prompts: &[(String, String)],
+    reminders: &[String],
+) -> Vec<String> {
+    let mut ids: Vec<String> = prompts.iter().map(|(id, _)| id.clone()).collect();
+    if !recording {
+        ids.extend(reminders.iter().cloned());
+    }
+    ids
+}
+
+fn withdraw_notifications(recording: bool) {
+    for id in notifications_to_withdraw(recording, &posted_prompts(), &posted_reminders()) {
+        crate::meetings::native::remove_notification(&id);
+    }
+}
+
 /// The title the summarizer sees: the meeting's current title (the user may
 /// have renamed it), never the linked calendar event's snapshot.
 fn summary_title(meeting: &Meeting) -> &str {
@@ -1151,5 +1354,103 @@ mod store_section_tests {
             .unwrap();
         assert_eq!(left, vec![e(segs[1].id)]);
         assert_eq!(mgr.store().speaker_embedding(speakers[0].id).unwrap(), None);
+    }
+
+    fn event(id: &str, end_at: i64) -> CalendarEvent {
+        CalendarEvent {
+            id: id.into(),
+            title: "Standup".into(),
+            start_at: end_at - 15 * 60 * 1000,
+            end_at,
+            meeting_url: None,
+            attendees: vec![],
+        }
+    }
+
+    #[test]
+    fn a_stale_prompt_start_is_not_linked_to_its_event() {
+        let end = 1_000_000_000;
+        let e = event("ev", end);
+        // During the event and within the grace period: linked.
+        assert_eq!(
+            prompt_start_link("ev", Some(&e), end - 1).as_deref(),
+            Some("ev")
+        );
+        assert_eq!(
+            prompt_start_link("ev", Some(&e), end + PROMPT_START_GRACE_MS).as_deref(),
+            Some("ev")
+        );
+        // Hours later, or the event can't be found: a plain start.
+        assert_eq!(prompt_start_link("ev", Some(&e), end + 3 * 3_600_000), None);
+        assert_eq!(prompt_start_link("ev", None, end), None);
+        assert_eq!(prompt_start_link("other", Some(&e), end), None);
+    }
+
+    #[test]
+    fn prompts_are_withdrawn_when_their_event_ends_or_disappears() {
+        let now = 1_000_000_000;
+        let prompts = vec![
+            ("p.on".to_string(), "on".to_string()),
+            ("p.over".to_string(), "over".to_string()),
+            ("p.gone".to_string(), "gone".to_string()),
+        ];
+        let events = [event("on", now + 60_000), event("over", now)];
+        assert_eq!(
+            ended_prompts(&prompts, &events, now),
+            vec!["p.over".to_string(), "p.gone".to_string()]
+        );
+    }
+
+    #[test]
+    fn starting_withdraws_prompts_and_stopping_also_reminders() {
+        let prompts = vec![("p".to_string(), "ev".to_string())];
+        let reminders = vec!["r".to_string()];
+        assert_eq!(
+            notifications_to_withdraw(true, &prompts, &reminders),
+            vec!["p".to_string()]
+        );
+        assert_eq!(
+            notifications_to_withdraw(false, &prompts, &reminders),
+            vec!["p".to_string(), "r".to_string()]
+        );
+    }
+
+    #[test]
+    fn meeting_data_is_detected_and_moved_aside_without_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        std::fs::write(data.join("settings.json"), b"{}").unwrap();
+        assert!(!has_meeting_data(data));
+        assert_eq!(move_meeting_data_aside(data, "s").unwrap(), None);
+        // An empty `meetings/audio` (no recording yet) is no data.
+        let audio = data.join("meetings").join("audio");
+        std::fs::create_dir_all(&audio).unwrap();
+        assert!(!has_meeting_data(data));
+        std::fs::write(audio.join("1-mic.gopus"), b"a").unwrap();
+        assert!(has_meeting_data(data));
+        std::fs::write(data.join(crate::meetings::store::MEETINGS_DB_FILE), b"db").unwrap();
+        std::fs::write(data.join("meetings.db-wal"), b"wal").unwrap();
+
+        let stamp = "20261018-120000";
+        let moved = move_meeting_data_aside(data, stamp).unwrap().unwrap();
+        assert_eq!(moved, data.join(format!("meetings-unreadable-{stamp}")));
+        assert!(!has_meeting_data(data));
+        assert_eq!(std::fs::read(moved.join("meetings.db")).unwrap(), b"db");
+        assert_eq!(
+            std::fs::read(moved.join("meetings.db-wal")).unwrap(),
+            b"wal"
+        );
+        assert!(moved
+            .join("meetings")
+            .join("audio")
+            .join("1-mic.gopus")
+            .exists());
+        assert!(data.join("settings.json").exists(), "other files stay");
+
+        // A second reset in the same second gets its own folder.
+        std::fs::write(data.join(crate::meetings::store::MEETINGS_DB_FILE), b"db2").unwrap();
+        let again = move_meeting_data_aside(data, stamp).unwrap().unwrap();
+        assert_eq!(again, data.join(format!("meetings-unreadable-{stamp}-2")));
+        assert_eq!(std::fs::read(moved.join("meetings.db")).unwrap(), b"db");
     }
 }

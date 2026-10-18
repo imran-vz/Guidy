@@ -2029,6 +2029,36 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    async fn missing_data_key_offers_a_confirmed_reset(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().init = MeetingsInit::NotStarted;
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        // Never used: no banner.
+        assert!(!exists(cx, w, "meetings-init-failed"));
+        assert!(!exists(cx, w, "meetings-init-key-missing"));
+        dispatch(
+            cx,
+            &state,
+            guidy_core::MEETINGS_DATA_KEY_MISSING_EVENT,
+            serde_json::json!("key gone"),
+        );
+        assert!(exists(cx, w, "meetings-init-key-missing"));
+        with_window(cx, w, |window, cx| window.click("meetings-init-reset", cx));
+        // Nothing happens until the dialog is confirmed.
+        assert!(!meetings.called("reset_data"));
+        cx.update_window(w, |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(meetings.called("reset_data"));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.meetings_init.clone()),
+            MeetingsInit::Ready
+        );
+        assert!(!exists(cx, w, "meetings-init-key-missing"));
+    }
+
+    #[gpui_kit::test]
     fn missing_meeting_model_offers_a_download(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         backend.data.lock().models =

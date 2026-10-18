@@ -629,6 +629,21 @@ impl MeetingsStore {
         )? > 0)
     }
 
+    /// Queue for processing: status `Processing` (error cleared) unless the
+    /// meeting is recording or, with `needs_audio`, has no track left.
+    /// Returns false (and changes nothing) otherwise. One statement, so it
+    /// is atomic with [`Self::clear_audio_paths_if_processed`]: retention
+    /// either sees the meeting `Processing` and keeps its audio, or clears
+    /// the audio first and this refuses.
+    pub fn mark_processing(&self, id: MeetingId, needs_audio: bool) -> Result<bool> {
+        Ok(self.conn.lock().execute(
+            "UPDATE meetings SET status = 'processing', error = NULL
+             WHERE id = ?1 AND status != 'recording'
+               AND (NOT ?2 OR mic_audio_path IS NOT NULL OR system_audio_path IS NOT NULL)",
+            params![id, needs_audio],
+        )? > 0)
+    }
+
     /// Audio retention: clear both track paths only when the meeting is fully
     /// processed and neither recording nor processing. Returns false (and
     /// changes nothing) otherwise.
@@ -2044,6 +2059,42 @@ mod tests {
         let got = s.get_meeting(id).unwrap().unwrap();
         assert_eq!((got.mic_audio_path, got.system_audio_path), (None, None));
         assert_eq!(got.title, "Renamed");
+    }
+
+    #[test]
+    fn marking_processing_is_guarded_by_status_and_audio() {
+        let s = store();
+        let mut rec = meeting("r", 0);
+        rec.status = MeetingStatus::Recording;
+        let recording = s.insert_meeting(&rec).unwrap();
+        assert!(!s.mark_processing(recording, false).unwrap());
+        assert_eq!(
+            s.get_meeting(recording).unwrap().unwrap().status,
+            MeetingStatus::Recording
+        );
+
+        let mut failed = meeting("f", 0);
+        failed.status = MeetingStatus::Failed;
+        failed.error = Some("boom".into());
+        let id = s.insert_meeting(&failed).unwrap();
+        assert!(s.mark_processing(id, true).unwrap());
+        let got = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!((got.status, got.error), (MeetingStatus::Processing, None));
+
+        // Processed and its audio cleared by retention: refused when the run
+        // needs audio, allowed when it resumes past it.
+        s.set_meeting_status(id, MeetingStatus::Processed, None)
+            .unwrap();
+        s.set_processing_stage(id, Some(ProcessingStage::Done))
+            .unwrap();
+        assert!(s.clear_audio_paths_if_processed(id).unwrap());
+        assert!(!s.mark_processing(id, true).unwrap());
+        assert_eq!(
+            s.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Processed
+        );
+        assert!(s.mark_processing(id, false).unwrap());
+        assert!(!s.mark_processing(999, false).unwrap());
     }
 
     #[test]
