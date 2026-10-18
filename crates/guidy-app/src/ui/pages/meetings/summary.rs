@@ -6,6 +6,7 @@
 use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::{
     error_box, model_label, provider_options, MeetingsLlmChoice,
@@ -13,8 +14,7 @@ use crate::ui::pages::meetings::ai_settings::{
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::types::{
@@ -797,12 +797,15 @@ impl SummaryView {
                 .w_full()
                 .gap_2()
                 .child(div().text_xs().text_color(muted).flex_none().child(label))
-                .child(div().flex_1().child(
-                    Progress::new("summary-progress-bar").value(fraction.unwrap_or(0.0) * 100.0),
-                ))
+                .child(div().flex_1().child(design::track(
+                    "summary-progress-bar",
+                    Some((fraction.unwrap_or(0.0) * 100.0) / 100.0),
+                    cx,
+                )))
                 .child(
                     Button::new("summary-cancel-generate")
                         .ghost()
+                        .pill()
                         .xsmall()
                         .icon(icon("circle-x"))
                         .label(t("meetingsAi.common.cancel"))
@@ -825,6 +828,7 @@ impl SummaryView {
                 d.child(
                     Button::new("summary-edit")
                         .ghost()
+                        .pill()
                         .small()
                         .icon(icon("pencil"))
                         .label(t("meetingsAi.summary.edit"))
@@ -834,7 +838,8 @@ impl SummaryView {
             })
             .child(
                 Button::new("summary-regenerate-with")
-                    .outline()
+                    .secondary()
+                    .pill()
                     .small()
                     .label(t("meetingsAi.summary.regenerateWith"))
                     .disabled(self.generating)
@@ -850,6 +855,8 @@ impl SummaryView {
             .child(
                 Button::new("summary-generate")
                     .primary()
+                    .when(self.generating, |b| b.secondary())
+                    .pill()
                     .small()
                     .icon(icon("sparkles"))
                     .label(if has_summary {
@@ -934,6 +941,8 @@ impl SummaryView {
                     .child(
                         Button::new("summary-picker-run")
                             .primary()
+                            .when(!can_run || self.generating, |b| b.secondary())
+                            .pill()
                             .small()
                             .label(t("meetingsAi.summary.run"))
                             .disabled(!can_run || self.generating)
@@ -954,7 +963,7 @@ impl SummaryView {
             let field = |label: SharedString, el: AnyElement| {
                 v_flex()
                     .gap_1()
-                    .child(div().text_sm().font_semibold().child(label))
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(label))
                     .child(el)
             };
             return vec![div()
@@ -991,6 +1000,7 @@ impl SummaryView {
                                 .child(
                                     Button::new("summary-save")
                                         .primary()
+                                        .pill()
                                         .small()
                                         .label(t("meetingsAi.common.save"))
                                         .on_click(
@@ -999,7 +1009,8 @@ impl SummaryView {
                                 )
                                 .child(
                                     Button::new("summary-cancel")
-                                        .outline()
+                                        .secondary()
+                                        .pill()
                                         .small()
                                         .label(t("meetingsAi.common.cancel"))
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1036,7 +1047,7 @@ impl SummaryView {
                 .child(
                     div()
                         .text_xs()
-                        .font_semibold()
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(muted)
                         .child(title),
                 )
@@ -1068,7 +1079,7 @@ impl SummaryView {
             .child(
                 div()
                     .text_lg()
-                    .font_semibold()
+                    .font_weight(FontWeight::MEDIUM)
                     .child(if s.title.is_empty() {
                         t("meetingsAi.summary.untitled")
                     } else {
@@ -1198,11 +1209,7 @@ impl SummaryView {
                                     .child(Input::new(&inputs.due).small().disabled(locked)),
                             )
                             .when_some(item.linear_issue_identifier.clone(), |d, ident| {
-                                d.child(
-                                    gpui_kit::component::tag::Tag::primary()
-                                        .small()
-                                        .child(ident),
-                                )
+                                d.child(design::chip(ident, true, cx))
                             }),
                     )
                     .children(quote)
@@ -1231,7 +1238,8 @@ impl SummaryView {
                 .child(div().flex_1().child(Input::new(&self.new_item).small()))
                 .child(
                     Button::new("action-item-add")
-                        .outline()
+                        .secondary()
+                        .pill()
                         .small()
                         .icon(icon("plus"))
                         .label(t("meetingsAi.summary.addItem"))

@@ -56,6 +56,18 @@ pub fn release_single_instance(cx: &mut App) {
     }
 }
 
+/// The single-instance id; a debug build gets one per dev profile.
+fn instance_id() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(dir) = guidy_core::dev_profile_dir() {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        dir.hash(&mut h);
+        return format!("{APP_IDENTIFIER}.dev-{:08x}", h.finish() as u32);
+    }
+    APP_IDENTIFIER.to_string()
+}
+
 pub fn run(cli_args: CliArgs) {
     let app = guidy_core::create_app_handle();
     guidy_core::logging::init(&app.paths().app_log_dir.clone(), false);
@@ -68,7 +80,7 @@ pub fn run(cli_args: CliArgs) {
     // Single instance: a second launch forwards its flags and exits.
     let args: Vec<String> = std::env::args().collect();
     let forward_app = app.clone();
-    let guard = match single_instance::acquire(APP_IDENTIFIER, &args, move |forwarded| {
+    let guard = match single_instance::acquire(&instance_id(), &args, move |forwarded| {
         guidy_core::handle_second_instance(&forward_app, &forwarded)
     }) {
         Ok(Instance::Forwarded) => {

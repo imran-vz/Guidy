@@ -3,6 +3,7 @@
 use crate::logic::models::{picked_model_ready, picker_groups, ModelCardStatus};
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, t, t_args};
 use crate::ui::main_window::MainWindow;
 use crate::ui::model_card::ModelCard;
@@ -199,13 +200,8 @@ impl Render for ModelPicker {
             })
             .collect();
 
-        let section_title = |key: &str| {
-            div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(t(key))
-        };
-        let mut download_section = v_flex().gap_3();
+        let section_title = |key: &str| div().px(px(2.)).child(design::eyebrow(t(key), cx));
+        let mut download_section = v_flex().gap(px(10.));
         if !groups.downloadable.is_empty() {
             download_section = download_section
                 .child(section_title("onboarding.downloadModelsTitle"))
@@ -229,6 +225,7 @@ impl Render for ModelPicker {
                     h_flex().justify_center().child(
                         Button::new("show-all-models")
                             .ghost()
+                            .pill()
                             .small()
                             .label(label)
                             .icon(icon(if self.show_all {
@@ -261,6 +258,7 @@ impl Render for ModelPicker {
                     div().absolute().top_4().left_4().child(
                         Button::new("picker-back")
                             .ghost()
+                            .pill()
                             .small()
                             .icon(icon("chevron-left"))
                             .label(t("common.back"))
@@ -279,6 +277,7 @@ impl Render for ModelPicker {
                     .child(wordmark(px(28.), cx))
                     .child(
                         div()
+                            .text_size(design::TEXT_BODY)
                             .text_color(theme.muted_foreground)
                             .child(t("onboarding.subtitle")),
                     ),
@@ -299,7 +298,7 @@ impl Render for ModelPicker {
                             .when(!existing.is_empty(), |d| {
                                 d.child(
                                     v_flex()
-                                        .gap_3()
+                                        .gap(px(10.))
                                         .child(section_title("onboarding.existingModelsTitle"))
                                         .children(existing),
                                 )

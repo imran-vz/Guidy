@@ -4,13 +4,12 @@
 use super::{run, toast_error};
 use crate::logic::meetings::{merge_targets, non_empty, MeetingsEvent};
 use crate::state::{AppEvent, AppState};
-use crate::ui::kit::{icon, page_header, t, t_args, Dropdown, DropdownOption};
+use crate::ui::design::{self, Pill};
+use crate::ui::kit::{icon, t, t_args, Dropdown, DropdownOption};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
-};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::types::{Person, PersonId};
@@ -248,6 +247,7 @@ impl PeopleView {
                 .child(
                     Button::new(SharedString::from(format!("person-save-{id}")))
                         .primary()
+                        .pill()
                         .small()
                         .label(t("meetings.people.save"))
                         .on_click(cx.listener(|this, _, _, cx| this.save_edit(cx))),
@@ -255,6 +255,7 @@ impl PeopleView {
                 .child(
                     Button::new(SharedString::from(format!("person-edit-cancel-{id}")))
                         .ghost()
+                        .pill()
                         .small()
                         .label(t("meetings.people.cancel"))
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -286,7 +287,7 @@ impl PeopleView {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_semibold()
+                                    .font_weight(FontWeight::MEDIUM)
                                     .truncate()
                                     .child(p.display_name.clone()),
                             )
@@ -409,9 +410,9 @@ impl Render for PeopleView {
             vec![div()
                 .id("people-empty")
                 .px_4()
-                .py_3()
+                .py(px(18.))
                 .text_center()
-                .text_sm()
+                .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
                 .child(t("meetings.people.empty"))
                 .test_support()
@@ -420,15 +421,25 @@ impl Render for PeopleView {
             let people = self.people.clone();
             people.iter().map(|p| self.render_row(p, cx)).collect()
         };
+        // A tab under the Meetings headline: eyebrow and a quiet line, not a
+        // second headline.
         v_flex()
             .id("meetings-people")
             .w_full()
-            .gap_4()
-            .child(page_header(
-                t("meetings.people.title"),
-                Some(t("meetings.people.description")),
-                cx,
-            ))
+            .gap(px(8.))
+            .child(
+                div()
+                    .px(px(2.))
+                    .child(design::eyebrow(t("meetings.people.title"), cx)),
+            )
+            .child(
+                div()
+                    .px(px(2.))
+                    .text_size(px(12.))
+                    .line_height(relative(1.5))
+                    .text_color(theme.muted_foreground)
+                    .child(t("meetings.people.description")),
+            )
             .child(crate::ui::kit::group(None, rows, cx))
             .test_support()
     }

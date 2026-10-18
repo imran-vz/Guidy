@@ -2,6 +2,7 @@
 
 pub mod banners;
 pub mod brand;
+pub mod design;
 pub mod kit;
 pub mod language_selector;
 pub mod main_window;

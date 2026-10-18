@@ -11,18 +11,19 @@ use super::ai_settings::AiSettingsView;
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
     meetings_patch, non_empty, parse_retention, retention_value, MeetingsEvent,
-    PRIVACY_AUDIO_CAPTURE_URL, PRIVACY_CALENDARS_URL, PRIVACY_MICROPHONE_URL,
+    NOTIFICATIONS_SETTINGS_URL, PRIVACY_AUDIO_CAPTURE_URL, PRIVACY_CALENDARS_URL,
+    PRIVACY_MICROPHONE_URL,
 };
 use crate::meetings_backend::error_message;
 use crate::state::AppEvent;
 use crate::state::AppState;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{
     group, icon, model_name, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
 };
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::progress::Progress;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
@@ -74,13 +75,13 @@ impl Permission {
             Self::Notifications => "meetings.settings.permissions.notifications",
         }
     }
-    /// The System Settings privacy pane (none for notifications).
+    /// The System Settings pane where a denial can be changed.
     fn pane(self) -> Option<&'static str> {
         match self {
             Self::Calendar => Some(PRIVACY_CALENDARS_URL),
             Self::SystemAudio => Some(PRIVACY_AUDIO_CAPTURE_URL),
             Self::Microphone => Some(PRIVACY_MICROPHONE_URL),
-            Self::Notifications => None,
+            Self::Notifications => Some(NOTIFICATIONS_SETTINGS_URL),
         }
     }
     fn granted(self, p: &PermissionReport) -> bool {
@@ -368,6 +369,7 @@ impl MeetingSettingsView {
                                     perm.id()
                                 )))
                                 .ghost()
+                                .pill()
                                 .xsmall()
                                 .label(t("meetings.settings.permissions.requestAgain"))
                                 .disabled(self.requesting)
@@ -382,6 +384,7 @@ impl MeetingSettingsView {
                                         perm.id()
                                     )))
                                     .ghost()
+                                    .pill()
                                     .xsmall()
                                     .icon(icon("external-link"))
                                     .label(t("meetings.settings.permissions.openSettings"))
@@ -411,52 +414,54 @@ impl MeetingSettingsView {
         let status = self.speaker_model.clone()?;
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let control: AnyElement =
-            match &status {
-                SpeakerModelStatus::Ready => h_flex()
-                    .gap_1()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(icon("check").xsmall().text_color(theme.success))
-                    .child(t("meetings.settings.speakerModel.ready"))
-                    .into_any_element(),
-                SpeakerModelStatus::Downloading { downloaded, total } => {
-                    let fraction = if *total > 0 {
-                        (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
+        let control: AnyElement = match &status {
+            SpeakerModelStatus::Ready => h_flex()
+                .gap_1()
+                .text_sm()
+                .text_color(muted)
+                .child(icon("check").xsmall().text_color(theme.success))
+                .child(t("meetings.settings.speakerModel.ready"))
+                .into_any_element(),
+            SpeakerModelStatus::Downloading { downloaded, total } => {
+                let fraction = if *total > 0 {
+                    (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
+                } else {
+                    0.0
+                };
+                h_flex()
+                    .id("meetings-speaker-model-progress")
+                    .gap_2()
+                    .w(px(220.))
+                    .child(div().flex_1().child(design::track(
+                        "meetings-speaker-model-bar",
+                        Some((fraction * 100.0) / 100.0),
+                        cx,
+                    )))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{:.0}%", fraction * 100.0)),
+                    )
+                    .test_support()
+                    .into_any_element()
+            }
+            SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. } => {
+                let failed = matches!(status, SpeakerModelStatus::Failed { .. });
+                Button::new("meetings-speaker-model-download")
+                    .secondary()
+                    .pill()
+                    .small()
+                    .icon(icon(if failed { "rotate-ccw" } else { "download" }))
+                    .label(if failed {
+                        t("meetings.settings.speakerModel.retry")
                     } else {
-                        0.0
-                    };
-                    h_flex()
-                        .id("meetings-speaker-model-progress")
-                        .gap_2()
-                        .w(px(220.))
-                        .child(div().flex_1().child(
-                            Progress::new("meetings-speaker-model-bar").value(fraction * 100.0),
-                        ))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(format!("{:.0}%", fraction * 100.0)),
-                        )
-                        .test_support()
-                        .into_any_element()
-                }
-                SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. } => {
-                    let failed = matches!(status, SpeakerModelStatus::Failed { .. });
-                    Button::new("meetings-speaker-model-download")
-                        .outline()
-                        .small()
-                        .icon(icon(if failed { "rotate-ccw" } else { "download" }))
-                        .label(if failed {
-                            t("meetings.settings.speakerModel.retry")
-                        } else {
-                            t("meetings.settings.speakerModel.download")
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.download_speaker_model(cx)))
-                        .into_any_element()
-                }
-            };
+                        t("meetings.settings.speakerModel.download")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.download_speaker_model(cx)))
+                    .into_any_element()
+            }
+        };
         let description = match &status {
             SpeakerModelStatus::Failed { error } => {
                 t_args("meetings.settings.speakerModel.failed", &[("error", error)])
@@ -685,6 +690,7 @@ impl Render for MeetingSettingsView {
         // -- advanced -------------------------------------------------------
         let advanced_toggle = Button::new("meetings-advanced-toggle")
             .ghost()
+            .pill()
             .small()
             .icon(icon(if self.advanced_open {
                 "chevron-down"

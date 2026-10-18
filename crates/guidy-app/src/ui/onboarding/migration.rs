@@ -4,12 +4,13 @@ use crate::logic::migration::{format_time_left, Action, Migration, Phase, RowSta
 use crate::logic::models::format_model_size;
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, spinner, t, t_args};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::NotificationType;
 use gpui_kit::component::progress::ProgressCircle;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -255,7 +256,8 @@ impl Render for ModelMigration {
                             )
                             .child(
                                 Button::new(SharedString::from(format!("retry-{}", p.retired.id)))
-                                    .outline()
+                                    .secondary()
+                                    .pill()
                                     .xsmall()
                                     .label(t("onboarding.migration.retry"))
                                     .on_click(move |_, window, cx| {
@@ -275,17 +277,16 @@ impl Render for ModelMigration {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(theme.success.opacity(0.2))
-                            .text_color(theme.success)
+                            .bg(design::tone(cx).accent_soft)
+                            .text_color(design::tone(cx).accent_text)
                             .child(icon("check").xsmall())
                             .into_any_element()
                     }
                     RowState::Progress(pct) => h_flex()
                         .gap_2()
                         .child(
-                            div()
-                                .text_color(theme.muted_foreground)
-                                .child(format!("{}%", pct.round() as i64)),
+                            design::mono(format!("{}%", pct.round() as i64))
+                                .text_color(theme.muted_foreground),
                         )
                         .child(
                             ProgressCircle::new(SharedString::from(format!(
@@ -296,9 +297,8 @@ impl Render for ModelMigration {
                             .small(),
                         )
                         .into_any_element(),
-                    _ => div()
+                    _ => design::mono(format_model_size(Some(p.replacement.size_mb as f64)))
                         .text_color(theme.muted_foreground)
-                        .child(format_model_size(Some(p.replacement.size_mb as f64)))
                         .into_any_element(),
                 };
                 let rid = p.retired.id.clone();
@@ -308,8 +308,8 @@ impl Render for ModelMigration {
                         "migration-row-{}",
                         p.retired.id
                     )))
-                    .px_4()
-                    .py_3()
+                    .px(design::SECTION_X)
+                    .py(px(12.))
                     .gap_3()
                     .when(toggleable, |d| {
                         d.cursor_pointer().on_click(move |_, _, cx| {
@@ -334,8 +334,8 @@ impl Render for ModelMigration {
                                 .items_center()
                                 .justify_center()
                                 .when(is_chosen, |d| {
-                                    d.bg(theme.primary)
-                                        .border_color(theme.primary)
+                                    d.bg(design::tone(cx).accent)
+                                        .border_color(design::tone(cx).accent)
                                         .text_color(theme.primary_foreground)
                                         .child(icon("check").xsmall())
                                 })
@@ -349,31 +349,29 @@ impl Render for ModelMigration {
                             .min_w_0()
                             .child(
                                 div()
-                                    .text_sm()
-                                    .font_semibold()
+                                    .text_size(design::TEXT_BODY)
+                                    .font_weight(FontWeight::MEDIUM)
                                     .truncate()
                                     .child(p.replacement.name.clone()),
                             )
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .text_xs()
+                                    .mt(px(3.))
+                                    .text_size(px(12.))
                                     .text_color(theme.muted_foreground)
                                     .child(t_args(
                                         "onboarding.migration.replaces",
                                         &[("name", &p.retired.name)],
                                     ))
-                                    .child(
-                                        div()
-                                            .px_1p5()
-                                            .rounded(px(3.))
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .child(t("onboarding.migration.oldFormat")),
-                                    ),
+                                    .child(design::chip(
+                                        t("onboarding.migration.oldFormat"),
+                                        false,
+                                        cx,
+                                    )),
                             ),
                     )
-                    .child(div().text_xs().child(status))
+                    .child(div().text_size(px(12.)).child(status))
                     .into_any_element()
             })
             .collect();
@@ -382,6 +380,7 @@ impl Render for ModelMigration {
             if no_way_forward {
                 Button::new("migration-choose-another")
                     .primary()
+                    .pill()
                     .w_full()
                     .label(t("onboarding.migration.chooseAnother"))
                     .on_click(cx.listener(|this, _, _, cx| this.choose_another(cx)))
@@ -397,6 +396,7 @@ impl Render for ModelMigration {
                 };
                 Button::new("migration-start")
                     .primary()
+                    .pill()
                     .w_full()
                     .label(label)
                     .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
@@ -406,7 +406,7 @@ impl Render for ModelMigration {
             h_flex()
                 .h(px(40.))
                 .gap_2()
-                .text_sm()
+                .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
                 .child(spinner(
                     "migration-footer-spin",
@@ -435,6 +435,7 @@ impl Render for ModelMigration {
         } else {
             Button::new("migration-choose-another-failed")
                 .ghost()
+                .pill()
                 .label(t("onboarding.migration.chooseAnother"))
                 .on_click(cx.listener(|this, _, _, cx| this.choose_another(cx)))
                 .into_any_element()
@@ -455,13 +456,14 @@ impl Render for ModelMigration {
                     .gap_1p5()
                     .child(
                         div()
-                            .text_xl()
-                            .font_semibold()
+                            .text_size(design::TEXT_HEADLINE)
+                            .font_weight(FontWeight::MEDIUM)
                             .child(t("onboarding.migration.title")),
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(design::TEXT_BODY)
+                            .line_height(relative(1.55))
                             .text_center()
                             .text_color(theme.muted_foreground)
                             .child(t("onboarding.migration.description")),
@@ -474,9 +476,10 @@ impl Render for ModelMigration {
                     .max_w(px(560.))
                     .min_h_0()
                     .overflow_y_scroll()
-                    .rounded(theme.radius_lg)
+                    .rounded(design::RADIUS_PANEL)
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(design::tone(cx).hairline)
+                    .bg(design::tone(cx).surface)
                     .children(row_elems),
             )
             .child(
