@@ -634,7 +634,12 @@ fn suggestions_list_unassigned_attendees_then_people_by_voice() {
     let centroid = f.store.speaker_embedding(speakers[1].id).unwrap().unwrap();
     f.store.add_voiceprint(yann.id, &centroid, None).unwrap();
 
-    let got = naming::suggestions(&f.store, speakers[1].id, Some("ME@example.com")).unwrap();
+    let got = naming::suggestions(
+        &f.store,
+        speakers[1].id,
+        &["work@example.com", "ME@example.com"],
+    )
+    .unwrap();
     let names: Vec<&str> = got.iter().map(|s| s.display_name.as_str()).collect();
     // Alice (attendee, not assigned); not me, not Bob. Then Yann (voice
     // match) before Bob and Zed (no similarity to this speaker / no prints).
@@ -665,7 +670,7 @@ fn the_current_user_attendee_is_never_suggested() {
     event.attendees[1].is_current_user = true;
     f.store.set_calendar_event(f.id, Some(&event)).unwrap();
     let speakers = f.store.speakers(f.id).unwrap();
-    let got = naming::suggestions(&f.store, speakers[1].id, None).unwrap();
+    let got = naming::suggestions(&f.store, speakers[1].id, &[]).unwrap();
     let names: Vec<&str> = got.iter().map(|s| s.display_name.as_str()).collect();
     assert!(!names.contains(&"Me Myself"), "{names:?}");
     assert!(names.contains(&"Alice") && names.contains(&"Bob"));

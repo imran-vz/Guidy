@@ -6,6 +6,7 @@
 
 pub mod ai_settings;
 pub mod detail;
+pub mod emails;
 pub mod list;
 pub mod people;
 pub mod settings;
@@ -78,10 +79,13 @@ pub(crate) fn meeting_model_missing(cx: &App) -> Option<MeetingModelMissing> {
     if !state.models.initialized || state.models.models.is_empty() {
         return None;
     }
-    let configured = state
-        .app_settings()
-        .and_then(|s| s.meetings.meeting_model.clone());
-    resolve_meeting_model_id(&state.models.models, configured.as_deref()).err()
+    let settings = state.app_settings()?;
+    resolve_meeting_model_id(
+        &state.models.models,
+        settings.meetings.meeting_model.as_deref(),
+        Some(&settings.selected_model),
+    )
+    .err()
 }
 
 /// "Download meeting model" (or its progress) for a missing meeting model.
@@ -89,6 +93,27 @@ pub(crate) fn meeting_model_missing(cx: &App) -> Option<MeetingModelMissing> {
 pub(crate) fn render_model_download(
     place: &str,
     missing: &MeetingModelMissing,
+    cx: &mut App,
+) -> AnyElement {
+    let message = if missing.known {
+        t_args(
+            "meetings.errors.modelMissing",
+            &[("name", &missing.model_name)],
+        )
+    } else {
+        t_args(
+            "meetings.errors.modelUnknown",
+            &[("name", &missing.model_name)],
+        )
+    };
+    render_model_download_with(place, missing, message, cx)
+}
+
+/// [`render_model_download`] with its own message.
+pub(crate) fn render_model_download_with(
+    place: &str,
+    missing: &MeetingModelMissing,
+    message: SharedString,
     cx: &mut App,
 ) -> AnyElement {
     let theme = cx.theme().clone();
@@ -102,17 +127,6 @@ pub(crate) fn render_model_download(
         .get(&id)
         .map(|p| p.percentage)
         .unwrap_or(0.0);
-    let message = if missing.known {
-        t_args(
-            "meetings.errors.modelMissing",
-            &[("name", &missing.model_name)],
-        )
-    } else {
-        t_args(
-            "meetings.errors.modelUnknown",
-            &[("name", &missing.model_name)],
-        )
-    };
     let action: Option<AnyElement> = if !missing.known {
         None
     } else if downloading {

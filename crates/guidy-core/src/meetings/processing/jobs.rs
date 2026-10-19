@@ -19,7 +19,9 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 use super::pipeline::{
     next_stage, overall_fraction, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
 };
-use super::speaker_model::{ensure_speaker_model, SpeakerEmbedder};
+use super::speaker_model::{
+    installed_speaker_model, speaker_model_installed, SpeakerEmbedder, SpeakerModelMissing,
+};
 use super::{is_cancelled, AudioSource};
 use crate::audio_toolkit::SpeechScorer;
 use crate::engine_supervisor::EngineSupervisor;
@@ -153,13 +155,21 @@ impl Processor {
         if next <= ProcessingStage::Voiceprints && !has_audio(&meeting) {
             bail!(AUDIO_DELETED);
         }
-        // Fail fast (nothing queued) when transcription is still to do and
-        // the meeting model isn't downloaded: the UI gets the typed
-        // `MeetingModelMissing` error to offer the download.
-        if next <= ProcessingStage::Transcribe {
-            if let Some(models) = self.inner.app.try_state::<Arc<ModelManager>>() {
-                let configured = get_settings(&self.inner.app).meetings.meeting_model;
-                resolve_meeting_model(&models, configured.as_deref())?;
+        // Fail fast (nothing queued) when a model a remaining stage needs
+        // isn't downloaded: the UI gets the typed `MeetingModelMissing` /
+        // `SpeakerModelMissing` error to point at the download. Only in the
+        // running app (with its model manager): unit tests have no models.
+        if let Some(models) = self.inner.app.try_state::<Arc<ModelManager>>() {
+            if next <= ProcessingStage::Transcribe {
+                let settings = get_settings(&self.inner.app);
+                resolve_meeting_model(
+                    &models,
+                    settings.meetings.meeting_model.as_deref(),
+                    Some(&settings.selected_model),
+                )?;
+            }
+            if next <= ProcessingStage::Voiceprints && !speaker_model_installed(&self.inner.app) {
+                return Err(SpeakerModelMissing.into());
             }
         }
         let mut state = self.lock_for(id);
@@ -544,6 +554,7 @@ impl Processor {
             app: &inner.app,
             transcriber,
             configured: settings.meetings.meeting_model.clone(),
+            dictation: settings.selected_model.clone(),
             language,
             ready: false,
         };
@@ -605,6 +616,8 @@ struct LazyTranscriber<'a> {
     app: &'a AppHandle,
     transcriber: &'a mut MeetingTranscriber,
     configured: Option<String>,
+    /// The dictation model, used when no meetings model is downloaded.
+    dictation: String,
     language: Option<String>,
     ready: bool,
 }
@@ -616,7 +629,8 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
                 .app
                 .try_state::<Arc<ModelManager>>()
                 .ok_or_else(|| anyhow::anyhow!("the model manager is not running"))?;
-            let (model_id, path) = resolve_meeting_model(&models, self.configured.as_deref())?;
+            let (model_id, path) =
+                resolve_meeting_model(&models, self.configured.as_deref(), Some(&self.dictation))?;
             log::info!("meeting processing uses model {model_id}");
             self.transcriber.load(self.app, &path)?;
             self.ready = true;
@@ -638,7 +652,7 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
     }
 }
 
-/// Downloads (if needed) and loads the speaker model on first use.
+/// Loads the speaker model on first use (never downloads it).
 struct LazyEmbedder<'a> {
     app: &'a AppHandle,
     embedder: Option<SpeakerEmbedder>,
@@ -647,7 +661,8 @@ struct LazyEmbedder<'a> {
 impl Embedder for LazyEmbedder<'_> {
     fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
         if self.embedder.is_none() {
-            let path = ensure_speaker_model(self.app)?;
+            // Downloaded only when the user asks (Meetings > Settings).
+            let path = installed_speaker_model(self.app)?;
             self.embedder = Some(SpeakerEmbedder::new(&path)?);
         }
         self.embedder.as_ref().expect("loaded").embed(pcm)

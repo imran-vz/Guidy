@@ -1896,6 +1896,86 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn user_emails_are_added_labelled_and_removed(cx: &mut TestAppContext) {
+        use crate::logic::meetings::EmailError;
+        use crate::ui::pages::meetings::emails::UserEmailsView;
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend.clone(), meetings);
+        let (w, view) = open(cx, UserEmailsView::new);
+        let enter = |cx: &mut TestAppContext, label: &str, email: &str| {
+            let (label, email) = (label.to_string(), email.to_string());
+            cx.update_window(w, |_, window, cx| {
+                view.update(cx, |v, cx| v.enter(&label, &email, window, cx))
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        enter(cx, "Personal", "me@home.example");
+        enter(cx, " Work ", "me@work.example");
+        let emails = backend.settings().meetings.user_emails;
+        assert_eq!(emails.len(), 2);
+        assert_eq!(emails[1].label, "Work");
+        assert!(exists(cx, w, "meetings-user-email-1"));
+        // Bad and duplicate addresses are refused with a message.
+        enter(cx, "", "ME@home.example");
+        assert_eq!(
+            view.read_with(cx, |v, _| v.error()),
+            Some(EmailError::Duplicate)
+        );
+        assert!(exists(cx, w, "meetings-user-email-error"));
+        enter(cx, "", "not-an-email");
+        assert_eq!(
+            view.read_with(cx, |v, _| v.error()),
+            Some(EmailError::Invalid)
+        );
+        assert_eq!(backend.settings().meetings.user_emails.len(), 2);
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-user-email-remove-0", cx)
+        });
+        let emails = backend.settings().meetings.user_emails;
+        assert_eq!(emails.len(), 1);
+        assert_eq!(emails[0].email, "me@work.example");
+        assert!(!exists(cx, w, "meetings-user-email-1"));
+    }
+
+    #[gpui_kit::test]
+    fn meetings_use_the_dictation_model_unless_another_is_chosen(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let mut whisper = crate::logic::models::test_model("whisper");
+        whisper.is_downloaded = true;
+        backend.data.lock().models = vec![
+            whisper,
+            crate::logic::models::test_model(DEFAULT_MEETING_MODEL_ID),
+        ];
+        backend.with_settings(|s| {
+            s.selected_model = "whisper".into();
+            s.meetings.meeting_model = None;
+        });
+        setup_meetings(cx, backend.clone(), meetings);
+        let (w, _) = open(cx, MeetingsPage::new);
+        settings_tab(cx, w);
+        // Parakeet isn't downloaded, but the dictation model is: no banner.
+        assert!(!exists(cx, w, "meeting-model-missing-settings"));
+        assert!(!exists(cx, w, "meeting-model-missing-list"));
+        assert!(!exists(cx, w, "meetings-model-dropdown"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-model-separate-toggle", cx)
+        });
+        assert_eq!(
+            backend.settings().meetings.meeting_model.as_deref(),
+            Some(DEFAULT_MEETING_MODEL_ID)
+        );
+        assert!(exists(cx, w, "meetings-model-dropdown"));
+        // The chosen model isn't downloaded: offered inline.
+        assert!(exists(cx, w, "meeting-model-download-settings"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-model-separate-toggle", cx)
+        });
+        assert_eq!(backend.settings().meetings.meeting_model, None);
+        assert!(!exists(cx, w, "meetings-model-dropdown"));
+    }
+
+    #[gpui_kit::test]
     fn meeting_settings_write_field_patches(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         backend.with_settings(|s| {
@@ -1913,7 +1993,11 @@ mod meetings_fixes {
             meetings_updates(&backend),
             vec![r#"update_setting meetings {"enabled":true}"#.to_string()]
         );
-        // Enabling pre-downloads the speaker model.
+        // The speaker model downloads only from its button.
+        assert!(!meetings.called("download_speaker_model"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-speaker-model-download", cx)
+        });
         assert!(meetings.called("download_speaker_model"));
         // Another writer changed a different field meanwhile: a patch from
         // this view doesn't undo it.
