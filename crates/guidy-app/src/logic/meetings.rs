@@ -219,9 +219,25 @@ pub fn is_linear_url(url: &str) -> bool {
             .all(|c| c.is_ascii_graphic() && c != '\\' && c != '@')
 }
 
-/// URLs the meetings UI may open: Linear pages and the settings panes.
+/// Where to create an API key, per LLM provider id (the "Get a key" link).
+pub const PROVIDER_KEY_URLS: [(&str, &str); 7] = [
+    ("anthropic", "https://console.anthropic.com/settings/keys"),
+    ("openai", "https://platform.openai.com/api-keys"),
+    ("openrouter", "https://openrouter.ai/settings/keys"),
+    ("groq", "https://console.groq.com/keys"),
+    ("cerebras", "https://cloud.cerebras.ai/platform"),
+    ("zai", "https://z.ai/manage-apikey/apikey-list"),
+    (
+        "vercel_ai_gateway",
+        "https://vercel.com/dashboard/ai-gateway/api-keys",
+    ),
+];
+
+/// URLs the meetings UI may open: Linear pages, the settings panes and the
+/// LLM providers' API key pages.
 pub fn is_allowed_external_url(url: &str) -> bool {
     is_linear_url(url)
+        || PROVIDER_KEY_URLS.iter().any(|(_, key_url)| *key_url == url)
         || [
             PRIVACY_CALENDARS_URL,
             PRIVACY_MICROPHONE_URL,
@@ -749,13 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn only_linear_and_privacy_urls_are_opened() {
+    fn only_known_urls_are_opened() {
         assert!(is_linear_url("https://linear.app/acme/issue/ENG-1/fix-it"));
         assert!(is_allowed_external_url("https://linear.app/settings/api"));
         assert!(is_allowed_external_url(PRIVACY_MICROPHONE_URL));
         assert!(is_allowed_external_url(PRIVACY_CALENDARS_URL));
         assert!(is_allowed_external_url(PRIVACY_AUDIO_CAPTURE_URL));
         assert!(is_allowed_external_url(NOTIFICATIONS_SETTINGS_URL));
+        for (_, url) in PROVIDER_KEY_URLS {
+            assert!(is_allowed_external_url(url), "{url}");
+        }
         for bad in [
             "http://linear.app/acme",
             "https://linear.app/",
