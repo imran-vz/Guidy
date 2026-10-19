@@ -4,7 +4,7 @@
 //! personal API key.
 
 use crate::logic::flows::CUSTOM_PROVIDER_ID;
-use crate::logic::meetings::{meetings_patch, MeetingsEvent};
+use crate::logic::meetings::{meetings_patch, MeetingsEvent, PROVIDER_KEY_URLS};
 use crate::logic::models::format_model_size;
 use crate::logic::settings_store::ToastSpec;
 use crate::meetings_backend::{
@@ -116,16 +116,10 @@ pub fn with_llm_choice(
 
 /// Where to create an API key for a provider (the "Get a key" link).
 pub fn provider_key_url(provider_id: &str) -> Option<&'static str> {
-    Some(match provider_id {
-        "anthropic" => "https://console.anthropic.com/settings/keys",
-        "openai" => "https://platform.openai.com/api-keys",
-        "openrouter" => "https://openrouter.ai/settings/keys",
-        "groq" => "https://console.groq.com/keys",
-        "cerebras" => "https://cloud.cerebras.ai/platform",
-        "zai" => "https://z.ai/manage-apikey/apikey-list",
-        "vercel_ai_gateway" => "https://vercel.com/dashboard/ai-gateway/api-keys",
-        _ => return None,
-    })
+    PROVIDER_KEY_URLS
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+        .map(|(_, url)| *url)
 }
 
 /// A radio mark: accent ring when selected.
