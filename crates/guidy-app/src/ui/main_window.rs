@@ -13,7 +13,7 @@ use crate::ui::onboarding::{
 use crate::ui::pages::{
     about::AboutPage, advanced::AdvancedPage, debug::DebugPage, general::GeneralPage,
     history::HistoryPage, meetings::MeetingsPage, models::ModelsPage,
-    post_processing::PostProcessingPage,
+    post_processing::PostProcessingPage, usage::UsagePage,
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
@@ -33,6 +33,7 @@ pub enum Section {
     Models,
     Advanced,
     PostProcessing,
+    Usage,
     Debug,
     About,
 }
@@ -46,6 +47,7 @@ impl Section {
             Section::Models => "models",
             Section::Advanced => "advanced",
             Section::PostProcessing => "postprocessing",
+            Section::Usage => "usage",
             Section::Debug => "debug",
             Section::About => "about",
         }
@@ -59,6 +61,7 @@ impl Section {
             "models" => Section::Models,
             "advanced" => Section::Advanced,
             "postprocessing" => Section::PostProcessing,
+            "usage" => Section::Usage,
             "debug" => Section::Debug,
             "about" => Section::About,
             _ => return None,
@@ -73,6 +76,7 @@ impl Section {
             Section::Models => "sidebar.models",
             Section::Advanced => "sidebar.advanced",
             Section::PostProcessing => "sidebar.postProcessing",
+            Section::Usage => "sidebar.usage",
             Section::Debug => "sidebar.debug",
             Section::About => "sidebar.about",
         }
@@ -86,6 +90,7 @@ impl Section {
             Section::Models => "cpu",
             Section::Advanced => "cog",
             Section::PostProcessing => "sparkles",
+            Section::Usage => "coins",
             Section::Debug => "flask-conical",
             Section::About => "info",
         }
@@ -105,6 +110,7 @@ struct Pages {
     models: Option<Entity<ModelsPage>>,
     advanced: Option<Entity<AdvancedPage>>,
     post_processing: Option<Entity<PostProcessingPage>>,
+    usage: Option<Entity<UsagePage>>,
     debug: Option<Entity<DebugPage>>,
     about: Option<Entity<AboutPage>>,
 }
@@ -269,6 +275,12 @@ impl MainWindow {
             cx.set_global(LastSection(section));
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
+        // Spend changes with every cloud call: show the latest on each visit.
+        if section == Section::Usage {
+            if let Some(page) = &self.pages.usage {
+                page.update(cx, |p, cx| p.reload(cx));
+            }
+        }
         cx.notify();
     }
 
@@ -390,6 +402,7 @@ impl MainWindow {
             Section::Models => page!(models, ModelsPage),
             Section::Advanced => page!(advanced, AdvancedPage),
             Section::PostProcessing => page!(post_processing, PostProcessingPage),
+            Section::Usage => page!(usage, UsagePage),
             Section::Debug => page!(debug, DebugPage),
             Section::About => page!(about, AboutPage),
         }

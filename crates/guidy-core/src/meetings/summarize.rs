@@ -934,6 +934,7 @@ pub fn summarize_meeting(
         temperature: Some(0.2),
         cancel: opts.cancel.clone(),
         max_queue_wait: opts.max_queue_wait,
+        meter: opts.meter.clone(),
     };
 
     let mut total = chunks.len() + usize::from(chunks.len() > 1);
@@ -1107,6 +1108,7 @@ pub fn persist(
     meeting_id: MeetingId,
     output: &SummarizeOutput,
     generated_by: &str,
+    usage: Option<crate::llm::usage::MeterTotals>,
     keep: &[ActionItemId],
 ) -> Result<StoredSummary> {
     let stored = StoredSummary {
@@ -1117,6 +1119,7 @@ pub fn persist(
         topics: output.summary.topics.clone(),
         generated_by: generated_by.to_string(),
         generated_at: now_ms(),
+        usage,
     };
     store.put_summary_and_action_items(&stored, &output.items, keep, is_duplicate)?;
     Ok(stored)
@@ -1921,7 +1924,7 @@ mod tests {
         let mut inp = input(&f);
         inp.meeting_id = meeting_id;
         let out = summarize_meeting(&p, &inp, &ChatOptions::default(), &|_, _| {}).unwrap();
-        persist(&store, meeting_id, &out, "fake/model", &[]).unwrap();
+        persist(&store, meeting_id, &out, "fake/model", None, &[]).unwrap();
         let items = store.action_items(meeting_id).unwrap();
         assert_eq!(items.len(), 2);
 
@@ -1936,7 +1939,7 @@ mod tests {
 
         // Regenerating keeps the linked item, doesn't duplicate it, and
         // replaces the unlinked ones.
-        let stored = persist(&store, meeting_id, &out, "fake/other", &[]).unwrap();
+        let stored = persist(&store, meeting_id, &out, "fake/other", None, &[]).unwrap();
         assert_eq!(stored.generated_by, "fake/other");
         let after = store.action_items(meeting_id).unwrap();
         assert_eq!(after.len(), 2, "{after:#?}");

@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
 use serde_json::Value;
 
+use super::usage::{self, UsageFeature, UsageSlot};
 use super::{
     block_on, extract_json, json_via_prompt, strip_think, validate_json, ChatMessage, ChatOptions,
     LlmProvider, CANCELLED,
@@ -47,6 +48,7 @@ impl HttpProvider {
                 self.provider.id.as_str(),
                 "custom" | "openrouter" | "openai" | "zai"
             ),
+            usage: Some(UsageSlot::default()),
         }
     }
 
@@ -55,6 +57,7 @@ impl HttpProvider {
         let api_key = self.api_key.clone();
         let model = self.model.clone();
         let cancel = opts.cancel.clone();
+        let slot = params.usage.clone();
         let reply = block_on(async move {
             let request = llm_client::send_chat(&provider, api_key, &model, params);
             tokio::pin!(request);
@@ -71,6 +74,16 @@ impl HttpProvider {
                 }
             }
         });
+        // Spent tokens count even when the reply is unusable (cut short).
+        if let Some(usage) = slot.map(|s| *s.lock()).filter(|u| !u.is_empty()) {
+            usage::record_call(
+                &self.provider.id,
+                &self.model,
+                &usage,
+                opts.meter.as_ref(),
+                UsageFeature::Other,
+            );
+        }
         let label = &self.provider.label;
         match reply {
             Ok(Some(text)) => Ok(strip_think(&text).to_string()),

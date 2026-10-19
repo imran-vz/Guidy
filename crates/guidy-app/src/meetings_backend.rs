@@ -1263,6 +1263,7 @@ pub mod fake {
                 topics: vec!["Release".into()],
                 generated_by: by,
                 generated_at: 1,
+                usage: None,
             };
             d.ai.summaries.insert(id, s.clone());
             Ok(s)

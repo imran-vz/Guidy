@@ -296,6 +296,10 @@ pub struct StoredSummary {
     /// "provider_id/model" that produced it.
     pub generated_by: String,
     pub generated_at: i64,
+    /// Tokens and cost of the cloud calls that produced it; `None` for local
+    /// models and summaries made before costs were recorded.
+    #[serde(default)]
+    pub usage: Option<crate::llm::usage::MeterTotals>,
 }
 
 /// Processing stages, in order. Stored as `Meeting::processing_stage` after

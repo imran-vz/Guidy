@@ -21,6 +21,7 @@ pub mod builtin;
 pub mod http;
 pub mod local_models;
 pub mod registry;
+pub mod usage;
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,6 +95,9 @@ pub struct ChatOptions {
     /// failing with [`builtin::WorkerBusy`]. `None` waits until it's free.
     /// Bounded waiters also go ahead of unbounded ones queued for the worker.
     pub max_queue_wait: Option<std::time::Duration>,
+    /// Cloud providers: totals for this job's calls (see [`usage`]). Every
+    /// cloud call is recorded in the usage ledger either way.
+    pub meter: Option<usage::UsageMeter>,
 }
 
 impl ChatOptions {

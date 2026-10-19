@@ -585,6 +585,7 @@ pub fn sidebar_sections(s: Option<&AppSettings>) -> Vec<&'static str> {
     if s.is_some_and(|s| s.post_process_enabled) {
         v.push("postprocessing");
     }
+    v.push("usage");
     if s.is_some_and(|s| s.debug_mode) {
         v.push("debug");
     }
@@ -949,7 +950,7 @@ mod tests {
         let mut s = guidy_core::settings::get_default_settings();
         assert_eq!(
             sidebar_sections(Some(&s)),
-            ["general", "history", "models", "advanced", "about"]
+            ["general", "history", "models", "advanced", "usage", "about"]
         );
         s.post_process_enabled = true;
         s.debug_mode = true;
@@ -961,6 +962,7 @@ mod tests {
                 "models",
                 "advanced",
                 "postprocessing",
+                "usage",
                 "debug",
                 "about"
             ]

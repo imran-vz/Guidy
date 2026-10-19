@@ -183,6 +183,9 @@ pub struct SummaryView {
     own_job: bool,
     /// LLM calls of the running summary: (done, total).
     progress: Option<(usize, usize)>,
+    /// The provider of this view's own run when it was picked with
+    /// "Regenerate with..." (else the meetings provider from settings).
+    job_provider: Option<String>,
     cancelling: bool,
     error: Option<String>,
     // Summary editor.
@@ -259,6 +262,7 @@ impl SummaryView {
             items: Vec::new(),
             speakers: Vec::new(),
             people: Vec::new(),
+            job_provider: None,
             generating: false,
             own_job: false,
             progress: None,
@@ -476,6 +480,7 @@ impl SummaryView {
         self.generating = true;
         self.own_job = true;
         self.progress = None;
+        self.job_provider = provider_override.as_ref().map(|(p, _)| p.clone());
         self.error = None;
         self.picker_open = false;
         let id = self.meeting_id;
@@ -494,6 +499,7 @@ impl SummaryView {
                 this.generating = false;
                 this.own_job = false;
                 this.progress = None;
+                this.job_provider = None;
                 match summary {
                     Ok(s) => {
                         this.summary = Some(s);
@@ -776,6 +782,22 @@ impl SummaryView {
 
     // -- render ---------------------------------------------------------
 
+    /// "Summarizing the meeting...": with a note that it can take minutes
+    /// only when a local model (built-in runtime, Apple Intelligence) runs it.
+    fn generating_label(&self, cx: &App) -> SharedString {
+        let provider = self.job_provider.clone().or_else(|| {
+            AppState::global(cx)
+                .read(cx)
+                .app_settings()
+                .map(|s| s.meetings.llm_provider_id.clone())
+        });
+        if provider.as_deref().is_some_and(runs_locally) {
+            t("meetingsAi.summary.generatingLocal")
+        } else {
+            t("meetingsAi.summary.generating")
+        }
+    }
+
     /// "Summarizing… n/m" with a progress bar and Cancel.
     fn progress_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.generating {
@@ -789,7 +811,7 @@ impl SummaryView {
                 "meetingsAi.summary.progress",
                 &[("done", &done.to_string()), ("total", &total.to_string())],
             ),
-            None => t("meetingsAi.summary.generating"),
+            None => self.generating_label(cx),
         };
         Some(
             h_flex()
@@ -1027,7 +1049,7 @@ impl SummaryView {
             let text = if !self.loaded {
                 t("meetingsAi.common.loading")
             } else if self.generating {
-                t("meetingsAi.summary.generating")
+                self.generating_label(cx)
             } else {
                 t("meetingsAi.summary.empty")
             };
@@ -1068,10 +1090,28 @@ impl SummaryView {
                         .child(div().flex_1().min_w_0().child(i.clone()))
                 }))
         };
-        let generated = t_args(
-            "meetingsAi.summary.generatedBy",
-            &[("model", &s.generated_by)],
-        );
+        let generated = match s
+            .usage
+            .as_ref()
+            .and_then(|u| crate::logic::usage::format_cost(u).map(|cost| (u, cost)))
+        {
+            Some((u, cost)) => t_args(
+                "meetingsAi.summary.generatedByCost",
+                &[
+                    ("model", &s.generated_by),
+                    ("cost", &cost),
+                    ("input", &crate::logic::usage::format_tokens(u.input_tokens)),
+                    (
+                        "output",
+                        &crate::logic::usage::format_tokens(u.output_tokens),
+                    ),
+                ],
+            ),
+            None => t_args(
+                "meetingsAi.summary.generatedBy",
+                &[("model", &s.generated_by)],
+            ),
+        };
         vec![v_flex()
             .id("summary-view")
             .p_3()
@@ -1262,6 +1302,7 @@ fn empty_summary(meeting_id: MeetingId) -> StoredSummary {
         topics: Vec::new(),
         generated_by: String::new(),
         generated_at: 0,
+        usage: None,
     }
 }
 
@@ -1271,6 +1312,12 @@ fn settings_model(cx: &App, provider_id: &str) -> String {
         .app_settings()
         .and_then(|s| s.meetings.llm_models.get(provider_id).cloned())
         .unwrap_or_default()
+}
+
+/// Whether `provider_id` runs on this Mac (no network, can be slow).
+fn runs_locally(provider_id: &str) -> bool {
+    provider_id == guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID
+        || provider_id == guidy_core::settings::APPLE_INTELLIGENCE_PROVIDER_ID
 }
 
 impl Render for SummaryView {
@@ -1428,6 +1475,7 @@ mod ui {
                     topics: vec!["Release".into()],
                     generated_by: "guidy_local/qwen3-4b".into(),
                     generated_at: 1,
+                    usage: None,
                 },
             );
             d.ai.items = vec![action_item_fixture(7, 1, "send the notes")];

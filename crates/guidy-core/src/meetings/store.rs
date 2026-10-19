@@ -164,6 +164,15 @@ static MIGRATIONS: &[M] = &[
         created_at INTEGER NOT NULL
     );",
     ),
+    // 8: the tokens and cost of the cloud LLM calls that produced a summary
+    // (NULL `llm_calls`: a local model, or made before this column).
+    M::up(
+        "ALTER TABLE meeting_summaries ADD COLUMN llm_calls INTEGER;
+    ALTER TABLE meeting_summaries ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE meeting_summaries ADD COLUMN output_tokens INTEGER;
+    ALTER TABLE meeting_summaries ADD COLUMN cost_usd REAL;
+    ALTER TABLE meeting_summaries ADD COLUMN cost_estimated INTEGER NOT NULL DEFAULT 0;",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -302,6 +311,18 @@ fn map_summary(row: &Row<'_>) -> rusqlite::Result<StoredSummary> {
         topics: from_json(4, &topics)?,
         generated_by: row.get(5)?,
         generated_at: row.get(6)?,
+        usage: row
+            .get::<_, Option<i64>>(7)?
+            .map(|calls| -> rusqlite::Result<_> {
+                Ok(crate::llm::usage::MeterTotals {
+                    calls: calls as u32,
+                    input_tokens: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64,
+                    output_tokens: row.get::<_, Option<i64>>(9)?.unwrap_or(0) as u64,
+                    cost_usd: row.get(10)?,
+                    estimated: row.get(11)?,
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -1298,7 +1319,8 @@ impl MeetingsStore {
             .lock()
             .query_row(
                 "SELECT meeting_id, title, short_summary, decisions, topics, generated_by,
-                    generated_at
+                    generated_at, llm_calls, input_tokens, output_tokens, cost_usd,
+                    cost_estimated
                  FROM meeting_summaries WHERE meeting_id = ?1",
                 [meeting_id],
                 map_summary,
@@ -1665,12 +1687,15 @@ fn replace_unlinked_action_items_tx(
 fn put_summary_tx(conn: &Connection, s: &StoredSummary) -> Result<()> {
     conn.execute(
         "INSERT INTO meeting_summaries (meeting_id, title, short_summary, decisions, topics,
-            generated_by, generated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            generated_by, generated_at, llm_calls, input_tokens, output_tokens, cost_usd,
+            cost_estimated)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(meeting_id) DO UPDATE SET title = excluded.title,
             short_summary = excluded.short_summary, decisions = excluded.decisions,
             topics = excluded.topics, generated_by = excluded.generated_by,
-            generated_at = excluded.generated_at",
+            generated_at = excluded.generated_at, llm_calls = excluded.llm_calls,
+            input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+            cost_usd = excluded.cost_usd, cost_estimated = excluded.cost_estimated",
         params![
             s.meeting_id,
             s.title,
@@ -1679,6 +1704,11 @@ fn put_summary_tx(conn: &Connection, s: &StoredSummary) -> Result<()> {
             to_json(&s.topics)?,
             s.generated_by,
             s.generated_at,
+            s.usage.map(|u| u.calls as i64),
+            s.usage.map(|u| u.input_tokens as i64),
+            s.usage.map(|u| u.output_tokens as i64),
+            s.usage.and_then(|u| u.cost_usd),
+            s.usage.is_some_and(|u| u.estimated),
         ],
     )?;
     Ok(())
@@ -2070,6 +2100,7 @@ mod tests {
             topics: vec![],
             generated_by: "x/y".into(),
             generated_at: 1,
+            usage: None,
         })
         .unwrap();
         s.insert_action_item(&item(m, "a")).unwrap();
@@ -2233,6 +2264,7 @@ mod tests {
             topics: vec!["t1".into(), "t2".into()],
             generated_by: "guidy_local/qwen".into(),
             generated_at: 5,
+            usage: None,
         };
         s.put_summary(&sum).unwrap();
         assert_eq!(s.summary(m).unwrap(), Some(sum.clone()));
@@ -2254,6 +2286,7 @@ mod tests {
             topics: vec![],
             generated_by: "a".into(),
             generated_at: 1,
+            usage: None,
         };
         let items = s
             .put_summary_and_action_items(&old, &[item(m, "old item")], &[], |_, _| false)
@@ -2308,6 +2341,7 @@ mod tests {
             topics: vec![],
             generated_by: "a".into(),
             generated_at: 1,
+            usage: None,
         };
         let owned = |text: &str, owner: PersonId| ActionItem {
             owner_person_id: Some(owner),

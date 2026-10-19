@@ -65,6 +65,14 @@ pub trait Backend: Send + Sync + 'static {
     fn open_recordings_folder(&self) -> BackendResult<()>;
     fn open_log_dir(&self) -> BackendResult<()>;
     fn open_app_data_dir(&self) -> BackendResult<()>;
+    /// What cloud LLM calls have cost (the Usage page).
+    fn llm_usage_report(&self) -> BackendResult<guidy_core::llm::usage::UsageReport> {
+        Ok(Default::default())
+    }
+    /// Forget the recorded LLM usage.
+    fn clear_llm_usage(&self) -> BackendResult<()> {
+        Ok(())
+    }
     fn initialize_enigo(&self) -> BackendResult<()>;
     fn initialize_shortcuts(&self) -> BackendResult<()>;
     fn cancel_operation(&self);
@@ -491,6 +499,14 @@ impl Backend for CoreBackend {
 
     fn open_app_data_dir(&self) -> BackendResult<()> {
         guidy_core::commands::open_app_data_dir(self.a())
+    }
+
+    fn llm_usage_report(&self) -> BackendResult<guidy_core::llm::usage::UsageReport> {
+        guidy_core::llm::usage::report().map_err(|e| format!("{e:#}"))
+    }
+
+    fn clear_llm_usage(&self) -> BackendResult<()> {
+        guidy_core::llm::usage::clear().map_err(|e| format!("{e:#}"))
     }
 
     fn initialize_enigo(&self) -> BackendResult<()> {

@@ -214,6 +214,15 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool) {
 
     // Cloud model names, context windows and prices (models.dev).
     llm::registry::load_and_refresh_if_stale(app_handle);
+    // What cloud LLM calls cost (the Usage page).
+    match portable::app_data_dir(app_handle) {
+        Ok(dir) => {
+            if let Err(e) = llm::usage::init(&dir) {
+                log::warn!("LLM usage ledger unavailable: {e:#}");
+            }
+        }
+        Err(e) => log::warn!("LLM usage ledger unavailable: {e}"),
+    }
 
     // Meeting notes (macOS 14.2+).
     init_meetings(app_handle);

@@ -34,6 +34,7 @@ pub struct FakeData {
     pub fail_download: bool,
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
+    pub usage: guidy_core::llm::usage::UsageReport,
 }
 
 /// Records calls as `"name arg1 arg2"` strings.
@@ -261,6 +262,14 @@ impl Backend for FakeBackend {
     }
     fn open_app_data_dir(&self) -> BackendResult<()> {
         self.rec("open_app_data_dir");
+        Ok(())
+    }
+    fn llm_usage_report(&self) -> BackendResult<guidy_core::llm::usage::UsageReport> {
+        Ok(self.data.lock().usage.clone())
+    }
+    fn clear_llm_usage(&self) -> BackendResult<()> {
+        self.rec("clear_llm_usage");
+        self.data.lock().usage = Default::default();
         Ok(())
     }
     fn initialize_enigo(&self) -> BackendResult<()> {

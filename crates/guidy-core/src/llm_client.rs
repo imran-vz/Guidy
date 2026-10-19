@@ -1,3 +1,4 @@
+use crate::llm::usage::{parse_usage, record_call, TokenUsage, UsageFeature, UsageSlot};
 use crate::settings::{PostProcessApiFormat, PostProcessProvider};
 use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
@@ -32,6 +33,8 @@ pub struct ChatParams {
     pub temperature: Option<f32>,
     /// Ask the endpoint to skip reasoning (see `reasoning_disable_params`).
     pub disable_reasoning: bool,
+    /// Filled with the call's token usage (and reported cost).
+    pub usage: Option<UsageSlot>,
 }
 
 /// Why [`send_chat`] produced no reply. The Display text is the user-facing
@@ -251,6 +254,9 @@ struct ChatCompletionRequest {
     temperature: Option<f32>,
     #[serde(flatten)]
     reasoning: ReasoningParams,
+    /// OpenRouter: `{"include": true}` returns the call's cost in `usage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Value>,
 }
 
 /// OpenAI reasoning models (`gpt-5*`, `gpt-6*`, `o1*`, `o3*`, `o4*`) reject
@@ -447,6 +453,8 @@ impl ChatCompletionRequest {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,6 +565,8 @@ struct AnthropicMessagesResponse {
     stop_reason: Option<String>,
     #[serde(default)]
     stop_details: Option<Value>,
+    #[serde(default)]
+    usage: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -754,6 +764,21 @@ fn report_reqwest_error(context: &str, error: &reqwest::Error) -> String {
     details
 }
 
+/// Add a response's `usage` object to `slot`.
+fn add_usage(slot: Option<&UsageSlot>, usage: Option<&Value>) {
+    if let (Some(slot), Some(u)) = (slot, usage.and_then(parse_usage)) {
+        slot.lock().add(&u);
+    }
+}
+
+/// Record a dictation call's usage in the ledger (when it reported any).
+fn record_dictation_usage(provider: &PostProcessProvider, model: &str, slot: &UsageSlot) {
+    let usage: TokenUsage = *slot.lock();
+    if !usage.is_empty() {
+        record_call(&provider.id, model, &usage, None, UsageFeature::Dictation);
+    }
+}
+
 /// Send a chat completion request to an OpenAI-compatible API
 /// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
 /// or Err on actual errors (HTTP, parsing, etc.)
@@ -765,21 +790,23 @@ pub async fn send_chat_completion(
     disable_reasoning: bool,
 ) -> Result<Option<String>, String> {
     if provider.api_format == PostProcessApiFormat::Anthropic {
-        return into_string_result(
-            send_anthropic_message(
-                provider,
-                api_key,
-                model,
-                None,
-                vec![ChatMessage {
-                    role: "user".to_string(),
-                    content: prompt,
-                }],
-                ANTHROPIC_MAX_TOKENS,
-                None,
-            )
-            .await,
-        );
+        let slot = UsageSlot::default();
+        let result = send_anthropic_message(
+            provider,
+            api_key,
+            model,
+            None,
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+            ANTHROPIC_MAX_TOKENS,
+            None,
+            Some(&slot),
+        )
+        .await;
+        record_dictation_usage(provider, model, &slot);
+        return into_string_result(result);
     }
 
     send_chat_completion_with_schema(
@@ -830,19 +857,21 @@ pub async fn send_chat_completion_with_schema(
         content: user_content,
     });
 
-    into_string_result(
-        send_openai_chat(
-            provider,
-            api_key,
-            model,
-            messages,
-            json_schema.map(|schema| ("transcription_output".to_string(), schema)),
-            None,
-            None,
-            disable_reasoning,
-        )
-        .await,
+    let slot = UsageSlot::default();
+    let result = send_openai_chat(
+        provider,
+        api_key,
+        model,
+        messages,
+        json_schema.map(|schema| ("transcription_output".to_string(), schema)),
+        None,
+        None,
+        disable_reasoning,
+        Some(&slot),
     )
+    .await;
+    record_dictation_usage(provider, model, &slot);
+    into_string_result(result)
 }
 
 /// Send a multi-message chat request in the provider's format (OpenAI-
@@ -875,6 +904,7 @@ pub async fn send_chat(
             messages,
             params.max_tokens.unwrap_or(ANTHROPIC_MAX_TOKENS),
             params.temperature,
+            params.usage.as_ref(),
         )
         .await;
     }
@@ -892,6 +922,7 @@ pub async fn send_chat(
         params.max_tokens,
         params.temperature,
         params.disable_reasoning,
+        params.usage.as_ref(),
     )
     .await
 }
@@ -906,6 +937,7 @@ async fn send_openai_chat(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     disable_reasoning: bool,
+    usage: Option<&UsageSlot>,
 ) -> Result<Option<String>, ChatError> {
     check_base_url(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
@@ -945,6 +977,7 @@ async fn send_openai_chat(
         max_completion_tokens: None,
         temperature,
         reasoning,
+        usage: (provider.id == "openrouter").then(|| serde_json::json!({ "include": true })),
     };
     request_body.fit_params_to_model();
     request_body.apply_learned(learned);
@@ -1014,6 +1047,7 @@ async fn send_openai_chat(
         .json()
         .await
         .map_err(|e| report_reqwest_error("Failed to parse API response", &e))?;
+    add_usage(usage, completion.usage.as_ref());
 
     let Some(choice) = completion.choices.into_iter().next() else {
         return Err(ChatError::NoChoices);
@@ -1039,6 +1073,7 @@ async fn send_openai_chat(
 /// provider and a custom provider set to it). None of them use structured
 /// output, and thinking is off unless requested, so no reasoning fields are
 /// needed.
+#[allow(clippy::too_many_arguments)]
 async fn send_anthropic_message(
     provider: &PostProcessProvider,
     api_key: String,
@@ -1047,6 +1082,7 @@ async fn send_anthropic_message(
     messages: Vec<ChatMessage>,
     max_tokens: u32,
     temperature: Option<f32>,
+    usage: Option<&UsageSlot>,
 ) -> Result<Option<String>, ChatError> {
     check_base_url(provider)?;
     let url = format!("{}/messages", provider.base_url.trim_end_matches('/'));
@@ -1143,6 +1179,7 @@ async fn send_anthropic_message(
         .json()
         .await
         .map_err(|e| report_reqwest_error("Failed to parse API response", &e))?;
+    add_usage(usage, message.usage.as_ref());
 
     // A response cut off at the token budget is incomplete; pasting it would
     // silently drop the end of the dictation.
@@ -1359,6 +1396,7 @@ mod tests {
             max_completion_tokens: None,
             temperature: None,
             reasoning,
+            usage: None,
         };
         serde_json::to_value(&request).unwrap()
     }
@@ -1560,6 +1598,7 @@ mod tests {
                 reasoning_effort: Some("none".into()),
                 ..Default::default()
             },
+            usage: None,
         };
         r.apply_learned(learned);
         assert_eq!((r.max_tokens, r.max_completion_tokens), (None, Some(100)));
@@ -1806,6 +1845,7 @@ mod tests {
                 max_tokens: Some(100),
                 temperature: Some(0.2),
                 disable_reasoning: false,
+                usage: None,
             },
         )
         .await;
@@ -1892,6 +1932,7 @@ mod tests {
                 max_completion_tokens: None,
                 temperature: Some(0.2),
                 reasoning: ReasoningParams::default(),
+                usage: None,
             };
             request.fit_params_to_model();
             serde_json::to_value(&request).unwrap()
@@ -1919,6 +1960,7 @@ mod tests {
                 reasoning_effort: Some("none".into()),
                 ..Default::default()
             },
+            usage: None,
         }
     }
 
@@ -2187,6 +2229,36 @@ mod tests {
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["max_tokens"], ANTHROPIC_THINKING_MAX_TOKENS);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[tokio::test]
+    async fn token_usage_and_reported_cost_fill_the_slot() {
+        let (base_url, _requests) = serve_sequence(vec![(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":30,"cost":0.0021}}"#,
+        )])
+        .await;
+        let slot = UsageSlot::default();
+        let result = send_chat(
+            &provider("openrouter", &base_url),
+            "key".into(),
+            "some/model",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                usage: Some(slot.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        assert_eq!(
+            *slot.lock(),
+            TokenUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                reported_cost_usd: Some(0.0021)
+            }
+        );
     }
 
     #[tokio::test]

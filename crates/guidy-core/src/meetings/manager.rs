@@ -861,8 +861,13 @@ impl MeetingsManager {
             people: &people,
             user_display_name: &settings.meetings.user_display_name,
         };
+        let meter = crate::llm::usage::UsageMeter::new(
+            crate::llm::usage::UsageFeature::MeetingSummary,
+            Some(id),
+        );
         let opts = crate::llm::ChatOptions {
             cancel: Some(job.cancel.clone()),
+            meter: Some(meter.clone()),
             ..Default::default()
         };
         let app = self.app.clone();
@@ -897,6 +902,7 @@ impl MeetingsManager {
                 id,
                 &output,
                 &provider.name(),
+                Some(meter.totals()).filter(|t| t.calls > 0),
                 &self.linear.in_flight_ids(),
             )
         })?;
@@ -1537,7 +1543,7 @@ mod store_section_tests {
             summary: Default::default(),
             items: vec![],
         };
-        crate::meetings::summarize::persist(mgr.store(), m, &out, "x/y", &[]).unwrap();
+        crate::meetings::summarize::persist(mgr.store(), m, &out, "x/y", None, &[]).unwrap();
         let left: Vec<_> = mgr
             .action_items(m)
             .unwrap()

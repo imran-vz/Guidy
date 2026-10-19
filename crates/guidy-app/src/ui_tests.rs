@@ -778,6 +778,44 @@ mod debug_and_about {
         assert!(backend.called("run_keyboard_diagnostic 10"));
     }
 
+    #[gpui_kit::test]
+    fn usage_page_lists_spend_per_model(cx: &mut TestAppContext) {
+        use crate::ui::pages::usage::UsagePage;
+        use guidy_core::llm::usage::{FeatureSpend, ModelSpend, UsageFeature, UsageReport};
+        let backend = FakeBackend::new();
+        backend.data.lock().usage = UsageReport {
+            models: vec![ModelSpend {
+                provider_id: "anthropic".into(),
+                model: "claude-sonnet-5-5".into(),
+                calls: 3,
+                input_tokens: 30_000,
+                output_tokens: 2_000,
+                total_usd: 0.09,
+                avg_usd: Some(0.03),
+                max_usd: Some(0.05),
+                estimated_calls: 3,
+                ..Default::default()
+            }],
+            features: vec![FeatureSpend {
+                feature: UsageFeature::MeetingSummary,
+                calls: 3,
+                total_usd: 0.09,
+            }],
+            total_usd: 0.09,
+            calls: 3,
+            last_30_days_usd: 0.09,
+        };
+        setup(cx, backend.clone());
+        let (w, page) = open(cx, UsagePage::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "usage-model-anthropic-claude-sonnet-5-5"));
+        assert!(!exists(cx, w, "usage-empty"));
+        page.update(cx, |p, cx| p.clear(cx));
+        cx.run_until_parked();
+        assert!(backend.called("clear_llm_usage"));
+        assert!(exists(cx, w, "usage-empty"));
+    }
+
     /// PARITY B-01, B-02, B-03, B-04, B-05
     #[gpui_kit::test]
     fn about_rows(cx: &mut TestAppContext) {
@@ -2312,6 +2350,7 @@ mod meetings_fixes {
                     topics: vec![],
                     generated_by: "x".into(),
                     generated_at: 1,
+                    usage: None,
                 },
             );
             d.ai.items = vec![action_item_fixture(7, 1, "send notes")];
