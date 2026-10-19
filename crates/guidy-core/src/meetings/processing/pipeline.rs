@@ -48,6 +48,9 @@ pub struct PipelineConfig {
     pub min_embed_ms: i64,
     pub match_threshold: f32,
     pub suggest_threshold: f32,
+    /// With the user's voice recorded, mic speech at least this similar to
+    /// it is the user's; less similar speech is someone else in the room.
+    pub user_voice_threshold: f32,
     /// Label of the mic speaker (the user).
     pub user_label: String,
 }
@@ -62,6 +65,7 @@ impl PipelineConfig {
             min_embed_ms: 1_500,
             match_threshold: s.speaker_match_threshold,
             suggest_threshold: s.speaker_suggest_threshold.min(s.speaker_match_threshold),
+            user_voice_threshold: 0.5,
             user_label: if name.is_empty() {
                 "me".into()
             } else {
@@ -389,6 +393,8 @@ impl<'a> Pipeline<'a> {
 
     fn voiceprints(&mut self, cache: &mut ProcessingCache) -> Result<()> {
         let n = cache.units.len();
+        // With the user's voice recorded, the mic track is diarized too.
+        let embed_mic = !self.store.user_voiceprints()?.is_empty();
         let mut last_save = Instant::now();
         for i in 0..n {
             if cache.embeddings[i].is_some() {
@@ -402,7 +408,7 @@ impl<'a> Pipeline<'a> {
             let has_speech = cache.transcripts[i]
                 .as_ref()
                 .is_some_and(|t| !t.text.is_empty());
-            let wanted = unit.track == Track::System
+            let wanted = (unit.track == Track::System || embed_mic)
                 && has_speech
                 && unit.span.len_ms() >= self.config.min_embed_ms;
             let embedding = if wanted {
@@ -439,6 +445,7 @@ impl<'a> Pipeline<'a> {
             cache,
             &self.config,
             &super::naming::known_voices(self.store)?,
+            &self.store.user_voiceprints()?,
         ));
         Ok(())
     }
@@ -535,17 +542,44 @@ fn offset_words(words: Vec<Word>, span: vad::Span) -> Vec<Word> {
         .collect()
 }
 
-/// Cluster the system units that have speech and match the clusters to
-/// known people.
+/// Mic units with speech that isn't the user's: embedded ones that don't
+/// sound like `user_voice`. Without a recorded voice (or a voiceprint for
+/// the unit, e.g. a short "yeah") mic speech stays the user's.
+fn others_on_mic(
+    cache: &ProcessingCache,
+    config: &PipelineConfig,
+    user_voice: &[Vec<f32>],
+) -> Vec<bool> {
+    (0..cache.units.len())
+        .map(|i| {
+            cache.units[i].track == Track::Mic
+                && !user_voice.is_empty()
+                && cache.transcripts[i]
+                    .as_ref()
+                    .is_some_and(|t| !t.text.is_empty())
+                && cache.embeddings[i]
+                    .as_ref()
+                    .and_then(Option::as_deref)
+                    .and_then(|e| cluster::person_similarity(e, user_voice))
+                    .is_some_and(|s| s < config.user_voice_threshold)
+        })
+        .collect()
+}
+
+/// Cluster the units that have speech (system, plus mic speech that isn't
+/// the user's: see [`others_on_mic`]) and match the clusters to known
+/// people. Mic units keep `None` (the user) unless they are in a cluster.
 pub fn cluster_units(
     cache: &ProcessingCache,
     config: &PipelineConfig,
     known: &[KnownVoice],
+    user_voice: &[Vec<f32>],
 ) -> Clustering {
     let n = cache.units.len();
+    let on_mic = others_on_mic(cache, config, user_voice);
     let speech: Vec<usize> = (0..n)
         .filter(|&i| {
-            cache.units[i].track == Track::System
+            (cache.units[i].track == Track::System || on_mic[i])
                 && cache.transcripts[i]
                     .as_ref()
                     .is_some_and(|t| !t.text.is_empty())
@@ -560,29 +594,66 @@ pub fn cluster_units(
         .iter()
         .map(|&i| cache.embeddings[i].clone().flatten().expect("embedded"))
         .collect();
-    let (labels_embedded, _) = cluster::agglomerate(&vectors, &config.cluster);
+    let (labels_embedded, k_embedded) = cluster::agglomerate(&vectors, &config.cluster);
 
     let mut labels: Vec<Option<usize>> = vec![None; n];
     for (&i, &l) in embedded.iter().zip(&labels_embedded) {
         labels[i] = Some(l);
     }
-    // Short or un-embeddable speech joins the nearest cluster in time; with
-    // no voiceprints at all, the system track is one speaker.
-    let spans: Vec<(i64, i64)> = speech
+    // Short or un-embeddable system speech joins the nearest system cluster
+    // in time; with no system voiceprints at all, it is one speaker. (Other
+    // people's mic speech is all embedded.)
+    let system: Vec<usize> = speech
+        .iter()
+        .copied()
+        .filter(|&i| cache.units[i].track == Track::System)
+        .collect();
+    let spans: Vec<(i64, i64)> = system
         .iter()
         .map(|&i| (cache.units[i].span.t0_ms, cache.units[i].span.t1_ms))
         .collect();
-    let speech_labels: Vec<Option<usize>> = speech.iter().map(|&i| labels[i]).collect();
-    let attached = cluster::attach_by_time(&spans, &speech_labels);
-    for (&i, l) in speech.iter().zip(attached) {
-        labels[i] = Some(l.unwrap_or(0));
+    let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
+    let attached = cluster::attach_by_time(&spans, &system_labels);
+    for (&i, l) in system.iter().zip(attached) {
+        labels[i] = Some(l.unwrap_or(k_embedded));
+    }
+
+    // A cluster of mic speech only that still sounds like the user (as a
+    // whole, segments are noisier) is the user after all.
+    if !user_voice.is_empty() {
+        let mut raw: Vec<usize> = labels.iter().flatten().copied().collect();
+        raw.sort_unstable();
+        raw.dedup();
+        for l in raw {
+            let members: Vec<usize> = (0..n).filter(|&i| labels[i] == Some(l)).collect();
+            if members.iter().any(|&i| cache.units[i].track != Track::Mic) {
+                continue;
+            }
+            let c = cluster::centroid(
+                members
+                    .iter()
+                    .filter_map(|&i| cache.embeddings[i].as_ref()?.as_deref()),
+            );
+            let is_user = c
+                .and_then(|c| cluster::person_similarity(&c, user_voice))
+                .is_some_and(|s| s >= config.user_voice_threshold);
+            if is_user {
+                for i in members {
+                    labels[i] = None;
+                }
+            }
+        }
     }
 
     // Renumber clusters by first appearance in time.
     let mut order: Vec<usize> = Vec::new();
-    for &l in labels.iter().flatten() {
-        if !order.contains(&l) {
-            order.push(l);
+    let mut by_time: Vec<usize> = (0..n).collect();
+    by_time.sort_by_key(|&i| (cache.units[i].span.t0_ms, i));
+    for &i in &by_time {
+        if let Some(l) = labels[i] {
+            if !order.contains(&l) {
+                order.push(l);
+            }
         }
     }
     let renumber: HashMap<usize, usize> = order
@@ -646,16 +717,20 @@ pub fn build_transcript(
     }
     let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
     let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
-    let sys_speakers: Vec<Option<usize>> = system
-        .iter()
-        .map(|(i, _)| clustering.labels.get(*i).copied().flatten())
-        .collect();
+    let speakers_of = |units: &[(usize, RawSegment)]| -> Vec<Option<usize>> {
+        units
+            .iter()
+            .map(|(i, _)| clustering.labels.get(*i).copied().flatten())
+            .collect()
+    };
+    let (mic_speakers, sys_speakers) = (speakers_of(&mic), speakers_of(&system));
     // `merge_timeline` takes speaker indices; map the user to a sentinel
     // past every cluster.
     let user_index = usize::MAX;
     let timeline = timeline::merge_timeline(
         &mic_segs,
         &sys_segs,
+        &mic_speakers,
         &sys_speakers,
         user_index,
         &config.echo,

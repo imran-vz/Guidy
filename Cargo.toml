@@ -7,7 +7,9 @@ default-members = ["crates/guidy-core", "crates/guidy-i18n", "crates/guidy-app",
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Imran"]
+authors = ["Imran (https://imran.codes)"]
+homepage = "https://guidy.imran.codes"
+repository = "https://github.com/imran-vz/Guidy"
 
 [profile.dev]
 incremental = true

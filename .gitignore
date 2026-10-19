@@ -1,3 +1,4 @@
 /target
 .DS_Store
 /crates/guidy-core/transcribe-libs
+.wrangler

@@ -875,7 +875,28 @@
       "namePlaceholder": "Name",
       "emailPlaceholder": "Email (optional)",
       "save": "Save",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "voice": {
+        "title": "Your voice",
+        "notRecorded": "Not recorded",
+        "recordedTitle": "Recorded",
+        "description": "Record a short sample of your voice so Guidy can tell you apart from other people in the room during in-person meetings.",
+        "recorded": "In meetings processed from now on, only speech that sounds like you is labeled as you. Reprocess older meetings to apply it.",
+        "record": "Record my voice",
+        "recordAgain": "Record again",
+        "starting": "Opening the microphone...",
+        "recording": "Recording",
+        "readAloud": "Read this aloud in your normal voice, then press Done.",
+        "passage": "When I join a meeting, I usually start by checking the agenda and the notes from last time. Then we go through what changed since we last spoke, what is blocked, and who is picking up the next steps. If something needs a decision, we try to make it before the end of the call, so nobody has to wait for another meeting. Afterwards I share a short summary with everyone who was there.",
+        "done": "Done",
+        "saving": "Saving your voice...",
+        "loadError": "Couldn't load your voice",
+        "recordError": "Couldn't start recording",
+        "saveError": "Couldn't save your voice",
+        "deleteTitle": "Delete your voice?",
+        "deleteConfirm": "Your recorded voice will be deleted. Guidy will label all microphone speech as you again.",
+        "deleteError": "Couldn't delete your voice"
+      }
     },
     "settings": {
       "general": "Meeting notes",

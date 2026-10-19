@@ -411,11 +411,12 @@ pub struct UnitTranscript {
     pub words: Vec<crate::meetings::types::Word>,
 }
 
-/// Clustering result over the system units.
+/// Clustering result over the system units (and the mic units of other
+/// people in the room, when the user's voice is recorded).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Clustering {
     /// Per unit (same indices as `units`): local cluster index, `None` for
-    /// mic units or system units with no speech.
+    /// the user's mic units or system units with no speech.
     pub labels: Vec<Option<usize>>,
     /// Per cluster: centroid voiceprint (`None` when no unit had one).
     pub centroids: Vec<Option<Vec<f32>>>,

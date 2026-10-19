@@ -16,7 +16,7 @@
 use crate::logic::meetings::MeetingsInit;
 pub use guidy_core::llm::ModelCatalog;
 use guidy_core::meetings::manager::{
-    MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult,
+    MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult, UserVoice,
 };
 use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::types::*;
@@ -214,6 +214,23 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     /// Start downloading the speaker model; progress arrives as
     /// `meetings://speaker-model-status`.
     fn download_speaker_model(&self) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+
+    // -- the user's voice (People) -------------------------------------------
+    fn user_voice(&self) -> MeetingsResult<UserVoice> {
+        Ok(UserVoice::default())
+    }
+    /// Start recording a sample of the user's voice (dictation microphone).
+    fn start_voice_recording(&self) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// Stop it and store it as the user's voice.
+    fn finish_voice_recording(&self) -> MeetingsResult<UserVoice> {
+        Err(unavailable())
+    }
+    fn cancel_voice_recording(&self) {}
+    fn delete_user_voice(&self) -> MeetingsResult<()> {
         Err(unavailable())
     }
 
@@ -505,6 +522,27 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn download_speaker_model(&self) -> MeetingsResult<()> {
         guidy_core::meetings::processing::start_speaker_model_download(&self.app);
         Ok(())
+    }
+
+    fn user_voice(&self) -> MeetingsResult<UserVoice> {
+        match self.manager() {
+            Some(m) => m.user_voice().map_err(err),
+            None => Ok(UserVoice::default()),
+        }
+    }
+    fn start_voice_recording(&self) -> MeetingsResult<()> {
+        self.m()?.start_voice_recording().map_err(err)
+    }
+    fn finish_voice_recording(&self) -> MeetingsResult<UserVoice> {
+        self.m()?.finish_voice_recording().map_err(err)
+    }
+    fn cancel_voice_recording(&self) {
+        if let Some(m) = self.manager() {
+            m.cancel_voice_recording();
+        }
+    }
+    fn delete_user_voice(&self) -> MeetingsResult<()> {
+        self.m()?.delete_user_voice().map_err(err)
     }
 
     fn init_status(&self) -> MeetingsInit {
@@ -860,6 +898,7 @@ pub mod fake {
         pub segments: HashMap<MeetingId, Vec<Segment>>,
         pub speakers: HashMap<MeetingId, Vec<MeetingSpeaker>>,
         pub people: Vec<Person>,
+        pub user_voice: UserVoice,
         /// Extra suggestions returned before the known people.
         pub attendees: Vec<NameSuggestion>,
         pub progress: HashMap<MeetingId, ProcessingProgress>,
@@ -883,6 +922,7 @@ pub mod fake {
                 segments: HashMap::new(),
                 speakers: HashMap::new(),
                 people: Vec::new(),
+                user_voice: UserVoice::default(),
                 attendees: Vec::new(),
                 progress: HashMap::new(),
                 next_id: 1000,
@@ -1076,6 +1116,30 @@ pub mod fake {
         fn delete_person(&self, id: PersonId) -> MeetingsResult<()> {
             self.rec(format!("delete_person {id}"));
             self.data.lock().people.retain(|p| p.id != id);
+            Ok(())
+        }
+        fn user_voice(&self) -> MeetingsResult<UserVoice> {
+            Ok(self.data.lock().user_voice)
+        }
+        fn start_voice_recording(&self) -> MeetingsResult<()> {
+            self.rec("start_voice_recording");
+            Ok(())
+        }
+        fn finish_voice_recording(&self) -> MeetingsResult<UserVoice> {
+            self.rec("finish_voice_recording");
+            let voice = UserVoice {
+                recorded_at: Some(1),
+                prints: 10,
+            };
+            self.data.lock().user_voice = voice;
+            Ok(voice)
+        }
+        fn cancel_voice_recording(&self) {
+            self.rec("cancel_voice_recording");
+        }
+        fn delete_user_voice(&self) -> MeetingsResult<()> {
+            self.rec("delete_user_voice");
+            self.data.lock().user_voice = UserVoice::default();
             Ok(())
         }
         fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()> {

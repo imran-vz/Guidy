@@ -1,0 +1,68 @@
+<!doctype html>
+<!-- Source for assets/og.png (1200x630). Render: see website/README.md. -->
+<html lang="en" data-mode="dark">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  html,body{margin:0;width:1200px;height:630px;overflow:hidden;background:#1b1b1b}
+  .card{position:absolute;inset:10px;border:1px solid var(--hair);border-radius:18px;overflow:hidden;background:var(--ink)}
+  .card .bp{position:absolute;inset:0}
+  .card .bp::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 60% 80% at 25% 45%,var(--ink) 30%,transparent 75%);pointer-events:none}
+  .x{width:14px;height:14px}.x::before{top:6.5px}.x::after{left:6.5px}
+  .x.tl{left:34px;top:34px}.x.tr{right:34px;top:34px}.x.bl{left:34px;bottom:34px}.x.br{right:34px;bottom:34px}
+  .top{position:absolute;left:64px;right:64px;top:30px;display:flex;justify-content:space-between;z-index:2}
+  .top .eyebrow{font-size:13px}
+  .left{position:absolute;left:64px;top:128px;width:620px;z-index:2}
+  .brand{display:flex;align-items:center;gap:16px;margin-bottom:34px}
+  .brand img{width:76px;height:76px;margin:-8px}
+  .brand .n{font:500 30px var(--sans);letter-spacing:-.02em;color:var(--text)}
+  .brand .chip{font-size:14px;line-height:22px;padding:2px 10px}
+  h1{font:500 56px/1.02 var(--sans);letter-spacing:-.035em;color:var(--text);margin:0}
+  h1 em{font-style:normal;color:var(--accent-text)}
+  .lede{margin-top:22px;font-size:22px;line-height:1.45;max-width:30ch}
+  .figure{position:absolute;right:64px;top:110px;width:430px;height:370px;z-index:2;background:var(--surface);border:1px solid var(--hair);border-radius:14px;overflow:hidden}
+  .figure .bp{position:absolute;inset:0;background-color:var(--ink)}
+  .figure .lab{position:absolute;left:22px;top:16px;z-index:2}
+  .figure .ill{position:absolute;left:30px;right:30px;top:58px;z-index:1}
+  .figure .callouts{position:absolute;left:30px;right:30px;bottom:30px;display:flex;flex-direction:column;gap:12px;z-index:1}
+  .figure .callout{font-size:15px}
+  .strip{position:absolute;left:0;right:0;bottom:0;height:86px;border-top:1px solid var(--hair);background:var(--surface);display:grid;grid-template-columns:repeat(4,1fr);z-index:3}
+  .strip>div{padding:16px 64px 0;display:flex;flex-direction:column;gap:6px;border-right:1px solid var(--hair)}
+  .strip>div:first-child{padding-left:64px}
+  .strip>div:not(:first-child){padding-left:28px}
+  .strip>div:last-child{border-right:0}
+  .strip .eyebrow{font-size:12px}
+  .strip .v{font:500 22px var(--mono);color:var(--text)}
+  .strip .v.acc{color:var(--accent-text)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="bp"></div>
+  <i class="x tl"></i><i class="x tr"></i>
+  <div class="top"><span class="eyebrow" style="padding-left:20px">Offline speech to text</span><span class="eyebrow acc" style="padding-right:20px">guidy.imran.codes</span></div>
+  <div class="left">
+    <div class="brand"><img src="../assets/brand/guidy-icon.svg" alt=""><span class="n">Guidy</span><span class="chip a">v0.1.0</span></div>
+    <h1>Speak. Guidy types it.<br><em>Nothing leaves your Mac.</em></h1>
+    <p class="lede">Press a shortcut, speak, and the text lands in the app you're using.</p>
+  </div>
+  <div class="figure rim">
+    <div class="bp"></div>
+    <span class="eyebrow lab" style="color:var(--faint)">Signal path</span>
+    <div class="ill" style="--ar:300/130"><i class="l" style="--m:url(../assets/illustrations/waveform.svg)"></i><i class="f" style="--m:url(../assets/illustrations/waveform-fill.svg)"></i><i class="a" style="--m:url(../assets/illustrations/waveform-accent.svg)"></i></div>
+    <div class="callouts">
+      <span class="callout a">your voice</span>
+      <span class="callout">model on this Mac</span>
+      <span class="callout">text in your app</span>
+    </div>
+  </div>
+  <div class="strip">
+    <div><span class="eyebrow">Network</span><span class="v acc">none</span></div>
+    <div><span class="eyebrow">Speech models</span><span class="v">69</span></div>
+    <div><span class="eyebrow">Languages</span><span class="v">up to 100</span></div>
+    <div><span class="eyebrow">Price</span><span class="v">free · MIT</span></div>
+  </div>
+</div>
+</body>
+</html>

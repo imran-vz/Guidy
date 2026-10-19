@@ -119,12 +119,14 @@ pub struct TimelineEntry {
 }
 
 /// Merge mic and system segments into one timeline sorted by start time.
-/// Mic segments go to `user_speaker`, minus the ones flagged as echoes;
-/// system segment `i` goes to `system_speakers[i]`. Empty-text segments are
-/// dropped.
+/// Mic segment `i` goes to `mic_speakers[i]` (someone else in the room, when
+/// the mic track was diarized), else to `user_speaker`, minus the ones
+/// flagged as echoes; system segment `i` goes to `system_speakers[i]`.
+/// Empty-text segments are dropped.
 pub fn merge_timeline(
     mic: &[RawSegment],
     system: &[RawSegment],
+    mic_speakers: &[Option<usize>],
     system_speakers: &[Option<usize>],
     user_speaker: usize,
     echo: &EchoParams,
@@ -133,10 +135,17 @@ pub fn merge_timeline(
     let mut out: Vec<TimelineEntry> = mic
         .iter()
         .zip(&echoes)
-        .filter(|(_, &is_echo)| !is_echo)
-        .map(|(s, _)| TimelineEntry {
+        .enumerate()
+        .filter(|(_, (_, &is_echo))| !is_echo)
+        .map(|(i, (s, _))| TimelineEntry {
             segment: s.clone(),
-            speaker: Some(user_speaker),
+            speaker: Some(
+                mic_speakers
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(user_speaker),
+            ),
         })
         .chain(system.iter().enumerate().map(|(i, s)| TimelineEntry {
             segment: s.clone(),
@@ -223,7 +232,7 @@ mod tests {
             // The user's own reply right after.
             seg(Track::Mic, 4500, 6000, "Sounds good to me."),
         ];
-        let tl = merge_timeline(&mic, &system, &[Some(0)], 9, &EchoParams::default());
+        let tl = merge_timeline(&mic, &system, &[], &[Some(0)], 9, &EchoParams::default());
         assert_eq!(tl.len(), 2);
         assert_eq!(tl[0].segment.track, Track::System);
         assert_eq!(tl[0].speaker, Some(0));
@@ -306,7 +315,14 @@ mod tests {
             seg(Track::Mic, 1000, 2000, "first"),
             seg(Track::Mic, 8000, 9000, "third"),
         ];
-        let tl = merge_timeline(&mic, &system, &[None, Some(1)], 0, &EchoParams::default());
+        let tl = merge_timeline(
+            &mic,
+            &system,
+            &[],
+            &[None, Some(1)],
+            0,
+            &EchoParams::default(),
+        );
         let texts: Vec<&str> = tl.iter().map(|e| e.segment.text.as_str()).collect();
         assert_eq!(texts, vec!["first", "second", "third"]);
         assert_eq!(tl[1].speaker, None);

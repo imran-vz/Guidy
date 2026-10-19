@@ -1,0 +1,12 @@
+{
+  // Static assets only: Workers serves this folder, no script.
+  "name": "guidy-website",
+  "compatibility_date": "2026-10-19",
+  "assets": {
+    "directory": ".",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "guidy.imran.codes", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false
+}

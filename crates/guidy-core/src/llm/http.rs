@@ -43,7 +43,10 @@ impl HttpProvider {
             max_tokens: opts.max_tokens,
             temperature: opts.temperature,
             // Same policy as dictation post-processing (actions.rs).
-            disable_reasoning: matches!(self.provider.id.as_str(), "custom" | "openrouter"),
+            disable_reasoning: matches!(
+                self.provider.id.as_str(),
+                "custom" | "openrouter" | "openai" | "zai"
+            ),
         }
     }
 

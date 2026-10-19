@@ -1759,6 +1759,41 @@ mod meetings_page {
     }
 
     #[gpui_kit::test]
+    fn the_users_voice_can_be_recorded_and_deleted(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        assert!(exists(cx, w, "people-voice-record"));
+
+        // Cancel discards the recording.
+        with_window(cx, w, |window, cx| window.click("people-voice-record", cx));
+        assert!(meetings.called("start_voice_recording"));
+        assert!(exists(cx, w, "people-voice-done"));
+        with_window(cx, w, |window, cx| window.click("people-voice-cancel", cx));
+        assert!(meetings.called("cancel_voice_recording"));
+        assert!(!exists(cx, w, "people-voice-done"));
+
+        // Done (enabled after a while) stores it.
+        with_window(cx, w, |window, cx| window.click("people-voice-record", cx));
+        let people = page.read_with(cx, |p, _| p.people().clone());
+        people.update(cx, |p, cx| p.finish_voice_recording(cx));
+        cx.run_until_parked();
+        assert!(meetings.called("finish_voice_recording"));
+        assert!(exists(cx, w, "people-voice-delete"));
+
+        with_window(cx, w, |window, cx| window.click("people-voice-delete", cx));
+        assert!(has_dialog(cx, w));
+        press_enter(cx, w);
+        assert!(
+            meetings.called("delete_user_voice"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(!exists(cx, w, "people-voice-delete"));
+    }
+
+    #[gpui_kit::test]
     fn merging_moves_into_the_target(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());

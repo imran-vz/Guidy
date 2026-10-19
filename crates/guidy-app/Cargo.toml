@@ -4,6 +4,9 @@ description = "Guidy: offline speech-to-text desktop app (GPUI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
 build = "build.rs"
 
 [lib]
@@ -51,6 +54,8 @@ product-name = "Guidy"
 identifier = "dev.guidy.app"
 description = "Offline speech-to-text"
 category = "Productivity"
+publisher = "Imran"
+homepage = "https://guidy.imran.codes"
 copyright = "Copyright (c) 2026 Imran. Portions (c) 2025 CJ Pais (Handy)."
 license-file = "../../LICENSE"
 # guidy-llm is the built-in llama.cpp helper; it ships next to `guidy`

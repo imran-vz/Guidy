@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guidy: offline speech to text for your desktop</title>
+<meta name="description" content="Press a shortcut, speak, and Guidy pastes the transcript into the app you're using. Transcription runs on your machine. Free and open source.">
+<meta name="author" content="Imran">
+<link rel="author" href="https://imran.codes">
+<link rel="canonical" href="https://guidy.imran.codes/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Guidy">
+<meta property="og:url" content="https://guidy.imran.codes/">
+<meta property="og:title" content="Guidy: offline speech to text">
+<meta property="og:description" content="Press a shortcut, speak, and Guidy types into the focused app. Transcription runs on your machine. Free and open source.">
+<meta property="og:image" content="https://guidy.imran.codes/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Guidy: Speak. Guidy types it. Nothing leaves your Mac.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Guidy: offline speech to text">
+<meta name="twitter:description" content="Press a shortcut, speak, and Guidy types into the focused app. Transcription runs on your machine.">
+<meta name="twitter:image" content="https://guidy.imran.codes/assets/og.png">
+<meta name="twitter:image:alt" content="Guidy: Speak. Guidy types it. Nothing leaves your Mac.">
+<meta name="theme-color" content="#1b1b1b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#efefec" media="(prefers-color-scheme: light)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<link rel="preload" href="assets/fonts/Geist-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="assets/fonts/GeistMono-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<script>
+  // Set the mode before first paint: saved choice, else the OS appearance.
+  (function(){var m=localStorage.getItem("guidy-mode");if(!m)m=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.dataset.mode=m})();
+</script>
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Guidy",
+  "url": "https://guidy.imran.codes",
+  "image": "https://guidy.imran.codes/assets/guidy-512.png",
+  "description": "Offline speech to text for the desktop. Press a shortcut, speak, and Guidy pastes the transcript into the focused app.",
+  "applicationCategory": "ProductivityApplication",
+  "operatingSystem": "macOS",
+  "softwareVersion": "0.1.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/imran-vz/Guidy",
+  "author": { "@type": "Person", "name": "Imran", "url": "https://imran.codes", "sameAs": ["https://github.com/imran-vz"] }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- Icons (Lucide, ISC), the same set the app uses through gpui-kit. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 15V3M7 10l5 5 5-5M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol>
+    <symbol id="i-gh" viewBox="0 0 24 24"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M9.9 15.5A2 2 0 0 0 8.5 14l-6.1-1.6a.5.5 0 0 1 0-1L8.5 10A2 2 0 0 0 10 8.5l1.6-6.1a.5.5 0 0 1 1 0L14 8.5a2 2 0 0 0 1.5 1.5l6.1 1.6a.5.5 0 0 1 0 1L15.5 14a2 2 0 0 0-1.5 1.5l-1.6 6.1a.5.5 0 0 1-1 0Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/></symbol>
+    <symbol id="i-term" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6M12 19h8"/></symbol>
+    <symbol id="i-vol" viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5ZM16 9a5 5 0 0 1 0 6M19.4 18.4a9 9 0 0 0 0-12.8"/></symbol>
+    <symbol id="i-apple" viewBox="0 0 24 24"><path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"/><path d="M10 2c1 .5 2 2 2 5"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  </defs>
+</svg>
+
+<header class="titlebar">
+  <a class="brand" href="#top" aria-label="Guidy home">
+    <svg class="mark" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect class="m-l" x="1.8" y="9.2" width="2" height="5.6" rx="1"/><rect class="m-a" x="6.4" y="5.7" width="2" height="12.6" rx="1"/><rect class="m-a" x="11" y="3.2" width="2" height="17.6" rx="1"/><rect class="m-a" x="15.6" y="6.7" width="2" height="10.6" rx="1"/><rect class="m-l" x="20.2" y="9.7" width="2" height="4.6" rx="1"/></svg>
+    <span class="prod">Guidy</span><span class="slash">/</span><span class="where" id="where">Home</span>
+  </a>
+  <nav class="nav" aria-label="Sections">
+    <a href="#how">How it works</a>
+    <a href="#models">Models</a>
+    <a href="#meetings">Meetings</a>
+    <a href="#privacy">Privacy</a>
+    <a href="#faq">FAQ</a>
+  </nav>
+  <div class="actions">
+    <button class="ib" id="mode" type="button" aria-label="Switch to light mode">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
+    </button>
+    <a class="btn s sm" href="https://github.com/imran-vz/Guidy">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gh"/></svg>GitHub
+    </a>
+    <a class="btn p sm" href="#download">Download</a>
+  </div>
+</header>
+
+<main class="well" id="main">
+
+  <!-- ───────────── Hero ───────────── -->
+  <section class="hero" id="top">
+    <div class="bp hero-grid" aria-hidden="true"></div>
+    <div class="wrap">
+      <div class="hero-top">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span class="chip a">v0.1.0</span>
+          <span class="eyebrow">Offline speech to text · macOS</span>
+        </div>
+        <h1>Speak. Guidy types it. <em>Nothing leaves your Mac.</em></h1>
+        <p class="lede">Press a shortcut, speak, and Guidy pastes the transcript into the app you're using. A local model does the transcription, so your voice stays on your machine.</p>
+        <div class="ctas">
+          <a class="btn p" href="#download">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dl"/></svg>Download for macOS
+          </a>
+          <a class="btn s" href="https://github.com/imran-vz/Guidy">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gh"/></svg>View on GitHub
+          </a>
+          <span class="note mono">Free · open source · MIT</span>
+        </div>
+      </div>
+
+      <!-- Desktop stand-in: an editor receiving dictation, with the overlay. -->
+      <div class="bp demo" aria-label="Animated demo: holding the shortcut, speaking, and the text appearing in an editor" role="img">
+        <i class="x tl"></i><i class="x tr"></i>
+        <span class="fig" style="left:44px;top:20px">Fig. 1 · Dictation</span>
+        <span class="fig" style="right:44px;top:20px" id="demo-state">Idle</span>
+        <div class="editor rim">
+          <div class="bar-top"><div class="lights"><i></i><i></i><i></i></div>Notes.md</div>
+          <div class="doc">
+            <div class="h">Design review</div>
+            <p class="muted" style="margin-bottom:12px">Thursday, with the platform team.</p>
+            <p><span class="typed" id="typed"></span><span class="caret"></span></p>
+          </div>
+        </div>
+        <div class="keys">
+          <span class="eyebrow">Shortcut</span>
+          <div class="kbd" id="demo-keys"><span>⌥ Option</span><span>Space</span></div>
+        </div>
+        <div class="legend">
+          <span class="callout a">your voice</span>
+          <span class="callout">on-device model</span>
+          <span class="callout">pasted text</span>
+        </div>
+        <div class="overlay-dock hidden" id="dock">
+          <div class="pill live rim" id="pill-live">
+            <div class="txt" id="live-txt"></div>
+            <div class="rowp">
+              <span class="dot pulse"></span>
+              <div style="flex:1;display:flex;justify-content:center">
+                <div class="wave" data-wave></div>
+              </div>
+              <span class="mono muted" id="timer">0:00</span>
+              <span class="ib" aria-hidden="true"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-x"/></svg></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Facts strip -->
+  <div class="panel strip rim">
+    <div class="wrap" style="padding:0">
+      <div class="stats c4">
+        <div><span class="eyebrow">Network while transcribing</span><span class="v acc">none</span></div>
+        <div><span class="eyebrow">Speech models</span><span class="v">69</span></div>
+        <div><span class="eyebrow">Languages</span><span class="v">up to 100</span></div>
+        <div><span class="eyebrow">Price</span><span class="v">free · MIT</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ───────────── 01 How it works ───────────── -->
+  <section class="section" id="how" data-name="How it works">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 01</span><span class="eyebrow">How it works</span></div>
+        <div>
+          <h2>Three steps. No account, no upload.</h2>
+          <p class="lede">Guidy sits in your menu bar until you need it. It works in any app that accepts a paste.</p>
+        </div>
+      </div>
+      <div class="steps">
+        <article class="panel rim step reveal">
+          <div class="bp">
+            <i class="x tl"></i><i class="x tr"></i><i class="x bl"></i><i class="x br"></i>
+            <div class="kbd-stage">
+              <div class="kbd" data-keys><span>⌥ Option</span><span>Space</span></div>
+              <span class="callout a" style="width:270px">hold, toggle or push-to-talk</span>
+            </div>
+          </div>
+          <div class="sec">
+            <span class="eyebrow">01 · Shortcut</span>
+            <h3>Press your shortcut</h3>
+            <p class="desc">Hold it while you talk, or tap once to start and again to stop. Esc cancels. Pick any key combination you like.</p>
+          </div>
+        </article>
+        <article class="panel rim step reveal">
+          <div class="bp">
+            <i class="x tl"></i><i class="x tr"></i><i class="x bl"></i><i class="x br"></i>
+            <div class="ill" style="--ar:480/210"><i class="l" style="--m:url(assets/illustrations/microphone.svg)"></i><i class="f" style="--m:url(assets/illustrations/microphone-fill.svg)"></i><i class="a" style="--m:url(assets/illustrations/microphone-accent.svg)"></i></div>
+          </div>
+          <div class="sec">
+            <span class="eyebrow">02 · Speak</span>
+            <h3>Talk normally</h3>
+            <p class="desc">Voice detection trims the silence, then a model on your machine turns the rest into text. Streaming models show it as you go.</p>
+          </div>
+        </article>
+        <article class="panel rim step reveal">
+          <div class="bp">
+            <i class="x tl"></i><i class="x tr"></i><i class="x bl"></i><i class="x br"></i>
+            <div class="ill zoom" style="--ar:480/210"><i class="l" style="--m:url(assets/illustrations/paste-keys.svg)"></i><i class="f" style="--m:url(assets/illustrations/paste-keys-fill.svg)"></i><i class="a" style="--m:url(assets/illustrations/paste-keys-accent.svg)"></i></div>
+          </div>
+          <div class="sec">
+            <span class="eyebrow">03 · Paste</span>
+            <h3>The text lands at your cursor</h3>
+            <p class="desc">Guidy pastes into whatever app has focus: your editor, a browser, a chat window or the terminal.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 02 Overlay ───────────── -->
+  <section class="section" id="overlay" data-name="Overlay">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 02</span><span class="eyebrow">Overlay</span></div>
+        <div>
+          <h2>See the words while you're still talking.</h2>
+          <p class="lede">A small glass panel floats over every app while Guidy listens. With a streaming model it shows the transcript live. It opens on the monitor your cursor is on, at the top or bottom of the screen.</p>
+        </div>
+      </div>
+      <div class="panel rim reveal">
+        <div class="bp ovl-stage">
+          <i class="x tl"></i><i class="x tr"></i><i class="x bl"></i><i class="x br"></i>
+          <span class="fig" style="left:44px;top:20px">Fig. 2 · Overlay states</span>
+          <div class="pill live rim">
+            <div class="txt">The roll runs out nine labels into the batch, so <span class="tail">we should load a new</span><span class="caret"></span></div>
+            <div class="rowp"><span class="dot pulse"></span><div style="flex:1;display:flex;justify-content:center"><div class="wave" data-wave></div></div><span class="mono muted">0:14</span><span class="ib" aria-hidden="true"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-x"/></svg></span></div>
+          </div>
+          <div class="ovl-row">
+            <div class="pill rim"><span class="dot pulse"></span><div class="wave" data-wave></div><span class="mono muted">0:03</span><span class="ib" aria-hidden="true"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-x"/></svg></span></div>
+            <div class="pill rim sheen" style="padding-right:10px"><span class="muted" style="display:grid"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-reset"/></svg></span><span class="shimmer" style="font-size:14px">Transcribing…</span><span class="ib" aria-hidden="true"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-x"/></svg></span></div>
+          </div>
+        </div>
+        <div class="stats c3 sm" style="border-top:1px solid var(--hair)">
+          <div><span class="eyebrow">Live text</span><span class="v">streaming models</span></div>
+          <div><span class="eyebrow">Listening</span><span class="v">level meter · timer</span></div>
+          <div><span class="eyebrow">Working</span><span class="v">batch models</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 03 Models ───────────── -->
+  <section class="section" id="models" data-name="Models">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 03</span><span class="eyebrow">Models</span></div>
+        <div>
+          <h2>Pick the model that fits your machine.</h2>
+          <p class="lede">Choose from 69 speech models in the built-in catalog, from a 218 MB model that runs on anything to large multilingual ones. You can also drop your own GGUF files into the models folder.</p>
+        </div>
+      </div>
+      <div class="models">
+        <div class="panel rim reveal">
+          <div class="sec">
+            <div class="mhead"><span class="nm">Nemotron Streaming 3.5</span><span class="chip a"><svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>recommended</span><span class="chip">streaming</span></div>
+            <p class="desc" style="margin-top:6px">Live multilingual transcription across 28 languages. Detects the language for you.</p>
+          </div>
+          <div class="stats c3 sm" style="border-top:1px solid var(--hair)">
+            <div><span class="eyebrow">Accuracy</span><span class="pips" data-pips="4"></span></div>
+            <div><span class="eyebrow">Speed</span><span class="pips" data-pips="4"></span></div>
+            <div><span class="eyebrow">Size</span><span class="v">751 MB · Q8_0</span></div>
+            <div><span class="eyebrow">Languages</span><span class="v">28</span></div>
+            <div><span class="eyebrow">Parameters</span><span class="v">0.6B</span></div>
+            <div><span class="eyebrow">Output</span><span class="v acc">live text</span></div>
+          </div>
+          <div class="sec sheen" style="border-top:1px solid var(--hair)">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+              <span class="mono shimmer">Downloading 42% · 18.2 MB/s</span>
+              <span class="ib" aria-hidden="true"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><use href="#i-x"/></svg></span>
+            </div>
+            <div class="bar" style="margin-top:10px"><i style="width:42%"></i></div>
+          </div>
+        </div>
+        <div class="group reveal">
+          <div class="eyebrow"><span>Also recommended</span><span>69 in catalog</span></div>
+          <div class="panel rim">
+            <div class="mcard"><div><div class="nm">Parakeet Unified EN 0.6B <span class="chip">english</span><span class="chip">streaming</span></div><p class="desc">Fast, accurate live English transcription.</p>
+              <div class="meta"><span class="eyebrow">Acc</span><span class="pips" data-pips="5"></span><span class="eyebrow">Spd</span><span class="pips" data-pips="4"></span><span class="mono muted">731 MB</span></div></div></div>
+            <div class="mcard"><div><div class="nm">Canary 180M Flash <span class="chip">translate</span></div><p class="desc">Tiny and instant. Runs well on any hardware.</p>
+              <div class="meta"><span class="eyebrow">Acc</span><span class="pips" data-pips="4"></span><span class="eyebrow">Spd</span><span class="pips" data-pips="5"></span><span class="mono muted">218 MB</span></div></div></div>
+            <div class="mcard"><div><div class="nm">Cohere Transcribe</div><p class="desc">Highest accuracy, 14 languages, slower.</p>
+              <div class="meta"><span class="eyebrow">Acc</span><span class="pips" data-pips="5"></span><span class="eyebrow">Spd</span><span class="pips" data-pips="3"></span><span class="mono muted">1.77 GB</span></div></div></div>
+            <div class="mcard"><div><div class="nm">Whisper Medium <span class="chip">99 languages</span></div><p class="desc">The broadest language coverage. A bit slower.</p>
+              <div class="meta"><span class="eyebrow">Acc</span><span class="pips" data-pips="4"></span><span class="eyebrow">Spd</span><span class="pips" data-pips="2"></span><span class="mono muted">832 MB</span></div></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 04 Meetings ───────────── -->
+  <section class="section" id="meetings" data-name="Meetings">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 04</span><span class="eyebrow">Meeting notes</span></div>
+        <div>
+          <h2>Meeting notes, with no bot in the call.</h2>
+          <p class="lede">Guidy records your microphone and your Mac's audio, so it works with any meeting app. After the call it writes a transcript with named speakers, a summary and action items. <span class="chip" style="vertical-align:1px">macOS 14.2+</span></p>
+        </div>
+      </div>
+      <div class="split">
+        <div class="panel rim reveal">
+          <div class="feature-list">
+            <div class="row"><span class="idx">01</span><div class="lbl"><b>Any meeting app</b><span class="desc">Nothing joins the call and there is no browser extension. Guidy spots meetings on your macOS Calendar and asks before it records.</span></div></div>
+            <div class="row"><span class="idx">02</span><div class="lbl"><b>Speakers by name</b><span class="desc">Name a speaker once and Guidy recognizes their voice in later meetings. Voiceprints are kept only for people you name.</span></div></div>
+            <div class="row"><span class="idx">03</span><div class="lbl"><b>Summaries from a local model</b><span class="desc">Use the built-in llama.cpp model or Apple Intelligence. If you prefer a cloud model, bring your own API key.</span></div></div>
+            <div class="row"><span class="idx">04</span><div class="lbl"><b>Action items to Linear</b><span class="desc">Guidy drafts tickets from the action items. Nothing is created until you approve it.</span></div></div>
+            <div class="row"><span class="idx">05</span><div class="lbl"><b>Encrypted on disk</b><span class="desc">Meetings and their audio are encrypted with a key kept in the macOS Keychain. Raw audio is deleted after 3 days unless you choose otherwise.</span></div></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="panel rim reveal">
+            <div class="sec" style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+              <span style="font-size:var(--t-title);font-weight:500">Weekly product sync</span><span class="eyebrow">Today · 10:00</span>
+            </div>
+            <div class="stats c4 sm" style="border-top:1px solid var(--hair)">
+              <div><span class="eyebrow">Duration</span><span class="v">42:18</span></div>
+              <div><span class="eyebrow">Speakers</span><span class="v">4</span></div>
+              <div><span class="eyebrow">Words</span><span class="v">6,412</span></div>
+              <div><span class="eyebrow">You spoke</span><span class="v acc">31%</span></div>
+            </div>
+            <div class="sec" style="border-top:1px solid var(--hair);padding-bottom:4px;display:flex;justify-content:space-between"><span class="eyebrow">Talk time</span><span class="eyebrow">Share</span></div>
+            <div class="talk" id="talk"></div>
+          </div>
+          <div class="group reveal">
+            <div class="eyebrow"><span>Draft tickets</span><span class="acc">2 of 3 approved</span></div>
+            <div class="panel rim">
+              <div class="ticket"><span class="check on"><svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><div class="t">Ship the new model picker</div><span class="chip">Priya</span></div>
+              <div class="ticket"><span class="check on"><svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span><div class="t">Add a fallback model for Intel Macs</div><span class="chip">Marcus</span></div>
+              <div class="ticket"><span class="check"></span><div class="t muted">Rewrite onboarding copy</div><span class="chip">You</span></div>
+              <div class="foot"><span class="eyebrow">Summary · local model</span><button class="btn p sm" type="button" tabindex="-1">Create 2 in Linear</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 05 Everything else ───────────── -->
+  <section class="section" id="more" data-name="Details">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 05</span><span class="eyebrow">Details</span></div>
+        <div>
+          <h2>The small things, done properly.</h2>
+        </div>
+      </div>
+      <div class="panel rim more reveal">
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg>Optional polishing</h3><p class="desc">Run the transcript through an LLM with your own prompts: Apple Intelligence, a local model, or any provider with your key. It has its own shortcut and is off by default.</p></div>
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>History</h3><p class="desc">Every transcription is saved on your machine with its audio. Replay it, copy it, star it, or transcribe it again.</p></div>
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>Your own models</h3><p class="desc">Drop GGUF files into the models folder and they show up next to the catalog models.</p></div>
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-globe"/></svg>26 interface languages</h3><p class="desc">The app is translated into 26 languages, right-to-left included. Transcription language is auto-detected or set per model.</p></div>
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-term"/></svg>Scriptable</h3><p class="desc"><span class="mono">guidy --toggle-transcription</span> starts and stops recording from a launcher, a Stream Deck or a script.</p></div>
+        <div><h3><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-vol"/></svg>Quiet when it should be</h3><p class="desc">Short start and stop sounds (marimba or pop), and an option to mute other audio while you record.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 06 Privacy ───────────── -->
+  <section class="section" id="privacy" data-name="Privacy">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 06</span><span class="eyebrow">Privacy</span></div>
+        <div>
+          <h2>Your voice stays on your machine.</h2>
+          <p class="lede">Recording, transcription and history all happen locally. Guidy uses the network only for the things you can see below.</p>
+        </div>
+      </div>
+      <div class="privacy">
+        <div class="panel rim reveal">
+          <div class="bp" style="position:relative">
+            <i class="x tl"></i><i class="x tr"></i><i class="x bl"></i><i class="x br"></i>
+            <span class="fig" style="left:44px;top:20px">Fig. 3 · Signal path</span>
+            <div class="ill" style="--ar:300/130;max-width:380px;position:relative;z-index:1;margin-bottom:60px"><i class="l" style="--m:url(assets/illustrations/waveform.svg)"></i><i class="f" style="--m:url(assets/illustrations/waveform-fill.svg)"></i><i class="a" style="--m:url(assets/illustrations/waveform-accent.svg)"></i></div>
+            <div class="callouts">
+              <span class="callout a">your voice</span>
+              <span class="callout">model on this Mac</span>
+              <span class="callout">text in your app</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel rim reveal">
+          <div class="kv a"><span>audio</span><span class="r"><span>recorded locally</span><span>on-device</span></span></div>
+          <div class="kv a"><span>transcription</span><span class="r"><span>local model</span><span>on-device</span></span></div>
+          <div class="kv a"><span>history</span><span class="r"><span>app data folder</span><span>on-device</span></span></div>
+          <div class="kv"><span>model downloads</span><span class="r"><span>when you pick one</span><span>network</span></span></div>
+          <div class="kv"><span>update checks</span><span class="r"><span>optional</span><span>network</span></span></div>
+          <div class="kv"><span>cloud LLM</span><span class="r"><span>only with your key</span><span>your choice</span></span></div>
+          <div class="kv"><span>secrets</span><span class="r"><span>API keys</span><span>keychain</span></span></div>
+          <div class="kv"><span>accounts · telemetry</span><span class="r"><span>none</span><span>—</span></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── 07 Download ───────────── -->
+  <section class="section" id="download" data-name="Download">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 07</span><span class="eyebrow">Download</span></div>
+        <div>
+          <h2>Get Guidy.</h2>
+          <p class="lede">Free and open source under the MIT license.</p>
+        </div>
+      </div>
+      <div class="group reveal">
+        <div class="eyebrow"><span>Releases</span><span class="acc">v0.1.0</span></div>
+        <div class="panel rim">
+          <div class="dl-row">
+            <div>
+              <div class="nm"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-apple"/></svg>macOS <span class="chip a">.dmg</span></div>
+              <p class="desc" style="margin-top:4px">macOS 10.15 or later. Meeting notes need macOS 14.2. Builds aren't notarized yet, so on first launch approve Guidy in System Settings → Privacy &amp; Security.</p>
+            </div>
+            <a class="btn p" href="https://github.com/imran-vz/Guidy/releases/latest"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dl"/></svg>Download for macOS</a>
+          </div>
+          <div class="dl-row">
+            <div>
+              <div class="nm"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>Windows &amp; Linux <span class="chip">from source</span></div>
+              <p class="desc" style="margin-top:4px">Guidy builds on Windows x64/ARM and Linux (X11 and Wayland). Packaged releases will follow once they're tested on real machines.</p>
+              <div class="code"><b>$</b> git clone https://github.com/imran-vz/Guidy && cd Guidy
+<b>$</b> cargo run --release -p guidy-app</div>
+            </div>
+            <a class="btn s" href="https://github.com/imran-vz/Guidy#build-and-run">Build instructions</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── FAQ ───────────── -->
+  <section class="section" id="faq" data-name="FAQ">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="num"><span class="eyebrow acc">§ 08</span><span class="eyebrow">FAQ</span></div>
+        <div><h2>Questions</h2></div>
+      </div>
+      <div class="panel rim faq reveal">
+        <details>
+          <summary>Does any of my audio go to the cloud?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">No. Recording and transcription run on your machine. Text only leaves your machine if you turn on post-processing or meeting summaries with a cloud provider and enter your own API key.</div>
+        </details>
+        <details>
+          <summary>Which apps does it work with?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">Any app that accepts a paste. On macOS Guidy needs Microphone access to hear you and Accessibility access to paste for you; it asks for both on first launch.</div>
+        </details>
+        <details>
+          <summary>How much space do the models need?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">The recommended models range from 218 MB (Canary 180M Flash) to about 1.8 GB (Cohere Transcribe). You only download the ones you pick, and you can delete them from the Models page.</div>
+        </details>
+        <details>
+          <summary>Where is my data stored?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">In the app data folder, <code>~/Library/Application Support/dev.guidy.app</code> on macOS. API keys go in the macOS Keychain.</div>
+        </details>
+        <details>
+          <summary>Can I use my own model?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">Yes. Put a GGUF speech model in the models folder and it appears on the Models page as a custom model.</div>
+        </details>
+        <details>
+          <summary>Is Guidy related to Handy?<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev"/></svg></summary>
+          <div class="a">Yes. Guidy's backend (audio, transcription, settings, history) comes from <a class="acc" href="https://github.com/cjpais/Handy">Handy</a> by CJ Pais, under the MIT license. The interface, meeting notes and artwork are Guidy's own, written in Rust on GPUI.</div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Closing -->
+  <section class="closer">
+    <div class="wrap">
+      <div class="ill reveal" style="--ar:300/130"><i class="l" style="--m:url(assets/illustrations/waveform.svg)"></i><i class="f" style="--m:url(assets/illustrations/waveform-fill.svg)"></i><i class="a" style="--m:url(assets/illustrations/waveform-accent.svg)"></i></div>
+      <h2 class="reveal">Press a key and start talking.</h2>
+      <p class="lede reveal">Guidy is free, runs offline and takes a minute to set up.</p>
+      <div class="ctas reveal">
+        <a class="btn p" href="https://github.com/imran-vz/Guidy/releases/latest"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-dl"/></svg>Download for macOS</a>
+        <a class="btn s" href="https://github.com/imran-vz/Guidy"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-gh"/></svg>View on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="statusbar">
+  <span class="dot"></span><span style="color:var(--text)">Guidy</span>
+  <span class="faint">·</span><span>Made by <a class="acc" href="https://imran.codes" rel="author">Imran</a></span>
+  <span class="sp"></span>
+  <a href="https://github.com/imran-vz/Guidy">GitHub</a><span class="faint">·</span>
+  <a href="https://github.com/imran-vz/Guidy/blob/main/LICENSE">MIT License</a><span class="faint">·</span>
+  <a href="https://github.com/imran-vz/Guidy/blob/main/NOTICE.md">Notices</a><span class="faint">·</span>
+  <span class="ver">v0.1.0</span>
+</footer>
+
+<script src="main.js" defer></script>
+</body>
+</html>

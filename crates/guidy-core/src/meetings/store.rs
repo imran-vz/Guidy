@@ -154,6 +154,16 @@ static MIGRATIONS: &[M] = &[
     );
     CREATE INDEX person_merges_into ON person_merges(into_id);",
     ),
+    // 7: `user_voiceprints`: the user's own voice, recorded in People. Not a
+    // person: with it, the mic track is diarized too (in-person meetings),
+    // and only the speech that sounds like it is labelled as the user.
+    M::up(
+        "CREATE TABLE user_voiceprints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        embedding BLOB NOT NULL,
+        created_at INTEGER NOT NULL
+    );",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -1240,6 +1250,44 @@ impl MeetingsStore {
             .lock()
             .execute("DELETE FROM voiceprints WHERE id = ?1", [id])?
             > 0)
+    }
+
+    // ----- the user's voice -------------------------------------------------
+
+    /// Replace the user's recorded voiceprints with `prints`.
+    pub fn replace_user_voiceprints(&self, prints: &[Vec<f32>]) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM user_voiceprints", [])?;
+        let created_at = now_ms();
+        for p in prints {
+            tx.execute(
+                "INSERT INTO user_voiceprints (embedding, created_at) VALUES (?1, ?2)",
+                params![encode_embedding(p), created_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The user's recorded voiceprints, by id (empty when none was recorded).
+    pub fn user_voiceprints(&self) -> Result<Vec<Vec<f32>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT embedding FROM user_voiceprints ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        Ok(rows
+            .map(|b| b.map(|b| decode_embedding(&b)))
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// When the user's voice was recorded (ms), `None` when it wasn't.
+    pub fn user_voice_recorded_at(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("SELECT MAX(created_at) FROM user_voiceprints", [], |r| {
+                r.get(0)
+            })?)
     }
 
     // ----- summaries --------------------------------------------------------

@@ -407,6 +407,16 @@ impl MeetingDetail {
                 Ok(samples) => {
                     Playback::global().play_samples(key, samples, SEGMENT_SAMPLE_RATE);
                     this.ensure_ticking(cx);
+                    // The player reports an output failure asynchronously.
+                    cx.spawn(async move |_, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(300))
+                            .await;
+                        if let Some(e) = Playback::global().state().error {
+                            cx.update(|cx| toast_error("meetings.detail.playError", &e, cx));
+                        }
+                    })
+                    .detach();
                 }
                 Err(e) => toast_error("meetings.detail.playError", &e, cx),
             },
@@ -1060,7 +1070,7 @@ impl MeetingDetail {
                     .gap(px(2.))
                     .children(block.segments.iter().map(|seg| {
                         let key = self.clip_key(seg.id);
-                        let active = st.path.as_ref() == Some(&key);
+                        let active = st.error.is_none() && st.path.as_ref() == Some(&key);
                         let playing = active && st.playing;
                         let s = seg.clone();
                         h_flex()

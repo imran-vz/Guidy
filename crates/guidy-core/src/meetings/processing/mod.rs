@@ -9,6 +9,7 @@
 //! - [`speaker_model`]: the sherpa-onnx speaker model download + extractor.
 //! - [`sidecar`]: encrypted checkpoint / per-segment voiceprint files.
 //! - [`naming`]: speaker suggestions and naming (stores voiceprints).
+//! - [`user_voice`]: voiceprints of the user's recorded voice sample.
 //!
 //! Where it runs: a background thread in the app process orchestrates the
 //! work. Transcription goes out of process through a dedicated
@@ -24,6 +25,7 @@ pub mod pipeline;
 pub mod sidecar;
 pub mod speaker_model;
 pub mod timeline;
+pub mod user_voice;
 pub mod vad;
 
 #[cfg(test)]

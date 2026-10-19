@@ -123,7 +123,7 @@ impl ReasoningParams {
 /// Pick the reasoning-disable request fields an endpoint understands.
 /// Unknown endpoints get the common OpenAI-style field; if they reject it,
 /// the request is retried without it (see `send_chat_completion_with_schema`).
-fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
+fn reasoning_disable_params(provider: &PostProcessProvider, model: &str) -> ReasoningParams {
     let base_url = provider.base_url.to_lowercase();
     if base_url.contains("api.deepseek.com") {
         // DeepSeek rejects reasoning_effort "none" and uses its own field:
@@ -142,11 +142,39 @@ fn reasoning_disable_params(provider: &PostProcessProvider) -> ReasoningParams {
             }),
             ..Default::default()
         }
-    } else {
+    } else if provider.id == "openai" && !is_openai_reasoning_model(model) {
+        // gpt-4.x and the `-chat` models have no reasoning to turn off.
+        ReasoningParams::default()
+    } else if provider.id == "zai" {
+        // GLM thinks by default (GLM-4.6+): https://docs.z.ai/api-reference/llm/chat-completion
         ReasoningParams {
-            reasoning_effort: Some("none".to_string()),
+            thinking: Some(serde_json::json!({ "type": "disabled" })),
             ..Default::default()
         }
+    } else {
+        ReasoningParams {
+            reasoning_effort: Some(lowest_reasoning_effort(model).to_string()),
+            ..Default::default()
+        }
+    }
+}
+
+/// The lowest `reasoning_effort` an OpenAI-style model accepts: the original
+/// gpt-5 models stop at "minimal", gpt-6-astra / gpt-6.1 and the o-series at
+/// "low"; newer ones (gpt-5.5+, gpt-6-sol, most local servers) take "none".
+fn lowest_reasoning_effort(model: &str) -> &'static str {
+    let name = model.trim().to_ascii_lowercase();
+    let name = name.rsplit('/').next().unwrap_or(&name);
+    let is = |p: &str| name == p || name.starts_with(&format!("{p}-"));
+    if is("gpt-5") || is("gpt-5-mini") || is("gpt-5-nano") {
+        "minimal"
+    } else if name.starts_with("gpt-6-astra")
+        || name.starts_with("gpt-6.1")
+        || ["o1", "o3", "o4"].iter().any(|p| name.starts_with(p))
+    {
+        "low"
+    } else {
+        "none"
     }
 }
 
@@ -225,7 +253,7 @@ struct ChatCompletionRequest {
     reasoning: ReasoningParams,
 }
 
-/// OpenAI reasoning models (`gpt-5*`, `o1*`, `o3*`, `o4*`) reject
+/// OpenAI reasoning models (`gpt-5*`, `gpt-6*`, `o1*`, `o3*`, `o4*`) reject
 /// `max_tokens` (they take `max_completion_tokens`) and any non-default
 /// `temperature`. Matched on the bare model name, as sent to OpenAI itself;
 /// gateways that prefix it (`openai/gpt-5`) translate the fields themselves.
@@ -233,7 +261,7 @@ struct ChatCompletionRequest {
 /// take both fields.
 pub fn is_openai_reasoning_model(model: &str) -> bool {
     let name = model.trim().to_ascii_lowercase();
-    ["gpt-5", "o1", "o3", "o4"]
+    ["gpt-5", "gpt-6", "o1", "o3", "o4"]
         .iter()
         .any(|p| name.starts_with(p))
         && !name.contains("-chat")
@@ -306,14 +334,16 @@ fn says_unsupported(lower: &str) -> bool {
 
 /// Whether error text says `temperature` itself is unsupported
 /// ("'temperature' is not supported", "temperature: only the default (1)
-/// value is supported"), as opposed to merely mentioning it (an echoed
-/// request body) or rejecting its value.
+/// value is supported", Anthropic's "`temperature` is deprecated for this
+/// model"), as opposed to merely mentioning it (an echoed request body) or
+/// rejecting its value.
 fn names_temperature_as_unsupported(lower: &str) -> bool {
-    const AFTER: [&str; 4] = [
+    const AFTER: [&str; 5] = [
         "not supported",
         "unsupported",
         "does not support",
         "only the default",
+        "deprecated",
     ];
     // Look only within the clause around each mention.
     let is_break = |c: char| matches!(c, '.' | ',' | ';' | '\n' | '{' | '}' | '[' | ']');
@@ -465,6 +495,10 @@ struct ChatMessageResponse {
 /// required. Ample for a cleaned-up dictation.
 const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 
+/// Output budget for Claude models that think by default: thinking counts
+/// against `max_tokens`, so a small budget would end in a truncated reply.
+const ANTHROPIC_THINKING_MAX_TOKENS: u32 = 16_000;
+
 #[derive(Debug, Serialize)]
 struct AnthropicMessagesRequest {
     model: String,
@@ -473,13 +507,56 @@ struct AnthropicMessagesRequest {
     system: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// `{"effort": "low"}` for models that think by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<Value>,
     messages: Vec<ChatMessage>,
+}
+
+/// A Claude model id's family and major version (`claude-opus-5-5` ->
+/// `("opus", 5, Some(5))`), ignoring a provider prefix (`anthropic.`,
+/// `anthropic/`) and a date suffix.
+fn claude_version(model: &str) -> Option<(String, u32, Option<u32>)> {
+    let name = model.trim().to_ascii_lowercase();
+    let rest = &name[name.find("claude-")? + "claude-".len()..];
+    let mut parts = rest.split(['-', '.', '@']);
+    let family = parts.next()?.to_string();
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse().ok())
+        .filter(|m| *m < 100);
+    Some((family, major, minor))
+}
+
+/// Claude models that think by default (thinking can't always be turned
+/// off): Fable/Mythos and the 5.x Opus, Sonnet and Haiku models. Their
+/// thinking depth is set with `output_config.effort`.
+fn claude_thinks_by_default(model: &str) -> bool {
+    matches!(claude_version(model), Some((family, major, _))
+        if matches!(family.as_str(), "fable" | "mythos") || major >= 5)
+}
+
+/// Claude models that reject `temperature`: removed on Fable/Mythos, Opus
+/// 4.7+ and the 5.x models (Sonnet 5.5 and Haiku 5.5 accept only the
+/// default).
+fn claude_rejects_temperature(model: &str) -> bool {
+    match claude_version(model) {
+        Some((family, major, minor)) => {
+            matches!(family.as_str(), "fable" | "mythos")
+                || major >= 5
+                || (family == "opus" && major == 4 && minor.is_some_and(|m| m >= 7))
+        }
+        None => false,
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct AnthropicMessagesResponse {
     content: Vec<AnthropicContentBlock>,
     stop_reason: Option<String>,
+    #[serde(default)]
+    stop_details: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -531,6 +608,10 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
     );
     headers.insert("X-Title", HeaderValue::from_static("Guidy"));
 
+    if provider.api_format == PostProcessApiFormat::Anthropic {
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    }
+
     // Provider-specific auth headers
     if !api_key.is_empty() {
         if provider.api_format == PostProcessApiFormat::Anthropic {
@@ -539,7 +620,6 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
                 HeaderValue::from_str(api_key)
                     .map_err(|e| format!("Invalid API key header value: {}", e))?,
             );
-            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         } else {
             headers.insert(
                 AUTHORIZATION,
@@ -851,7 +931,7 @@ async fn send_openai_chat(
     let key = endpoint_key(provider, model);
     let learned = learned_params(&key);
     let reasoning = if disable_reasoning {
-        reasoning_disable_params(provider)
+        reasoning_disable_params(provider, model)
     } else {
         ReasoningParams::default()
     };
@@ -976,38 +1056,88 @@ async fn send_anthropic_message(
         sanitized_url_for_log(&url)
     );
 
-    let request_body = AnthropicMessagesRequest {
+    let key = endpoint_key(provider, model);
+    let thinks = claude_thinks_by_default(model);
+    let mut request_body = AnthropicMessagesRequest {
         model: model.to_string(),
-        max_tokens,
+        max_tokens: if thinks {
+            max_tokens.max(ANTHROPIC_THINKING_MAX_TOKENS)
+        } else {
+            max_tokens
+        },
         system,
-        temperature,
+        temperature: temperature.filter(|_| !claude_rejects_temperature(model)),
+        // Cleanup and summaries need little thinking; the default effort
+        // spends seconds (and output budget) on it.
+        output_config: thinks.then(|| serde_json::json!({ "effort": "low" })),
         messages,
     };
+    let learned = learned_params(&key);
+    if learned.drop_temperature {
+        request_body.temperature = None;
+    }
+    if learned.drop_reasoning {
+        request_body.output_config = None;
+    }
+    let client = create_client(provider, &api_key)?;
 
-    let response = create_client(provider, &api_key)?
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| report_reqwest_error("HTTP request failed", &e))?;
-    let status = response.status();
-    debug!(
-        "Anthropic Messages response received with status {} over {:?} from {}",
-        status,
-        response.version(),
-        sanitized_url(response.url())
-    );
+    // Newer Claude models reject `temperature` ("`temperature` is deprecated
+    // for this model"), older ones `output_config.effort`: retry without the
+    // rejected field and remember that per endpoint.
+    let response = loop {
+        let response = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| report_reqwest_error("HTTP request failed", &e))?;
+        let status = response.status();
+        debug!(
+            "Anthropic Messages response received with status {} over {:?} from {}",
+            status,
+            response.version(),
+            sanitized_url(response.url())
+        );
+        if status.is_success() {
+            break response;
+        }
 
-    if !status.is_success() {
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|e| report_reqwest_error("Failed to read API error response", &e));
-        return Err(ChatError::Status {
-            status: status.as_u16(),
-            body: error_text,
-        });
-    }
+        let lower = error_text.to_ascii_lowercase();
+        let learned = if status.as_u16() != 400 {
+            None
+        } else if request_body.temperature.is_some() && names_temperature_as_unsupported(&lower) {
+            request_body.temperature = None;
+            Some(LearnedParams {
+                drop_temperature: true,
+                ..Default::default()
+            })
+        } else if request_body.output_config.is_some()
+            && (lower.contains("output_config") || lower.contains("effort"))
+        {
+            request_body.output_config = None;
+            Some(LearnedParams {
+                drop_reasoning: true,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+        let Some(learned) = learned else {
+            return Err(ChatError::Status {
+                status: status.as_u16(),
+                body: error_text,
+            });
+        };
+        info!(
+            "Anthropic endpoint rejected a parameter for model '{}': {}. Retrying without it",
+            model, error_text
+        );
+        remember_learned(key.clone(), learned);
+    };
 
     let message: AnthropicMessagesResponse = response
         .json()
@@ -1019,7 +1149,21 @@ async fn send_anthropic_message(
     if message.stop_reason.as_deref() == Some("max_tokens") {
         return Err(ChatError::Truncated(format!(
             "Response was truncated at the {} token limit",
-            max_tokens
+            request_body.max_tokens
+        )));
+    }
+    // A safety-classifier refusal comes back as a success with no (or
+    // partial) text.
+    if message.stop_reason.as_deref() == Some("refusal") {
+        let category = message
+            .stop_details
+            .as_ref()
+            .and_then(|d| d.get("category"))
+            .and_then(Value::as_str)
+            .map(|c| format!(" ({c})"))
+            .unwrap_or_default();
+        return Err(ChatError::Failed(format!(
+            "The request was declined by the provider's safety filter{category}"
         )));
     }
 
@@ -1055,7 +1199,12 @@ pub async fn fetch_models_with_info(
 ) -> Result<Vec<ModelInfo>, String> {
     check_base_url(provider)?;
     let base_url = provider.base_url.trim_end_matches('/');
-    let url = format!("{}/models", base_url);
+    // Anthropic's list returns 20 models per page unless asked for more.
+    let url = if provider.api_format == PostProcessApiFormat::Anthropic {
+        format!("{}/models?limit=1000", base_url)
+    } else {
+        format!("{}/models", base_url)
+    };
 
     debug!("Fetching models from: {}", sanitized_url_for_log(&url));
 
@@ -1314,7 +1463,8 @@ mod tests {
 
     #[test]
     fn custom_provider_uses_top_level_reasoning_effort() {
-        let params = reasoning_disable_params(&provider("custom", "http://localhost:11434/v1"));
+        let params =
+            reasoning_disable_params(&provider("custom", "http://localhost:11434/v1"), "llama3");
         let json = request_json(params);
         assert_eq!(json["reasoning_effort"], "none");
         assert!(json.get("reasoning").is_none());
@@ -1324,7 +1474,7 @@ mod tests {
     #[test]
     fn openrouter_uses_nested_reasoning_object() {
         let params =
-            reasoning_disable_params(&provider("openrouter", "https://openrouter.ai/api/v1"));
+            reasoning_disable_params(&provider("openrouter", "https://openrouter.ai/api/v1"), "x");
         let json = request_json(params);
         assert!(json.get("reasoning_effort").is_none());
         assert_eq!(json["reasoning"]["effort"], "none");
@@ -1334,7 +1484,10 @@ mod tests {
 
     #[test]
     fn deepseek_base_url_uses_thinking_disabled() {
-        let params = reasoning_disable_params(&provider("custom", "https://api.deepseek.com"));
+        let params = reasoning_disable_params(
+            &provider("custom", "https://api.deepseek.com"),
+            "deepseek-chat",
+        );
         let json = request_json(params);
         assert!(json.get("reasoning_effort").is_none());
         assert!(json.get("reasoning").is_none());
@@ -1505,6 +1658,7 @@ mod tests {
             max_tokens: ANTHROPIC_MAX_TOKENS,
             system: None,
             temperature: None,
+            output_config: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: "hi".to_string(),
@@ -1951,6 +2105,149 @@ mod tests {
         let second = request_body(&requests.recv().await.unwrap());
         assert!(second.get("temperature").is_none());
         assert_eq!(second["max_tokens"], 50);
+    }
+
+    #[test]
+    fn claude_model_capabilities() {
+        for m in [
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-opus-5",
+            "anthropic.claude-sonnet-5",
+        ] {
+            assert!(claude_thinks_by_default(m), "{m}");
+            assert!(claude_rejects_temperature(m), "{m}");
+        }
+        for m in ["claude-opus-4-7", "claude-opus-4-8"] {
+            assert!(!claude_thinks_by_default(m), "{m}");
+            assert!(claude_rejects_temperature(m), "{m}");
+        }
+        for m in [
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5",
+            "my-model",
+        ] {
+            assert!(!claude_thinks_by_default(m), "{m}");
+            assert!(!claude_rejects_temperature(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_floor_per_openai_model() {
+        assert_eq!(lowest_reasoning_effort("gpt-5"), "minimal");
+        assert_eq!(lowest_reasoning_effort("gpt-5-mini-2025-08-07"), "minimal");
+        assert_eq!(lowest_reasoning_effort("openai/gpt-5-nano"), "minimal");
+        assert_eq!(lowest_reasoning_effort("gpt-5.5"), "none");
+        assert_eq!(lowest_reasoning_effort("gpt-6-sol"), "none");
+        assert_eq!(lowest_reasoning_effort("gpt-6-astra"), "low");
+        assert_eq!(lowest_reasoning_effort("gpt-6.1-sol"), "low");
+        assert_eq!(lowest_reasoning_effort("o4-mini"), "low");
+        assert_eq!(lowest_reasoning_effort("qwen3:8b"), "none");
+        let openai = provider("openai", "https://api.openai.com/v1");
+        assert!(reasoning_disable_params(&openai, "gpt-4.1").is_empty());
+        assert_eq!(
+            reasoning_disable_params(&openai, "gpt-5")
+                .reasoning_effort
+                .as_deref(),
+            Some("minimal")
+        );
+        let zai = provider("zai", "https://api.z.ai/api/paas/v4");
+        assert_eq!(
+            reasoning_disable_params(&zai, "glm-5").thinking,
+            Some(serde_json::json!({ "type": "disabled" }))
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_thinking_models_get_low_effort_and_room_to_think() {
+        let (base_url, mut requests) = serve_sequence(vec![(
+            "200 OK",
+            r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#,
+        )])
+        .await;
+        let result = send_chat(
+            &anthropic_format_provider(&base_url),
+            "key".into(),
+            "claude-sonnet-5-5",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                max_tokens: Some(768),
+                temperature: Some(0.2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        let body = request_body(&requests.recv().await.unwrap());
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["max_tokens"], ANTHROPIC_THINKING_MAX_TOKENS);
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[tokio::test]
+    async fn anthropic_refusals_are_errors() {
+        let (base_url, _requests) = serve_sequence(vec![(
+            "200 OK",
+            r#"{"content":[],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}"#,
+        )])
+        .await;
+        let result = send_chat(
+            &anthropic_format_provider(&base_url),
+            "key".into(),
+            "claude-haiku-4-5",
+            ChatParams {
+                messages: vec![("user".into(), "hi".into())],
+                ..Default::default()
+            },
+        )
+        .await;
+        match result {
+            Err(ChatError::Failed(m)) => assert!(m.contains("(cyber)"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_retries_without_a_deprecated_temperature() {
+        let (base_url, mut requests) = serve_sequence(vec![
+            (
+                "400 Bad Request",
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"content":[{"type":"text","text":"again"}],"stop_reason":"end_turn"}"#,
+            ),
+        ])
+        .await;
+        let provider = anthropic_format_provider(&base_url);
+        let params = || ChatParams {
+            messages: vec![("user".into(), "hi".into())],
+            max_tokens: Some(50),
+            temperature: Some(0.2),
+            ..Default::default()
+        };
+        let result = send_chat(&provider, "key".into(), "claude-new", params()).await;
+        assert_eq!(result, Ok(Some("ok".to_string())));
+        let first = request_body(&requests.recv().await.unwrap());
+        assert!(first.get("temperature").is_some());
+        let second = request_body(&requests.recv().await.unwrap());
+        assert!(second.get("temperature").is_none());
+
+        // Remembered: the next request leaves it out up front.
+        let result = send_chat(&provider, "key".into(), "claude-new", params()).await;
+        assert_eq!(result, Ok(Some("again".to_string())));
+        let third = request_body(&requests.recv().await.unwrap());
+        assert!(third.get("temperature").is_none());
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
-//! People tab: everyone named in meetings, with voiceprint counts. Edit
-//! (name + email), merge into another person, delete (with voiceprints).
+//! People tab: the user's own voice (recorded here, so in-person meetings
+//! can tell them from the others in the room), and everyone named in
+//! meetings, with voiceprint counts. Edit (name + email), merge into another
+//! person, delete (with voiceprints).
 
 use super::{run, toast_error};
 use crate::logic::meetings::{merge_targets, non_empty, MeetingsEvent};
@@ -12,9 +14,28 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::meetings::manager::UserVoice;
 use guidy_core::meetings::types::{Person, PersonId};
+use std::time::{Duration, Instant};
+
+/// Where the "Your voice" recording is.
+#[derive(Clone, Copy, PartialEq)]
+enum VoiceRecording {
+    Idle,
+    Starting,
+    Recording { since: Instant },
+    Saving,
+}
+
+/// "Done" is enabled after this much recording (speech is trimmed, so the
+/// sample needs some slack over the 8 s minimum).
+const MIN_RECORDING: Duration = Duration::from_secs(12);
+/// The recording stops by itself after this long.
+const MAX_RECORDING: Duration = Duration::from_secs(60);
 
 pub struct PeopleView {
+    voice: UserVoice,
+    recording: VoiceRecording,
     people: Vec<Person>,
     loading: bool,
     editing: Option<PersonId>,
@@ -51,6 +72,8 @@ impl PeopleView {
             }),
         ];
         let mut this = Self {
+            voice: UserVoice::default(),
+            recording: VoiceRecording::Idle,
             people: Vec::new(),
             loading: true,
             editing: None,
@@ -66,6 +89,14 @@ impl PeopleView {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         run(
             cx,
+            |b| b.user_voice(),
+            |this: &mut Self, r, cx| match r {
+                Ok(voice) => this.voice = voice,
+                Err(e) => toast_error("meetings.people.voice.loadError", &e, cx),
+            },
+        );
+        run(
+            cx,
             |b| b.list_people(),
             |this: &mut Self, r, cx| {
                 this.loading = false;
@@ -78,6 +109,276 @@ impl PeopleView {
                 }
             },
         );
+    }
+
+    fn start_voice_recording(&mut self, cx: &mut Context<Self>) {
+        if self.recording != VoiceRecording::Idle {
+            return;
+        }
+        self.recording = VoiceRecording::Starting;
+        cx.notify();
+        run(
+            cx,
+            |b| b.start_voice_recording(),
+            |this: &mut Self, r, cx| match r {
+                Ok(()) => {
+                    this.recording = VoiceRecording::Recording {
+                        since: Instant::now(),
+                    };
+                    this.tick_recording(cx);
+                }
+                Err(e) => {
+                    this.recording = VoiceRecording::Idle;
+                    toast_error("meetings.people.voice.recordError", &e, cx);
+                }
+            },
+        );
+    }
+
+    /// Redraw the timer while recording; stop at [`MAX_RECORDING`].
+    fn tick_recording(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            let keep = this
+                .update(cx, |this, cx| match this.recording {
+                    VoiceRecording::Recording { since } => {
+                        if since.elapsed() >= MAX_RECORDING {
+                            this.finish_voice_recording(cx);
+                            false
+                        } else {
+                            cx.notify();
+                            true
+                        }
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    pub fn finish_voice_recording(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.recording, VoiceRecording::Recording { .. }) {
+            return;
+        }
+        self.recording = VoiceRecording::Saving;
+        cx.notify();
+        run(
+            cx,
+            |b| b.finish_voice_recording(),
+            |this: &mut Self, r, cx| {
+                this.recording = VoiceRecording::Idle;
+                match r {
+                    Ok(voice) => this.voice = voice,
+                    Err(e) => toast_error("meetings.people.voice.saveError", &e, cx),
+                }
+            },
+        );
+    }
+
+    fn cancel_voice_recording(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.recording, VoiceRecording::Recording { .. }) {
+            return;
+        }
+        self.recording = VoiceRecording::Idle;
+        cx.notify();
+        run(cx, |b| b.cancel_voice_recording(), |_: &mut Self, _, _| {});
+    }
+
+    fn confirm_delete_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this = this.clone();
+            alert
+                .title(t("meetings.people.voice.deleteTitle"))
+                .description(t("meetings.people.voice.deleteConfirm"))
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    this.update(cx, |this, cx| {
+                        this.voice = UserVoice::default();
+                        cx.notify();
+                        run(
+                            cx,
+                            |b| b.delete_user_voice(),
+                            |this: &mut Self, r, cx| {
+                                if let Err(e) = r {
+                                    toast_error("meetings.people.voice.deleteError", &e, cx);
+                                    this.reload(cx);
+                                }
+                            },
+                        );
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
+    fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let recorded = self.voice.recorded_at.is_some();
+        let text_col = |title: SharedString, line: SharedString| {
+            v_flex()
+                .min_w_0()
+                .flex_1()
+                .gap(px(2.))
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
+                .child(
+                    div()
+                        .text_xs()
+                        .line_height(relative(1.5))
+                        .text_color(theme.muted_foreground)
+                        .child(line),
+                )
+        };
+        let row = h_flex()
+            .id("people-voice")
+            .w_full()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .justify_between();
+        let row = match self.recording {
+            VoiceRecording::Recording { since } => {
+                let elapsed = since.elapsed();
+                let timer = crate::logic::overlay::format_timer(elapsed.as_secs());
+                return v_flex()
+                    .id("people-voice")
+                    .w_full()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_3()
+                            .justify_between()
+                            .child(text_col(
+                                t("meetings.people.voice.recording"),
+                                t("meetings.people.voice.readAloud"),
+                            ))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family(crate::theme::MONO_FONT)
+                                    .text_sm()
+                                    .text_color(theme.danger)
+                                    .child(timer),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.))
+                            .bg(theme.background)
+                            .text_size(design::TEXT_BODY)
+                            .line_height(relative(1.6))
+                            .child(t("meetings.people.voice.passage")),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .justify_end()
+                            .child(
+                                Button::new("people-voice-cancel")
+                                    .ghost()
+                                    .pill()
+                                    .small()
+                                    .label(t("meetings.people.cancel"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_voice_recording(cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("people-voice-done")
+                                    .primary()
+                                    .pill()
+                                    .small()
+                                    .label(t("meetings.people.voice.done"))
+                                    .disabled(elapsed < MIN_RECORDING)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.finish_voice_recording(cx)
+                                    })),
+                            ),
+                    )
+                    .test_support()
+                    .into_any_element();
+            }
+            VoiceRecording::Starting | VoiceRecording::Saving => row
+                .child(text_col(
+                    t(if recorded {
+                        "meetings.people.voice.recordedTitle"
+                    } else {
+                        "meetings.people.voice.notRecorded"
+                    }),
+                    t(if self.recording == VoiceRecording::Saving {
+                        "meetings.people.voice.saving"
+                    } else {
+                        "meetings.people.voice.starting"
+                    }),
+                ))
+                .child(
+                    Button::new("people-voice-record")
+                        .primary()
+                        .pill()
+                        .small()
+                        .loading(true)
+                        .label(t("meetings.people.voice.record")),
+                ),
+            VoiceRecording::Idle if recorded => row
+                .child(text_col(
+                    t("meetings.people.voice.recordedTitle"),
+                    t("meetings.people.voice.recorded"),
+                ))
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .child(
+                            Button::new("people-voice-record")
+                                .ghost()
+                                .pill()
+                                .small()
+                                .label(t("meetings.people.voice.recordAgain"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.start_voice_recording(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("people-voice-delete")
+                                .ghost()
+                                .xsmall()
+                                .icon(icon("trash"))
+                                .tooltip(t("meetings.people.delete"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.confirm_delete_voice(window, cx)
+                                })),
+                        ),
+                ),
+            VoiceRecording::Idle => row
+                .child(text_col(
+                    t("meetings.people.voice.notRecorded"),
+                    t("meetings.people.voice.description"),
+                ))
+                .child(
+                    Button::new("people-voice-record")
+                        .primary()
+                        .pill()
+                        .small()
+                        .icon(icon("mic"))
+                        .label(t("meetings.people.voice.record"))
+                        .on_click(cx.listener(|this, _, _, cx| this.start_voice_recording(cx))),
+                ),
+        };
+        row.test_support().into_any_element()
     }
 
     #[cfg(test)]
@@ -427,9 +728,15 @@ impl Render for PeopleView {
             .id("meetings-people")
             .w_full()
             .gap(px(8.))
+            .child(crate::ui::kit::group(
+                Some(t("meetings.people.voice.title")),
+                vec![self.render_voice(cx)],
+                cx,
+            ))
             .child(
                 div()
                     .px(px(2.))
+                    .pt(px(8.))
                     .child(design::eyebrow(t("meetings.people.title"), cx)),
             )
             .child(

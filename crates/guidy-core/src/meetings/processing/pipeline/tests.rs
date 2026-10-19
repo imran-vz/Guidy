@@ -186,6 +186,15 @@ struct Run {
 }
 
 fn run(f: &Fixture, cancel_after: Option<usize>) -> Run {
+    run_tracks(f, cancel_after, &mic_turns(), &system_turns())
+}
+
+fn run_tracks(
+    f: &Fixture,
+    cancel_after: Option<usize>,
+    mic: &[(usize, i64, i64)],
+    system: &[(usize, i64, i64)],
+) -> Run {
     let cancel = AtomicBool::new(false);
     let t_calls = Rc::new(Cell::new(0));
     let e_calls = Rc::new(Cell::new(0));
@@ -207,8 +216,8 @@ fn run(f: &Fixture, cancel_after: Option<usize>) -> Run {
             user_label: "Imran".into(),
             ..PipelineConfig::default()
         },
-        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
-        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        mic: Some(Box::new(PcmSource::new(render(30_000, mic)))),
+        system: Some(Box::new(PcmSource::new(render(30_000, system)))),
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
@@ -233,6 +242,70 @@ fn stage(f: &Fixture) -> Option<ProcessingStage> {
         .processing_stage
         .as_deref()
         .and_then(ProcessingStage::parse)
+}
+
+/// The [`FakeEmbedder`] voice of speaker `k`.
+fn voice(k: usize) -> Vec<f32> {
+    let mut v = vec![0f32; 16];
+    v[k] = 1.0;
+    v
+}
+
+#[test]
+fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
+    let f = fixture();
+    f.store.replace_user_voiceprints(&[voice(USER)]).unwrap();
+    // Everyone is in the room: only the mic hears them.
+    let mic = [
+        (USER, 1000, 4000),
+        (5, 5000, 8000),
+        (USER, 9000, 12000),
+        (5, 13000, 16000),
+        (6, 17000, 20000),
+    ];
+    let r = run_tracks(&f, None, &mic, &[]);
+    r.result.unwrap();
+    assert_eq!(r.embed_calls, 5);
+
+    let speakers = f.store.speakers(f.id).unwrap();
+    let labels: Vec<&str> = speakers.iter().map(|s| s.cluster_label.as_str()).collect();
+    assert_eq!(labels, vec!["Imran", "Speaker 1", "Speaker 2"]);
+    let label_of = |id| {
+        speakers
+            .iter()
+            .find(|s| Some(s.id) == id)
+            .map(|s| s.cluster_label.as_str())
+    };
+    let segments = f.store.segments(f.id).unwrap();
+    let said: Vec<(&str, &str)> = segments
+        .iter()
+        .map(|s| {
+            let k = s.text.split(' ').nth(3).unwrap();
+            (label_of(s.speaker_id).unwrap(), k)
+        })
+        .collect();
+    assert_eq!(
+        said,
+        vec![
+            ("Imran", "8"),
+            ("Speaker 1", "5"),
+            ("Imran", "8"),
+            ("Speaker 1", "5"),
+            ("Speaker 2", "6"),
+        ]
+    );
+}
+
+#[test]
+fn without_a_recorded_voice_the_mic_is_the_user() {
+    let f = fixture();
+    let mic = [(USER, 1000, 4000), (5, 5000, 8000)];
+    let r = run_tracks(&f, None, &mic, &[]);
+    r.result.unwrap();
+    assert_eq!(r.embed_calls, 0);
+    let speakers = f.store.speakers(f.id).unwrap();
+    assert_eq!(speakers.len(), 1);
+    assert!(speakers[0].is_user);
 }
 
 #[test]

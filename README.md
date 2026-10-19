@@ -2,6 +2,8 @@
 
 Offline speech-to-text for the desktop. Press a shortcut, speak, and Guidy pastes the transcript into the focused app. Transcription runs locally.
 
+Website: [guidy.imran.codes](https://guidy.imran.codes). Made by [Imran](https://imran.codes).
+
 Guidy is pure Rust on GPUI, with [gpui-kit](https://gpui-kit.com) components and its own look (Guidy Dark/Light, Geist, Geist Mono; see `docs/ARCHITECTURE.md` §1.3). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, [`docs/PARITY.md`](docs/PARITY.md) for the feature-by-feature test record, and [`NOTICE.md`](NOTICE.md) for third-party credits.
 
 ## Layout
@@ -85,4 +87,4 @@ These variables are read at build time:
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). Third-party code and assets are listed in [`NOTICE.md`](NOTICE.md).
+MIT, © 2026 [Imran](https://imran.codes), see [`LICENSE`](LICENSE). Third-party code and assets are listed in [`NOTICE.md`](NOTICE.md).

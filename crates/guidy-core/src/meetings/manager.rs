@@ -15,6 +15,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::host::AppHandle;
+use crate::managers::audio::AudioRecordingManager;
 use crate::meetings::store::MeetingsStore;
 use crate::meetings::types::*;
 
@@ -26,6 +27,18 @@ pub enum PersonRef {
         display_name: String,
         email: Option<String>,
     },
+}
+
+/// Dictation-recorder binding id of the People > Your voice recording.
+const VOICE_RECORDING_BINDING: &str = "meetings_user_voice";
+
+/// The user's recorded voice (People > Your voice).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UserVoice {
+    /// When it was recorded (ms); `None` when it wasn't.
+    pub recorded_at: Option<i64>,
+    /// Number of stored voiceprints.
+    pub prints: usize,
 }
 
 /// A suggestion in the Speaker N -> name picker.
@@ -605,6 +618,65 @@ impl MeetingsManager {
                 self.emit_meeting_changed(*meeting_id);
             }
         }
+        self.emit_people_changed();
+        Ok(())
+    }
+
+    // ===== The user's voice (People) =========================================
+
+    /// Whether (and when) the user's voice was recorded.
+    pub fn user_voice(&self) -> Result<UserVoice> {
+        Ok(UserVoice {
+            recorded_at: self.store.user_voice_recorded_at()?,
+            prints: self.store.user_voiceprints()?.len(),
+        })
+    }
+
+    /// Start recording a sample of the user's voice from the dictation
+    /// microphone (speech only: the VAD trims silence). Refused when the
+    /// speaker model isn't downloaded or the microphone is busy.
+    pub fn start_voice_recording(&self) -> Result<()> {
+        crate::meetings::processing::installed_speaker_model(&self.app)?;
+        let rm = self.app.state::<Arc<AudioRecordingManager>>();
+        rm.try_start_recording(
+            VOICE_RECORDING_BINDING,
+            crate::audio_toolkit::VadPolicy::Offline,
+        )?;
+        Ok(())
+    }
+
+    /// Stop the voice recording and store its voiceprints as the user's
+    /// voice, replacing any earlier ones. Meetings processed from now on
+    /// diarize the mic track too.
+    pub fn finish_voice_recording(&self) -> Result<UserVoice> {
+        use crate::meetings::processing::speaker_model::SpeakerEmbedder;
+        use crate::meetings::processing::user_voice::voiceprints_from_sample;
+        let rm = self.app.state::<Arc<AudioRecordingManager>>();
+        let samples = rm
+            .stop_recording(VOICE_RECORDING_BINDING, rm.cancel_generation())
+            .ok_or_else(|| anyhow::anyhow!("no voice recording in progress"))?;
+        let model = crate::meetings::processing::installed_speaker_model(&self.app)?;
+        let embedder = SpeakerEmbedder::new(&model)?;
+        let prints = voiceprints_from_sample(&samples, |pcm| embedder.embed(pcm))?;
+        self.store.replace_user_voiceprints(&prints)?;
+        log::info!(
+            "meetings: recorded the user's voice ({} voiceprints)",
+            prints.len()
+        );
+        self.emit_people_changed();
+        self.user_voice()
+    }
+
+    /// Discard a voice recording in progress.
+    pub fn cancel_voice_recording(&self) {
+        self.app
+            .state::<Arc<AudioRecordingManager>>()
+            .cancel_recording();
+    }
+
+    /// Forget the user's voice: the mic track is all the user's again.
+    pub fn delete_user_voice(&self) -> Result<()> {
+        self.store.replace_user_voiceprints(&[])?;
         self.emit_people_changed();
         Ok(())
     }

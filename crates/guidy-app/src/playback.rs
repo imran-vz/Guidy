@@ -212,11 +212,20 @@ fn run(rx: mpsc::Receiver<Cmd>, state: Arc<Mutex<PlaybackState>>) {
     }
 }
 
+/// The default output device, falling back to its other supported configs
+/// and then to other devices: the default config's fixed buffer size can be
+/// refused (e.g. Bluetooth headsets in their 24 kHz headset mode).
 fn open_sink() -> Option<rodio::MixerDeviceSink> {
-    rodio::DeviceSinkBuilder::from_default_device()
-        .and_then(|b| b.open_stream())
-        .map_err(|e| log::error!("Failed to open audio output: {e}"))
-        .ok()
+    let mut sink = rodio::DeviceSinkBuilder::from_default_device()
+        .and_then(|b| b.open_sink_or_fallback())
+        .or_else(|e| {
+            log::warn!("Default audio output config failed: {e:?}");
+            rodio::DeviceSinkBuilder::open_default_sink()
+        })
+        .map_err(|e| log::error!("Failed to open audio output: {e:?}"))
+        .ok()?;
+    sink.log_on_drop(false);
+    Some(sink)
 }
 
 fn play_file(

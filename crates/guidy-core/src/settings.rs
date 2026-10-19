@@ -670,7 +670,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             base_url: "https://api.z.ai/api/paas/v4".to_string(),
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
-            supports_structured_output: true,
+            supports_structured_output: false,
             api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
@@ -762,12 +762,13 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         api_format: PostProcessApiFormat::OpenAi,
     });
 
-    // AWS Bedrock via Mantle (OpenAI-compatible endpoint)
+    // AWS Bedrock via Mantle (OpenAI-compatible endpoint). The host is per
+    // region (`bedrock-mantle.{region}.api.aws`), so the URL is editable.
     providers.push(PostProcessProvider {
         id: "bedrock_mantle".to_string(),
         label: "AWS Bedrock (Mantle)".to_string(),
         base_url: "https://bedrock-mantle.us-east-1.api.aws/v1".to_string(),
-        allow_base_url_edit: false,
+        allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
         api_format: PostProcessApiFormat::OpenAi,
