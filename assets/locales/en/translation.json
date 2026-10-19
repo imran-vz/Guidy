@@ -783,6 +783,7 @@
       "empty": "No meetings yet. Start meeting notes to record one.",
       "loading": "Loading meetings...",
       "loadError": "Couldn't load meetings",
+      "speakerModelMissing": "Recordings aren't processed until the speaker recognition model is downloaded.",
       "minutes": "{{count}} min",
       "open": "Open",
       "rename": "Rename",
