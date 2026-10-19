@@ -617,6 +617,10 @@
         "title": "Version",
         "description": "Current version of Guidy"
       },
+      "author": {
+        "title": "Made by",
+        "description": "Imran"
+      },
       "whatsNewUpdates": {
         "label": "Show What's New",
         "description": "Show release notes after Guidy updates"

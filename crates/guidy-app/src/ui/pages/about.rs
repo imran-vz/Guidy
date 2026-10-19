@@ -1,16 +1,20 @@
-//! About page: language, theme, version, what's-new toggle, data/log dirs,
-//! acknowledgments.
+//! About page: language, theme, version, author, what's-new toggle,
+//! data/log dirs, acknowledgments.
 
 use crate::state::AppState;
-use crate::ui::design;
+use crate::ui::design::{self, Pill};
 use crate::ui::kit::{
-    group, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
+    group, icon, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
 };
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{h_flex, ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::json;
+
+const AUTHOR_SITE: &str = "https://imran.codes";
+const AUTHOR_GITHUB: &str = "https://github.com/imran-vz";
 
 pub struct AboutPage {
     state: Entity<AppState>,
@@ -114,6 +118,31 @@ impl Render for AboutPage {
                         .text_size(design::TEXT_MONO)
                         .font_family(crate::theme::MONO_FONT)
                         .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                )
+                .into_any_element(),
+            SettingRow::new("author", t("settings.about.author.title"))
+                .description(t("settings.about.author.description"))
+                .control(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("author-site")
+                                .ghost()
+                                .pill()
+                                .small()
+                                .icon(icon("globe"))
+                                .label("imran.codes")
+                                .on_click(|_, _, cx| cx.open_url(AUTHOR_SITE)),
+                        )
+                        .child(
+                            Button::new("author-github")
+                                .ghost()
+                                .pill()
+                                .small()
+                                .icon(icon("github"))
+                                .label("GitHub")
+                                .on_click(|_, _, cx| cx.open_url(AUTHOR_GITHUB)),
+                        ),
                 )
                 .into_any_element(),
             SettingRow::new(

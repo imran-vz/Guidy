@@ -162,6 +162,8 @@ h1,h2,h3{margin:0;font-weight:500;letter-spacing:-.02em}
 .ill{position:relative;width:100%;aspect-ratio:var(--ar,480/210)}
 .ill i{position:absolute;inset:0;-webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat}
 /* Zoom into a drawing whose subject sits small in its frame. */
+/* Artwork drawn off-centre in its frame (the microphone sits at x≈100 of 480): shift it to the middle. */
+.ill.nudge i{transform:translateX(var(--dx,0))}
 .ill.zoom i{-webkit-mask-size:250%;mask-size:250%;-webkit-mask-position:53% 90%;mask-position:53% 90%}
 .ill .l{background:var(--line)}.ill .f{background:var(--accent-soft)}.ill .a{background:var(--accent-text)}
 
