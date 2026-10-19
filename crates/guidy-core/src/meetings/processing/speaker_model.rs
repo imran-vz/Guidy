@@ -18,11 +18,31 @@ use sha2::{Digest, Sha256};
 use super::SAMPLE_RATE;
 use crate::host::AppHandle;
 
+/// Display name and training data, shown next to the download button.
+pub const SPEAKER_MODEL_NAME: &str = "WeSpeaker ResNet34";
+pub const SPEAKER_MODEL_TRAINED_ON: &str = "VoxCeleb, English";
 pub const SPEAKER_MODEL_FILE: &str = "wespeaker_en_voxceleb_resnet34_LM.onnx";
 pub const SPEAKER_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx";
 pub const SPEAKER_MODEL_SHA256: &str =
     "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012";
 pub const SPEAKER_MODEL_SIZE: u64 = 26_530_550;
+
+/// The speaker model isn't downloaded. It downloads only when the user asks
+/// (Meetings > Settings), so processing refuses to start without it.
+/// Downcast an `anyhow::Error` to this to point the user there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeakerModelMissing;
+
+impl std::fmt::Display for SpeakerModelMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "The speaker recognition model isn't downloaded. Download it in Meetings > \
+             Settings, then process the meeting again.",
+        )
+    }
+}
+
+impl std::error::Error for SpeakerModelMissing {}
 
 /// Event emitted while the speaker model downloads. Payload:
 /// [`SpeakerModelStatus`].
@@ -68,6 +88,21 @@ pub fn speaker_model_path(app: &AppHandle) -> Result<PathBuf> {
 
 fn is_installed(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() == SPEAKER_MODEL_SIZE)
+}
+
+/// Whether the speaker model is on disk (no download).
+pub fn speaker_model_installed(app: &AppHandle) -> bool {
+    speaker_model_path(app).is_ok_and(|p| is_installed(&p))
+}
+
+/// The installed speaker model's path, or [`SpeakerModelMissing`]. Never
+/// downloads.
+pub fn installed_speaker_model(app: &AppHandle) -> Result<PathBuf> {
+    let path = speaker_model_path(app)?;
+    if !is_installed(&path) {
+        return Err(SpeakerModelMissing.into());
+    }
+    Ok(path)
 }
 
 pub fn speaker_model_status(app: &AppHandle) -> SpeakerModelStatus {

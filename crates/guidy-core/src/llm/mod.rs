@@ -20,6 +20,7 @@ pub mod apple;
 pub mod builtin;
 pub mod http;
 pub mod local_models;
+pub mod registry;
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -395,6 +396,50 @@ pub fn list_models(app: &AppHandle, provider_id: &str) -> Result<Vec<String>> {
     validate_base_url(&provider)?;
     let api_key = crate::settings::provider_api_key(provider_id);
     block_on(http::list_models(&provider, api_key))
+}
+
+/// The model picker's list for a cloud provider ([`registry::merge_models`]).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ModelCatalog {
+    pub models: Vec<registry::ModelEntry>,
+    /// models.dev describes this provider.
+    pub in_registry: bool,
+    /// When the registry copy was downloaded (unix seconds); `None` for the
+    /// copy bundled with the app.
+    pub registry_fetched_at: Option<u64>,
+    /// Why the provider's own model list couldn't be read (no API key, a
+    /// network error). The registry's models are shown meanwhile.
+    pub live_error: Option<String>,
+}
+
+/// The models a cloud provider offers, described by the registry. The live
+/// list is only asked for once an API key is set (or for the custom
+/// endpoint, which may need none). Blocking.
+pub fn model_catalog(app: &AppHandle, provider_id: &str) -> Result<ModelCatalog> {
+    let settings = crate::settings::get_settings(app);
+    let provider = match resolve_provider(&settings, provider_id) {
+        Some(ProviderRef::Configured(p)) => p.clone(),
+        Some(ProviderRef::Builtin) => bail!("the built-in runtime has no model catalog"),
+        None => bail!("unknown LLM provider '{provider_id}'"),
+    };
+    let api_key = crate::settings::provider_api_key(provider_id);
+    let live = if api_key.trim().is_empty() && provider.id != "custom" {
+        Err(anyhow!("no API key set for {}", provider.label))
+    } else {
+        validate_base_url(&provider).and_then(|_| block_on(http::list_models(&provider, api_key)))
+    };
+    let reg = registry::current();
+    let known = reg.models(provider_id);
+    let (live, live_error) = match live {
+        Ok(ids) => (Some(ids), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    Ok(ModelCatalog {
+        models: registry::merge_models(known, live.as_deref()),
+        in_registry: known.is_some(),
+        registry_fetched_at: reg.fetched_at,
+        live_error,
+    })
 }
 
 /// Run a future to completion from blocking code, whether or not the caller

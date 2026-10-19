@@ -14,6 +14,7 @@
 //! the trait (returning [`unavailable`]) keeps the others compiling.
 
 use crate::logic::meetings::MeetingsInit;
+pub use guidy_core::llm::ModelCatalog;
 use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult,
 };
@@ -45,6 +46,9 @@ pub enum MeetingsError {
         name: String,
         known: bool,
     },
+    /// The speaker recognition model isn't downloaded (it downloads only
+    /// from Meetings > Settings).
+    SpeakerModelMissing,
     NoLinearKey,
     LinearUnauthorized,
     /// The job was cancelled ([`guidy_core::llm::CANCELLED`]): not an error
@@ -57,6 +61,7 @@ impl MeetingsError {
     pub fn from_anyhow(e: &anyhow::Error) -> Self {
         use guidy_core::linear::LinearError;
         use guidy_core::managers::transcription::meeting::MeetingModelMissing;
+        use guidy_core::meetings::processing::SpeakerModelMissing;
         if guidy_core::llm::is_cancelled_error(e) {
             return Self::Cancelled;
         }
@@ -67,6 +72,9 @@ impl MeetingsError {
                     name: m.model_name.clone(),
                     known: m.known,
                 };
+            }
+            if cause.downcast_ref::<SpeakerModelMissing>().is_some() {
+                return Self::SpeakerModelMissing;
             }
             match cause.downcast_ref::<LinearError>() {
                 Some(LinearError::MissingApiKey) => return Self::NoLinearKey,
@@ -86,6 +94,7 @@ impl MeetingsError {
                 name,
                 known,
             } => format!("{TAG}model-missing{TAG}{model_id}{TAG}{name}{TAG}{known}"),
+            Self::SpeakerModelMissing => format!("{TAG}speaker-model-missing"),
             Self::NoLinearKey => format!("{TAG}no-linear-key"),
             Self::LinearUnauthorized => format!("{TAG}linear-unauthorized"),
             Self::Cancelled => format!("{TAG}cancelled"),
@@ -107,6 +116,7 @@ impl MeetingsError {
                 name: name.to_string(),
                 known: *known == "true",
             },
+            ["speaker-model-missing"] => Self::SpeakerModelMissing,
             ["no-linear-key"] => Self::NoLinearKey,
             ["linear-unauthorized"] => Self::LinearUnauthorized,
             ["cancelled"] => Self::Cancelled,
@@ -126,6 +136,7 @@ impl MeetingsError {
             Self::ModelMissing { name, .. } => {
                 t_args("meetings.errors.modelUnknown", &[("name", name)])
             }
+            Self::SpeakerModelMissing => t("meetings.errors.speakerModelMissing"),
             Self::NoLinearKey => t("meetings.errors.noLinearKey"),
             Self::LinearUnauthorized => t("meetings.errors.linearUnauthorized"),
             Self::Cancelled | Self::Other(_) => return None,
@@ -302,6 +313,15 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     /// Model ids the provider offers (local: downloaded built-in models).
     fn llm_models(&self, _provider_id: &str) -> MeetingsResult<Vec<String>> {
         Ok(Vec::new())
+    }
+    /// A cloud provider's models described by the models.dev registry.
+    fn llm_model_catalog(&self, _provider_id: &str) -> MeetingsResult<ModelCatalog> {
+        Err(unavailable())
+    }
+    /// Download the models.dev registry now. Returns when it was fetched
+    /// (unix seconds).
+    fn refresh_llm_registry(&self) -> MeetingsResult<u64> {
+        Err(unavailable())
     }
     /// Built-in llama.cpp models (catalog + download state).
     fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
@@ -568,6 +588,14 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
         g2_core::list_models(&self.app, provider_id)
     }
+    fn llm_model_catalog(&self, provider_id: &str) -> MeetingsResult<ModelCatalog> {
+        guidy_core::llm::model_catalog(&self.app, provider_id).map_err(err)
+    }
+    fn refresh_llm_registry(&self) -> MeetingsResult<u64> {
+        guidy_core::llm::registry::refresh(&self.app)
+            .map(|r| r.fetched_at.unwrap_or_default())
+            .map_err(err)
+    }
     fn local_llm_models(&self) -> MeetingsResult<Vec<LocalLlmModel>> {
         g2_core::local_models(&self.app)
     }
@@ -765,6 +793,12 @@ mod error_tests {
             }
         );
         assert_eq!(MeetingsError::parse(&e.encode()), e);
+        let speaker = anyhow::Error::new(guidy_core::meetings::processing::SpeakerModelMissing)
+            .context("process meeting 4");
+        assert_eq!(
+            MeetingsError::parse(&err(speaker)),
+            MeetingsError::SpeakerModelMissing
+        );
         let linear = anyhow::Error::new(guidy_core::linear::LinearError::MissingApiKey);
         assert_eq!(
             MeetingsError::parse(&err(linear)),
@@ -1321,6 +1355,14 @@ pub mod fake {
                 None => Ok("Connected".into()),
             }
         }
+        fn llm_model_catalog(&self, provider_id: &str) -> MeetingsResult<ModelCatalog> {
+            self.rec(format!("llm_model_catalog {provider_id}"));
+            Ok(self.data.lock().ai.catalog.clone())
+        }
+        fn refresh_llm_registry(&self) -> MeetingsResult<u64> {
+            self.rec("refresh_llm_registry".to_string());
+            Ok(1)
+        }
         fn llm_models(&self, provider_id: &str) -> MeetingsResult<Vec<String>> {
             self.rec(format!("llm_models {provider_id}"));
             let d = self.data.lock();
@@ -1362,6 +1404,8 @@ pub mod fake {
         /// `cancel_summarize` returns false (the job is already storing).
         pub cancel_refused: bool,
         pub llm_models: Vec<String>,
+        /// What `llm_model_catalog` returns.
+        pub catalog: ModelCatalog,
         /// `llm_models` fails with this message.
         pub fail_llm_models: Option<String>,
         /// What `llm_test_connection` returns for a provider (default

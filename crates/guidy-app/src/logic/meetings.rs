@@ -3,7 +3,7 @@
 //! links, external-URL checks and settings patches.
 
 use guidy_core::meetings::processing::SpeakerModelStatus;
-use guidy_core::meetings::settings::MeetingSettings;
+use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
     events, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
     RecorderState, Segment, SpeakerId,
@@ -466,6 +466,51 @@ pub fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// Why an email address can't be added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmailError {
+    Invalid,
+    Duplicate,
+}
+
+/// A plausible email address: one `@`, something before it, a dotted domain
+/// after it, no whitespace. Deliverability isn't checked.
+pub fn is_valid_email(email: &str) -> bool {
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.contains('@')
+        && !email.chars().any(char::is_whitespace)
+        && domain
+            .split_once('.')
+            .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && !b.ends_with('.'))
+}
+
+/// `emails` with `email` (trimmed) appended under `label` (trimmed).
+pub fn add_user_email(
+    emails: &[UserEmail],
+    label: &str,
+    email: &str,
+) -> Result<Vec<UserEmail>, EmailError> {
+    let email = email.trim();
+    if !is_valid_email(email) {
+        return Err(EmailError::Invalid);
+    }
+    if emails
+        .iter()
+        .any(|u| u.email.trim().eq_ignore_ascii_case(email))
+    {
+        return Err(EmailError::Duplicate);
+    }
+    let mut out = emails.to_vec();
+    out.push(UserEmail {
+        label: label.trim().to_string(),
+        email: email.to_string(),
+    });
+    Ok(out)
+}
+
 /// People a person can be merged into (everyone else).
 pub fn merge_targets(people: &[Person], from: i64) -> Vec<&Person> {
     people.iter().filter(|p| p.id != from).collect()
@@ -731,6 +776,34 @@ mod tests {
         ] {
             assert!(!is_allowed_external_url(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn email_validation_accepts_plain_addresses_only() {
+        for ok in ["a@b.co", "first.last+tag@work.example.com"] {
+            assert!(is_valid_email(ok), "{ok}");
+        }
+        for bad in [
+            "", "a", "a@", "@b.co", "a@b", "a@b.", "a@.co", "a b@c.co", "a@b@c.co",
+        ] {
+            assert!(!is_valid_email(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn adding_an_email_trims_and_rejects_duplicates() {
+        let list = add_user_email(&[], " Work ", " me@work.example ").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].label, "Work");
+        assert_eq!(list[0].email, "me@work.example");
+        assert_eq!(
+            add_user_email(&list, "Other", "ME@work.example"),
+            Err(EmailError::Duplicate)
+        );
+        assert_eq!(add_user_email(&list, "", "nope"), Err(EmailError::Invalid));
+        let list = add_user_email(&list, "", "me@home.example").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].label, "");
     }
 
     #[test]

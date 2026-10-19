@@ -1254,6 +1254,27 @@ fn apply_settings_migrations(
         updated = true;
     }
 
+    // One-time meetings email migration (only while the new key is absent):
+    // the single `user_email` became a labelled list.
+    if let Some(meetings) = settings_value.get("meetings") {
+        if meetings.get("user_emails").is_none() {
+            let legacy = meetings
+                .get("user_email")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|e| !e.is_empty());
+            settings.meetings.user_emails = legacy
+                .map(|email| {
+                    vec![crate::meetings::settings::UserEmail {
+                        label: String::new(),
+                        email: email.to_string(),
+                    }]
+                })
+                .unwrap_or_default();
+            updated = true;
+        }
+    }
+
     let stored_schema_version = settings_value
         .get("settings_schema_version")
         .and_then(|v| v.as_u64())
@@ -1798,6 +1819,32 @@ mod tests {
             assert_eq!(settings.selected_language, language);
             assert_eq!(settings.chinese_script, script);
         }
+    }
+
+    #[test]
+    fn meetings_email_migration_moves_the_single_email_into_the_list() {
+        let mut settings = get_default_settings();
+        let raw = serde_json::json!({
+            "meetings": { "enabled": true, "user_email": " me@work.example " }
+        });
+        assert!(apply_settings_migrations(&mut settings, &raw));
+        assert_eq!(settings.meetings.user_emails.len(), 1);
+        assert_eq!(settings.meetings.user_emails[0].email, "me@work.example");
+        assert_eq!(settings.meetings.user_emails[0].label, "");
+
+        // A blank legacy email migrates to an empty list.
+        let mut settings = get_default_settings();
+        let raw = serde_json::json!({ "meetings": { "user_email": "  " } });
+        apply_settings_migrations(&mut settings, &raw);
+        assert!(settings.meetings.user_emails.is_empty());
+
+        // Once the list exists it wins, even when empty.
+        let mut settings = get_default_settings();
+        let raw = serde_json::json!({
+            "meetings": { "user_email": "old@example.com", "user_emails": [] }
+        });
+        apply_settings_migrations(&mut settings, &raw);
+        assert!(settings.meetings.user_emails.is_empty());
     }
 
     #[test]

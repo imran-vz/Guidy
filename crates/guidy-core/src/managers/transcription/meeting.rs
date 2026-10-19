@@ -68,27 +68,24 @@ impl fmt::Display for MeetingModelMissing {
 
 impl std::error::Error for MeetingModelMissing {}
 
-/// Pick the meeting model id from the model list. `configured: None` means
-/// the default (any downloaded quant of Parakeet v3, preferring the catalog
-/// default quant).
+/// Pick the meeting model id from the model list: the model chosen for
+/// meetings (`configured`) when downloaded, else the dictation model
+/// (`dictation`), else any downloaded Parakeet v3 quant (preferring the
+/// catalog default). Fails only when none of them is downloaded, naming the
+/// model to download: the chosen one, else the dictation model, else
+/// Parakeet v3.
 pub fn resolve_meeting_model_id(
     models: &[ModelInfo],
     configured: Option<&str>,
+    dictation: Option<&str>,
 ) -> std::result::Result<String, MeetingModelMissing> {
-    if let Some(id) = configured.filter(|id| !id.trim().is_empty()) {
-        return match models.iter().find(|m| m.id == id) {
-            Some(m) if m.is_downloaded => Ok(m.id.clone()),
-            Some(m) => Err(MeetingModelMissing {
-                model_id: m.id.clone(),
-                model_name: m.name.clone(),
-                known: true,
-            }),
-            None => Err(MeetingModelMissing {
-                model_id: id.to_string(),
-                model_name: id.to_string(),
-                known: false,
-            }),
-        };
+    let configured = non_blank(configured);
+    let dictation = non_blank(dictation);
+    let find = |id: &str| models.iter().find(|m| m.id == id);
+    for id in configured.into_iter().chain(dictation) {
+        if let Some(m) = find(id).filter(|m| m.is_downloaded) {
+            return Ok(m.id.clone());
+        }
     }
     let prefix = format!("{DEFAULT_MEETING_MODEL_REPO}/");
     let mut candidates: Vec<&ModelInfo> = models
@@ -96,12 +93,55 @@ pub fn resolve_meeting_model_id(
         .filter(|m| m.is_downloaded && m.id.starts_with(&prefix))
         .collect();
     candidates.sort_by_key(|m| m.id != DEFAULT_MEETING_MODEL_ID);
-    match candidates.first() {
-        Some(m) => Ok(m.id.clone()),
-        None => Err(MeetingModelMissing {
+    if let Some(m) = candidates.first() {
+        return Ok(m.id.clone());
+    }
+    let missing = |id: &str| match find(id) {
+        Some(m) => MeetingModelMissing {
+            model_id: m.id.clone(),
+            model_name: m.name.clone(),
+            known: true,
+        },
+        None => MeetingModelMissing {
+            model_id: id.to_string(),
+            model_name: id.to_string(),
+            known: false,
+        },
+    };
+    Err(match (configured, dictation) {
+        (Some(id), _) => missing(id),
+        (None, Some(id)) if find(id).is_some() => missing(id),
+        _ => MeetingModelMissing {
             model_id: DEFAULT_MEETING_MODEL_ID.to_string(),
             model_name: DEFAULT_MEETING_MODEL_NAME.to_string(),
             known: true,
+        },
+    })
+}
+
+fn non_blank(id: Option<&str>) -> Option<&str> {
+    id.map(str::trim).filter(|id| !id.is_empty())
+}
+
+/// Whether the model chosen for meetings is downloaded. `None` when no
+/// separate meetings model is chosen (meetings use the dictation model).
+/// When it isn't, [`resolve_meeting_model_id`] falls back meanwhile.
+pub fn configured_meeting_model_missing(
+    models: &[ModelInfo],
+    configured: Option<&str>,
+) -> Option<MeetingModelMissing> {
+    let id = non_blank(configured)?;
+    match models.iter().find(|m| m.id == id) {
+        Some(m) if m.is_downloaded => None,
+        Some(m) => Some(MeetingModelMissing {
+            model_id: m.id.clone(),
+            model_name: m.name.clone(),
+            known: true,
+        }),
+        None => Some(MeetingModelMissing {
+            model_id: id.to_string(),
+            model_name: id.to_string(),
+            known: false,
         }),
     }
 }
@@ -111,8 +151,10 @@ pub fn resolve_meeting_model_id(
 pub fn resolve_meeting_model(
     model_manager: &ModelManager,
     configured: Option<&str>,
+    dictation: Option<&str>,
 ) -> Result<(String, PathBuf)> {
-    let id = resolve_meeting_model_id(&model_manager.get_available_models(), configured)?;
+    let id =
+        resolve_meeting_model_id(&model_manager.get_available_models(), configured, dictation)?;
     let path = model_manager.get_model_path(&id)?;
     Ok((id, path))
 }
@@ -257,42 +299,80 @@ mod tests {
     }
 
     #[test]
-    fn default_prefers_the_catalog_quant_then_any_downloaded_quant() {
+    fn parakeet_is_the_last_resort_preferring_the_catalog_quant() {
         let q4 = format!("{DEFAULT_MEETING_MODEL_REPO}/parakeet-tdt-0.6b-v3-Q4_K_M.gguf");
         let models = vec![model(&q4, true), model(DEFAULT_MEETING_MODEL_ID, true)];
         assert_eq!(
-            resolve_meeting_model_id(&models, None).unwrap(),
+            resolve_meeting_model_id(&models, None, None).unwrap(),
             DEFAULT_MEETING_MODEL_ID
         );
         let models = vec![model(&q4, true), model(DEFAULT_MEETING_MODEL_ID, false)];
-        assert_eq!(resolve_meeting_model_id(&models, None).unwrap(), q4);
+        assert_eq!(resolve_meeting_model_id(&models, None, None).unwrap(), q4);
     }
 
     #[test]
-    fn missing_default_names_parakeet_v3() {
-        let models = vec![model(DEFAULT_MEETING_MODEL_ID, false), model("other", true)];
-        let err = resolve_meeting_model_id(&models, None).unwrap_err();
+    fn meetings_use_the_dictation_model_by_default() {
+        let models = vec![
+            model(DEFAULT_MEETING_MODEL_ID, true),
+            model("whisper", true),
+        ];
+        assert_eq!(
+            resolve_meeting_model_id(&models, None, Some("whisper")).unwrap(),
+            "whisper"
+        );
+        // A blank meetings model is no choice.
+        assert_eq!(
+            resolve_meeting_model_id(&models, Some(" "), Some("whisper")).unwrap(),
+            "whisper"
+        );
+    }
+
+    #[test]
+    fn a_chosen_meetings_model_wins_once_downloaded() {
+        let models = vec![model("parakeet", false), model("whisper", true)];
+        // Not downloaded yet: the dictation model meanwhile.
+        assert_eq!(
+            resolve_meeting_model_id(&models, Some("parakeet"), Some("whisper")).unwrap(),
+            "whisper"
+        );
+        let missing = configured_meeting_model_missing(&models, Some("parakeet")).unwrap();
+        assert_eq!(missing.model_id, "parakeet");
+        assert!(missing.known);
+        let models = vec![model("parakeet", true), model("whisper", true)];
+        assert_eq!(
+            resolve_meeting_model_id(&models, Some("parakeet"), Some("whisper")).unwrap(),
+            "parakeet"
+        );
+        assert!(configured_meeting_model_missing(&models, Some("parakeet")).is_none());
+        assert!(configured_meeting_model_missing(&models, None).is_none());
+        assert!(
+            !configured_meeting_model_missing(&models, Some("gone"))
+                .unwrap()
+                .known
+        );
+    }
+
+    #[test]
+    fn nothing_downloaded_names_the_model_to_download() {
+        let models = vec![
+            model(DEFAULT_MEETING_MODEL_ID, false),
+            model("whisper", false),
+        ];
+        let err = resolve_meeting_model_id(&models, Some("whisper"), None).unwrap_err();
+        assert_eq!(err.model_id, "whisper");
+        let err = resolve_meeting_model_id(&models, None, Some("whisper")).unwrap_err();
+        assert_eq!(err.model_id, "whisper");
+        // No dictation model either: Parakeet v3.
+        let err = resolve_meeting_model_id(&models, None, None).unwrap_err();
         assert_eq!(err.model_id, DEFAULT_MEETING_MODEL_ID);
         assert!(err.known);
         assert!(err.to_string().contains("Parakeet TDT 0.6B v3"));
-    }
-
-    #[test]
-    fn configured_model_must_be_downloaded() {
-        let models = vec![model("a", true), model("b", false)];
-        assert_eq!(resolve_meeting_model_id(&models, Some("a")).unwrap(), "a");
+        // A chosen model missing from the list can't be downloaded.
         assert!(
-            resolve_meeting_model_id(&models, Some("b"))
+            !resolve_meeting_model_id(&models, Some("gone"), None)
                 .unwrap_err()
                 .known
         );
-        assert!(
-            !resolve_meeting_model_id(&models, Some("c"))
-                .unwrap_err()
-                .known
-        );
-        // A blank setting means the default.
-        assert!(resolve_meeting_model_id(&models, Some(" ")).is_err());
     }
 
     #[test]
