@@ -3,7 +3,7 @@
 //! links, external-URL checks and settings patches.
 
 use guidy_core::meetings::processing::SpeakerModelStatus;
-use guidy_core::meetings::settings::MeetingSettings;
+use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
     events, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
     RecorderState, Segment, SpeakerId,
@@ -219,9 +219,25 @@ pub fn is_linear_url(url: &str) -> bool {
             .all(|c| c.is_ascii_graphic() && c != '\\' && c != '@')
 }
 
-/// URLs the meetings UI may open: Linear pages and the settings panes.
+/// Where to create an API key, per LLM provider id (the "Get a key" link).
+pub const PROVIDER_KEY_URLS: [(&str, &str); 7] = [
+    ("anthropic", "https://console.anthropic.com/settings/keys"),
+    ("openai", "https://platform.openai.com/api-keys"),
+    ("openrouter", "https://openrouter.ai/settings/keys"),
+    ("groq", "https://console.groq.com/keys"),
+    ("cerebras", "https://cloud.cerebras.ai/platform"),
+    ("zai", "https://z.ai/manage-apikey/apikey-list"),
+    (
+        "vercel_ai_gateway",
+        "https://vercel.com/dashboard/ai-gateway/api-keys",
+    ),
+];
+
+/// URLs the meetings UI may open: Linear pages, the settings panes and the
+/// LLM providers' API key pages.
 pub fn is_allowed_external_url(url: &str) -> bool {
     is_linear_url(url)
+        || PROVIDER_KEY_URLS.iter().any(|(_, key_url)| *key_url == url)
         || [
             PRIVACY_CALENDARS_URL,
             PRIVACY_MICROPHONE_URL,
@@ -466,6 +482,48 @@ pub fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// Why an email address can't be added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmailError {
+    Invalid,
+    Duplicate,
+}
+
+/// A plausible email address: one `@`, something before it, a dotted domain
+/// after it, no whitespace. Deliverability isn't checked.
+pub fn is_valid_email(email: &str) -> bool {
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.contains('@')
+        && !email.chars().any(char::is_whitespace)
+        && domain
+            .split_once('.')
+            .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty() && !b.ends_with('.'))
+}
+
+/// `emails` with `email` (trimmed) appended under `label` (trimmed).
+pub fn add_user_email(
+    emails: &[UserEmail],
+    label: &str,
+    email: &str,
+) -> Result<Vec<UserEmail>, EmailError> {
+    let email = email.trim();
+    if !is_valid_email(email) {
+        return Err(EmailError::Invalid);
+    }
+    if emails.iter().any(|u| u.matches(email)) {
+        return Err(EmailError::Duplicate);
+    }
+    let mut out = emails.to_vec();
+    out.push(UserEmail {
+        label: label.trim().to_string(),
+        email: email.to_string(),
+    });
+    Ok(out)
+}
+
 /// People a person can be merged into (everyone else).
 pub fn merge_targets(people: &[Person], from: i64) -> Vec<&Person> {
     people.iter().filter(|p| p.id != from).collect()
@@ -707,13 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn only_linear_and_privacy_urls_are_opened() {
+    fn only_known_urls_are_opened() {
         assert!(is_linear_url("https://linear.app/acme/issue/ENG-1/fix-it"));
         assert!(is_allowed_external_url("https://linear.app/settings/api"));
         assert!(is_allowed_external_url(PRIVACY_MICROPHONE_URL));
         assert!(is_allowed_external_url(PRIVACY_CALENDARS_URL));
         assert!(is_allowed_external_url(PRIVACY_AUDIO_CAPTURE_URL));
         assert!(is_allowed_external_url(NOTIFICATIONS_SETTINGS_URL));
+        for (_, url) in PROVIDER_KEY_URLS {
+            assert!(is_allowed_external_url(url), "{url}");
+        }
         for bad in [
             "http://linear.app/acme",
             "https://linear.app/",
@@ -731,6 +792,34 @@ mod tests {
         ] {
             assert!(!is_allowed_external_url(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn email_validation_accepts_plain_addresses_only() {
+        for ok in ["a@b.co", "first.last+tag@work.example.com"] {
+            assert!(is_valid_email(ok), "{ok}");
+        }
+        for bad in [
+            "", "a", "a@", "@b.co", "a@b", "a@b.", "a@.co", "a b@c.co", "a@b@c.co",
+        ] {
+            assert!(!is_valid_email(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn adding_an_email_trims_and_rejects_duplicates() {
+        let list = add_user_email(&[], " Work ", " me@work.example ").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].label, "Work");
+        assert_eq!(list[0].email, "me@work.example");
+        assert_eq!(
+            add_user_email(&list, "Other", "ME@work.example"),
+            Err(EmailError::Duplicate)
+        );
+        assert_eq!(add_user_email(&list, "", "nope"), Err(EmailError::Invalid));
+        let list = add_user_email(&list, "", "me@home.example").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].label, "");
     }
 
     #[test]

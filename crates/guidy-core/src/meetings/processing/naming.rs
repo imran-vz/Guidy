@@ -10,6 +10,7 @@ use anyhow::{bail, Result};
 use super::cluster::{rank_people, KnownVoice};
 use super::sidecar::{self, SegmentEmbedding};
 use crate::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
+use crate::meetings::settings::MeetingSettings;
 use crate::meetings::store::MeetingsStore;
 use crate::meetings::types::*;
 
@@ -41,13 +42,13 @@ fn same_text(a: &str, b: &str) -> bool {
 
 /// Picker suggestions for `speaker_id`: the linked event's attendees who
 /// aren't assigned to another speaker of this meeting (and aren't the user,
-/// by `Attendee::is_current_user` or the settings email),
+/// by `Attendee::is_current_user` or one of the settings emails),
 /// then every other known person, ranked by voice similarity (people without
 /// voiceprints last, by name).
 pub fn suggestions(
     store: &MeetingsStore,
     speaker_id: SpeakerId,
-    user_email: Option<&str>,
+    settings: &MeetingSettings,
 ) -> Result<Vec<NameSuggestion>> {
     let Some(speaker) = store.get_speaker(speaker_id)? else {
         bail!("speaker {speaker_id} not found");
@@ -87,7 +88,7 @@ pub fn suggestions(
         }
         let email = a.email.as_deref().map(str::trim).filter(|e| !e.is_empty());
         let name = a.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
-        if email.is_some_and(|e| user_email.is_some_and(|u| same_text(e, u))) {
+        if email.is_some_and(|e| settings.is_user_email(e)) {
             continue;
         }
         if is_assigned(name, email) {

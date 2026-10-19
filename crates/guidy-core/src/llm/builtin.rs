@@ -807,13 +807,28 @@ impl BuiltinProvider {
         model_id: &str,
         llm: &'static BuiltinLlm,
     ) -> Result<Self> {
-        let entry = if model_id.trim().is_empty() {
+        let model_id = model_id.trim();
+        let entry = if model_id.is_empty() {
             models.first_available().ok_or_else(|| {
                 anyhow!("No built-in model is downloaded. Download one in Settings, or pick another provider.")
             })?
         } else {
-            local_models::catalog_entry(model_id.trim())
-                .ok_or_else(|| anyhow!("unknown built-in model '{model_id}'"))?
+            let chosen = local_models::catalog_entry(model_id);
+            match chosen.filter(|e| models.is_downloaded(e.id)) {
+                Some(e) => e,
+                // The chosen model was deleted (or is unknown): another
+                // downloaded one, as the settings page shows.
+                None => match models.first_available() {
+                    Some(e) => {
+                        log::info!(
+                            "built-in model '{model_id}' isn't downloaded; using {}",
+                            e.id
+                        );
+                        e
+                    }
+                    None => chosen.ok_or_else(|| anyhow!("unknown built-in model '{model_id}'"))?,
+                },
+            }
         };
         let path = models.model_path(entry.id).map_err(|_| {
             anyhow!(
@@ -1092,6 +1107,25 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("not downloaded"), "{err}");
+    }
+
+    #[test]
+    fn a_deleted_chosen_model_falls_back_to_a_downloaded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = LocalModels::at(dir.path());
+        let llm: &'static BuiltinLlm = Box::leak(Box::new(BuiltinLlm::new(IDLE_TIMEOUT)));
+        let [chosen, other, ..] = local_models::CATALOG else {
+            panic!("the catalog has two models");
+        };
+        // A sparse file of the right size counts as downloaded.
+        std::fs::File::create(models.path_for(other))
+            .unwrap()
+            .set_len(other.size_bytes)
+            .unwrap();
+        let p = BuiltinProvider::from_models(&models, chosen.id, llm).unwrap();
+        assert_eq!(p.model_label(), other.name);
+        let p = BuiltinProvider::from_models(&models, "gone-model", llm).unwrap();
+        assert_eq!(p.model_label(), other.name);
     }
 
     #[test]

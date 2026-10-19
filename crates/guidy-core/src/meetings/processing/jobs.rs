@@ -19,13 +19,17 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 use super::pipeline::{
     next_stage, overall_fraction, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
 };
-use super::speaker_model::{ensure_speaker_model, SpeakerEmbedder};
+use super::speaker_model::{
+    installed_speaker_model, speaker_model_installed, SpeakerEmbedder, SpeakerModelMissing,
+};
 use super::{is_cancelled, AudioSource};
 use crate::audio_toolkit::SpeechScorer;
 use crate::engine_supervisor::EngineSupervisor;
 use crate::host::AppHandle;
 use crate::managers::model::ModelManager;
-use crate::managers::transcription::meeting::{resolve_meeting_model, MeetingTranscriber};
+use crate::managers::transcription::meeting::{
+    resolve_meeting_model, MeetingModelMissing, MeetingTranscriber,
+};
 use crate::meetings::audio_store::{self, TrackReader};
 use crate::meetings::store::MeetingsStore;
 use crate::meetings::types::*;
@@ -153,13 +157,21 @@ impl Processor {
         if next <= ProcessingStage::Voiceprints && !has_audio(&meeting) {
             bail!(AUDIO_DELETED);
         }
-        // Fail fast (nothing queued) when transcription is still to do and
-        // the meeting model isn't downloaded: the UI gets the typed
-        // `MeetingModelMissing` error to offer the download.
-        if next <= ProcessingStage::Transcribe {
-            if let Some(models) = self.inner.app.try_state::<Arc<ModelManager>>() {
-                let configured = get_settings(&self.inner.app).meetings.meeting_model;
-                resolve_meeting_model(&models, configured.as_deref())?;
+        // Fail fast (nothing queued) when a model a remaining stage needs
+        // isn't downloaded: the UI gets the typed `MeetingModelMissing` /
+        // `SpeakerModelMissing` error to point at the download. Only in the
+        // running app (with its model manager): unit tests have no models.
+        if let Some(models) = self.inner.app.try_state::<Arc<ModelManager>>() {
+            if next <= ProcessingStage::Transcribe {
+                let settings = get_settings(&self.inner.app);
+                resolve_meeting_model(
+                    &models,
+                    settings.meetings.meeting_model.as_deref(),
+                    Some(&settings.selected_model),
+                )?;
+            }
+            if next <= ProcessingStage::Voiceprints && !speaker_model_installed(&self.inner.app) {
+                return Err(SpeakerModelMissing.into());
             }
         }
         let mut state = self.lock_for(id);
@@ -340,10 +352,10 @@ impl Processor {
     }
 
     /// Queue every meeting left in `Processing` (queued or running when the
-    /// app quit or crashed). One that can't be queued (e.g. the meeting
-    /// model is missing) never sits in `Processing` forever: a meeting that
-    /// was `Processed` before it was queued keeps its notes (the reason is
-    /// logged); any other is set to `Failed` with the reason. The others
+    /// app quit or crashed). One that can't be queued never sits in
+    /// `Processing` forever: when a model isn't downloaded, or the meeting
+    /// was `Processed` before it was queued, it gets its status back (the
+    /// reason is logged); any other is set to `Failed` with the reason. The others
     /// still resume. Returns how many were queued.
     pub fn resume_interrupted(&self) -> Result<usize> {
         self.resume_interrupted_with(|id| self.enqueue(id))
@@ -362,6 +374,10 @@ impl Processor {
                     log::error!("meeting {}: could not resume processing: {e:#}", m.id);
                     let store = &self.inner.store;
                     let result = match store.status_before_processing(m.id) {
+                        // A model to download isn't a failure: back to how it
+                        // was (a new recording stays `Recorded`, with
+                        // "Process" and the download banner).
+                        _ if is_model_missing(&e) => self.restore_status(m.id).map(|_| ()),
                         // Its notes are still good: only the rerun is lost.
                         Ok(Some(MeetingStatus::Processed)) => self.restore_status(m.id).map(|_| ()),
                         _ => store.finish_processing(
@@ -544,6 +560,7 @@ impl Processor {
             app: &inner.app,
             transcriber,
             configured: settings.meetings.meeting_model.clone(),
+            dictation: settings.selected_model.clone(),
             language,
             ready: false,
         };
@@ -585,6 +602,17 @@ pub const STILL_STOPPING: &str =
 pub const AUDIO_DELETED: &str =
     "this meeting's audio has been deleted, so it can't be processed again";
 
+/// Whether `e` is a model that isn't downloaded yet but can be (meeting or
+/// speaker model): the download banner covers it, so it isn't a processing
+/// failure. A chosen model that is gone is one (choose another).
+fn is_model_missing(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<MeetingModelMissing>()
+            .is_some_and(|m| m.known)
+            || c.is::<SpeakerModelMissing>()
+    })
+}
+
 /// Whether the meeting still has a recorded track to process.
 pub fn has_audio(meeting: &Meeting) -> bool {
     meeting.mic_audio_path.is_some() || meeting.system_audio_path.is_some()
@@ -605,6 +633,8 @@ struct LazyTranscriber<'a> {
     app: &'a AppHandle,
     transcriber: &'a mut MeetingTranscriber,
     configured: Option<String>,
+    /// The dictation model, used when no meetings model is downloaded.
+    dictation: String,
     language: Option<String>,
     ready: bool,
 }
@@ -616,7 +646,8 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
                 .app
                 .try_state::<Arc<ModelManager>>()
                 .ok_or_else(|| anyhow::anyhow!("the model manager is not running"))?;
-            let (model_id, path) = resolve_meeting_model(&models, self.configured.as_deref())?;
+            let (model_id, path) =
+                resolve_meeting_model(&models, self.configured.as_deref(), Some(&self.dictation))?;
             log::info!("meeting processing uses model {model_id}");
             self.transcriber.load(self.app, &path)?;
             self.ready = true;
@@ -638,7 +669,7 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
     }
 }
 
-/// Downloads (if needed) and loads the speaker model on first use.
+/// Loads the speaker model on first use (never downloads it).
 struct LazyEmbedder<'a> {
     app: &'a AppHandle,
     embedder: Option<SpeakerEmbedder>,
@@ -647,7 +678,8 @@ struct LazyEmbedder<'a> {
 impl Embedder for LazyEmbedder<'_> {
     fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
         if self.embedder.is_none() {
-            let path = ensure_speaker_model(self.app)?;
+            // Downloaded only when the user asks (Meetings > Settings).
+            let path = installed_speaker_model(self.app)?;
             self.embedder = Some(SpeakerEmbedder::new(&path)?);
         }
         self.embedder.as_ref().expect("loaded").embed(pcm)
@@ -924,6 +956,31 @@ mod tests {
         assert_eq!(m.status, MeetingStatus::Failed);
         assert!(m.error.unwrap().contains("not downloaded"));
         assert!(p.is_busy(good));
+    }
+
+    /// A missing model is for the user to download, not a failure: the
+    /// meeting gets its status back (a new recording stays `Recorded`).
+    #[test]
+    fn resume_restores_meetings_waiting_for_a_model() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let before = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let recorded = store
+            .insert_meeting(&meeting(MeetingStatus::Recorded))
+            .unwrap();
+        before.inner.state.lock().running = true;
+        before.enqueue(recorded).unwrap();
+        drop(before);
+
+        let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
+        let n = p
+            .resume_interrupted_with(|_| {
+                Err(anyhow::Error::new(SpeakerModelMissing).context("process meeting"))
+            })
+            .unwrap();
+        assert_eq!(n, 0);
+        let m = store.get_meeting(recorded).unwrap().unwrap();
+        assert_eq!((m.status, m.error), (MeetingStatus::Recorded, None));
     }
 
     /// The status before queueing is in the database: after a restart, a

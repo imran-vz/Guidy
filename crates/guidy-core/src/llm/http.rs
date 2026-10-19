@@ -260,17 +260,37 @@ fn lists_context_lengths(provider: &PostProcessProvider) -> bool {
 
 /// Context window for `model` on `provider`: the model list's metadata when
 /// it has been seen (see [`remember_model_info`]), else
-/// [`context_tokens_by_name`].
+/// [`context_tokens_by_name`] for a model it knows, else the registry's
+/// size.
 pub fn context_tokens_for(provider: &PostProcessProvider, model: &str) -> usize {
     cached_context(provider, model)
         .flatten()
-        .unwrap_or_else(|| context_tokens_by_name(&provider.id, model))
+        // The registry lists a model's maximum, and hosted variants are
+        // often smaller: it only fills in for models the name table doesn't
+        // know.
+        .or_else(|| known_context_by_name(&provider.id, model))
+        .or_else(|| registry_context(provider, model))
+        .unwrap_or(DEFAULT_CONTEXT_TOKENS)
+}
+
+/// The context window models.dev lists for this provider's model.
+fn registry_context(provider: &PostProcessProvider, model: &str) -> Option<usize> {
+    let tokens = super::registry::current()
+        .find(&provider.id, model)?
+        .limit
+        .context?;
+    usize::try_from(tokens).ok().filter(|t| *t > 0)
 }
 
 /// Conservative context windows of well-known models, by name. Hosted
 /// variants are often smaller than the model's maximum, so these are the
 /// common hosted sizes, not the largest ones.
 pub fn context_tokens_by_name(provider_id: &str, model: &str) -> usize {
+    known_context_by_name(provider_id, model).unwrap_or(DEFAULT_CONTEXT_TOKENS)
+}
+
+/// [`context_tokens_by_name`], `None` for a model the table doesn't know.
+fn known_context_by_name(provider_id: &str, model: &str) -> Option<usize> {
     let lower = model.trim().to_ascii_lowercase();
     // `openai/gpt-4o`, `@cf/meta/llama-3.1-8b-instruct`, ... -> the last part.
     let name = lower.rsplit('/').next().unwrap_or(&lower);
@@ -280,19 +300,21 @@ pub fn context_tokens_by_name(provider_id: &str, model: &str) -> usize {
     // Custom endpoints are usually a local server (Ollama defaults to a few
     // thousand tokens) whatever the model is called.
     if provider_id == "custom" {
-        return 8_192;
+        return Some(8_192);
     }
     if provider_id == CLOUDFLARE_WORKERS_AI_PROVIDER_ID || lower.contains("@cf/") {
-        return if has("llama-3.3-70b") || has("llama-4") || has("gpt-oss") {
-            24_000
-        } else if has("8b") || has("3b") || has("1b") || has("7b") {
-            8_000
-        } else {
-            DEFAULT_CONTEXT_TOKENS
-        };
+        return Some(
+            if has("llama-3.3-70b") || has("llama-4") || has("gpt-oss") {
+                24_000
+            } else if has("8b") || has("3b") || has("1b") || has("7b") {
+                8_000
+            } else {
+                return None;
+            },
+        );
     }
     if starts("claude") {
-        return 200_000;
+        return Some(200_000);
     }
     if starts("gpt-4o")
         || starts("gpt-4.1")
@@ -304,28 +326,28 @@ pub fn context_tokens_by_name(provider_id: &str, model: &str) -> usize {
         || starts("o4")
         || starts("chatgpt-4o")
     {
-        return 128_000;
+        return Some(128_000);
     }
     if starts("gpt-4") {
-        return 8_192;
+        return Some(8_192);
     }
     if starts("gpt-3.5") {
-        return 16_000;
+        return Some(16_000);
     }
     if starts("gemini") || starts("grok") || starts("kimi") || starts("moonshot") {
-        return 128_000;
+        return Some(128_000);
     }
     if starts("deepseek") {
-        return 64_000;
+        return Some(64_000);
     }
     if starts("llama-3.1") || starts("llama-3.3") || starts("llama-4") || starts("llama3.1") {
         // Groq/Cerebras free tiers cap these well below 128k.
-        return 32_000;
+        return Some(32_000);
     }
     if starts("mistral") || starts("mixtral") || starts("qwen") || starts("command") {
-        return 32_000;
+        return Some(32_000);
     }
-    DEFAULT_CONTEXT_TOKENS
+    None
 }
 
 impl LlmProvider for HttpProvider {
@@ -958,7 +980,7 @@ mod tests {
             &p,
             &[
                 ModelInfo {
-                    id: "meta-llama/llama-3.1-8b-instruct".into(),
+                    id: "meta-llama/llama-3.1-8b-test".into(),
                     context_length: Some(131_072),
                 },
                 ModelInfo {
@@ -968,19 +990,51 @@ mod tests {
             ],
         );
         assert_eq!(
-            context_tokens_for(&p, "meta-llama/llama-3.1-8b-instruct"),
+            context_tokens_for(&p, "meta-llama/llama-3.1-8b-test"),
             131_072
         );
         // Not reported: the name table.
         assert_eq!(context_tokens_for(&p, "x/unlisted"), DEFAULT_CONTEXT_TOKENS);
         // Another base URL is another provider.
         assert_eq!(
-            context_tokens_for(&other, "meta-llama/llama-3.1-8b-instruct"),
+            context_tokens_for(&other, "meta-llama/llama-3.1-8b-test"),
             32_000
         );
         // Already listed: no request (the URL is unroutable).
-        let http = HttpProvider::new(p, "k".into(), "meta-llama/llama-3.1-8b-instruct".into());
+        let http = HttpProvider::new(p, "k".into(), "meta-llama/llama-3.1-8b-test".into());
         assert_eq!(http.context_tokens(), 131_072);
+    }
+
+    #[test]
+    fn registry_context_fills_in_for_the_name_table_but_not_the_listing() {
+        let reg = super::super::registry::current();
+        // A model the name table doesn't know: the registry's size.
+        let (id, listed) = reg
+            .models("openrouter")
+            .unwrap()
+            .iter()
+            .filter(|m| known_context_by_name("openrouter", &m.id).is_none())
+            .find_map(|m| Some((m.id.clone(), m.limit.context?)))
+            .unwrap();
+        let p = provider("openrouter", "https://ctx-registry.invalid/api/v1", true);
+        assert_eq!(context_tokens_for(&p, &id), listed as usize);
+        // One it knows: its hosted size, not the registry's maximum.
+        let (known, n) = reg
+            .models("openrouter")
+            .unwrap()
+            .iter()
+            .filter(|m| m.limit.context.is_some())
+            .find_map(|m| Some((m.id.clone(), known_context_by_name("openrouter", &m.id)?)))
+            .unwrap();
+        assert_eq!(context_tokens_for(&p, &known), n);
+        remember_model_info(
+            &p,
+            &[ModelInfo {
+                id: id.clone(),
+                context_length: Some(12_345),
+            }],
+        );
+        assert_eq!(context_tokens_for(&p, &id), 12_345);
     }
 
     #[test]
@@ -988,12 +1042,12 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let base = rt.block_on(serve(vec![(
             "200 OK",
-            json!({"data":[{"id":"z-ai/glm-4.6","context_length":202752}]}).to_string(),
+            json!({"data":[{"id":"z-ai/glm-test","context_length":202752}]}).to_string(),
         )]));
         let p = HttpProvider::new(
             provider("openrouter", &base, true),
             "k".into(),
-            "z-ai/glm-4.6".into(),
+            "z-ai/glm-test".into(),
         );
         assert_eq!(p.context_tokens(), 202_752);
         // Cached: the mock serves only one connection.
@@ -1007,13 +1061,13 @@ mod tests {
             ("500 Internal Server Error", "down".into()),
             (
                 "200 OK",
-                json!({"data":[{"id":"z-ai/glm-4.6","context_length":202752}]}).to_string(),
+                json!({"data":[{"id":"z-ai/glm-test","context_length":202752}]}).to_string(),
             ),
         ]));
         let p = HttpProvider::new(
             provider("openrouter", &base, true),
             "k".into(),
-            "z-ai/glm-4.6".into(),
+            "z-ai/glm-test".into(),
         );
         assert_eq!(p.context_tokens(), DEFAULT_CONTEXT_TOKENS);
         assert_eq!(cached_context(&p.provider, &p.model), None);

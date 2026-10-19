@@ -650,12 +650,8 @@ impl MeetingsManager {
 
     /// Attendees first, then known people (by voice similarity).
     pub fn speaker_suggestions(&self, speaker_id: SpeakerId) -> Result<Vec<NameSuggestion>> {
-        let user_email = crate::settings::get_settings(&self.app).meetings.user_email;
-        crate::meetings::processing::naming::suggestions(
-            &self.store,
-            speaker_id,
-            user_email.as_deref(),
-        )
+        let settings = crate::settings::get_settings(&self.app).meetings;
+        crate::meetings::processing::naming::suggestions(&self.store, speaker_id, &settings)
     }
 
     /// Name a speaker. Stores that speaker's voiceprints under the person and

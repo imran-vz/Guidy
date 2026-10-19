@@ -6,6 +6,8 @@ use crate::logic::meetings::{
     apply_progress, can_process, duration_minutes, format_meeting_date, non_empty, status_key,
     MeetingsEvent,
 };
+use crate::logic::models::format_model_size;
+use crate::meetings_backend::error_message;
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, Pill};
 use crate::ui::kit::{icon, t, t_args};
@@ -15,6 +17,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::meetings::processing::{SpeakerModelStatus, SPEAKER_MODEL_SIZE};
 use guidy_core::meetings::types::{Meeting, MeetingId, MeetingStatus, ProcessingProgress};
 use std::collections::{HashMap, HashSet};
 
@@ -29,6 +32,8 @@ pub struct MeetingList {
     renaming: Option<MeetingId>,
     rename_input: Entity<InputState>,
     busy: HashSet<MeetingId>,
+    /// The speaker model's state: recordings aren't processed without it.
+    speaker_model: Option<SpeakerModelStatus>,
     _subs: Vec<Subscription>,
 }
 
@@ -58,9 +63,18 @@ impl MeetingList {
             renaming: None,
             rename_input,
             busy: HashSet::new(),
+            speaker_model: None,
             _subs: subs,
         };
         this.reload(cx);
+        run(
+            cx,
+            |b| b.speaker_model_status(),
+            // Unless an event or a click got here first (newer).
+            |this: &mut Self, s, _| {
+                this.speaker_model.get_or_insert(s);
+            },
+        );
         this
     }
 
@@ -78,6 +92,10 @@ impl MeetingList {
             MeetingsEvent::MeetingChanged(_)
             | MeetingsEvent::RecorderState(_)
             | MeetingsEvent::Ready => self.reload(cx),
+            MeetingsEvent::SpeakerModelStatus(s) => {
+                self.speaker_model = Some(s.clone());
+                cx.notify();
+            }
             _ => {}
         }
     }
@@ -114,6 +132,89 @@ impl MeetingList {
                 }
             },
         );
+    }
+
+    fn download_speaker_model(&mut self, cx: &mut Context<Self>) {
+        self.speaker_model = Some(SpeakerModelStatus::Downloading {
+            downloaded: 0,
+            total: 0,
+        });
+        cx.notify();
+        run(
+            cx,
+            |b| b.download_speaker_model(),
+            |this: &mut Self, r, _| {
+                if let Err(e) = r {
+                    this.speaker_model = Some(SpeakerModelStatus::Failed {
+                        error: error_message(&e),
+                    });
+                }
+            },
+        );
+    }
+
+    /// "Download the speaker model" while it's missing: without it nothing
+    /// is processed (it downloads only when asked).
+    fn render_speaker_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.speaker_model.as_ref()?;
+        let tone = design::tone(cx);
+        let failed = matches!(status, SpeakerModelStatus::Failed { .. });
+        let action: AnyElement = match status {
+            SpeakerModelStatus::Ready => return None,
+            SpeakerModelStatus::Downloading { downloaded, total } => {
+                let pct = if *total > 0 {
+                    (*downloaded as f64 / *total as f64 * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0
+                };
+                design::mono(format!("{pct:.0}%"))
+                    .text_color(tone.text_muted)
+                    .into_any_element()
+            }
+            SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. } => {
+                let size = format_model_size(Some(SPEAKER_MODEL_SIZE as f64 / (1024.0 * 1024.0)));
+                Button::new("meetings-list-speaker-model-download")
+                    .primary()
+                    .small()
+                    .pill()
+                    .icon(icon(if failed { "rotate-ccw" } else { "download" }))
+                    .label(if failed {
+                        t("meetings.settings.speakerModel.retry")
+                    } else {
+                        t_args(
+                            "meetings.settings.speakerModel.download",
+                            &[("size", &size)],
+                        )
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.download_speaker_model(cx)))
+                    .into_any_element()
+            }
+        };
+        let message = match status {
+            SpeakerModelStatus::Failed { error } => {
+                t_args("meetings.settings.speakerModel.failed", &[("error", error)])
+            }
+            _ => t("meetings.list.speakerModelMissing"),
+        };
+        let theme = cx.theme().clone();
+        Some(
+            design::notice(theme.warning)
+                .id("meetings-speaker-model-missing-list")
+                .flex()
+                .items_center()
+                .gap_3()
+                .justify_between()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(design::TEXT_BODY)
+                        .child(message),
+                )
+                .child(action)
+                .test_support()
+                .into_any_element(),
+        )
     }
 
     #[cfg(test)]
@@ -415,6 +516,9 @@ impl Render for MeetingList {
         let model_banner = meeting_model_missing(cx)
             .filter(|_| needs_model)
             .map(|m| render_model_download("list", &m, cx));
+        let speaker_banner = needs_model
+            .then(|| self.render_speaker_banner(cx))
+            .flatten();
         let notice = |text: SharedString| {
             div()
                 .px(design::SECTION_X)
@@ -454,6 +558,7 @@ impl Render for MeetingList {
                     .child(design::eyebrow(t("meetings.list.title"), cx)),
             )
             .children(model_banner)
+            .children(speaker_banner)
             .child(design::panel(cx).child(content))
             .test_support()
     }
