@@ -71,7 +71,7 @@ impl std::error::Error for MeetingModelMissing {}
 /// Pick the meeting model id from the model list: the model chosen for
 /// meetings (`configured`) when downloaded, else the dictation model
 /// (`dictation`), else any downloaded Parakeet v3 quant (preferring the
-/// catalog default). Fails only when none of them is downloaded, naming the
+/// catalog default). A Parakeet v3 quant stands in for another one. Fails only when none of them is downloaded, naming the
 /// model to download: the chosen one, else the dictation model, else
 /// Parakeet v3.
 pub fn resolve_meeting_model_id(
@@ -83,17 +83,11 @@ pub fn resolve_meeting_model_id(
     let dictation = non_blank(dictation);
     let find = |id: &str| models.iter().find(|m| m.id == id);
     for id in configured.into_iter().chain(dictation) {
-        if let Some(m) = find(id).filter(|m| m.is_downloaded) {
+        if let Some(m) = downloaded_as(models, id) {
             return Ok(m.id.clone());
         }
     }
-    let prefix = format!("{DEFAULT_MEETING_MODEL_REPO}/");
-    let mut candidates: Vec<&ModelInfo> = models
-        .iter()
-        .filter(|m| m.is_downloaded && m.id.starts_with(&prefix))
-        .collect();
-    candidates.sort_by_key(|m| m.id != DEFAULT_MEETING_MODEL_ID);
-    if let Some(m) = candidates.first() {
+    if let Some(m) = downloaded_parakeet(models) {
         return Ok(m.id.clone());
     }
     let missing = |id: &str| match find(id) {
@@ -119,6 +113,31 @@ pub fn resolve_meeting_model_id(
     })
 }
 
+/// `id` when downloaded; for a Parakeet v3 quant, else any downloaded one.
+fn downloaded_as<'a>(models: &'a [ModelInfo], id: &str) -> Option<&'a ModelInfo> {
+    models
+        .iter()
+        .find(|m| m.id == id && m.is_downloaded)
+        .or_else(|| {
+            is_parakeet(id)
+                .then(|| downloaded_parakeet(models))
+                .flatten()
+        })
+}
+
+fn is_parakeet(id: &str) -> bool {
+    id.strip_prefix(DEFAULT_MEETING_MODEL_REPO)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// A downloaded Parakeet v3 quant, preferring the catalog default.
+fn downloaded_parakeet(models: &[ModelInfo]) -> Option<&ModelInfo> {
+    models
+        .iter()
+        .filter(|m| m.is_downloaded && is_parakeet(&m.id))
+        .min_by_key(|m| m.id != DEFAULT_MEETING_MODEL_ID)
+}
+
 fn non_blank(id: Option<&str>) -> Option<&str> {
     id.map(str::trim).filter(|id| !id.is_empty())
 }
@@ -131,8 +150,10 @@ pub fn configured_meeting_model_missing(
     configured: Option<&str>,
 ) -> Option<MeetingModelMissing> {
     let id = non_blank(configured)?;
+    if downloaded_as(models, id).is_some() {
+        return None;
+    }
     match models.iter().find(|m| m.id == id) {
-        Some(m) if m.is_downloaded => None,
         Some(m) => Some(MeetingModelMissing {
             model_id: m.id.clone(),
             model_name: m.name.clone(),
@@ -349,6 +370,24 @@ mod tests {
             !configured_meeting_model_missing(&models, Some("gone"))
                 .unwrap()
                 .known
+        );
+    }
+
+    #[test]
+    fn a_chosen_parakeet_quant_is_served_by_another_downloaded_one() {
+        let q4 = format!("{DEFAULT_MEETING_MODEL_REPO}/parakeet-tdt-0.6b-v3-Q4_K_M.gguf");
+        let models = vec![
+            model(DEFAULT_MEETING_MODEL_ID, false),
+            model(&q4, true),
+            model("whisper", true),
+        ];
+        assert_eq!(
+            resolve_meeting_model_id(&models, Some(DEFAULT_MEETING_MODEL_ID), Some("whisper"))
+                .unwrap(),
+            q4
+        );
+        assert!(
+            configured_meeting_model_missing(&models, Some(DEFAULT_MEETING_MODEL_ID)).is_none()
         );
     }
 

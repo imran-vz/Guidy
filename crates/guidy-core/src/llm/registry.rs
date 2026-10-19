@@ -32,22 +32,28 @@ const CACHE_FILE: &str = "llm-registry.json";
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const BUNDLED: &str = include_str!("../../../../assets/llm-registry.json");
 
+/// (Guidy provider id, models.dev provider id) for the providers models.dev
+/// describes. Keep in sync with `PROVIDERS` in
+/// `scripts/update_llm_registry.py`.
+const PROVIDERS: [(&str, &str); 9] = [
+    ("anthropic", "anthropic"),
+    ("cerebras", "cerebras"),
+    ("groq", "groq"),
+    ("openai", "openai"),
+    ("openrouter", "openrouter"),
+    ("zai", "zai"),
+    (VERCEL_AI_GATEWAY_PROVIDER_ID, "vercel"),
+    (CLOUDFLARE_WORKERS_AI_PROVIDER_ID, "cloudflare-workers-ai"),
+    (CLOUDFLARE_AI_GATEWAY_PROVIDER_ID, "cloudflare-ai-gateway"),
+];
+
 /// The models.dev provider for a Guidy provider id. Providers models.dev
 /// doesn't describe (custom endpoints, Bedrock Mantle's own ids) have none.
-/// Keep in sync with `PROVIDERS` in `scripts/update_llm_registry.py`.
 pub fn models_dev_provider(provider_id: &str) -> Option<&'static str> {
-    Some(match provider_id {
-        "anthropic" => "anthropic",
-        "cerebras" => "cerebras",
-        "groq" => "groq",
-        "openai" => "openai",
-        "openrouter" => "openrouter",
-        "zai" => "zai",
-        VERCEL_AI_GATEWAY_PROVIDER_ID => "vercel",
-        CLOUDFLARE_WORKERS_AI_PROVIDER_ID => "cloudflare-workers-ai",
-        CLOUDFLARE_AI_GATEWAY_PROVIDER_ID => "cloudflare-ai-gateway",
-        _ => return None,
-    })
+    PROVIDERS
+        .iter()
+        .find(|(guidy, _)| *guidy == provider_id)
+        .map(|(_, models_dev)| *models_dev)
 }
 
 /// One model as models.dev describes it (the fields Guidy uses).
@@ -99,8 +105,9 @@ impl RegistryModel {
 
 #[derive(Deserialize)]
 struct RawProvider {
+    /// Parsed one by one, so a malformed model drops only itself.
     #[serde(default)]
-    models: HashMap<String, RegistryModel>,
+    models: HashMap<String, serde_json::Value>,
 }
 
 /// Text models per models.dev provider id.
@@ -115,24 +122,11 @@ pub struct Registry {
 impl Registry {
     /// Parse models.dev's `api.json` (or the bundled trimmed copy). Only
     /// providers Guidy maps and models that output text are kept. A
-    /// malformed provider entry is skipped, not fatal.
+    /// malformed provider or model entry is skipped, not fatal.
     pub fn parse(json: &str) -> Result<Self> {
         let raw: HashMap<String, serde_json::Value> =
             serde_json::from_str(json).context("models.dev catalog is not a JSON object")?;
-        let wanted = |id: &str| {
-            [
-                "anthropic",
-                "cerebras",
-                "groq",
-                "openai",
-                "openrouter",
-                "zai",
-                "vercel",
-                "cloudflare-workers-ai",
-                "cloudflare-ai-gateway",
-            ]
-            .contains(&id)
-        };
+        let wanted = |id: &str| PROVIDERS.iter().any(|(_, models_dev)| *models_dev == id);
         let mut providers = HashMap::new();
         for (id, value) in raw {
             if !wanted(&id) {
@@ -142,17 +136,27 @@ impl Registry {
                 log::warn!("models.dev: skipping malformed provider {id}");
                 continue;
             };
+            let mut skipped = 0;
             let mut models: Vec<RegistryModel> = p
                 .models
                 .into_iter()
-                .map(|(key, mut m)| {
+                .filter_map(|(key, mut value)| {
+                    // An explicit null means "not listed", like a missing field.
+                    drop_nulls(&mut value);
+                    let Ok(mut m) = serde_json::from_value::<RegistryModel>(value) else {
+                        skipped += 1;
+                        return None;
+                    };
                     if m.id.is_empty() {
                         m.id = key;
                     }
-                    m
+                    Some(m)
                 })
                 .filter(RegistryModel::outputs_text)
                 .collect();
+            if skipped > 0 {
+                log::warn!("models.dev: skipped {skipped} malformed model(s) of {id}");
+            }
             sort_newest_first(&mut models);
             providers.insert(id, models);
         }
@@ -181,6 +185,14 @@ impl Registry {
     pub fn find(&self, provider_id: &str, model_id: &str) -> Option<&RegistryModel> {
         let model_id = model_id.trim();
         self.models(provider_id)?.iter().find(|m| m.id == model_id)
+    }
+}
+
+/// Remove null members from objects, recursively.
+fn drop_nulls(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        map.retain(|_, v| !v.is_null());
+        map.values_mut().for_each(drop_nulls);
     }
 }
 
@@ -415,7 +427,10 @@ mod tests {
                         "limit": {"context": 1000000, "output": 64000},
                         "cost": {"input": 2, "output": 10}},
                 "image": {"id": "image", "name": "Image",
-                          "modalities": {"input": ["text"], "output": ["image"]}}
+                          "modalities": {"input": ["text"], "output": ["image"]}},
+                "nulls": {"id": "nulls", "name": "Nulls", "release_date": "2025-01-01",
+                          "reasoning": null, "limit": {"context": null}, "cost": null},
+                "broken": {"id": "broken", "limit": {"context": 1.5}}
             }},
             "somebody-else": {"id": "x", "models": {}},
             "groq": "not an object"
@@ -427,7 +442,8 @@ mod tests {
             .iter()
             .map(|m| m.id.as_str())
             .collect();
-        assert_eq!(ids, ["new", "old"]);
+        // Nulls are defaults; a malformed model is dropped, not the provider.
+        assert_eq!(ids, ["new", "nulls", "old"]);
         let new = r.find("openai", " new ").unwrap();
         assert_eq!(new.limit.context, Some(1_000_000));
         assert_eq!(new.cost.unwrap().output, Some(10.0));

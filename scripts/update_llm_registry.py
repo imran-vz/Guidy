@@ -32,10 +32,10 @@ def trim_model(m):
     out = {k: m[k] for k in MODEL_FIELDS if k in m}
     if "modalities" in m:
         out["modalities"] = m["modalities"]
-    limit = {k: v for k, v in m.get("limit", {}).items() if k in ("context", "output")}
+    limit = {k: v for k, v in (m.get("limit") or {}).items() if k in ("context", "output")}
     if limit:
         out["limit"] = limit
-    cost = {k: v for k, v in m.get("cost", {}).items() if k in ("input", "output")}
+    cost = {k: v for k, v in (m.get("cost") or {}).items() if k in ("input", "output")}
     if cost:
         out["cost"] = cost
     return out
@@ -57,7 +57,8 @@ def main():
         models = {
             mid: trim_model(m)
             for mid, m in sorted(p.get("models", {}).items())
-            if "text" in m.get("modalities", {}).get("output", ["text"])
+            # As `outputs_text` in registry.rs: no output modalities means text.
+            if "text" in ((m.get("modalities") or {}).get("output") or ["text"])
         }
         out[pid] = {"id": pid, "name": p.get("name", pid), "models": models}
     json.dump(out, sys.stdout, ensure_ascii=False, separators=(",", ":"), sort_keys=True)

@@ -59,15 +59,18 @@ impl std::fmt::Debug for UserEmail {
     }
 }
 
+impl UserEmail {
+    /// Whether `email` is this address (trimmed, case-insensitive).
+    pub fn matches(&self, email: &str) -> bool {
+        let email = email.trim();
+        !email.is_empty() && self.email.trim().eq_ignore_ascii_case(email)
+    }
+}
+
 impl MeetingSettings {
     /// Whether `email` is one of the user's addresses (case-insensitive).
     pub fn is_user_email(&self, email: &str) -> bool {
-        let email = email.trim();
-        !email.is_empty()
-            && self
-                .user_emails
-                .iter()
-                .any(|u| u.email.trim().eq_ignore_ascii_case(email))
+        self.user_emails.iter().any(|u| u.matches(email))
     }
 }
 

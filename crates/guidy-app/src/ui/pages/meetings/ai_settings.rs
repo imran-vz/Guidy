@@ -281,6 +281,10 @@ pub struct AiSettingsView {
     catalogs: HashMap<String, ModelCatalog>,
     /// The provider whose catalog is being fetched.
     fetching: Option<String>,
+    /// The latest catalog fetch per provider: an older one that returns
+    /// later is dropped.
+    catalog_fetches: HashMap<String, u64>,
+    next_fetch: u64,
     /// The last failed catalog fetch: (provider id, message).
     catalog_error: Option<(String, String)>,
     /// Only models known to support structured output.
@@ -388,6 +392,8 @@ impl AiSettingsView {
             saving_key: None,
             catalogs: HashMap::new(),
             fetching: None,
+            catalog_fetches: HashMap::new(),
+            next_fetch: 0,
             catalog_error: None,
             good_only: true,
             refreshing_registry: false,
@@ -584,10 +590,21 @@ impl AiSettingsView {
         {
             return;
         }
+        // The old endpoint's models go; the catalog is fetched once the
+        // save is done (from whichever URL is then stored), loading meanwhile.
+        self.catalogs.remove(&pid);
+        self.catalog_fetches.remove(&pid);
+        self.fetching = Some(pid.clone());
+        cx.notify();
+        let view = cx.entity().downgrade();
+        let provider = pid.clone();
         self.state.update(cx, |st, cx| {
-            st.update_post_process_then("base_url", &pid, value, cx, |_, _, _| {})
+            st.update_post_process_then("base_url", &provider, value, cx, move |_, _, cx| {
+                cx.defer(move |cx| {
+                    let _ = view.update(cx, |this, cx| this.fetch_catalog(pid, cx));
+                });
+            })
         });
-        self.fetch_catalog(pid, cx);
     }
 
     /// Write only the fields that differ from the stored meetings settings.
@@ -634,8 +651,13 @@ impl AiSettingsView {
             })
             .flatten();
         let mut m = with_llm_choice(&s.meetings, &id, model.as_deref());
+        // Remember the cloud provider to switch back to: the new one, or
+        // the one being left (it may predate `llm_cloud_provider_id`).
+        let current = s.meetings.llm_provider_id.as_str();
         if SummaryPlace::of(&id) == SummaryPlace::Cloud {
             m.llm_cloud_provider_id = id;
+        } else if !current.is_empty() && SummaryPlace::of(current) == SummaryPlace::Cloud {
+            m.llm_cloud_provider_id = current.to_string();
         }
         self.save_meetings(m, cx);
     }
@@ -677,11 +699,18 @@ impl AiSettingsView {
             return;
         }
         self.fetching = Some(pid.clone());
+        self.next_fetch += 1;
+        let seq = self.next_fetch;
+        self.catalog_fetches.insert(pid.clone(), seq);
         let read = pid.clone();
         self.run(
             cx,
             move |b| b.llm_model_catalog(&read),
             move |this, r, _| {
+                if this.catalog_fetches.get(&pid) != Some(&seq) {
+                    // A newer fetch for this provider supersedes it.
+                    return;
+                }
                 if this.fetching.as_ref() == Some(&pid) {
                     this.fetching = None;
                 }
@@ -1070,7 +1099,10 @@ impl AiSettingsView {
         let shown: Vec<&ModelEntry> = all
             .iter()
             .copied()
-            .filter(|m| !in_registry || !self.good_only || m.good_for_summaries())
+            // The model in use always shows, so the choice stays visible.
+            .filter(|m| {
+                !in_registry || !self.good_only || m.good_for_summaries() || m.id == effective
+            })
             .filter(|m| {
                 query.is_empty()
                     || m.id.to_lowercase().contains(&query)

@@ -497,10 +497,7 @@ pub fn add_user_email(
     if !is_valid_email(email) {
         return Err(EmailError::Invalid);
     }
-    if emails
-        .iter()
-        .any(|u| u.email.trim().eq_ignore_ascii_case(email))
-    {
+    if emails.iter().any(|u| u.matches(email)) {
         return Err(EmailError::Duplicate);
     }
     let mut out = emails.to_vec();
