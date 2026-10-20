@@ -25,8 +25,9 @@ use crate::host::{AppHandle, Theme};
 use crate::managers::history::{HistoryEntry, HistoryManager};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
+use crate::meetings::types::RecorderState;
 use crate::settings;
-use crate::tray_i18n::get_tray_translations;
+use crate::tray_i18n::{get_tray_translations, TrayStrings};
 use log::{error, info, trace, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,6 +41,9 @@ pub struct TrayIcon;
 
 thread_local! {
     static NATIVE: RefCell<Option<tray_icon::TrayIcon>> = const { RefCell::new(None) };
+    /// The meeting status item of the menu last built, retitled in place
+    /// every second by the meeting clock (rebuilding the menu would close it).
+    static MEETING_ITEM: RefCell<Option<tray_icon::menu::MenuItem>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +85,52 @@ struct MeetingMenu {
     recording: bool,
     /// Title of the meeting being recorded (the linked event's title).
     title: Option<String>,
+    /// The recording's clock inputs (see [`RecorderState::elapsed_ms`]);
+    /// stable while it runs, so the clock never rebuilds the menu.
+    started_at: i64,
+    paused_at: Option<i64>,
+    paused_ms: i64,
+}
+
+impl MeetingMenu {
+    fn recorder_state(&self) -> RecorderState {
+        RecorderState::Recording {
+            meeting_id: 0,
+            title: String::new(),
+            started_at: self.started_at,
+            scheduled_end_at: None,
+            paused_at: self.paused_at,
+            paused_ms: self.paused_ms,
+        }
+    }
+
+    /// "● Weekly sync · 12:34" (or "Paused · 12:34").
+    fn status_label(&self, strings: &TrayStrings, now: i64) -> String {
+        let elapsed = crate::meetings::types::format_elapsed(
+            self.recorder_state().elapsed_ms(now).unwrap_or(0),
+        );
+        if self.paused_at.is_some() {
+            let en = get_tray_translations(Some("en".to_string()));
+            return format!(
+                "❚❚ {} · {elapsed}",
+                or_en(&strings.meeting_paused, &en.meeting_paused)
+            );
+        }
+        match self.title.as_deref().filter(|t| !t.is_empty()) {
+            Some(title) => format!("● {title} · {elapsed}"),
+            None => format!("● {elapsed}"),
+        }
+    }
+}
+
+/// A translation, or the English one where the locale lacks the key
+/// (build.rs emits "" for missing keys).
+fn or_en(s: &str, en: &str) -> String {
+    if s.is_empty() {
+        en.to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMenu {
@@ -90,17 +140,25 @@ fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMen
         .map(|m| m.recorder_state())
         .unwrap_or_default();
     match state {
-        crate::meetings::types::RecorderState::Recording { title, .. } => MeetingMenu {
+        RecorderState::Recording {
+            title,
+            started_at,
+            paused_at,
+            paused_ms,
+            ..
+        } => MeetingMenu {
             available: true,
             recording: true,
             title: Some(title),
+            started_at,
+            paused_at,
+            paused_ms,
         },
-        crate::meetings::types::RecorderState::Idle => MeetingMenu {
+        RecorderState::Idle => MeetingMenu {
             available: manager.is_some()
                 && settings.meetings.enabled
                 && crate::meetings::is_supported(),
-            recording: false,
-            title: None,
+            ..Default::default()
         },
     }
 }
@@ -149,6 +207,8 @@ struct TrayInner {
     anim_frame: u8,
     /// The animation ticker thread is running.
     animating: bool,
+    /// The meeting clock thread is running.
+    meeting_clock: bool,
     /// Latest computed snapshot, waiting to be (or just) applied.
     desired: Option<TrayDesired>,
     /// Icon the native tray currently shows. Only updated when `set_icon`
@@ -179,6 +239,7 @@ impl TrayState {
             icon_state: TrayIconState::Idle,
             anim_frame: 0,
             animating: false,
+            meeting_clock: false,
             desired: None,
             applied_icon: None,
             applied_menu: None,
@@ -364,6 +425,52 @@ fn spawn_animation(app: &AppHandle) {
     }
 }
 
+/// Retitles the meeting status item every second while a meeting records,
+/// so the menu shows how long it has been going (also while it is open).
+fn spawn_meeting_clock(app: &AppHandle) {
+    let clock_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-meeting-clock".into())
+        .spawn(move || loop {
+            let app = &clock_app;
+            let Some(state) = app.try_state::<TrayState>() else {
+                return;
+            };
+            let label = {
+                let mut inner = state.lock();
+                match inner
+                    .applied_menu
+                    .as_ref()
+                    .or(inner.desired.as_ref().map(|d| &d.menu))
+                {
+                    Some(menu) if menu.meeting.recording => {
+                        let strings = get_tray_translations(Some(menu.locale.clone()));
+                        menu.meeting
+                            .status_label(&strings, crate::meetings::recorder::now_ms())
+                    }
+                    _ => {
+                        inner.meeting_clock = false;
+                        return;
+                    }
+                }
+            };
+            let _ = on_tray_thread(app, move || {
+                MEETING_ITEM.with(|item| {
+                    if let Some(item) = item.borrow().as_ref() {
+                        item.set_text(&label);
+                    }
+                })
+            });
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        });
+    if let Err(err) = spawned {
+        error!("Failed to start the tray meeting clock: {err}");
+        if let Some(state) = app.try_state::<TrayState>() {
+            state.lock().meeting_clock = false;
+        }
+    }
+}
+
 /// Re-syncs the tray after something other than the recording state changed
 /// (theme, Secure Input warning). The recording state itself is preserved.
 pub fn refresh_tray_icon(app: &AppHandle) {
@@ -408,6 +515,11 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
     }
 
     let desired = compute_desired(app, icon_state, anim_frame);
+    let start_clock =
+        desired.menu.meeting.recording && !std::mem::replace(&mut state.lock().meeting_clock, true);
+    if start_clock {
+        spawn_meeting_clock(app);
+    }
 
     ensure_icon(app, &state, desired.icon_key());
 
@@ -849,6 +961,11 @@ pub struct MenuModel {
 /// depends on is in `inputs`, plus the process-constant updater-disable env
 /// flag behind `update_checks_forced_disabled()`.
 fn build_menu(inputs: &MenuInputs) -> MenuModel {
+    build_menu_at(inputs, crate::meetings::recorder::now_ms())
+}
+
+/// [`build_menu`] with the meeting clock read at `now` (unix ms).
+fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
     let strings = get_tray_translations(Some(inputs.locale.clone()));
 
     // Secure Input warning entry (macOS): clicking opens the settings window
@@ -872,8 +989,6 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
     #[cfg(not(target_os = "macos"))]
     let (settings_accelerator, quit_accelerator) = (Some("Ctrl+,"), Some("Ctrl+Q"));
 
-    let version_label = version_label();
-    let version_i = MenuEntry::item("version", &version_label, false, None);
     let settings_i = MenuEntry::item("settings", &strings.settings, true, settings_accelerator);
     // When update checks are forced off the item is dropped rather than shown
     // disabled — it can never do anything in that case. A manually-disabled
@@ -894,7 +1009,7 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
     );
     let quit_i = MenuEntry::item("quit", &strings.quit, true, quit_accelerator);
 
-    let mut entries = vec![version_i, MenuEntry::Separator];
+    let mut entries = Vec::new();
     if inputs.busy {
         entries.push(MenuEntry::item("cancel", &strings.cancel, true, None));
         entries.push(MenuEntry::Separator);
@@ -939,26 +1054,31 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
     entries.push(MenuEntry::Separator);
     entries.push(quit_i);
 
-    // Meeting notes go right below the version line.
+    // Meeting notes go first.
     if inputs.meeting.available {
         let en = get_tray_translations(Some("en".to_string()));
-        let or_en = |s: &str, e: &str| {
-            if s.is_empty() {
-                e.to_string()
-            } else {
-                s.to_string()
-            }
-        };
         let mut items = Vec::new();
         if inputs.meeting.recording {
-            if let Some(title) = inputs.meeting.title.as_deref().filter(|t| !t.is_empty()) {
-                items.push(MenuEntry::item(
-                    "meeting_title",
-                    &format!("● {title}"),
-                    false,
-                    None,
-                ));
-            }
+            items.push(MenuEntry::item(
+                "meeting_title",
+                &inputs.meeting.status_label(&strings, now),
+                false,
+                None,
+            ));
+            let (id, label, label_en) = if inputs.meeting.paused_at.is_some() {
+                (
+                    "meeting_resume",
+                    &strings.resume_meeting_notes,
+                    &en.resume_meeting_notes,
+                )
+            } else {
+                (
+                    "meeting_pause",
+                    &strings.pause_meeting_notes,
+                    &en.pause_meeting_notes,
+                )
+            };
+            items.push(MenuEntry::item(id, &or_en(label, label_en), true, None));
             items.push(MenuEntry::item(
                 "meeting_stop",
                 &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
@@ -974,19 +1094,18 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
             ));
         }
         items.push(MenuEntry::Separator);
-        entries.splice(2..2, items);
+        entries.splice(0..0, items);
     }
 
-    // Both layouts start with [version, separator, ...]; slot the warning in
-    // right below the version line so it's the first actionable thing seen.
-    let mut tooltip = version_label;
+    // The warning goes on top so it's the first actionable thing seen.
+    let mut tooltip = version_label();
     if let Some(label) = secure_input_warning {
         tooltip = format!("{} — {}", tooltip, label);
         entries.insert(
-            2,
+            0,
             MenuEntry::item("secure_input_warning", &label, true, None),
         );
-        entries.insert(3, MenuEntry::Separator);
+        entries.insert(1, MenuEntry::Separator);
     }
 
     MenuModel { entries, tooltip }
@@ -1007,7 +1126,11 @@ fn to_native_menu(model: &MenuModel) -> Result<tray_icon::menu::Menu, String> {
                 accelerator,
             } => {
                 let accel = accelerator.and_then(|a| a.parse::<Accelerator>().ok());
-                Box::new(MenuItem::with_id(id.clone(), label, *enabled, accel))
+                let item = MenuItem::with_id(id.clone(), label, *enabled, accel);
+                if id == "meeting_title" {
+                    MEETING_ITEM.with(|m| *m.borrow_mut() = Some(item.clone()));
+                }
+                Box::new(item)
             }
             MenuEntry::Check { id, label, checked } => Box::new(CheckMenuItem::with_id(
                 id.clone(),
@@ -1028,6 +1151,7 @@ fn to_native_menu(model: &MenuModel) -> Result<tray_icon::menu::Menu, String> {
         })
     }
 
+    MEETING_ITEM.with(|m| *m.borrow_mut() = None);
     let menu = Menu::new();
     for entry in &model.entries {
         let built = build(entry)?;
@@ -1240,6 +1364,12 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "cancel" => {
             crate::utils::cancel_current_operation(app);
         }
+        "meeting_pause" | "meeting_resume" => {
+            if let Some(manager) = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
+            {
+                manager.set_recording_paused(id == "meeting_pause");
+            }
+        }
         "meeting_start" | "meeting_stop" => {
             let Some(manager) = app
                 .try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
@@ -1289,9 +1419,9 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_menu, desired_from, effective_icon_state, get_icon_path, last_transcript_text,
-        load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry, MenuInputs, TrayDesired,
-        TrayIconState, ANIMATION_FRAMES,
+        build_menu, build_menu_at, desired_from, effective_icon_state, get_icon_path,
+        last_transcript_text, load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry,
+        MenuInputs, TrayDesired, TrayIconState, ANIMATION_FRAMES,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -1382,7 +1512,8 @@ mod tests {
     fn idle_menu_has_model_submenu_and_unload() {
         let menu = build_menu(&inputs(false));
         let ids = ids(&menu.entries);
-        assert_eq!(ids[0], "version");
+        assert_eq!(ids[0], "copy_last_transcript");
+        assert!(!ids.contains(&"version".to_string()));
         assert!(ids.contains(&"model_submenu".to_string()));
         assert!(ids.contains(&"unload_model".to_string()));
         assert!(!ids.contains(&"cancel".to_string()));
@@ -1409,7 +1540,7 @@ mod tests {
     #[test]
     fn busy_menu_offers_cancel_instead_of_models() {
         let ids = ids(&build_menu(&inputs(true)).entries);
-        assert_eq!(ids[2], "cancel");
+        assert_eq!(ids[0], "cancel");
         assert!(!ids.contains(&"model_submenu".to_string()));
     }
 
@@ -1418,8 +1549,8 @@ mod tests {
         let mut i = inputs(false);
         i.warning = true;
         let menu = build_menu(&i);
-        assert_eq!(menu.entries[2].id(), Some("secure_input_warning"));
-        assert_eq!(menu.entries[3], MenuEntry::Separator);
+        assert_eq!(menu.entries[0].id(), Some("secure_input_warning"));
+        assert_eq!(menu.entries[1], MenuEntry::Separator);
         assert!(menu.tooltip.contains(" — "));
     }
 
@@ -1458,10 +1589,10 @@ mod tests {
         let mut i = inputs(false);
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert_eq!(menu.entries[2].id(), Some("meeting_start"));
-        assert_eq!(menu.entries[3], MenuEntry::Separator);
+        assert_eq!(menu.entries[0].id(), Some("meeting_start"));
+        assert_eq!(menu.entries[1], MenuEntry::Separator);
         assert!(matches!(
-            &menu.entries[2],
+            &menu.entries[0],
             MenuEntry::Item { label, enabled: true, .. } if label == "Start Meeting Notes"
         ));
         // The rest of the idle menu is unchanged.
@@ -1469,28 +1600,50 @@ mod tests {
     }
 
     #[test]
-    fn meeting_recording_shows_title_and_stop() {
+    fn meeting_recording_shows_title_elapsed_pause_and_stop() {
         for busy in [false, true] {
             let mut i = inputs(busy);
             i.meeting = MeetingMenu {
                 available: true,
                 recording: true,
                 title: Some("Weekly sync".into()),
+                started_at: 1_000,
+                ..Default::default()
             };
-            let menu = build_menu(&i);
+            let menu = build_menu_at(&i, 1_000 + 754_000);
             assert_eq!(
-                menu.entries[2],
+                menu.entries[0],
                 MenuEntry::Item {
                     id: "meeting_title".into(),
-                    label: "● Weekly sync".into(),
+                    label: "● Weekly sync · 12:34".into(),
                     enabled: false,
                     accelerator: None,
                 }
             );
-            assert_eq!(menu.entries[3].id(), Some("meeting_stop"));
-            assert_eq!(menu.entries[4], MenuEntry::Separator);
+            assert_eq!(menu.entries[1].id(), Some("meeting_pause"));
+            assert_eq!(menu.entries[2].id(), Some("meeting_stop"));
+            assert_eq!(menu.entries[3], MenuEntry::Separator);
             assert!(!ids(&menu.entries).contains(&"meeting_start".to_string()));
         }
+    }
+
+    #[test]
+    fn paused_meeting_offers_resume_and_freezes_the_clock() {
+        let mut i = inputs(false);
+        i.meeting = MeetingMenu {
+            available: true,
+            recording: true,
+            title: Some("Weekly sync".into()),
+            started_at: 0,
+            paused_at: Some(65_000),
+            paused_ms: 0,
+        };
+        let menu = build_menu_at(&i, 500_000);
+        assert!(matches!(
+            &menu.entries[0],
+            MenuEntry::Item { label, .. } if label == "❚❚ Paused · 1:05"
+        ));
+        assert_eq!(menu.entries[1].id(), Some("meeting_resume"));
     }
 
     #[test]
@@ -1499,7 +1652,7 @@ mod tests {
         i.locale = "de".to_string();
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert!(matches!(&menu.entries[2], MenuEntry::Item { label, .. } if !label.is_empty()));
+        assert!(matches!(&menu.entries[0], MenuEntry::Item { label, .. } if !label.is_empty()));
     }
 
     #[test]
@@ -1530,6 +1683,7 @@ mod tests {
             available: true,
             recording: true,
             title: Some("Weekly sync".into()),
+            ..Default::default()
         };
         let desired = desired_from(TrayIconState::Idle, 3, AppTheme::Dark, i);
         assert!(!desired.menu.busy);

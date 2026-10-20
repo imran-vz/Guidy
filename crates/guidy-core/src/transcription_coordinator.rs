@@ -543,28 +543,31 @@ impl TranscriptionCoordinator {
         let (tx, rx) = mpsc::channel();
 
         thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut state = CoordinatorState::new();
+            let mut state = CoordinatorState::new();
+            loop {
+                let cmd = if let Some(deadline) = state.grace_deadline() {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(cmd) => Some(cmd),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                } else {
+                    match rx.recv() {
+                        Ok(cmd) => Some(cmd),
+                        Err(_) => break,
+                    }
+                };
 
-                loop {
-                    let cmd = if let Some(deadline) = state.grace_deadline() {
-                        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                            Ok(cmd) => cmd,
-                            Err(mpsc::RecvTimeoutError::Timeout) => {
-                                if let Some(effect) = state.on_grace_expired() {
-                                    run_effect(&app, &mut state, effect);
-                                }
-                                continue;
-                            }
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // One command at a time, so a panic loses that command and
+                // resets to idle instead of ending the thread (after which
+                // every shortcut would silently do nothing until restart).
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let Some(cmd) = cmd else {
+                        if let Some(effect) = state.on_grace_expired() {
+                            run_effect(&app, &mut state, effect);
                         }
-                    } else {
-                        match rx.recv() {
-                            Ok(cmd) => cmd,
-                            Err(_) => break,
-                        }
+                        return;
                     };
-
                     match cmd {
                         Command::Input(input) => {
                             if let Some(effect) = state.on_input(input, Instant::now()) {
@@ -580,12 +583,13 @@ impl TranscriptionCoordinator {
                             }
                         }
                     }
+                }));
+                if let Err(e) = result {
+                    error!("Transcription coordinator panicked, resetting to idle: {e:?}");
+                    state = CoordinatorState::new();
                 }
-                debug!("Transcription coordinator exited");
-            }));
-            if let Err(e) = result {
-                error!("Transcription coordinator panicked: {e:?}");
             }
+            debug!("Transcription coordinator exited");
         });
 
         Self { tx }

@@ -363,7 +363,57 @@ pub enum RecorderState {
         started_at: i64,
         /// Scheduled end of the linked event, if any.
         scheduled_end_at: Option<i64>,
+        /// When the current pause began (unix ms); `None` while capturing.
+        #[serde(default)]
+        paused_at: Option<i64>,
+        /// Total length of the pauses that already ended.
+        #[serde(default)]
+        paused_ms: i64,
     },
+}
+
+impl RecorderState {
+    pub fn is_recording(&self) -> bool {
+        matches!(self, RecorderState::Recording { .. })
+    }
+
+    pub fn is_paused(&self) -> bool {
+        matches!(
+            self,
+            RecorderState::Recording {
+                paused_at: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// Time captured so far at `now` (unix ms), pauses excluded. `None` when
+    /// idle.
+    pub fn elapsed_ms(&self, now: i64) -> Option<i64> {
+        match self {
+            RecorderState::Recording {
+                started_at,
+                paused_at,
+                paused_ms,
+                ..
+            } => {
+                let end = paused_at.unwrap_or(now);
+                Some((end - started_at - paused_ms).max(0))
+            }
+            RecorderState::Idle => None,
+        }
+    }
+}
+
+/// `m:ss`, or `h:mm:ss` from an hour on.
+pub fn format_elapsed(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// Event names emitted on the app event bus (`AppHandle::emit`).
@@ -392,6 +442,43 @@ mod tests {
             confirmed: false,
             is_user: false,
         }
+    }
+
+    #[test]
+    fn elapsed_excludes_pauses() {
+        let mut st = RecorderState::Recording {
+            meeting_id: 1,
+            title: "x".into(),
+            started_at: 1_000,
+            scheduled_end_at: None,
+            paused_at: None,
+            paused_ms: 0,
+        };
+        assert_eq!(st.elapsed_ms(61_000), Some(60_000));
+        if let RecorderState::Recording {
+            paused_at,
+            paused_ms,
+            ..
+        } = &mut st
+        {
+            *paused_at = Some(31_000);
+            *paused_ms = 10_000;
+        }
+        assert!(st.is_paused());
+        // Frozen at the pause.
+        assert_eq!(st.elapsed_ms(99_000), Some(20_000));
+        assert_eq!(RecorderState::Idle.elapsed_ms(5), None);
+        assert_eq!(format_elapsed(65_400), "1:05");
+        assert_eq!(format_elapsed(3_725_000), "1:02:05");
+    }
+
+    #[test]
+    fn recorder_state_without_pause_fields_still_parses() {
+        let v = serde_json::json!({"Recording": {
+            "meeting_id": 3, "title": "t", "started_at": 5, "scheduled_end_at": null
+        }});
+        let st: RecorderState = serde_json::from_value(v).unwrap();
+        assert!(st.is_recording() && !st.is_paused());
     }
 
     #[test]

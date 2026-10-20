@@ -24,6 +24,7 @@ pub mod llm;
 pub mod llm_client;
 pub mod logging;
 pub mod managers;
+pub mod mcp;
 pub mod meetings;
 pub mod memory;
 pub mod overlay;
@@ -246,6 +247,10 @@ fn init_meetings(app_handle: &AppHandle) {
         return;
     }
 
+    // The MCP server reads meetings; it follows `meetings.mcp_enabled`.
+    app_handle.manage(mcp::McpServerState::default());
+    mcp::sync(app_handle);
+
     // Tray icon/menu follow the recorder.
     let tray_app = app_handle.clone();
     app_handle.listen(meetings::types::events::RECORDER_STATE, move |_| {
@@ -287,6 +292,7 @@ fn on_settings_changed(
         return;
     }
     refresh_tray(app);
+    mcp::sync(app);
     if let Some(m) = app.try_state::<Arc<meetings::manager::MeetingsManager>>() {
         m.sync_scheduler();
         return;

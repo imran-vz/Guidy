@@ -10,12 +10,20 @@
     "secureInputWarning": "⚠ Shortcuts blocked by Secure Input",
     "startMeetingNotes": "Start Meeting Notes",
     "stopMeetingNotes": "Stop Meeting Notes",
+    "pauseMeetingNotes": "Pause Recording",
+    "resumeMeetingNotes": "Resume Recording",
+    "meetingPaused": "Paused",
     "meetingStillRecording": "Guidy is still recording",
     "meetingStop": "Stop",
     "meetingKeepGoing": "Keep going",
     "meetingTakeNotesFor": "Take notes for {{title}}?",
     "meetingStart": "Start",
     "meetingUntitled": "Meeting"
+  },
+  "notch": {
+    "pause": "Pause recording",
+    "resume": "Resume recording",
+    "stop": "Stop meeting notes"
   },
   "sidebar": {
     "general": "General",
@@ -992,6 +1000,14 @@
         "days7": "7 days",
         "days30": "30 days",
         "forever": "Forever"
+      },
+      "mcp": {
+        "group": "Other apps",
+        "title": "MCP server",
+        "description": "Let AI apps on this Mac, like Claude or Cursor, read your meeting list, summaries and transcripts. Local only and read-only.",
+        "url": "Server URL (Streamable HTTP)",
+        "stdio": "Command (for apps that only run stdio servers)",
+        "failed": "Couldn't start the MCP server on port {{port}}. Another app may be using it."
       },
       "calendarNotifications": {
         "title": "Calendar notifications",

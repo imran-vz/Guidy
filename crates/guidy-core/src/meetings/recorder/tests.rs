@@ -97,6 +97,7 @@ fn start_feed_stop_produces_a_recorded_meeting_with_two_tracks() {
             started_at,
             scheduled_end_at,
             ref title,
+            ..
         } => {
             assert_eq!(meeting_id, id);
             assert_eq!(started_at, T0);
@@ -160,6 +161,45 @@ fn start_feed_stop_produces_a_recorded_meeting_with_two_tracks() {
 
     // Stopping again is a no-op.
     assert_eq!(r.rec.stop(T0 + 3_000).unwrap(), None);
+}
+
+#[test]
+fn pause_writes_silence_and_freezes_the_elapsed_time() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    let tone: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    r.capture.feed(Track::Mic, &tone);
+    assert!(r.rec.take_level() > 0.0);
+    assert_eq!(r.rec.take_level(), 0.0, "reset after reading");
+
+    assert!(r.rec.set_paused(true, T0 + 1_000));
+    assert!(!r.rec.set_paused(true, T0 + 1_500), "already paused");
+    assert!(r.rec.state().is_paused());
+    r.capture.feed(Track::Mic, &tone);
+    assert_eq!(r.rec.take_level(), 0.0, "no level while paused");
+    assert_eq!(r.rec.state().elapsed_ms(T0 + 9_000), Some(1_000));
+
+    assert!(r.rec.set_paused(false, T0 + 4_000));
+    r.capture.feed(Track::Mic, &tone);
+    let st = r.rec.state();
+    assert!(!st.is_paused());
+    assert_eq!(st.elapsed_ms(T0 + 5_000), Some(2_000));
+
+    r.rec.stop(T0 + 5_000).unwrap();
+    // Pause and resume each emitted a state.
+    assert_eq!(r.states.lock().len(), 4);
+    assert!(!r.rec.set_paused(true, T0 + 6_000), "idle");
+
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    let audio = TrackReader::open(&audio_path(&r, m.mic_audio_path.as_ref().unwrap()), &KEY)
+        .unwrap()
+        .read_all()
+        .unwrap();
+    // The paused second is kept (timeline intact) but silent.
+    assert_eq!(audio.len(), 3 * 16_000);
+    let paused = &audio[16_000 + 800..32_000 - 800];
+    assert!(paused.iter().all(|x| x.abs() < 0.01));
+    assert!(audio[32_000 + 800..].iter().any(|x| x.abs() > 0.1));
 }
 
 #[test]

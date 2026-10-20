@@ -17,5 +17,6 @@ incremental = true
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+# Keep symbol names so macOS crash reports show Guidy frames.
+strip = "debuginfo"
 panic = "unwind"

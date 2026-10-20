@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn english_has_the_full_key_set() {
-        assert_eq!(keys("en").len(), 788);
+        assert_eq!(keys("en").len(), 847);
     }
 
     #[test]

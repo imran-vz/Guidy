@@ -683,8 +683,15 @@ impl TranscriptionManager {
         }
 
         *is_loading = true;
+        // Clears the flag and wakes waiters even if the load panics;
+        // otherwise every later dictation waits on the condvar forever.
+        let guard = LoadingGuard {
+            is_loading: self.is_loading.clone(),
+            loading_condvar: self.loading_condvar.clone(),
+        };
         let self_clone = self.clone();
         thread::spawn(move || {
+            let _guard = guard;
             if reload_pending {
                 self_clone
                     .reload_model_on_next_use
@@ -694,9 +701,6 @@ impl TranscriptionManager {
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
-            let mut is_loading = self_clone.is_loading.lock().unwrap();
-            *is_loading = false;
-            self_clone.loading_condvar.notify_all();
         });
     }
 

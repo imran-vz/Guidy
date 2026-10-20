@@ -37,7 +37,16 @@ pub struct RecordingErrorEvent {
 struct FinishGuard(AppHandle, Arc<TranscriptionManager>);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
-        self.1.maybe_unload_immediately("transcription session");
+        // Runs while unwinding too, where a second panic (e.g. a mutex the
+        // first one poisoned) would abort the app: contain it.
+        let tm = &self.1;
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tm.maybe_unload_immediately("transcription session")
+        }))
+        .is_err()
+        {
+            log::error!("unloading the model after a transcription session panicked");
+        }
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
             c.notify_processing_finished();
         }

@@ -3,7 +3,8 @@
 //! Three sinks:
 //! - console (stdout, or stderr in headless mode so stdout stays parseable),
 //!   filtered by `RUST_LOG` (default info);
-//! - a rotating file `guidy.log` in the log dir (500 KB, keep one), filtered by
+//! - a rotating file `guidy.log` in the log dir (5 MB, the previous file kept
+//!   as `guidy.log.1`), filtered by
 //!   the user's log level ([`crate::FILE_LOG_LEVEL`]);
 //! - the `log://log` event for the debug page's live viewer, only while
 //!   [`crate::LOG_STREAMING`] is on.
@@ -18,7 +19,7 @@ use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 pub const LOG_FILE_NAME: &str = "guidy.log";
-pub const MAX_LOG_FILE_SIZE: u64 = 500_000;
+pub const MAX_LOG_FILE_SIZE: u64 = 5_000_000;
 pub const LOG_EVENT: &str = "log://log";
 
 /// Payload of the `log://log` event. `level` follows tauri-plugin-log's
@@ -58,8 +59,9 @@ pub fn build_console_filter() -> env_filter::Filter {
     builder.build()
 }
 
-/// Size-capped log file: when a write would exceed the cap, the file is
-/// truncated and logging starts over (tauri-plugin-log `KeepOne`).
+/// Size-capped log file: when a write would exceed the cap, the file is moved
+/// to `<name>.1` (replacing the older one) and logging starts a new file, so
+/// the lines leading up to a crash survive one rotation.
 pub struct RotatingFile {
     path: PathBuf,
     max_size: u64,
@@ -97,6 +99,8 @@ impl RotatingFile {
     pub fn write_line(&mut self, line: &str) {
         let len = line.len() as u64 + 1;
         if self.size + len > self.max_size {
+            self.file = None;
+            let _ = std::fs::rename(&self.path, previous_path(&self.path));
             self.file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -111,6 +115,13 @@ impl RotatingFile {
             }
         }
     }
+}
+
+/// `guidy.log` → `guidy.log.1`.
+pub fn previous_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".1");
+    path.with_file_name(name)
 }
 
 struct Logger {
@@ -185,7 +196,24 @@ pub fn init(log_dir: &Path, headless: bool) {
     });
     if log::set_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Trace);
+        install_panic_hook();
     }
+}
+
+/// Record panics in `guidy.log` (a bundled app's stderr goes nowhere), with
+/// the thread and a backtrace, then run the default hook.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!(
+            "panic on thread '{}': {info}\n{backtrace}",
+            thread.name().unwrap_or("<unnamed>")
+        );
+        log::logger().flush();
+        default_hook(info);
+    }));
 }
 
 /// Connect the logger to the app's event bus for live streaming.
@@ -198,14 +226,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rotating_file_truncates_when_full() {
+    fn rotating_file_keeps_the_previous_file_when_full() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.log");
         let mut f = RotatingFile::open(path.clone(), 20);
         f.write_line("0123456789"); // 11 bytes
-        f.write_line("abcdefghij"); // would exceed 20 → truncate first
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "abcdefghij\n");
+        f.write_line("abcdefghij"); // would exceed 20 → rotate first
+        f.write_line("klmnopqrst"); // rotate again: the oldest is dropped
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "klmnopqrst\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("x.log.1")).unwrap(),
+            "abcdefghij\n"
+        );
     }
 
     #[test]

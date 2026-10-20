@@ -9,6 +9,9 @@
 //! - **stop**: stop capture, finish both files, set `ended_at` and status
 //!   `Recorded`. (The manager then queues processing; a finish that only a
 //!   later retry manages is reported through `on_recording_finished`.)
+//! - **pause/resume**: capture keeps running but the sink writes silence,
+//!   so both tracks stay aligned with the wall clock (and with each other)
+//!   and the paused stretch reads as a gap, not as missing audio.
 //! - **tick** (driven by the [`Scheduler`] thread): "still recording"
 //!   reminders and "Take notes for …?" calendar prompts.
 //!
@@ -22,6 +25,7 @@ pub mod schedule;
 pub use ports::*;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
@@ -102,6 +106,25 @@ struct Session {
     writer: Option<JoinHandle<WriterOutcome>>,
     /// Streams that failed mid-recording; written as the meeting's error.
     capture_errors: Arc<Mutex<Vec<String>>>,
+    /// Read by the capture sink: write silence instead of the samples.
+    paused: Arc<AtomicBool>,
+    /// When the current pause began.
+    paused_at: Option<i64>,
+    /// Total length of the pauses that already ended.
+    paused_ms: i64,
+}
+
+impl Session {
+    fn state(&self) -> RecorderState {
+        RecorderState::Recording {
+            meeting_id: self.meeting_id,
+            title: self.title.clone(),
+            started_at: self.started_at,
+            scheduled_end_at: self.scheduled_end_at,
+            paused_at: self.paused_at,
+            paused_ms: self.paused_ms,
+        }
+    }
 }
 
 /// A stopped recording whose row is still `Recording` because the database
@@ -185,6 +208,9 @@ pub struct MeetingRecorder {
     pending: Mutex<Vec<PendingFinish>>,
     state: Mutex<RecorderState>,
     prompts: Mutex<Prompts>,
+    /// Peak input level (an `f32`'s bits, 0.0..=1.0) since the last
+    /// [`MeetingRecorder::take_level`].
+    level: Arc<AtomicU32>,
 }
 
 fn local_time(ms: i64, fmt: &str) -> String {
@@ -206,6 +232,7 @@ impl MeetingRecorder {
             pending: Mutex::new(Vec::new()),
             state: Mutex::new(RecorderState::Idle),
             prompts: Mutex::new(Prompts::default()),
+            level: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -301,7 +328,7 @@ impl MeetingRecorder {
         };
         let meeting = Meeting {
             id: 0,
-            title: title.clone(),
+            title,
             calendar_event_id: event.as_ref().map(|e| e.id.clone()),
             calendar_event: event.clone(),
             started_at: now,
@@ -332,12 +359,7 @@ impl MeetingRecorder {
                 return Err(e);
             }
         };
-        let state = RecorderState::Recording {
-            meeting_id: id,
-            title,
-            started_at: now,
-            scheduled_end_at: session.scheduled_end_at,
-        };
+        let state = session.state();
         *self.session.lock() = Some(session);
         log::info!("meetings: recording meeting {id}");
         self.set_state(state);
@@ -399,11 +421,22 @@ impl MeetingRecorder {
             .context("spawn meeting writer")?;
 
         let sink_tx = Mutex::new(tx.clone());
-        let sink: CaptureSink = Arc::new(move |track, samples: Vec<f32>| {
-            if !samples.is_empty() {
-                // Unbounded channel: never blocks the audio thread.
-                let _ = sink_tx.lock().send(WriterMsg::Samples(track, samples));
+        let paused = Arc::new(AtomicBool::new(false));
+        let sink_paused = paused.clone();
+        let level = self.level.clone();
+        level.store(0, Ordering::Relaxed);
+        let sink: CaptureSink = Arc::new(move |track, mut samples: Vec<f32>| {
+            if samples.is_empty() {
+                return;
             }
+            if sink_paused.load(Ordering::Relaxed) {
+                samples.fill(0.0);
+            } else {
+                // Non-negative floats order like their bits.
+                level.fetch_max(rms_level(&samples).to_bits(), Ordering::Relaxed);
+            }
+            // Unbounded channel: never blocks the audio thread.
+            let _ = sink_tx.lock().send(WriterMsg::Samples(track, samples));
         });
         let capture_errors = Arc::new(Mutex::new(Vec::new()));
         let errors = capture_errors.clone();
@@ -433,7 +466,46 @@ impl MeetingRecorder {
             tx,
             writer: Some(writer),
             capture_errors,
+            paused,
+            paused_at: None,
+            paused_ms: 0,
         })
+    }
+
+    /// Pause (`true`) or resume (`false`) the recording at `now`. Returns
+    /// whether anything changed (false when idle or already in that state).
+    pub fn set_paused(&self, pause: bool, now: i64) -> bool {
+        let _op = self.op.lock();
+        let state = {
+            let mut session = self.session.lock();
+            let Some(s) = session.as_mut() else {
+                return false;
+            };
+            match (pause, s.paused_at) {
+                (true, None) => s.paused_at = Some(now),
+                (false, Some(at)) => {
+                    s.paused_ms += (now - at).max(0);
+                    s.paused_at = None;
+                }
+                _ => return false,
+            }
+            s.paused.store(pause, Ordering::Relaxed);
+            s.state()
+        };
+        if pause {
+            self.level.store(0, Ordering::Relaxed);
+        }
+        log::info!(
+            "meetings: {} recording",
+            if pause { "paused" } else { "resumed" }
+        );
+        self.set_state(state);
+        true
+    }
+
+    /// Peak input level (0.0..=1.0) since the last call, then reset.
+    pub fn take_level(&self) -> f32 {
+        f32::from_bits(self.level.swap(0, Ordering::Relaxed))
     }
 
     /// Stop recording at `now`. Returns the meeting id, or `None` when idle.
@@ -819,6 +891,12 @@ impl MeetingRecorder {
         }
         Ok(outcome.files_deleted)
     }
+}
+
+/// RMS of `samples`, scaled so speech sits around 0.3–0.8.
+fn rms_level(samples: &[f32]) -> f32 {
+    let mean = samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32;
+    (mean.sqrt() * 4.0).clamp(0.0, 1.0)
 }
 
 fn reminder_state(s: &Session, interval_minutes: u32) -> ReminderState {

@@ -173,6 +173,11 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn recorder_state(&self) -> RecorderState;
     fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId>;
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>>;
+    /// Pause (`true`) or resume (`false`) the recording; false when nothing
+    /// changed.
+    fn set_recording_paused(&self, paused: bool) -> bool;
+    /// Peak input level (0.0..=1.0) since the last call, for the waveform.
+    fn take_recording_level(&self) -> f32;
     /// 16 kHz mono f32 samples of one track between `t0_ms` and `t1_ms`.
     fn segment_audio(
         &self,
@@ -441,6 +446,13 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         self.m()?.stop_recording().map_err(err)
+    }
+    fn set_recording_paused(&self, paused: bool) -> bool {
+        self.manager()
+            .is_some_and(|m| m.set_recording_paused(paused))
+    }
+    fn take_recording_level(&self) -> f32 {
+        self.manager().map_or(0.0, |m| m.take_recording_level())
     }
     fn segment_audio(
         &self,
@@ -753,6 +765,12 @@ impl MeetingsBackend for NoMeetings {
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         Err(unavailable())
     }
+    fn set_recording_paused(&self, _: bool) -> bool {
+        false
+    }
+    fn take_recording_level(&self) -> f32 {
+        0.0
+    }
     fn segment_audio(&self, _: MeetingId, _: Track, _: i64, _: i64) -> MeetingsResult<Vec<f32>> {
         Err(unavailable())
     }
@@ -1010,8 +1028,24 @@ pub mod fake {
                 title,
                 started_at: 0,
                 scheduled_end_at: None,
+                paused_at: None,
+                paused_ms: 0,
             };
             Ok(id)
+        }
+        fn set_recording_paused(&self, paused: bool) -> bool {
+            self.rec(format!("set_recording_paused {paused}"));
+            let mut d = self.data.lock();
+            match &mut d.recorder {
+                RecorderState::Recording { paused_at, .. } if paused_at.is_some() != paused => {
+                    *paused_at = paused.then_some(0);
+                    true
+                }
+                _ => false,
+            }
+        }
+        fn take_recording_level(&self) -> f32 {
+            0.5
         }
         fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
             self.rec("stop_recording");

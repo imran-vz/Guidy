@@ -27,6 +27,13 @@ extern "C" {
 
 void guidy_mb_free_string(char *s);
 
+#ifdef __OBJC__
+// Swift-internal (objc_exception.m): runs `block`, returning 0, or 1 when it
+// raised an Objective-C exception, with `*reason` set to a malloc'd
+// description (release with `free`).
+int guidy_mb_objc_try(void (^__attribute__((noescape)) block)(void), char **reason);
+#endif
+
 // 1 on macOS 14.2+ (Core Audio process taps), else 0.
 int32_t guidy_mb_is_supported(void);
 

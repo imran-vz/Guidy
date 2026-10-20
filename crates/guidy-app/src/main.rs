@@ -24,6 +24,15 @@ fn main() {
     }
 
     let cli_args = CliArgs::parse();
+
+    // stdout is the MCP channel here: no logging, no app.
+    if cli_args.mcp_stdio {
+        let port = cli_args.mcp_port.unwrap_or_else(|| {
+            let app = guidy_core::create_app_handle();
+            guidy_core::settings::get_settings(&app).meetings.mcp_port
+        });
+        std::process::exit(guidy_core::mcp::run_stdio_bridge(port));
+    }
     guidy_core::prepare_process();
 
     if guidy_core::is_headless(&cli_args) {

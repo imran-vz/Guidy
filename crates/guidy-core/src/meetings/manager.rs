@@ -248,6 +248,20 @@ impl MeetingsManager {
         Ok(stopped)
     }
 
+    /// Pause (`true`) or resume (`false`) the recording. Returns whether
+    /// anything changed.
+    pub fn set_recording_paused(&self, pause: bool) -> bool {
+        self.capture
+            .recorder
+            .get()
+            .is_some_and(|r| r.set_paused(pause, crate::meetings::recorder::now_ms()))
+    }
+
+    /// Peak input level (0.0..=1.0) of the recording since the last call.
+    pub fn take_recording_level(&self) -> f32 {
+        self.capture.recorder.get().map_or(0.0, |r| r.take_level())
+    }
+
     /// A stopped recording whose finish failed at stop, finished by a later
     /// retry (the recorder's `on_recording_finished`): processed like a
     /// normal stop.

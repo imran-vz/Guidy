@@ -591,9 +591,11 @@ fn build_meeting_bridge() {
 
     const SWIFT_FILE: &str = "swift/meeting_bridge.swift";
     const BRIDGE_HEADER: &str = "swift/meeting_bridge.h";
+    const OBJC_FILE: &str = "swift/objc_exception.m";
 
     println!("cargo:rerun-if-changed={SWIFT_FILE}");
     println!("cargo:rerun-if-changed={BRIDGE_HEADER}");
+    println!("cargo:rerun-if-changed={OBJC_FILE}");
     println!("cargo:rerun-if-env-changed=SDKROOT");
     println!("cargo:rerun-if-env-changed=SWIFTC");
 
@@ -605,6 +607,7 @@ fn build_meeting_bridge() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
     let object_path = out_dir.join("meeting_bridge.o");
+    let objc_object_path = out_dir.join("meeting_bridge_objc.o");
     let static_lib_path = out_dir.join("libmeeting_bridge.a");
 
     let xcrun = |args: &[&str]| -> String {
@@ -650,10 +653,32 @@ fn build_meeting_bridge() {
         panic!("swiftc failed to compile {SWIFT_FILE}");
     }
 
+    // The Objective-C exception shim (Swift cannot catch NSException).
+    let status = Command::new("clang")
+        .args([
+            "-target",
+            swift_target,
+            "-isysroot",
+            &sdk_path,
+            "-fobjc-arc",
+            "-fobjc-exceptions",
+            "-O2",
+            "-c",
+            OBJC_FILE,
+            "-o",
+        ])
+        .arg(&objc_object_path)
+        .status()
+        .expect("Failed to invoke clang for the meeting bridge shim");
+    if !status.success() {
+        panic!("clang failed to compile {OBJC_FILE}");
+    }
+
     let status = Command::new("libtool")
         .args(["-static", "-o"])
         .arg(&static_lib_path)
         .arg(&object_path)
+        .arg(&objc_object_path)
         .status()
         .expect("Failed to create the meeting bridge static library");
     if !status.success() {

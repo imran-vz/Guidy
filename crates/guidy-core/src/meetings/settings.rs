@@ -42,6 +42,11 @@ pub struct MeetingSettings {
     /// Remembered Linear defaults between meetings.
     pub linear_default_team_id: Option<String>,
     pub linear_default_project_id: Option<String>,
+    /// Serve meetings and transcripts to other apps over a local MCP
+    /// server ([`crate::mcp`]).
+    pub mcp_enabled: bool,
+    /// Loopback port of the MCP server.
+    pub mcp_port: u16,
 }
 
 /// One of the user's email addresses, with a free-text label ("Work").
@@ -96,6 +101,8 @@ impl Default for MeetingSettings {
             llm_models: Default::default(),
             linear_default_team_id: None,
             linear_default_project_id: None,
+            mcp_enabled: false,
+            mcp_port: crate::mcp::DEFAULT_PORT,
         }
     }
 }
@@ -122,6 +129,8 @@ impl std::fmt::Debug for MeetingSettings {
             .field("llm_models", &self.llm_models)
             .field("linear_default_team_id", &self.linear_default_team_id)
             .field("linear_default_project_id", &self.linear_default_project_id)
+            .field("mcp_enabled", &self.mcp_enabled)
+            .field("mcp_port", &self.mcp_port)
             .finish()
     }
 }

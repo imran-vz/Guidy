@@ -23,6 +23,17 @@ private struct BridgeError: Error, CustomStringConvertible {
     init(_ description: String) { self.description = description }
 }
 
+/// Runs `body`, turning an Objective-C exception (which Swift cannot catch and
+/// would abort the app) into a thrown `BridgeError`.
+private func objcTry(_ what: String, _ body: () -> Void) throws {
+    var reason: UnsafeMutablePointer<CChar>?
+    if guidy_mb_objc_try(body, &reason) != 0 {
+        let text = reason.map { String(cString: $0) } ?? "Objective-C exception"
+        free(reason)
+        throw BridgeError("\(what) raised \(text)")
+    }
+}
+
 private func setError(_ out: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ message: String) {
     guard let out = out else { return }
     out.pointee = strdup(message)
@@ -289,6 +300,10 @@ private final class MicCapture {
     private var resampler: MonoResampler?
     private var observer: NSObjectProtocol?
     private var stopped = false
+    /// Restart bookkeeping, on `controlQueue`: device changes arrive in
+    /// bursts, so each one bumps the generation and stale retries drop out.
+    private var restartGeneration = 0
+    private var voiceProcessing = false
     /// Puts the mic on the session timeline (shared origin with the system
     /// stream). Guarded by `alignLock`: the tap block and the silence timer
     /// both use it. The lock is held only while converting/forwarding one
@@ -307,12 +322,12 @@ private final class MicCapture {
     func start() throws {
         do {
             try startVoiceProcessing()
+            voiceProcessing = true
         } catch {
             // Echo cancellation is preferred, not required: record the plain
             // mic rather than nothing, and say so.
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
-            try? engine.inputNode.setVoiceProcessingEnabled(false)
+            stopEngine()
+            disableVoiceProcessing()
             try installTapAndStart()
             sink.event(
                 GUIDY_MB_STREAM_MIC,
@@ -323,7 +338,10 @@ private final class MicCapture {
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
             guard let self = self else { return }
-            self.controlQueue.async { self.restart() }
+            self.controlQueue.async {
+                self.restartGeneration += 1
+                self.restart(generation: self.restartGeneration, attempt: 0)
+            }
         }
         startSilenceTimer()
     }
@@ -348,9 +366,15 @@ private final class MicCapture {
 
     private func startVoiceProcessing() throws {
         let input = engine.inputNode
-        do {
-            try input.setVoiceProcessingEnabled(true)
-        } catch {
+        var enableError: Error?
+        try objcTry("enabling voice processing") {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+            } catch {
+                enableError = error
+            }
+        }
+        if let error = enableError {
             throw BridgeError("enabling voice processing (echo cancellation) failed: \(error)")
         }
         if #available(macOS 14.0, *) {
@@ -379,15 +403,47 @@ private final class MicCapture {
         self.resampler = resampler
         stateLock.unlock()
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
-            self?.handle(buffer, when)
+        // `format: nil` taps in the bus's current format. Passing a format
+        // read a moment earlier raises an exception when the hardware changed
+        // in between (seen after device switches); `handle` adapts instead.
+        try objcTry("installing the microphone tap") {
+            input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, when in
+                self?.handle(buffer, when)
+            }
         }
-        engine.prepare()
+        var startError: Error?
         do {
-            try engine.start()
+            try objcTry("starting the microphone") {
+                self.engine.prepare()
+                do {
+                    try self.engine.start()
+                } catch {
+                    startError = error
+                }
+            }
         } catch {
-            input.removeTap(onBus: 0)
+            startError = error
+        }
+        if let error = startError {
+            removeTap()
             throw BridgeError("starting the microphone failed: \(error)")
+        }
+    }
+
+    /// Stop the engine and remove the tap; never throws (there is nothing to
+    /// recover if either was already gone).
+    private func stopEngine() {
+        try? objcTry("stopping the microphone") { self.engine.stop() }
+        removeTap()
+    }
+
+    private func removeTap() {
+        try? objcTry("removing the microphone tap") { self.engine.inputNode.removeTap(onBus: 0) }
+    }
+
+    private func disableVoiceProcessing() {
+        try? objcTry("disabling voice processing") {
+            try? self.engine.inputNode.setVoiceProcessingEnabled(false)
         }
     }
 
@@ -395,7 +451,15 @@ private final class MicCapture {
         stateLock.lock()
         let resampler = self.resampler
         stateLock.unlock()
-        guard let resampler = resampler else { return }
+        guard var resampler = resampler else { return }
+        if buffer.format.sampleRate != resampler.inputFormat.sampleRate {
+            // The device changed under a running tap.
+            guard let rebuilt = MonoResampler(inputRate: buffer.format.sampleRate) else { return }
+            stateLock.lock()
+            self.resampler = rebuilt
+            stateLock.unlock()
+            resampler = rebuilt
+        }
         let frames = Int(buffer.frameLength)
         guard frames > 0, let source = buffer.floatChannelData,
               let mono = resampler.makeInputBuffer(frames: frames),
@@ -427,16 +491,36 @@ private final class MicCapture {
 
     /// The input or output device changed: rebuild the tap with the new format.
     /// The time the restart takes becomes silence on the track (the aligner
-    /// pads up to the first new buffer's timestamp).
-    private func restart() {
-        if stopped { return }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+    /// pads up to the first new buffer's timestamp). Devices often settle a
+    /// moment after the notification (Bluetooth profile switches, docks), so a
+    /// failed restart is retried with backoff for as long as the recording
+    /// runs; after a few failures, echo cancellation is given up for the
+    /// plain microphone. Runs on `controlQueue`.
+    private func restart(generation: Int, attempt: Int) {
+        if stopped || generation != restartGeneration { return }
+        stopEngine()
+        if voiceProcessing && attempt == 3 {
+            disableVoiceProcessing()
+            voiceProcessing = false
+            sink.event(
+                GUIDY_MB_STREAM_MIC,
+                "echo cancellation unavailable after a device change, recording the plain microphone")
+        }
         do {
             try installTapAndStart()
             sink.event(GUIDY_MB_STREAM_MIC, "microphone restarted after an audio device change")
         } catch {
-            sink.event(GUIDY_MB_STREAM_MIC, "error: \(error)")
+            if attempt == 0 {
+                // Kept as the meeting's error even if a retry succeeds later.
+                sink.event(
+                    GUIDY_MB_STREAM_MIC,
+                    "error: \(error) (retrying while the recording runs)")
+            }
+            let delays = [0.25, 0.5, 1.0, 2.0]
+            let delay = delays[min(attempt, delays.count - 1)]
+            controlQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.restart(generation: generation, attempt: attempt + 1)
+            }
         }
     }
 
@@ -449,13 +533,12 @@ private final class MicCapture {
         silenceTimer = nil
         controlQueue.sync {
             stopped = true
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+            stopEngine()
         }
         // Wait out a tick already running.
         tickQueue.sync {}
         // Leave the shared input node in its normal mode for dictation.
-        try? engine.inputNode.setVoiceProcessingEnabled(false)
+        disableVoiceProcessing()
     }
 }
 

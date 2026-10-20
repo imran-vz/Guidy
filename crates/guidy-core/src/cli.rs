@@ -61,4 +61,15 @@ pub struct CliArgs {
     /// Emit --transcribe-file results as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Serve meeting notes over MCP on stdin/stdout, relayed to the running
+    /// app's local MCP server (turn it on in Settings › Meetings). For MCP
+    /// clients that only launch stdio servers.
+    #[arg(long)]
+    pub mcp_stdio: bool,
+
+    /// Port of the app's MCP server for --mcp-stdio (default: the one in
+    /// settings).
+    #[arg(long, value_name = "PORT")]
+    pub mcp_port: Option<u16>,
 }

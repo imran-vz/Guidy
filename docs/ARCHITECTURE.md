@@ -41,6 +41,8 @@ guidy/                          (cargo workspace)
 |---|---|
 | Main window 680×570 | `open_window` with a gpui-kit `Root`; the close button hides the app into the tray |
 | Overlay | `WindowKind::PopUp`, transparent, `focus:false`, positioned on the cursor's monitor (`overlay.rs`); `WindowKind::LayerShell` on Wayland |
+| Meeting controls | While a meeting records, a borderless black panel wraps the notch (`ui/notch.rs`, placement in `logic/notch.rs` from `NSScreen` `safeAreaInsets`/`auxiliaryTop*Area`; a small island mid-menu-bar on displays without one): waveform with pause/resume on hover, elapsed time, stop |
+| MCP server | Off by default (`meetings.mcp_enabled`). `guidy_core::mcp` serves read-only meeting tools (`list_meetings`, `get_meeting`, `get_transcript`) over Streamable HTTP on `127.0.0.1:<meetings.mcp_port>/mcp`, refusing foreign `Origin`/`Host` headers; `guidy --mcp-stdio` relays stdio clients to it |
 | Tray | `tray-icon` on the GPUI main thread; on Linux on a dedicated GTK thread (libappindicator needs a GTK loop, which GPUI doesn't run) |
 | Global shortcuts | Two implementations: `global-hotkey` (stored as `"tauri"` for compatibility, labelled "System" in the UI) and `NativeKeys` (`shortcut/native_keys.rs`, a native key-listener library) |
 | Single instance | lock file + `interprocess` local socket that forwards argv (`--toggle-transcription`, `--toggle-post-process`, `--cancel`, otherwise show the window); SIGUSR1/SIGUSR2 on Unix |

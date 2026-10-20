@@ -172,6 +172,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         cx,
     );
     let overlay = OverlayState::install(cx);
+    crate::ui::notch::NotchState::install(cx);
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
     spawn_event_loop(event_rx, state, overlay, cx);
@@ -281,6 +282,15 @@ pub fn dispatch_event(
         overlay.update(cx, |o, cx| {
             o.handle_core_event(&event.name, &event.payload, top, style, cx)
         });
+    }
+    if event.name == guidy_core::meetings::types::events::RECORDER_STATE {
+        if let (Some(notch), Ok(recorder)) = (
+            crate::ui::notch::NotchState::global(cx),
+            serde_json::from_value(event.payload.clone()),
+        ) {
+            notch.update(cx, |n, cx| n.set_recorder(recorder, cx));
+            windows::sync_notch(cx);
+        }
     }
     if event.name != "mic-level" {
         state.update(cx, |s, cx| s.handle_core_event(event, cx));

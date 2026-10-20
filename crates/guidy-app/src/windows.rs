@@ -4,8 +4,10 @@
 //! GPUI has no per-window hide/show, so "hiding" closes the window and
 //! "showing" reopens it; all state lives in models outside the views.
 
+use crate::logic::notch::{notch_frame, NotchFrame, ScreenInfo};
 use crate::shell::{GpuiShell, ShellMsg};
 use crate::ui::main_window::MainWindow;
+use crate::ui::notch::{NotchState, NotchView};
 use crate::ui::overlay::OverlayView;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -21,6 +23,7 @@ pub struct Windows {
     pub main: Option<AnyWindowHandle>,
     pub main_view: Option<WeakEntity<MainWindow>>,
     pub overlay: Option<(AnyWindowHandle, OverlayPlacement)>,
+    pub notch: Option<AnyWindowHandle>,
 }
 
 impl Global for Windows {}
@@ -285,6 +288,253 @@ pub fn hide_overlay(cx: &mut App) {
     if let Some((handle, _)) = windows(cx).overlay.take() {
         let _ = cx.update_window(handle, |_, window, _| window.remove_window());
     }
+}
+
+/// Show the meeting controls around the notch while a meeting records, and
+/// close them when it stops. macOS only.
+pub fn sync_notch(cx: &mut App) {
+    let visible = NotchState::global(cx).is_some_and(|n| n.read(cx).model.visible());
+    if !visible {
+        if let Some(handle) = windows(cx).notch.take() {
+            let _ = cx.update_window(handle, |_, window, _| window.remove_window());
+        }
+        return;
+    }
+    if let Some(handle) = windows(cx).notch {
+        if cx
+            .update_window(handle, |_, window, _| window.refresh())
+            .is_ok()
+        {
+            return;
+        }
+        windows(cx).notch = None;
+    }
+    let Some(frame) = notch_target() else {
+        return;
+    };
+    if let Some(state) = NotchState::global(cx) {
+        state.update(cx, |s, cx| {
+            s.notch_width = frame.notch_width as f32;
+            cx.notify();
+        });
+    }
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(frame.width as f32), px(frame.height as f32)),
+        })),
+        titlebar: None,
+        focus: false,
+        show: true,
+        kind: WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        window_background: WindowBackgroundAppearance::Transparent,
+        app_id: Some(format!("{}.notch", guidy_core::host::APP_IDENTIFIER)),
+        ..Default::default()
+    };
+    match cx.open_window(options, |window, cx| {
+        cx.new(|cx| NotchView::new(window, cx))
+    }) {
+        Ok(handle) => {
+            let any: AnyWindowHandle = handle.into();
+            let _ = cx.update_window(any, |_, window, _| {
+                configure_overlay_panel(window);
+                place_over_menu_bar(window, &frame);
+            });
+            windows(cx).notch = Some(any);
+        }
+        Err(e) => log::error!("Failed to open the notch controls: {e}"),
+    }
+}
+
+/// The display with a notch (else the primary one) and where the controls
+/// go on it.
+#[cfg(target_os = "macos")]
+fn notch_target() -> Option<NotchFrame> {
+    let screens = macos_screens();
+    let screen = screens
+        .iter()
+        .find(|s| s.notch.is_some())
+        .or_else(|| screens.first())?;
+    Some(notch_frame(screen))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notch_target() -> Option<NotchFrame> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+mod cocoa {
+    use objc2::encode::{Encode, Encoding};
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct CGPoint {
+        pub x: f64,
+        pub y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct CGSize {
+        pub width: f64,
+        pub height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct CGRect {
+        pub origin: CGPoint,
+        pub size: CGSize,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct NSEdgeInsets {
+        pub top: f64,
+        pub left: f64,
+        pub bottom: f64,
+        pub right: f64,
+    }
+
+    const POINT: Encoding = Encoding::Struct("CGPoint", &[Encoding::Double, Encoding::Double]);
+    const SIZE: Encoding = Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
+
+    // SAFETY: `#[repr(C)]` with the fields AppKit declares, in order.
+    unsafe impl Encode for CGPoint {
+        const ENCODING: Encoding = POINT;
+    }
+    unsafe impl Encode for CGSize {
+        const ENCODING: Encoding = SIZE;
+    }
+    unsafe impl Encode for CGRect {
+        const ENCODING: Encoding = Encoding::Struct("CGRect", &[POINT, SIZE]);
+    }
+    unsafe impl Encode for NSEdgeInsets {
+        const ENCODING: Encoding = Encoding::Struct(
+            "NSEdgeInsets",
+            &[
+                Encoding::Double,
+                Encoding::Double,
+                Encoding::Double,
+                Encoding::Double,
+            ],
+        );
+    }
+}
+
+/// Every display (primary first) with its notch, from `NSScreen`.
+#[cfg(target_os = "macos")]
+fn macos_screens() -> Vec<ScreenInfo> {
+    use cocoa::{CGRect, NSEdgeInsets};
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
+    use objc2::{msg_send, sel};
+    let Some(class) = AnyClass::get(c"NSScreen") else {
+        return Vec::new();
+    };
+    let responds = |obj: *mut AnyObject, sel: Sel| -> bool {
+        // SAFETY: `obj` is a live NSScreen.
+        let r: Bool = unsafe { msg_send![obj, respondsToSelector: sel] };
+        r.as_bool()
+    };
+    let mut out = Vec::new();
+    // SAFETY: AppKit calls on the main thread (GPUI's app thread); the
+    // array and screens are owned by AppKit and outlive this call.
+    unsafe {
+        let screens: *mut AnyObject = msg_send![class, screens];
+        if screens.is_null() {
+            return out;
+        }
+        let count: usize = msg_send![screens, count];
+        for i in 0..count {
+            let screen: *mut AnyObject = msg_send![screens, objectAtIndex: i];
+            if screen.is_null() {
+                continue;
+            }
+            let frame: CGRect = msg_send![screen, frame];
+            // macOS 12+: the notch areas.
+            let (top_inset, notch) = if responds(screen, sel!(safeAreaInsets)) {
+                let insets: NSEdgeInsets = msg_send![screen, safeAreaInsets];
+                let notch = if insets.top > 0.0 && responds(screen, sel!(auxiliaryTopLeftArea)) {
+                    let left: CGRect = msg_send![screen, auxiliaryTopLeftArea];
+                    let right: CGRect = msg_send![screen, auxiliaryTopRightArea];
+                    let x0 = left.origin.x + left.size.width - frame.origin.x;
+                    let x1 = right.origin.x - frame.origin.x;
+                    (x1 > x0 && left.size.width > 0.0).then_some((x0, x1))
+                } else {
+                    None
+                };
+                (insets.top, notch)
+            } else {
+                (0.0, None)
+            };
+            // Without a notch, match the menu bar's height.
+            let top_inset = if notch.is_none() {
+                let visible: CGRect = msg_send![screen, visibleFrame];
+                let bar =
+                    (frame.origin.y + frame.size.height) - (visible.origin.y + visible.size.height);
+                if bar > 0.0 {
+                    bar
+                } else {
+                    top_inset
+                }
+            } else {
+                top_inset
+            };
+            out.push(ScreenInfo {
+                x: frame.origin.x,
+                y: frame.origin.y,
+                width: frame.size.width,
+                height: frame.size.height,
+                notch,
+                top_inset,
+            });
+        }
+    }
+    out
+}
+
+/// Move the panel to `frame` (Cocoa coordinates) above the menu bar, on
+/// every Space and over full-screen apps.
+fn place_over_menu_bar(window: &Window, frame: &NotchFrame) {
+    #[cfg(target_os = "macos")]
+    {
+        use cocoa::{CGPoint, CGRect, CGSize};
+        use objc2::msg_send;
+        use objc2::runtime::{AnyObject, Bool};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+            let view = h.ns_view.as_ptr() as *mut AnyObject;
+            // SAFETY: a live NSView owned by this window, on the main thread.
+            unsafe {
+                let ns_window: *mut AnyObject = msg_send![view, window];
+                if ns_window.is_null() {
+                    return;
+                }
+                // NSMainMenuWindowLevel (24) + 2: above the menu bar.
+                let _: () = msg_send![ns_window, setLevel: 26isize];
+                // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
+                let behavior: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
+                let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+                let rect = CGRect {
+                    origin: CGPoint {
+                        x: frame.x,
+                        y: frame.y,
+                    },
+                    size: CGSize {
+                        width: frame.width,
+                        height: frame.height,
+                    },
+                };
+                let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES];
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, frame);
 }
 
 /// Displays in logical points (GPUI exposes no scale factor; placement math

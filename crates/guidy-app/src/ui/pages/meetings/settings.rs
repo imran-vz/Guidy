@@ -757,6 +757,55 @@ impl Render for MeetingSettingsView {
         ]);
         recording.extend(self.render_speaker_model(cx));
 
+        // -- other apps (MCP) -----------------------------------------------
+        let mut mcp = vec![
+            SettingRow::new("meetings-mcp", t("meetings.settings.mcp.title"))
+                .description(t("meetings.settings.mcp.description"))
+                .control(toggle(
+                    "meetings-mcp-toggle",
+                    m.mcp_enabled,
+                    updating,
+                    |v, _, cx| update_meetings(cx, |m| m.mcp_enabled = v),
+                ))
+                .into_any_element(),
+        ];
+        if m.mcp_enabled {
+            let running = cx
+                .try_global::<crate::windows::ShellGlobal>()
+                .is_some_and(|g| guidy_core::mcp::is_running(&g.app));
+            if running || updating {
+                let exe = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "guidy".into());
+                mcp.push(copy_row(
+                    "meetings-mcp-url",
+                    t("meetings.settings.mcp.url"),
+                    guidy_core::mcp::endpoint_url(m.mcp_port),
+                    cx,
+                ));
+                mcp.push(copy_row(
+                    "meetings-mcp-stdio",
+                    t("meetings.settings.mcp.stdio"),
+                    format!("\"{exe}\" --mcp-stdio"),
+                    cx,
+                ));
+            } else {
+                mcp.push(
+                    div()
+                        .w_full()
+                        .px(design::SECTION_X)
+                        .pb(px(10.))
+                        .text_size(px(12.))
+                        .text_color(cx.theme().danger)
+                        .child(t_args(
+                            "meetings.settings.mcp.failed",
+                            &[("port", &m.mcp_port.to_string())],
+                        ))
+                        .into_any_element(),
+                );
+            }
+        }
+
         // -- advanced -------------------------------------------------------
         let advanced_toggle = Button::new("meetings-advanced-toggle")
             .ghost()
@@ -784,6 +833,7 @@ impl Render for MeetingSettingsView {
             .child(group(Some(t("meetings.settings.general")), general, cx))
             .child(group(Some(t("meetings.settings.you")), you, cx))
             .child(group(Some(t("meetings.settings.recording")), recording, cx))
+            .child(group(Some(t("meetings.settings.mcp.group")), mcp, cx))
             .child(
                 v_flex()
                     .w_full()
@@ -815,4 +865,39 @@ impl Render for MeetingSettingsView {
             .child(self.ai.clone())
             .test_support()
     }
+}
+
+/// A labelled value in mono with a Copy button (the MCP connection details).
+fn copy_row(id: &'static str, title: SharedString, value: String, cx: &App) -> AnyElement {
+    let muted = design::tone(cx).text_muted;
+    SettingRow::new(id, title)
+        .stacked()
+        .control(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .font_family(crate::theme::MONO_FONT)
+                        .text_size(px(12.))
+                        .text_color(muted)
+                        .child(value.clone()),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-copy")))
+                        .secondary()
+                        .pill()
+                        .xsmall()
+                        .label(t("common.copy"))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                        }),
+                ),
+        )
+        .into_any_element()
 }
