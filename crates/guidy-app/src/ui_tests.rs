@@ -781,7 +781,10 @@ mod debug_and_about {
     #[gpui_kit::test]
     fn usage_page_lists_spend_per_model(cx: &mut TestAppContext) {
         use crate::ui::pages::usage::UsagePage;
-        use guidy_core::llm::usage::{FeatureSpend, ModelSpend, UsageFeature, UsageReport};
+        use guidy_core::llm::usage::{
+            FeatureSpend, LocalKind, LocalModelUsage, LocalUsageReport, ModelSpend, UsageFeature,
+            UsageReport,
+        };
         let backend = FakeBackend::new();
         backend.data.lock().usage = UsageReport {
             models: vec![ModelSpend {
@@ -804,16 +807,55 @@ mod debug_and_about {
             total_usd: 0.09,
             calls: 3,
             last_30_days_usd: 0.09,
+            local: LocalUsageReport {
+                models: vec![
+                    LocalModelUsage {
+                        kind: LocalKind::Transcription,
+                        model: "Nemotron Streaming 3.5".into(),
+                        runs: 12,
+                        audio_ms: 3_600_000,
+                        timed_audio_ms: 3_600_000,
+                        compute_ms: 150_000,
+                        words: 9_000,
+                        loads: 1,
+                        load_ms: 1_200,
+                        ..Default::default()
+                    },
+                    LocalModelUsage {
+                        kind: LocalKind::Llm,
+                        model: "Qwen3 4B".into(),
+                        runs: 2,
+                        input_tokens: 9_000,
+                        output_tokens: 600,
+                        compute_ms: 30_000,
+                        prompt_ms: 10_000,
+                        ..Default::default()
+                    },
+                ],
+                runs: 14,
+                audio_ms: 3_600_000,
+                words: 9_000,
+                tokens: 9_600,
+                ..Default::default()
+            },
         };
         setup(cx, backend.clone());
         let (w, page) = open(cx, UsagePage::new);
         cx.run_until_parked();
         assert!(exists(cx, w, "usage-model-anthropic-claude-sonnet-5-5"));
         assert!(!exists(cx, w, "usage-empty"));
+        assert!(exists(
+            cx,
+            w,
+            "usage-local-transcription-Nemotron Streaming 3.5"
+        ));
+        assert!(exists(cx, w, "usage-local-llm-Qwen3 4B"));
+        assert!(!exists(cx, w, "usage-local-empty"));
         page.update(cx, |p, cx| p.clear(cx));
         cx.run_until_parked();
         assert!(backend.called("clear_llm_usage"));
         assert!(exists(cx, w, "usage-empty"));
+        assert!(exists(cx, w, "usage-local-empty"));
     }
 
     /// PARITY B-01, B-02, B-03, B-04, B-05

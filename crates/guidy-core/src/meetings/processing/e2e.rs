@@ -79,9 +79,13 @@ fn speaker_model_gives_stable_voiceprints() {
 
 struct RealTranscriber(MeetingTranscriber);
 
-impl SegmentTranscriber for RealTranscriber {
-    fn transcribe(&mut self, pcm: Vec<f32>) -> anyhow::Result<(String, Vec<Word>)> {
-        let t = self.0.transcribe_words(pcm, None)?;
+impl RealTranscriber {
+    fn run(
+        &mut self,
+        pcm: Vec<f32>,
+        language: Option<String>,
+    ) -> anyhow::Result<(String, Vec<Word>)> {
+        let t = self.0.transcribe_words(pcm, language)?;
         let words = t
             .words
             .iter()
@@ -93,6 +97,25 @@ impl SegmentTranscriber for RealTranscriber {
             .filter(|w| !w.text.is_empty())
             .collect();
         Ok((t.text.trim().to_string(), words))
+    }
+}
+
+impl SegmentTranscriber for RealTranscriber {
+    fn transcribe(&mut self, pcm: Vec<f32>) -> anyhow::Result<(String, Vec<Word>)> {
+        self.run(pcm, None)
+    }
+
+    fn language_of(&self, text: &str) -> Option<String> {
+        let languages = &self.0.loaded_info()?.capabilities.languages;
+        super::pipeline::segment_language(text, languages)
+    }
+
+    fn transcribe_in(
+        &mut self,
+        pcm: Vec<f32>,
+        language: &str,
+    ) -> anyhow::Result<(String, Vec<Word>)> {
+        self.run(pcm, Some(language.to_string()))
     }
 }
 

@@ -190,6 +190,22 @@ pub fn word_run_options(language: Option<String>) -> RunOptions {
     }
 }
 
+/// The code `languages` (a model's list) has for `hint`: the same code, else
+/// the first one of the same base language (`en` -> `en-US`, `pt-PT` -> `pt`).
+fn model_language(languages: &[String], hint: &str) -> Option<String> {
+    let base = |l: &str| {
+        l.split(['-', '_'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    languages
+        .iter()
+        .find(|l| l.eq_ignore_ascii_case(hint))
+        .or_else(|| languages.iter().find(|l| base(l) == base(hint)))
+        .cloned()
+}
+
 /// A transcribe.cpp worker dedicated to meeting processing.
 pub struct MeetingTranscriber {
     engine: EngineSupervisor,
@@ -249,26 +265,26 @@ impl MeetingTranscriber {
         Ok(info)
     }
 
+    /// Whether `path` is the loaded model.
+    pub fn is_loaded(&self, path: &Path) -> bool {
+        self.loaded.as_ref().is_some_and(|(p, _)| p == path) && self.engine.loaded().is_some()
+    }
+
     pub fn loaded_info(&self) -> Option<&LoadedInfo> {
         self.loaded.as_ref().map(|(_, info)| info)
     }
 
     /// Transcribe 16 kHz mono PCM with word timestamps (relative to the
-    /// start of `pcm`). A hint `language` the model doesn't list is dropped
-    /// (autodetect instead).
+    /// start of `pcm`). A hint `language` is passed as the model lists it
+    /// (`en` as `en-US` for Nemotron 3.5); one the model doesn't list is
+    /// dropped (autodetect instead).
     pub fn transcribe_words(
         &self,
         pcm: Vec<f32>,
         language: Option<String>,
     ) -> std::result::Result<Transcript, EngineError> {
-        let language = language.filter(|lang| {
-            self.loaded_info().is_some_and(|info| {
-                info.capabilities
-                    .languages
-                    .iter()
-                    .any(|l| l.eq_ignore_ascii_case(lang))
-            })
-        });
+        let language = language
+            .and_then(|lang| model_language(&self.loaded_info()?.capabilities.languages, &lang));
         self.engine.transcribe(pcm, word_run_options(language))
     }
 
@@ -317,6 +333,17 @@ mod tests {
             supports_streaming: false,
             supports_language_detection: false,
         }
+    }
+
+    #[test]
+    fn a_language_hint_is_passed_as_the_model_lists_it() {
+        let nemotron: Vec<String> = ["en-US", "en-GB", "hi-IN"].map(String::from).into();
+        assert_eq!(model_language(&nemotron, "en").as_deref(), Some("en-US"));
+        assert_eq!(model_language(&nemotron, "en-gb").as_deref(), Some("en-GB"));
+        assert_eq!(model_language(&nemotron, "hi").as_deref(), Some("hi-IN"));
+        assert_eq!(model_language(&nemotron, "fr"), None);
+        let whisper: Vec<String> = ["en", "pt"].map(String::from).into();
+        assert_eq!(model_language(&whisper, "pt-BR").as_deref(), Some("pt"));
     }
 
     #[test]

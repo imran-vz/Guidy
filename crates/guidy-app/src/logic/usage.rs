@@ -1,4 +1,5 @@
-//! Formatting LLM spend for the Usage page and summaries.
+//! Formatting AI usage (cloud spend, local model work) for the Usage page
+//! and summaries.
 
 use guidy_core::llm::usage::MeterTotals;
 
@@ -21,6 +22,49 @@ pub fn format_tokens(n: u64) -> String {
         0..=999 => n.to_string(),
         1_000..=999_999 => trim_zero(format!("{:.1}", n as f64 / 1e3)) + "k",
         _ => trim_zero(format!("{:.1}", n as f64 / 1e6)) + "M",
+    }
+}
+
+/// Audio or compute time: `45 s`, `12 min`, `3 h 12 min`.
+pub fn format_duration(ms: u64) -> String {
+    let secs = (ms + 500) / 1000;
+    match secs {
+        0..=59 => format!("{secs} s"),
+        60..=3_599 => format!("{} min", (secs + 30) / 60),
+        _ => {
+            let mins = (secs + 30) / 60;
+            match mins % 60 {
+                0 => format!("{} h", mins / 60),
+                m => format!("{} h {m} min", mins / 60),
+            }
+        }
+    }
+}
+
+/// A short wait: `350 ms`, `1.2 s`.
+pub fn format_wait(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms} ms")
+    } else {
+        trim_zero(format!("{:.1}", ms as f64 / 1e3)) + " s"
+    }
+}
+
+/// How many times real time: `24×`, `3.5×`.
+pub fn format_speedup(x: f64) -> String {
+    format!("{}×", one_decimal_below_ten(x))
+}
+
+/// Tokens per second: `28 tok/s`, `7.5 tok/s`.
+pub fn format_tokens_per_second(x: f64) -> String {
+    format!("{} tok/s", one_decimal_below_ten(x))
+}
+
+fn one_decimal_below_ten(x: f64) -> String {
+    if x < 10.0 {
+        trim_zero(format!("{x:.1}"))
+    } else {
+        format!("{x:.0}")
     }
 }
 
@@ -55,6 +99,22 @@ mod tests {
         assert_eq!(format_tokens(12_345), "12.3k");
         assert_eq!(format_tokens(2_000), "2k");
         assert_eq!(format_tokens(4_100_000), "4.1M");
+    }
+
+    #[test]
+    fn local_work_reads_well() {
+        assert_eq!(format_duration(0), "0 s");
+        assert_eq!(format_duration(44_600), "45 s");
+        assert_eq!(format_duration(12 * 60_000 + 10_000), "12 min");
+        assert_eq!(format_duration(3 * 3_600_000), "3 h");
+        assert_eq!(format_duration(3 * 3_600_000 + 12 * 60_000), "3 h 12 min");
+        assert_eq!(format_wait(350), "350 ms");
+        assert_eq!(format_wait(1_200), "1.2 s");
+        assert_eq!(format_wait(2_000), "2 s");
+        assert_eq!(format_speedup(24.4), "24×");
+        assert_eq!(format_speedup(3.46), "3.5×");
+        assert_eq!(format_tokens_per_second(28.2), "28 tok/s");
+        assert_eq!(format_tokens_per_second(7.0), "7 tok/s");
     }
 
     #[test]

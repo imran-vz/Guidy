@@ -210,6 +210,10 @@ fn dictation_chat_options(cancel: crate::llm::CancelFlag) -> crate::llm::ChatOpt
     crate::llm::ChatOptions {
         cancel: Some(cancel),
         max_queue_wait: Some(DICTATION_QUEUE_WAIT),
+        meter: Some(crate::llm::usage::UsageMeter::new(
+            crate::llm::usage::UsageFeature::Dictation,
+            None,
+        )),
         ..Default::default()
     }
 }

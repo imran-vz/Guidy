@@ -59,10 +59,13 @@ fn speaker_of(pcm: &[f32]) -> usize {
 struct FakeTranscriber<'c> {
     calls: Rc<Cell<usize>>,
     cancel_after: Option<(usize, &'c AtomicBool)>,
+    /// A speaker whose English autodetect writes in Devanagari, as
+    /// Nemotron 3.5 does with an Indian accent. Enables the language pass.
+    accented: Option<usize>,
 }
 
-impl SegmentTranscriber for FakeTranscriber<'_> {
-    fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+impl FakeTranscriber<'_> {
+    fn say(&mut self, pcm: Vec<f32>, language: Option<&str>) -> Result<(String, Vec<Word>)> {
         self.calls.set(self.calls.get() + 1);
         if let Some((n, flag)) = self.cancel_after {
             if self.calls.get() >= n {
@@ -70,7 +73,11 @@ impl SegmentTranscriber for FakeTranscriber<'_> {
             }
         }
         let k = speaker_of(&pcm);
-        let text = format!("hello from speaker {k} today");
+        let text = if self.accented == Some(k) && language.is_none() {
+            format!("हेलो फ्रॉम स्पीकर {k} टुडे")
+        } else {
+            format!("hello from speaker {k} today")
+        };
         let words = text
             .split(' ')
             .enumerate()
@@ -81,6 +88,21 @@ impl SegmentTranscriber for FakeTranscriber<'_> {
             })
             .collect();
         Ok((text, words))
+    }
+}
+
+impl SegmentTranscriber for FakeTranscriber<'_> {
+    fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+        self.say(pcm, None)
+    }
+
+    fn language_of(&self, text: &str) -> Option<String> {
+        self.accented?;
+        segment_language(text, &["en-US".into(), "hi-IN".into()])
+    }
+
+    fn transcribe_in(&mut self, pcm: Vec<f32>, language: &str) -> Result<(String, Vec<Word>)> {
+        self.say(pcm, Some(language))
     }
 }
 
@@ -195,12 +217,23 @@ fn run_tracks(
     mic: &[(usize, i64, i64)],
     system: &[(usize, i64, i64)],
 ) -> Run {
+    run_accented(f, cancel_after, None, mic, system)
+}
+
+fn run_accented(
+    f: &Fixture,
+    cancel_after: Option<usize>,
+    accented: Option<usize>,
+    mic: &[(usize, i64, i64)],
+    system: &[(usize, i64, i64)],
+) -> Run {
     let cancel = AtomicBool::new(false);
     let t_calls = Rc::new(Cell::new(0));
     let e_calls = Rc::new(Cell::new(0));
     let mut transcriber = FakeTranscriber {
         calls: t_calls.clone(),
         cancel_after: cancel_after.map(|n| (n, &cancel)),
+        accented,
     };
     let mut embedder = FakeEmbedder {
         calls: e_calls.clone(),
@@ -214,6 +247,7 @@ fn run_tracks(
         key: KEY,
         config: PipelineConfig {
             user_label: "Imran".into(),
+            preferred_language: Some("en".into()),
             ..PipelineConfig::default()
         },
         mic: Some(Box::new(PcmSource::new(render(30_000, mic)))),
@@ -508,6 +542,7 @@ fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) ->
     let mut transcriber = FakeTranscriber {
         calls: Rc::new(Cell::new(0)),
         cancel_after: None,
+        accented: None,
     };
     let mut embedder = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -761,6 +796,7 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
     let mut transcriber = FakeTranscriber {
         calls: Rc::new(Cell::new(0)),
         cancel_after: None,
+        accented: None,
     };
     let mut embedder = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -805,6 +841,7 @@ fn a_run_no_longer_processing_saves_nothing() {
     let mut transcriber = FakeTranscriber {
         calls: Rc::new(Cell::new(0)),
         cancel_after: None,
+        accented: None,
     };
     let mut embedder = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -850,6 +887,7 @@ fn mic_only_meeting_has_just_the_user() {
     let mut t = FakeTranscriber {
         calls: calls.clone(),
         cancel_after: None,
+        accented: None,
     };
     let mut e = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -886,6 +924,7 @@ fn no_audio_is_an_error() {
     let mut t = FakeTranscriber {
         calls: Rc::new(Cell::new(0)),
         cancel_after: None,
+        accented: None,
     };
     let mut e = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -918,6 +957,7 @@ fn a_cancel_during_the_merge_lets_it_complete() {
     let mut transcriber = FakeTranscriber {
         calls: Rc::new(Cell::new(0)),
         cancel_after: None,
+        accented: None,
     };
     let mut embedder = FakeEmbedder {
         calls: Rc::new(Cell::new(0)),
@@ -995,4 +1035,84 @@ fn a_merge_failing_after_the_transcript_drops_the_old_sidecar() {
         "transcript stored"
     );
     assert!(!sidecar::embeddings_path(f.dir.path(), f.id).exists());
+}
+
+#[test]
+fn segments_in_another_script_are_transcribed_again_in_the_meetings_language() {
+    let f = fixture();
+    // Speaker 1 (two system turns and their mic echo) comes out in
+    // Devanagari; everyone else in English.
+    let r = run_accented(&f, None, Some(1), &mic_turns(), &system_turns());
+    r.result.unwrap();
+    // 8 units, then speaker 1's three again.
+    assert_eq!(r.transcribe_calls, 11);
+    let segments = f.store.segments(f.id).unwrap();
+    assert!(
+        segments.iter().all(|s| s.text.is_ascii()),
+        "{:?}",
+        segments.iter().map(|s| &s.text).collect::<Vec<_>>()
+    );
+    // Back in English, the echo is recognised and dropped again.
+    assert_eq!(segments.len(), 7);
+}
+
+#[test]
+fn the_main_language_needs_enough_words_and_a_clear_lead() {
+    let seg = |l: &str, n| (Some(l.to_string()), n);
+    assert_eq!(
+        main_language(&[seg("en", 25), seg("hi", 15), (None, 50)], None).as_deref(),
+        Some("en")
+    );
+    // A clear leader wins over the preferred language.
+    assert_eq!(
+        main_language(&[seg("en", 25), seg("hi", 75)], Some("en")).as_deref(),
+        Some("hi")
+    );
+    // Too few words to tell.
+    assert_eq!(main_language(&[seg("en", 10)], Some("en")), None);
+    // Without a clear leader: the preferred language, if it has a fair share.
+    let even = [seg("en", 69), seg("hi", 80)];
+    assert_eq!(main_language(&even, None), None);
+    assert_eq!(main_language(&even, Some("en-US")).as_deref(), Some("en"));
+    assert_eq!(main_language(&even, Some("fr")), None);
+    // Mixed-script segments don't vote.
+    assert_eq!(
+        main_language(&[seg("hi", 30), seg(MIXED_LANGUAGE, 100)], None).as_deref(),
+        Some("hi")
+    );
+}
+
+#[test]
+fn a_segment_in_two_scripts_is_mixed() {
+    let langs: Vec<String> = vec!["en-US".into(), "hi-IN".into(), "ja-JP".into()];
+    assert_eq!(
+        segment_language(
+            "ओके सो कंट्री ऑल्सो दिस टू. They were not appearing for you in the data.",
+            &langs
+        )
+        .as_deref(),
+        Some(MIXED_LANGUAGE)
+    );
+    assert_eq!(
+        segment_language(
+            "ओके एस ओ करंटली ऑल्सो दिस टू डी एस आर नॉट प्रेजेंट फॉर द टू डी एस आर",
+            &langs
+        )
+        .as_deref(),
+        Some("hi")
+    );
+    assert_eq!(
+        segment_language(
+            "Okay, so currently also these two DSRs are not present for the two DSRs",
+            &langs
+        )
+        .as_deref(),
+        Some("en")
+    );
+    // Kana and kanji are one script.
+    assert_ne!(
+        segment_language("今日はとても良い天気ですね、カフェに行きましょう", &langs).as_deref(),
+        Some(MIXED_LANGUAGE)
+    );
+    assert_eq!(segment_language("", &langs), None);
 }

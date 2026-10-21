@@ -15,6 +15,7 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -177,6 +178,8 @@ fn main() {
                             finish_reason: done.finish_reason,
                             prompt_tokens: done.prompt_tokens,
                             completion_tokens: done.completion_tokens,
+                            prompt_ms: done.prompt_ms,
+                            generation_ms: done.generation_ms,
                         },
                     ),
                     Err(e) => send(
@@ -212,6 +215,8 @@ struct ChatDone {
     finish_reason: FinishReason,
     prompt_tokens: u32,
     completion_tokens: u32,
+    prompt_ms: u64,
+    generation_ms: u64,
 }
 
 impl Worker {
@@ -275,6 +280,7 @@ impl Worker {
         let mut sampler = build_sampler(model, temperature, json_schema)?;
 
         // Prompt, in batches; logits only for the very last token.
+        let started = Instant::now();
         let mut batch = LlamaBatch::new(N_BATCH as usize, 1);
         let last = tokens.len() - 1;
         for (chunk_index, chunk) in tokens.chunks(N_BATCH as usize).enumerate() {
@@ -288,6 +294,8 @@ impl Worker {
             }
             ctx.decode(&mut batch).context("prompt decode failed")?;
         }
+        let prompt_ms = started.elapsed().as_millis() as u64;
+        let generating = Instant::now();
 
         let mut bytes: Vec<u8> = Vec::new();
         let mut streamed = 0usize;
@@ -332,6 +340,8 @@ impl Worker {
             finish_reason,
             prompt_tokens: n_prompt,
             completion_tokens: generated,
+            prompt_ms,
+            generation_ms: generating.elapsed().as_millis() as u64,
         })
     }
 }
@@ -342,6 +352,8 @@ fn cancelled(text: String, prompt_tokens: u32, completion_tokens: u32) -> ChatDo
         finish_reason: FinishReason::Cancelled,
         prompt_tokens,
         completion_tokens,
+        prompt_ms: 0,
+        generation_ms: 0,
     }
 }
 

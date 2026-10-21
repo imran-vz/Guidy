@@ -37,7 +37,9 @@
   },
   "usage": {
     "title": "Usage",
-    "description": "What cloud AI providers have cost for post-processing and meeting summaries. Local models are free and not counted.",
+    "description": "What cloud AI providers have cost, and the work models have done on this Mac.",
+    "cloud": "Cloud",
+    "local": "On this Mac",
     "refresh": "Refresh",
     "total": "Total spent",
     "last30Days": "Last 30 days",
@@ -52,15 +54,36 @@
     "tokens": "{{input}} in / {{output}} out tokens",
     "unknownPrice": "price unknown",
     "feature": {
-      "dictation": "Dictation post-processing",
+      "dictation": "Dictation",
+      "meetingTranscription": "Meeting transcription",
       "meetingSummary": "Meeting summaries",
       "other": "Other"
     },
+    "localAudio": "Audio transcribed",
+    "localWords": "Words",
+    "localTokens": "LLM tokens",
+    "localCloudEquivalent": "Cloud equivalent",
+    "localEmpty": "Nothing has run on a local model yet.",
+    "localByModel": "Local models",
+    "localByFeature": "Local work by feature",
+    "kind": {
+      "transcription": "Transcription",
+      "llm": "Built-in LLM"
+    },
+    "runs_one": "{{count}} run",
+    "runs_other": "{{count}} runs",
+    "audio": "{{duration}} audio",
+    "words": "{{count}} words",
+    "realtime": "{{speed}} real time",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "generation {{speed}}",
+    "loadTime": "loads in {{time}}",
+    "localNote": "Real time speed is audio length ÷ processing time, loading excluded; dictation decoded live while you speak isn't timed. Cloud equivalent prices the audio at ${{price}} per minute (OpenAI Whisper).",
     "estimateNote": "~ marks amounts estimated from published per-token prices; providers that report their own cost (such as OpenRouter) are exact. Check your provider's dashboard for billing.",
-    "localNote": "Amounts are as reported by the providers. Check your provider's dashboard for billing.",
+    "reportedNote": "Amounts are as reported by the providers. Check your provider's dashboard for billing.",
     "clear": "Clear history",
     "clearTitle": "Clear usage history?",
-    "clearConfirm": "The recorded calls and costs will be deleted. Costs shown on meeting summaries stay."
+    "clearConfirm": "The recorded calls, costs and local model runs will be deleted. Usage shown on meeting summaries stays."
   },
   "onboarding": {
     "subtitle": "To get started, choose a transcription model",
@@ -1062,6 +1085,7 @@
       "none": "None",
       "generatedBy": "Generated with {{model}}",
       "generatedByCost": "Generated with {{model}} · {{cost}} · {{input}} in / {{output}} out tokens",
+      "generatedByTokens": "Generated with {{model}} · {{input}} in / {{output}} out tokens",
       "pickerTitle": "Model for this summary",
       "pickerDescription": "Regenerate with a different provider and model. Your meetings model in settings stays unchanged. Action items that already have a Linear issue are kept.",
       "run": "Generate",

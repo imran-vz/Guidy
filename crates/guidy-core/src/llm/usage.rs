@@ -1,8 +1,11 @@
 //! What cloud LLM calls cost: token counts from each response, priced with
 //! the provider's reported cost (OpenRouter and some gateways return one) or
 //! the registry's per-million-token prices, kept in a small local ledger
-//! (`llm_usage.db` in the app data dir) for the Usage page. Local models
-//! (built-in runtime, Apple Intelligence) are free and not recorded.
+//! (`llm_usage.db` in the app data dir) for the Usage page.
+//!
+//! Local models are free, so the same ledger keeps what they did instead
+//! ([`LocalRun`]): audio transcribed and how much faster than real time, and
+//! the built-in LLM's tokens, generation speed and load time.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -107,8 +110,9 @@ fn price_with(rates: Option<super::registry::Cost>, usage: &TokenUsage) -> Cost 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageFeature {
-    /// Dictation post-processing.
+    /// Dictation (transcription and post-processing).
     Dictation,
+    MeetingTranscription,
     MeetingSummary,
     /// Anything else (ticket drafts, connection tests, ...).
     #[default]
@@ -119,6 +123,7 @@ impl UsageFeature {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Dictation => "dictation",
+            Self::MeetingTranscription => "meeting_transcription",
             Self::MeetingSummary => "meeting_summary",
             Self::Other => "other",
         }
@@ -127,6 +132,7 @@ impl UsageFeature {
     fn parse(s: &str) -> Self {
         match s {
             "dictation" => Self::Dictation,
+            "meeting_transcription" => Self::MeetingTranscription,
             "meeting_summary" => Self::MeetingSummary,
             _ => Self::Other,
         }
@@ -165,6 +171,14 @@ impl UsageMeter {
 
     pub fn totals(&self) -> MeterTotals {
         *self.totals.lock()
+    }
+
+    /// A local model's call: tokens, no cost.
+    pub fn add_local(&self, input_tokens: u64, output_tokens: u64) {
+        let mut t = self.totals.lock();
+        t.calls += 1;
+        t.input_tokens += input_tokens;
+        t.output_tokens += output_tokens;
     }
 
     fn add(&self, usage: &TokenUsage, cost: Cost) {
@@ -206,6 +220,151 @@ pub fn record_call(
         log::warn!("LLM usage not recorded: {e:#}");
     }
     cost
+}
+
+// ----- local models ------------------------------------------------------------
+
+/// What runs a local model.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalKind {
+    /// Speech to text (transcribe.cpp).
+    #[default]
+    Transcription,
+    /// The built-in LLM runtime (llama.cpp).
+    Llm,
+}
+
+impl LocalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transcription => "transcription",
+            Self::Llm => "llm",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "llm" => Self::Llm,
+            _ => Self::Transcription,
+        }
+    }
+}
+
+/// One job a local model did: a dictation, a meeting's transcription, or
+/// one built-in LLM call.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LocalRun {
+    pub kind: LocalKind,
+    pub feature: UsageFeature,
+    pub model: String,
+    /// Speech transcribed.
+    pub audio_ms: u64,
+    /// Words in the transcript.
+    pub words: u64,
+    /// LLM prompt tokens (prefill).
+    pub input_tokens: u64,
+    /// LLM generated tokens.
+    pub output_tokens: u64,
+    /// Time the model spent working (loading excluded). `None` when not
+    /// measurable, e.g. a dictation decoded live while it was recorded.
+    pub compute_ms: Option<u64>,
+    /// The LLM's share of `compute_ms` spent on the prompt (prefill); the
+    /// rest is generation.
+    pub prompt_ms: u64,
+    /// Time spent loading the model for this job (0 = already loaded).
+    pub load_ms: u64,
+    pub meeting_id: Option<i64>,
+}
+
+/// Record a local model's job in the ledger.
+pub fn record_local_run(run: &LocalRun) {
+    if let Err(e) = ledger_record_local(crate::meetings::store::now_ms(), run) {
+        log::warn!("local model usage not recorded: {e:#}");
+    }
+}
+
+/// What the Usage page cites as the cloud price of transcription, USD per
+/// audio minute (OpenAI `whisper-1` / `gpt-4o-transcribe`).
+pub const CLOUD_TRANSCRIPTION_USD_PER_MIN: f64 = 0.006;
+
+/// One local model's work, over every recorded job.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct LocalModelUsage {
+    pub kind: LocalKind,
+    pub model: String,
+    pub runs: u64,
+    pub audio_ms: u64,
+    pub words: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// Sum of the measured compute times.
+    pub compute_ms: u64,
+    /// The LLM's prompt processing (prefill) share of `compute_ms`.
+    pub prompt_ms: u64,
+    /// Audio of the jobs with a measured compute time (the RTFx numerator).
+    pub timed_audio_ms: u64,
+    /// Jobs that loaded the model, and the time that took.
+    pub loads: u64,
+    pub load_ms: u64,
+    pub last_used_ms: i64,
+}
+
+impl LocalModelUsage {
+    /// How many times faster than real time transcription ran (RTFx: audio
+    /// duration / compute time; loading excluded).
+    pub fn realtime_factor(&self) -> Option<f64> {
+        (self.compute_ms > 0 && self.timed_audio_ms > 0)
+            .then(|| self.timed_audio_ms as f64 / self.compute_ms as f64)
+    }
+
+    /// LLM generation speed (decode), tokens per second.
+    pub fn generation_tokens_per_second(&self) -> Option<f64> {
+        let ms = self.compute_ms.saturating_sub(self.prompt_ms);
+        (ms > 0 && self.output_tokens > 0).then(|| self.output_tokens as f64 * 1000.0 / ms as f64)
+    }
+
+    /// LLM prompt processing speed (prefill), tokens per second.
+    pub fn prompt_tokens_per_second(&self) -> Option<f64> {
+        (self.prompt_ms > 0 && self.input_tokens > 0)
+            .then(|| self.input_tokens as f64 * 1000.0 / self.prompt_ms as f64)
+    }
+
+    /// Mean model load time.
+    pub fn avg_load_ms(&self) -> Option<u64> {
+        (self.loads > 0).then(|| self.load_ms / self.loads)
+    }
+}
+
+/// Local work per feature.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct LocalFeatureUsage {
+    pub feature: UsageFeature,
+    pub runs: u64,
+    pub audio_ms: u64,
+    pub output_tokens: u64,
+}
+
+/// The local half of the Usage page.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct LocalUsageReport {
+    /// Most used first.
+    pub models: Vec<LocalModelUsage>,
+    pub features: Vec<LocalFeatureUsage>,
+    pub runs: u64,
+    pub audio_ms: u64,
+    pub words: u64,
+    pub tokens: u64,
+    /// Transcription and loading time, all models.
+    pub compute_ms: u64,
+}
+
+impl LocalUsageReport {
+    /// What the transcribed audio would have cost at
+    /// [`CLOUD_TRANSCRIPTION_USD_PER_MIN`].
+    pub fn cloud_transcription_usd(&self) -> f64 {
+        self.audio_ms as f64 / 60_000.0 * CLOUD_TRANSCRIPTION_USD_PER_MIN
+    }
 }
 
 // ----- the ledger ------------------------------------------------------------
@@ -264,6 +423,7 @@ pub struct UsageReport {
     pub calls: u64,
     /// Spend in the last 30 days.
     pub last_30_days_usd: f64,
+    pub local: LocalUsageReport,
 }
 
 fn ledger() -> &'static Mutex<Option<Connection>> {
@@ -291,7 +451,23 @@ fn create_schema(conn: &Connection) -> Result<()> {
             cost_estimated INTEGER NOT NULL DEFAULT 0,
             meeting_id INTEGER
         );
-        CREATE INDEX IF NOT EXISTS llm_calls_model ON llm_calls(provider_id, model);",
+        CREATE INDEX IF NOT EXISTS llm_calls_model ON llm_calls(provider_id, model);
+        CREATE TABLE IF NOT EXISTS local_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            at_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            feature TEXT NOT NULL,
+            model TEXT NOT NULL,
+            audio_ms INTEGER NOT NULL DEFAULT 0,
+            words INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            compute_ms INTEGER,
+            prompt_ms INTEGER NOT NULL DEFAULT 0,
+            load_ms INTEGER NOT NULL DEFAULT 0,
+            meeting_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS local_runs_model ON local_runs(kind, model);",
     )?;
     Ok(())
 }
@@ -332,6 +508,90 @@ fn ledger_record(r: &UsageRecord) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+fn ledger_record_local(at_ms: i64, r: &LocalRun) -> Result<()> {
+    let guard = ledger().lock();
+    let Some(conn) = guard.as_ref() else {
+        return Ok(());
+    };
+    conn.execute(
+        "INSERT INTO local_runs (at_ms, kind, feature, model, audio_ms, words,
+            input_tokens, output_tokens, compute_ms, prompt_ms, load_ms, meeting_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            at_ms,
+            r.kind.as_str(),
+            r.feature.as_str(),
+            r.model,
+            r.audio_ms as i64,
+            r.words as i64,
+            r.input_tokens as i64,
+            r.output_tokens as i64,
+            r.compute_ms.map(|ms| ms as i64),
+            r.prompt_ms as i64,
+            r.load_ms as i64,
+            r.meeting_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn local_report(conn: &Connection) -> Result<LocalUsageReport> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, model, COUNT(*), SUM(audio_ms), SUM(words), SUM(input_tokens),
+            SUM(output_tokens), COALESCE(SUM(compute_ms), 0),
+            COALESCE(SUM(CASE WHEN compute_ms IS NOT NULL THEN audio_ms END), 0),
+            SUM(load_ms > 0), SUM(load_ms), MAX(at_ms), SUM(prompt_ms)
+         FROM local_runs GROUP BY kind, model
+         ORDER BY 3 DESC, 2",
+    )?;
+    let u = |r: &rusqlite::Row, i| r.get::<_, i64>(i).map(|n| n as u64);
+    let models = stmt
+        .query_map([], |r| {
+            Ok(LocalModelUsage {
+                kind: LocalKind::parse(&r.get::<_, String>(0)?),
+                model: r.get(1)?,
+                runs: u(r, 2)?,
+                audio_ms: u(r, 3)?,
+                words: u(r, 4)?,
+                input_tokens: u(r, 5)?,
+                output_tokens: u(r, 6)?,
+                compute_ms: u(r, 7)?,
+                timed_audio_ms: u(r, 8)?,
+                loads: u(r, 9)?,
+                load_ms: u(r, 10)?,
+                last_used_ms: r.get(11)?,
+                prompt_ms: u(r, 12)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare(
+        "SELECT feature, COUNT(*), SUM(audio_ms), SUM(output_tokens) FROM local_runs
+         GROUP BY feature ORDER BY 2 DESC",
+    )?;
+    let features = stmt
+        .query_map([], |r| {
+            Ok(LocalFeatureUsage {
+                feature: UsageFeature::parse(&r.get::<_, String>(0)?),
+                runs: u(r, 1)?,
+                audio_ms: u(r, 2)?,
+                output_tokens: u(r, 3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(LocalUsageReport {
+        runs: models.iter().map(|m| m.runs).sum(),
+        audio_ms: models.iter().map(|m| m.audio_ms).sum(),
+        words: models.iter().map(|m| m.words).sum(),
+        tokens: models
+            .iter()
+            .map(|m| m.input_tokens + m.output_tokens)
+            .sum(),
+        compute_ms: models.iter().map(|m| m.compute_ms + m.load_ms).sum(),
+        models,
+        features,
+    })
 }
 
 /// The Usage page's numbers. Empty when the ledger isn't open.
@@ -389,13 +649,14 @@ pub fn report() -> Result<UsageReport> {
         models,
         features,
         last_30_days_usd,
+        local: local_report(conn)?,
     })
 }
 
-/// Forget every recorded call.
+/// Forget every recorded call and local run.
 pub fn clear() -> Result<()> {
     if let Some(conn) = ledger().lock().as_ref() {
-        conn.execute("DELETE FROM llm_calls", [])?;
+        conn.execute_batch("DELETE FROM llm_calls; DELETE FROM local_runs;")?;
     }
     Ok(())
 }
@@ -479,8 +740,12 @@ mod tests {
         );
     }
 
+    /// The ledger is global: its tests take turns.
+    static LEDGER: Mutex<()> = Mutex::new(());
+
     #[test]
     fn the_ledger_reports_spend_per_model_and_feature() {
+        let _turn = LEDGER.lock();
         init_in_memory();
         clear().unwrap();
         let meter = UsageMeter::new(UsageFeature::MeetingSummary, Some(4));
@@ -519,5 +784,56 @@ mod tests {
         let b = &r.models[1];
         assert_eq!((b.unpriced_calls, b.avg_usd), (1, None));
         assert_eq!(r.features[0].feature, UsageFeature::MeetingSummary);
+    }
+
+    #[test]
+    fn the_ledger_reports_local_work_per_model() {
+        let _turn = LEDGER.lock();
+        init_in_memory();
+        clear().unwrap();
+        let asr = |audio_ms, compute_ms, load_ms| LocalRun {
+            kind: LocalKind::Transcription,
+            feature: UsageFeature::Dictation,
+            model: "nemotron".into(),
+            audio_ms,
+            words: 10,
+            compute_ms,
+            load_ms,
+            ..Default::default()
+        };
+        // 60 s in 3 s, after a 2 s load; then 30 s decoded live (untimed).
+        record_local_run(&asr(60_000, Some(3_000), 2_000));
+        record_local_run(&asr(30_000, None, 0));
+        record_local_run(&LocalRun {
+            kind: LocalKind::Llm,
+            feature: UsageFeature::MeetingSummary,
+            model: "qwen".into(),
+            input_tokens: 900,
+            output_tokens: 100,
+            compute_ms: Some(4_000),
+            prompt_ms: 1_000,
+            meeting_id: Some(3),
+            ..Default::default()
+        });
+        let r = report().unwrap().local;
+        assert_eq!(
+            (r.runs, r.audio_ms, r.words, r.tokens),
+            (3, 90_000, 20, 1_000)
+        );
+        let nemotron = &r.models[0];
+        assert_eq!((nemotron.model.as_str(), nemotron.runs), ("nemotron", 2));
+        assert_eq!(nemotron.realtime_factor(), Some(20.0));
+        assert_eq!(nemotron.avg_load_ms(), Some(2_000));
+        assert_eq!(nemotron.generation_tokens_per_second(), None);
+        let qwen = &r.models[1];
+        assert_eq!(qwen.kind, LocalKind::Llm);
+        // 900 prompt tokens in 1 s, 100 generated in 3 s.
+        assert_eq!(qwen.prompt_tokens_per_second(), Some(900.0));
+        assert!((qwen.generation_tokens_per_second().unwrap() - 33.333).abs() < 1e-3);
+        assert_eq!(qwen.realtime_factor(), None);
+        assert!((r.cloud_transcription_usd() - 0.009).abs() < 1e-12);
+        assert_eq!(r.features[0].feature, UsageFeature::Dictation);
+        clear().unwrap();
+        assert_eq!(report().unwrap().local.runs, 0);
     }
 }

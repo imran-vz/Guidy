@@ -932,6 +932,8 @@ impl TranscriptionManager {
             return Ok(String::new());
         }
 
+        // Decoded while recording: the time after it isn't the model's work.
+        let decoded_live = live.is_some();
         let outcome = match live {
             Some(outcome) => outcome,
             None => self.decode_batch(audio)?,
@@ -964,9 +966,34 @@ impl TranscriptionManager {
             );
         }
 
+        self.record_usage(
+            audio_len,
+            &final_result,
+            (!decoded_live).then_some(elapsed_secs),
+        );
         self.maybe_unload_immediately("transcription");
 
         Ok(final_result)
+    }
+
+    /// Record a finished dictation in the usage ledger.
+    fn record_usage(&self, samples: usize, text: &str, compute_secs: Option<f64>) {
+        let Some(model_id) = self.get_current_model() else {
+            return;
+        };
+        let model = self
+            .model_manager
+            .get_model_info(&model_id)
+            .map_or(model_id, |m| m.name);
+        crate::llm::usage::record_local_run(&crate::llm::usage::LocalRun {
+            kind: crate::llm::usage::LocalKind::Transcription,
+            feature: crate::llm::usage::UsageFeature::Dictation,
+            model,
+            audio_ms: samples as u64 * 1000 / 16_000,
+            words: text.split_whitespace().count() as u64,
+            compute_ms: compute_secs.map(|s| (s * 1000.0) as u64),
+            ..Default::default()
+        });
     }
 
     /// Decode a whole clip with the loaded model, loading it first if a load

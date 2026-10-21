@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::local_models::{self, CatalogEntry, LocalModels};
+use super::usage;
 use super::{
     extract_json, json_via_prompt, strip_think, validate_json, ChatMessage, ChatOptions,
     LlmProvider, CANCELLED,
@@ -120,6 +121,12 @@ pub enum Response {
         finish_reason: FinishReason,
         prompt_tokens: u32,
         completion_tokens: u32,
+        /// Time spent on the prompt (prefill), ms. Absent from older helpers.
+        #[serde(default)]
+        prompt_ms: u64,
+        /// Time spent generating, ms.
+        #[serde(default)]
+        generation_ms: u64,
     },
     Unloaded {
         id: u64,
@@ -419,6 +426,19 @@ impl Drop for Worker {
     }
 }
 
+/// What one built-in chat took.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChatStats {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// Prompt processing (prefill), ms.
+    pub prompt_ms: u64,
+    /// Token generation, ms.
+    pub generation_ms: u64,
+    /// Loading the model first (0 when it was loaded).
+    pub load_ms: u64,
+}
+
 /// Parameters of one built-in chat request.
 pub struct BuiltinChat<'a> {
     pub model_path: &'a Path,
@@ -649,6 +669,15 @@ impl BuiltinLlm {
     /// or the running request) and [`BuiltinChat::max_queue_wait`] (it
     /// returns [`WorkerBusy`]).
     pub fn chat(&self, req: &BuiltinChat<'_>, cancel: Option<&AtomicBool>) -> Result<String> {
+        self.chat_with_stats(req, cancel).map(|(text, _)| text)
+    }
+
+    /// [`chat`](Self::chat), with what the call took.
+    pub fn chat_with_stats(
+        &self,
+        req: &BuiltinChat<'_>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<(String, ChatStats)> {
         let mut guard = self.lock_worker(cancel, req.max_queue_wait)?;
         *self.last_used.lock() = Instant::now();
         // A model deleted while we queued must not be reused.
@@ -709,10 +738,12 @@ impl BuiltinLlm {
         slot: &mut Option<Worker>,
         req: &BuiltinChat<'_>,
         cancel: Option<&AtomicBool>,
-    ) -> Result<String> {
+    ) -> Result<(String, ChatStats)> {
+        let mut stats = ChatStats::default();
         let worker = self.ensure_worker(slot)?;
         let want = (req.model_path.to_path_buf(), req.n_ctx);
         if worker.loaded.as_ref() != Some(&want) {
+            let loading = Instant::now();
             worker.loaded = None;
             let id = worker.id();
             worker.send(&Request::Load {
@@ -731,6 +762,7 @@ impl BuiltinLlm {
                             .unwrap_or_default()
                     );
                     worker.loaded = Some(want);
+                    stats.load_ms = loading.elapsed().as_millis() as u64;
                 }
                 Response::Error { message, .. } => bail!("could not load the model: {message}"),
                 other => bail!("unexpected reply to load: {other:?}"),
@@ -758,9 +790,22 @@ impl BuiltinLlm {
             Response::Done {
                 text,
                 finish_reason,
+                prompt_tokens,
+                completion_tokens,
+                prompt_ms,
+                generation_ms,
                 ..
             } => match finish_reason {
-                FinishReason::Stop => Ok(text),
+                FinishReason::Stop => Ok((
+                    text,
+                    ChatStats {
+                        prompt_tokens: prompt_tokens.into(),
+                        completion_tokens: completion_tokens.into(),
+                        prompt_ms,
+                        generation_ms,
+                        ..stats
+                    },
+                )),
                 FinishReason::Length => {
                     bail!("the reply was cut off at {} tokens", req.max_tokens)
                 }
@@ -848,13 +893,14 @@ impl BuiltinProvider {
         self.entry.name
     }
 
+    /// One chat, recorded in the usage ledger (and `opts.meter`).
     fn run(
         &self,
         messages: &[ChatMessage],
         schema: Option<&Value>,
         opts: &ChatOptions,
     ) -> Result<String> {
-        self.llm.chat(
+        let (text, stats) = self.llm.chat_with_stats(
             &BuiltinChat {
                 model_path: &self.path,
                 n_ctx: self.n_ctx,
@@ -865,7 +911,26 @@ impl BuiltinProvider {
                 max_queue_wait: opts.max_queue_wait,
             },
             opts.cancel.as_deref(),
-        )
+        )?;
+        if let Some(meter) = &opts.meter {
+            meter.add_local(stats.prompt_tokens, stats.completion_tokens);
+        }
+        usage::record_local_run(&usage::LocalRun {
+            kind: usage::LocalKind::Llm,
+            feature: opts
+                .meter
+                .as_ref()
+                .map_or(usage::UsageFeature::Other, |m| m.feature),
+            model: self.entry.name.to_string(),
+            input_tokens: stats.prompt_tokens,
+            output_tokens: stats.completion_tokens,
+            compute_ms: Some(stats.prompt_ms + stats.generation_ms).filter(|&ms| ms > 0),
+            prompt_ms: stats.prompt_ms,
+            load_ms: stats.load_ms,
+            meeting_id: opts.meter.as_ref().and_then(|m| m.meeting_id),
+            ..Default::default()
+        });
+        Ok(text)
     }
 }
 
@@ -970,7 +1035,10 @@ mod tests {
                 text: "hi".into(),
                 finish_reason: FinishReason::Stop,
                 prompt_tokens: 4,
-                completion_tokens: 1
+                completion_tokens: 1,
+                // An older helper sends no timings.
+                prompt_ms: 0,
+                generation_ms: 0,
             }
         );
         assert!(decode_frame::<Response>("   ").is_none());

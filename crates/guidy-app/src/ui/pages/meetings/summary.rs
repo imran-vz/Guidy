@@ -1090,23 +1090,43 @@ impl SummaryView {
                         .child(div().flex_1().min_w_0().child(i.clone()))
                 }))
         };
-        let generated = match s
-            .usage
-            .as_ref()
-            .and_then(|u| crate::logic::usage::format_cost(u).map(|cost| (u, cost)))
-        {
-            Some((u, cost)) => t_args(
-                "meetingsAi.summary.generatedByCost",
-                &[
-                    ("model", &s.generated_by),
-                    ("cost", &cost),
-                    ("input", &crate::logic::usage::format_tokens(u.input_tokens)),
-                    (
-                        "output",
-                        &crate::logic::usage::format_tokens(u.output_tokens),
-                    ),
-                ],
-            ),
+        let tokens = |u: &guidy_core::llm::usage::MeterTotals| {
+            (
+                crate::logic::usage::format_tokens(u.input_tokens),
+                crate::logic::usage::format_tokens(u.output_tokens),
+            )
+        };
+        let generated = match s.usage.as_ref().filter(|u| u.calls > 0) {
+            Some(u) => match crate::logic::usage::format_cost(u) {
+                Some(cost) => {
+                    let (input, output) = tokens(u);
+                    t_args(
+                        "meetingsAi.summary.generatedByCost",
+                        &[
+                            ("model", &s.generated_by),
+                            ("cost", &cost),
+                            ("input", &input),
+                            ("output", &output),
+                        ],
+                    )
+                }
+                // A local model: tokens, no cost.
+                None if u.input_tokens + u.output_tokens > 0 => {
+                    let (input, output) = tokens(u);
+                    t_args(
+                        "meetingsAi.summary.generatedByTokens",
+                        &[
+                            ("model", &s.generated_by),
+                            ("input", &input),
+                            ("output", &output),
+                        ],
+                    )
+                }
+                None => t_args(
+                    "meetingsAi.summary.generatedBy",
+                    &[("model", &s.generated_by)],
+                ),
+            },
             None => t_args(
                 "meetingsAi.summary.generatedBy",
                 &[("model", &s.generated_by)],

@@ -12,6 +12,7 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use parking_lot::{Condvar, Mutex, MutexGuard};
@@ -563,6 +564,13 @@ impl Processor {
             dictation: settings.selected_model.clone(),
             language,
             ready: false,
+            usage: crate::llm::usage::LocalRun {
+                kind: crate::llm::usage::LocalKind::Transcription,
+                feature: crate::llm::usage::UsageFeature::MeetingTranscription,
+                meeting_id: Some(id),
+                compute_ms: Some(0),
+                ..Default::default()
+            },
         };
         let mut embedder = LazyEmbedder {
             app: &inner.app,
@@ -571,12 +579,15 @@ impl Processor {
         let app = inner.app.clone();
         let this = self.clone();
         let run = cancel.clone();
-        Pipeline {
+        let result = Pipeline {
             meeting_id: id,
             store: &inner.store,
             meetings_dir: &inner.meetings_dir,
             key,
-            config: PipelineConfig::from_settings(&settings.meetings),
+            config: PipelineConfig {
+                preferred_language: Some(settings.app_language.clone()),
+                ..PipelineConfig::from_settings(&settings.meetings)
+            },
             mic,
             system,
             vad: Box::new(move || make_detector(&app)),
@@ -585,7 +596,11 @@ impl Processor {
             cancel,
             on_progress: Box::new(move |p| this.report_progress(&run, p)),
         }
-        .run()
+        .run();
+        if segment_transcriber.usage.audio_ms > 0 {
+            crate::llm::usage::record_local_run(&segment_transcriber.usage);
+        }
+        result
     }
 }
 
@@ -637,10 +652,19 @@ struct LazyTranscriber<'a> {
     dictation: String,
     language: Option<String>,
     ready: bool,
+    /// What this run transcribed, for the usage ledger.
+    usage: crate::llm::usage::LocalRun,
 }
 
-impl SegmentTranscriber for LazyTranscriber<'_> {
-    fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+impl LazyTranscriber<'_> {
+    /// Transcribe `pcm`, counting it in `usage` unless it is a second pass
+    /// over audio already counted.
+    fn run(
+        &mut self,
+        pcm: Vec<f32>,
+        language: Option<String>,
+        count: bool,
+    ) -> Result<(String, Vec<Word>)> {
         if !self.ready {
             let models = self
                 .app
@@ -649,12 +673,26 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
             let (model_id, path) =
                 resolve_meeting_model(&models, self.configured.as_deref(), Some(&self.dictation))?;
             log::info!("meeting processing uses model {model_id}");
+            let loading = Instant::now();
+            let was_loaded = self.transcriber.is_loaded(&path);
             self.transcriber.load(self.app, &path)?;
+            if !was_loaded {
+                self.usage.load_ms = loading.elapsed().as_millis() as u64;
+            }
+            self.usage.model = models
+                .get_model_info(&model_id)
+                .map_or(model_id, |m| m.name);
             self.ready = true;
         }
-        let t = self
-            .transcriber
-            .transcribe_words(pcm, self.language.clone())?;
+        let audio_ms = pcm.len() as u64 * 1000 / super::SAMPLE_RATE as u64;
+        let started = Instant::now();
+        let t = self.transcriber.transcribe_words(pcm, language)?;
+        if count {
+            let u = &mut self.usage;
+            u.audio_ms += audio_ms;
+            u.compute_ms = Some(u.compute_ms.unwrap_or(0) + started.elapsed().as_millis() as u64);
+            u.words += t.text.split_whitespace().count() as u64;
+        }
         let words = t
             .words
             .iter()
@@ -666,6 +704,28 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
             .filter(|w| !w.text.is_empty())
             .collect();
         Ok((t.text.trim().to_string(), words))
+    }
+}
+
+impl SegmentTranscriber for LazyTranscriber<'_> {
+    fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+        self.run(pcm, self.language.clone(), true)
+    }
+
+    /// Only in autodetect, from the text, among the model's languages.
+    fn language_of(&self, text: &str) -> Option<String> {
+        if self.language.is_some() {
+            return None;
+        }
+        let languages = &self.transcriber.loaded_info()?.capabilities.languages;
+        if languages.is_empty() {
+            return None;
+        }
+        super::pipeline::segment_language(text, languages)
+    }
+
+    fn transcribe_in(&mut self, pcm: Vec<f32>, language: &str) -> Result<(String, Vec<Word>)> {
+        self.run(pcm, Some(language.to_string()), false)
     }
 }
 

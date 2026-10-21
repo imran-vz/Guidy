@@ -94,6 +94,12 @@ pub enum Response {
         finish_reason: FinishReason,
         prompt_tokens: u32,
         completion_tokens: u32,
+        /// Time spent on the prompt (prefill), ms. Absent from older helpers.
+        #[serde(default)]
+        prompt_ms: u64,
+        /// Time spent generating, ms.
+        #[serde(default)]
+        generation_ms: u64,
     },
     Unloaded {
         id: u64,
@@ -215,11 +221,13 @@ mod tests {
             finish_reason: FinishReason::Stop,
             prompt_tokens: 4,
             completion_tokens: 1,
+            prompt_ms: 12,
+            generation_ms: 30,
         };
         assert_eq!(
             serde_json::to_value(&done).unwrap(),
             serde_json::json!({"type":"done","id":3,"text":"hi","finish_reason":"stop",
-                "prompt_tokens":4,"completion_tokens":1})
+                "prompt_tokens":4,"completion_tokens":1,"prompt_ms":12,"generation_ms":30})
         );
     }
 }

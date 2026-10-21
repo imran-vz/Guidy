@@ -30,6 +30,19 @@ use crate::meetings::types::*;
 /// relative to the start of `pcm`.
 pub trait SegmentTranscriber {
     fn transcribe(&mut self, pcm: Vec<f32>) -> Result<(String, Vec<Word>)>;
+
+    /// The language `text` is in, when the transcriber autodetects the
+    /// language and can tell. `None` (the default) skips the meeting-wide
+    /// language pass.
+    fn language_of(&self, _text: &str) -> Option<String> {
+        None
+    }
+
+    /// [`transcribe`](Self::transcribe) in `language` (a code
+    /// [`language_of`](Self::language_of) returned).
+    fn transcribe_in(&mut self, pcm: Vec<f32>, _language: &str) -> Result<(String, Vec<Word>)> {
+        self.transcribe(pcm)
+    }
 }
 
 /// Computes a voiceprint for one segment's PCM (`None` if too short).
@@ -53,6 +66,9 @@ pub struct PipelineConfig {
     pub user_voice_threshold: f32,
     /// Label of the mic speaker (the user).
     pub user_label: String,
+    /// The user's own language (the app's): the meeting's language when
+    /// autodetect leaves no clear main one (see [`main_language`]).
+    pub preferred_language: Option<String>,
 }
 
 impl PipelineConfig {
@@ -71,6 +87,7 @@ impl PipelineConfig {
             } else {
                 name.into()
             },
+            preferred_language: None,
         }
     }
 }
@@ -356,27 +373,14 @@ impl<'a> Pipeline<'a> {
                 self.save(cache)?;
                 return Err(e);
             }
-            let unit = cache.units[i];
-            let pcm = self
-                .source(unit.track)?
-                .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
-            let result = if pcm.is_empty() {
-                Ok((String::new(), Vec::new()))
-            } else {
-                self.transcriber.transcribe(pcm)
-            };
-            let (text, words) = match result {
-                Ok(r) => r,
+            match self.transcribe_unit(cache.units[i], None) {
+                Ok(t) => cache.transcripts[i] = Some(t),
                 Err(e) => {
                     // Keep what is done so a retry resumes here.
                     self.save(cache)?;
                     return Err(e);
                 }
-            };
-            cache.transcripts[i] = Some(UnitTranscript {
-                text: text.trim().to_string(),
-                words: offset_words(words, unit.span),
-            });
+            }
             let done = cache.transcripts.iter().filter(|t| t.is_some()).count();
             self.progress(
                 ProcessingStage::Transcribe,
@@ -386,6 +390,74 @@ impl<'a> Pipeline<'a> {
             if last_save.elapsed() >= CHECKPOINT_EVERY {
                 self.save(cache)?;
                 last_save = Instant::now();
+            }
+        }
+        self.unify_language(cache)
+    }
+
+    /// One unit's transcript, in `language` when given.
+    fn transcribe_unit(&mut self, unit: Unit, language: Option<&str>) -> Result<UnitTranscript> {
+        let pcm = self
+            .source(unit.track)?
+            .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
+        let (text, words) = if pcm.is_empty() {
+            (String::new(), Vec::new())
+        } else if let Some(language) = language {
+            self.transcriber.transcribe_in(pcm, language)?
+        } else {
+            self.transcriber.transcribe(pcm)?
+        };
+        Ok(UnitTranscript {
+            text: text.trim().to_string(),
+            words: offset_words(words, unit.span),
+        })
+    }
+
+    /// Autodetect picks a language per segment, and a short or accented one
+    /// can come out in another language's script (Indian English written as
+    /// Devanagari Hindi), which also hides its echo from the D9 net. Every
+    /// segment detected in a language other than the meeting's main one is
+    /// transcribed again in the main one.
+    fn unify_language(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        let detected: Vec<(Option<String>, usize)> = cache
+            .transcripts
+            .iter()
+            .map(|t| {
+                let text = t.as_ref().map_or("", |t| t.text.as_str());
+                (
+                    self.transcriber.language_of(text),
+                    text.split_whitespace().count(),
+                )
+            })
+            .collect();
+        let Some(main) = main_language(&detected, self.config.preferred_language.as_deref()) else {
+            return Ok(());
+        };
+        let redo: Vec<usize> = detected
+            .iter()
+            .enumerate()
+            .filter(|(_, (lang, _))| lang.as_deref().is_some_and(|l| l != main))
+            .map(|(i, _)| i)
+            .collect();
+        if redo.is_empty() {
+            return Ok(());
+        }
+        log::info!(
+            "meeting {}: transcribing {} segment(s) again in the meeting's language ({main})",
+            self.meeting_id,
+            redo.len()
+        );
+        for i in redo {
+            if let Err(e) = self.check_cancel() {
+                self.save(cache)?;
+                return Err(e);
+            }
+            match self.transcribe_unit(cache.units[i], Some(&main)) {
+                Ok(t) => cache.transcripts[i] = Some(t),
+                Err(e) => {
+                    self.save(cache)?;
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -520,6 +592,68 @@ impl<'a> Pipeline<'a> {
             .collect();
         sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)
     }
+}
+
+/// [`segment_language`] of a segment written in more than one script.
+pub const MIXED_LANGUAGE: &str = "mul";
+
+/// The language of one segment's text, among the model's `languages`:
+/// [`MIXED_LANGUAGE`] when its words are in more than one script (an
+/// accented English segment partly written as Devanagari), else the
+/// confident text detection, if any.
+pub fn segment_language(text: &str, languages: &[String]) -> Option<String> {
+    use whatlang::Script;
+    // Japanese mixes kana and kanji; one script as far as this goes.
+    let group = |s: Script| match s {
+        Script::Hiragana | Script::Katakana | Script::Mandarin | Script::Hangul => Script::Mandarin,
+        s => s,
+    };
+    let mut scripts = text.split_whitespace().filter_map(|w| {
+        let letters: String = w.chars().filter(|c| c.is_alphabetic()).collect();
+        whatlang::detect_script(&letters).map(group)
+    });
+    let first = scripts.next()?;
+    if scripts.any(|s| s != first) {
+        return Some(MIXED_LANGUAGE.to_string());
+    }
+    crate::audio_toolkit::detect_output_language(text, languages)
+}
+
+/// Fewest words in a detected language before a meeting has a main one.
+const MAIN_LANGUAGE_MIN_WORDS: usize = 20;
+/// Share of the detected words the main language must hold.
+const MAIN_LANGUAGE_MIN_SHARE: f32 = 0.6;
+/// Share the preferred language needs to be the main one when none leads.
+const PREFERRED_LANGUAGE_MIN_SHARE: f32 = 1.0 / 3.0;
+
+/// The language most of a meeting's words are in, given each segment's
+/// detected language and word count. Without a clear leader (echoes of
+/// misdetected speech count twice), `preferred` when it holds a fair share.
+/// `None` when too little was detected or neither applies.
+pub fn main_language(
+    segments: &[(Option<String>, usize)],
+    preferred: Option<&str>,
+) -> Option<String> {
+    let mut words: HashMap<&str, usize> = HashMap::new();
+    for (lang, n) in segments {
+        if let Some(lang) = lang.as_deref().filter(|&l| l != MIXED_LANGUAGE) {
+            *words.entry(lang).or_default() += n;
+        }
+    }
+    let total: usize = words.values().sum();
+    if total < MAIN_LANGUAGE_MIN_WORDS {
+        return None;
+    }
+    let share = |n: usize| n as f32 / total as f32;
+    let (lang, n) = words
+        .iter()
+        .max_by_key(|&(l, n)| (*n, std::cmp::Reverse(*l)))?;
+    if share(*n) >= MAIN_LANGUAGE_MIN_SHARE {
+        return Some(lang.to_string());
+    }
+    let preferred = preferred?.split(['-', '_']).next()?.to_ascii_lowercase();
+    let n = words.get(preferred.as_str()).copied().unwrap_or(0);
+    (share(n) >= PREFERRED_LANGUAGE_MIN_SHARE).then_some(preferred)
 }
 
 /// Shift words from segment time to meeting time, clamped to the segment.
