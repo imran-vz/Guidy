@@ -4,9 +4,10 @@
 
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker,
-    needs_confirmation, non_empty, speaker_name, status_key, talk_time, transcript_issue,
-    MeetingsEvent, RedoChoice, SpeakerBlock, SpeakerRedoChoice, TalkTime, TranscriptIssue,
+    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_range,
+    needs_confirmation, non_empty, select_lines, speaker_name, status_key, talk_time,
+    transcript_issue, LineClick, MeetingsEvent, RedoChoice, SpeakerBlock, SpeakerRedoChoice,
+    TalkTime, TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -56,6 +57,18 @@ pub struct MeetingDetail {
     progress: Option<ProcessingProgress>,
     /// The speaker whose name picker is open.
     picker: Option<PickTarget>,
+    /// The line a line picker opens under (default: its first line).
+    picker_at: Option<i64>,
+    /// Lines selected to tag together, in transcript order.
+    selection: Vec<i64>,
+    /// Where a Shift-click range starts.
+    anchor: Option<i64>,
+    /// The line a drag started on (mouse down, no modifiers).
+    drag_start: Option<i64>,
+    /// The drag reached another line: the click it ends in doesn't play.
+    dragged: bool,
+    /// Takes Esc / Enter for the selection.
+    focus: FocusHandle,
     suggestions: Vec<NameSuggestion>,
     suggestions_loading: bool,
     name_input: Entity<InputState>,
@@ -122,6 +135,12 @@ impl MeetingDetail {
             loading: true,
             progress: None,
             picker: None,
+            picker_at: None,
+            selection: Vec::new(),
+            anchor: None,
+            drag_start: None,
+            dragged: false,
+            focus: cx.focus_handle(),
             suggestions: Vec::new(),
             suggestions_loading: false,
             name_input,
@@ -249,6 +268,7 @@ impl MeetingDetail {
         cx: &mut Context<Self>,
     ) {
         self.picker = Some(PickTarget::Speaker(speaker_id));
+        self.picker_at = None;
         self.suggestions.clear();
         self.suggestions_loading = true;
         self.name_input
@@ -286,6 +306,7 @@ impl MeetingDetail {
         };
         let target = PickTarget::Lines(segment_ids);
         self.picker = Some(target.clone());
+        self.picker_at = None;
         self.suggestions.clear();
         self.suggestions_loading = true;
         self.name_input
@@ -311,8 +332,114 @@ impl MeetingDetail {
 
     fn close_picker(&mut self, cx: &mut Context<Self>) {
         self.picker = None;
+        self.picker_at = None;
         self.suggestions.clear();
         cx.notify();
+    }
+
+    // -- selecting lines --------------------------------------------------------
+
+    #[cfg(test)]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// The lines selected to tag together.
+    pub fn selection(&self) -> &[i64] {
+        &self.selection
+    }
+
+    /// Every line's id, in transcript order.
+    fn line_order(&self) -> Vec<i64> {
+        self.segments.iter().map(|s| s.id).collect()
+    }
+
+    /// A click on a line: Shift selects a range, Command one more line, a
+    /// plain click plays it (and drops the selection).
+    pub fn click_line(&mut self, seg: &Segment, click: LineClick, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.dragged) {
+            // The end of a drag across lines, not a click.
+            return;
+        }
+        let (selection, anchor) = select_lines(
+            &self.line_order(),
+            &self.selection,
+            self.anchor,
+            seg.id,
+            click,
+        );
+        let changed = selection != self.selection;
+        self.selection = selection;
+        self.anchor = anchor;
+        if changed && self.picker_at.is_some() {
+            self.close_picker(cx);
+        }
+        if click == LineClick::Plain {
+            self.play(seg, cx);
+        }
+        cx.notify();
+    }
+
+    /// The mouse moved over line `over`, the button held since a drag
+    /// started: select from the start to it.
+    fn drag_over(&mut self, over: i64, pressed: bool, cx: &mut Context<Self>) {
+        let Some(start) = self.drag_start else {
+            return;
+        };
+        if !pressed {
+            // Let go somewhere else.
+            self.drag_start = None;
+            cx.notify();
+            return;
+        }
+        if over == start && !self.dragged {
+            return;
+        }
+        let range = line_range(&self.line_order(), start, over);
+        if range != self.selection {
+            self.selection = range;
+            self.anchor = Some(start);
+            self.dragged = true;
+            if self.picker_at.is_some() {
+                self.close_picker(cx);
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.selection.clear();
+        if self.picker_at.is_some() {
+            self.close_picker(cx);
+        }
+        cx.notify();
+    }
+
+    /// Name the speaker of the selected lines; the picker opens under the
+    /// last one (where the selection ended).
+    pub fn tag_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(&last) = self.selection.last() else {
+            return;
+        };
+        self.open_line_picker(self.selection.clone(), window, cx);
+        self.picker_at = Some(last);
+    }
+
+    fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selection.is_empty() {
+            return;
+        }
+        match ev.keystroke.key.as_str() {
+            "escape" => {
+                self.clear_selection(cx);
+                cx.stop_propagation();
+            }
+            "enter" if self.picker.is_none() => {
+                self.tag_selection(window, cx);
+                cx.stop_propagation();
+            }
+            _ => {}
+        }
     }
 
     #[cfg(test)]
@@ -385,6 +512,7 @@ impl MeetingDetail {
                 match r {
                     Ok(_) => {
                         this.close_picker(cx);
+                        this.selection.clear();
                         this.load(cx);
                     }
                     Err(e) => toast_error("meetings.speaker.assignError", &e, cx),
@@ -538,7 +666,6 @@ impl MeetingDetail {
         crate::logic::meetings::speaker_redo_choices(
             &self.diarization,
             minutes,
-            &t("meetings.speakersRedo.accurate"),
             &t("meetings.speakersRedo.standard"),
             &t("meetings.speakersRedo.download"),
             &t("meetings.redo.noKeyShort"),
@@ -599,7 +726,8 @@ impl MeetingDetail {
         });
     }
 
-    /// "Redo speakers" with the accurate model, and a menu of the others.
+    /// "Redo speakers" with the chosen (or most accurate) model, and a
+    /// menu of the others.
     fn speakers_button(&self, cx: &mut Context<Self>) -> DropdownButton {
         let choices = self.speaker_redo_choices();
         let busy = self.processing_busy;
@@ -633,6 +761,7 @@ impl MeetingDetail {
                     let weak = weak.clone();
                     menu = menu.item(
                         PopupMenuItem::new(c.label.clone())
+                            .checked(c.current)
                             .disabled(!c.enabled)
                             .on_click(move |_, window, cx| {
                                 let choice = choice.clone();
@@ -1411,9 +1540,17 @@ impl MeetingDetail {
         // The line picker opens right under the (first) line it names, so it
         // is next to where it was clicked even in a long turn.
         let picker_line = match &self.picker {
-            Some(PickTarget::Lines(ids)) => ids.first().copied(),
+            Some(PickTarget::Lines(ids)) => self.picker_at.or(ids.first().copied()),
             _ => None,
         };
+        // The selection's bar goes under its last line, unless the picker
+        // already opened there; not mid-drag, where it would push the lines
+        // being dragged over down.
+        let bar_line = self
+            .selection
+            .last()
+            .copied()
+            .filter(|_| picker_line.is_none() && self.drag_start.is_none());
         // Who and when on the left, what they said on the right.
         let row = h_flex()
             .id(SharedString::from(format!("block-{i}")))
@@ -1500,6 +1637,7 @@ impl MeetingDetail {
                         let playing = active && st.playing;
                         let s = seg.clone();
                         let seg_id = seg.id;
+                        let selected = self.selection.contains(&seg_id);
                         let line = h_flex()
                             .id(SharedString::from(format!("segment-{}", seg.id)))
                             .group(SharedString::from(format!("segment-{}", seg.id)))
@@ -1512,7 +1650,43 @@ impl MeetingDetail {
                             .rounded(dp(6.))
                             .cursor_pointer()
                             .when(active, |d| d.bg(tone.accent_soft))
-                            .hover(move |d| d.bg(tone.raised.opacity(0.5)))
+                            .when(selected, |d| {
+                                d.bg(tone.accent.opacity(0.18))
+                                    .border_l_2()
+                                    .border_color(tone.accent)
+                            })
+                            .when(!selected, |d| {
+                                d.hover(move |d| d.bg(tone.raised.opacity(0.5)))
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                                    window.focus(&this.focus, cx);
+                                    let m = ev.modifiers;
+                                    this.dragged = false;
+                                    this.drag_start =
+                                        (!m.shift && !m.platform && !m.control).then_some(seg_id);
+                                }),
+                            )
+                            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                                this.drag_over(
+                                    seg_id,
+                                    ev.pressed_button == Some(MouseButton::Left),
+                                    cx,
+                                )
+                            }))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                    // Released on another line: the drag
+                                    // ends on it, even before a move got there.
+                                    if this.drag_start.is_some_and(|s| s != seg_id) {
+                                        this.drag_over(seg_id, true, cx);
+                                    }
+                                    this.drag_start = None;
+                                    cx.notify();
+                                }),
+                            )
                             .child(
                                 div()
                                     .pt(dp(4.))
@@ -1569,20 +1743,89 @@ impl MeetingDetail {
                                         .build(window, cx)
                                 }
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| this.play(&s, cx)))
+                            .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
+                                let m = ev.modifiers();
+                                let click = if m.shift {
+                                    LineClick::Range
+                                } else if m.platform || m.control {
+                                    LineClick::Toggle
+                                } else {
+                                    LineClick::Plain
+                                };
+                                this.click_line(&s, click, cx)
+                            }))
                             .test_support();
-                        v_flex().w_full().min_w_0().child(line).when(
-                            picker_line == Some(seg_id),
-                            |d| {
+                        v_flex()
+                            .w_full()
+                            .min_w_0()
+                            .child(line)
+                            .when(picker_line == Some(seg_id), |d| {
                                 d.child(div().pt(dp(6.)).pb(dp(10.)).child(
                                     self.render_picker(format!("line-picker-{seg_id}").into(), cx),
                                 ))
-                            },
-                        )
+                            })
+                            .when(bar_line == Some(seg_id), |d| {
+                                d.child(self.render_selection_bar(cx))
+                            })
                     })),
             )
             .test_support();
         row.into_any_element()
+    }
+
+    /// Under the selected lines: how many, and "Set speaker" for all of
+    /// them at once.
+    fn render_selection_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
+        let n = self.selection.len();
+        h_flex()
+            .id("selection-bar")
+            .w_full()
+            .mt(dp(4.))
+            .mb(dp(6.))
+            .px(dp(10.))
+            .py(dp(6.))
+            .gap_2()
+            .items_center()
+            .rounded(dp(8.))
+            .bg(tone.raised)
+            .child(
+                div()
+                    .text_size(dp(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(t_args(
+                        "meetings.selection.count",
+                        &[("count", &n.to_string())],
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(dp(11.))
+                    .text_color(tone.text_faint)
+                    .child(t("meetings.selection.keys")),
+            )
+            .child(
+                Button::new("selection-clear")
+                    .ghost()
+                    .pill()
+                    .small()
+                    .label(t("meetings.selection.clear"))
+                    .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
+            )
+            .child(
+                Button::new("selection-tag")
+                    .primary()
+                    .pill()
+                    .small()
+                    .icon(icon("user-round-pen"))
+                    .label(t("meetings.selection.setSpeaker"))
+                    .on_click(cx.listener(|this, _, window, cx| this.tag_selection(window, cx))),
+            )
+            .test_support()
+            .into_any_element()
     }
 
     /// While this meeting records: what live transcription has heard so far.
@@ -1759,9 +2002,38 @@ impl MeetingDetail {
                     .items_center()
                     .justify_between()
                     .child(design::eyebrow(t("meetings.detail.transcript"), cx))
-                    .children(copy),
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when(!self.loading && !self.segments.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_size(dp(11.))
+                                        .text_color(design::tone(cx).text_faint)
+                                        .child(t("meetings.selection.hint")),
+                                )
+                            })
+                            .children(copy),
+                    ),
             )
-            .child(group(None, rows, cx))
+            .child(
+                div()
+                    .id("transcript-lines")
+                    .w_full()
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::on_key_down))
+                    // A drag let go outside the transcript ends there.
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                            if this.drag_start.take().is_some() {
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(group(None, rows, cx)),
+            )
             .into_any_element()
     }
 

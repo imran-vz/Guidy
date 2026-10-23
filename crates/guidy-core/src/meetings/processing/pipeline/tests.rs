@@ -1471,3 +1471,179 @@ fn a_better_models_voiceprints_decide_the_clusters() {
     let c = cluster_units_with(&cache, &config, &[], &[], &source);
     assert_eq!(c.labels[1], Some(0));
 }
+
+/// What the user said (a speaker named, a line tagged) survives running
+/// the meeting again: the model only decides the lines nobody pinned.
+#[test]
+fn a_rerun_keeps_the_names_and_tags_the_user_gave() {
+    let f = fixture();
+    let alice = named_alice(&f);
+    let alice_speaker = speaker_1(&f);
+    let alice_lines: Vec<(Track, i64, i64)> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(alice_speaker.id))
+        .map(|s| (s.track, s.t0_ms, s.t1_ms))
+        .collect();
+    // One line of another speaker, tagged by hand as Bob.
+    let line = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .find(|s| {
+            s.speaker_id.is_some_and(|id| id != alice_speaker.id)
+                && f.store
+                    .get_speaker(s.speaker_id.unwrap())
+                    .unwrap()
+                    .is_some_and(|s| !s.is_user)
+        })
+        .unwrap();
+    let bob = naming::assign_segment(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        line.id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+
+    run(&f, None).result.unwrap();
+
+    let speakers = f.store.speakers(f.id).unwrap();
+    let person_of = |track: Track, t0: i64, t1: i64| {
+        let seg = f
+            .store
+            .segments(f.id)
+            .unwrap()
+            .into_iter()
+            .find(|s| (s.track, s.t0_ms, s.t1_ms) == (track, t0, t1))
+            .unwrap();
+        let sp = speakers
+            .iter()
+            .find(|s| Some(s.id) == seg.speaker_id)
+            .unwrap();
+        (sp.person_id, sp.confirmed)
+    };
+    for &(track, t0, t1) in &alice_lines {
+        assert_eq!(person_of(track, t0, t1), (Some(alice), true));
+    }
+    assert_eq!(
+        person_of(line.track, line.t0_ms, line.t1_ms),
+        (Some(bob), true)
+    );
+    // The pins are still there for the next one.
+    let pins = f.store.segment_pins(f.id).unwrap();
+    assert_eq!(pins.len(), alice_lines.len() + 1);
+
+    // Merging Bob into Alice moves his pin with him.
+    f.store.merge_people(bob, alice).unwrap();
+    assert!(f
+        .store
+        .segment_pins(f.id)
+        .unwrap()
+        .iter()
+        .all(|p| p.person_id == alice));
+}
+
+#[test]
+fn pins_override_the_model_and_steer_its_guesses() {
+    let speaker = |id: SpeakerId, person: Option<PersonId>, confirmed: bool| MeetingSpeaker {
+        id,
+        meeting_id: 0,
+        cluster_label: format!("Speaker {id}"),
+        person_id: person,
+        match_confidence: person.map(|_| 0.6),
+        confirmed,
+        is_user: false,
+    };
+    let seg = |t0_ms: i64, speaker_id: Option<SpeakerId>| Segment {
+        id: 0,
+        meeting_id: 0,
+        track: Track::System,
+        t0_ms,
+        t1_ms: t0_ms + 1_000,
+        text: String::new(),
+        words: Vec::new(),
+        speaker_id,
+    };
+    let pin = |t0_ms: i64, t1_ms: i64, person_id: PersonId| SegmentPin {
+        track: Track::System,
+        t0_ms,
+        t1_ms,
+        person_id,
+    };
+    let mut built = (
+        vec![
+            speaker(1, Some(7), true),
+            speaker(2, None, false),
+            speaker(3, Some(7), false),
+        ],
+        vec![
+            seg(0, Some(1)),     // the model's 7, pinned to 9
+            seg(2_000, Some(2)), // unknown voice, pinned to 9
+            seg(4_000, Some(2)), // unpinned, same unnamed voice
+            seg(6_000, Some(3)), // pinned to 7: the guess's only line
+            seg(8_000, None),    // nobody, pinned to 7 (pin a bit off)
+            seg(10_000, Some(1)),
+        ],
+        vec![0; 6],
+    );
+    let pins = [
+        pin(0, 1_000, 9),
+        pin(2_000, 3_000, 9),
+        pin(6_000, 7_000, 7),
+        pin(8_300, 9_200, 7),
+    ];
+    apply_pins(&mut built, &pins);
+    let (speakers, segments, _) = &built;
+    let person = |i: usize| {
+        let sp = speakers
+            .iter()
+            .find(|s| Some(s.id) == segments[i].speaker_id)
+            .unwrap();
+        (sp.person_id, sp.confirmed)
+    };
+    assert_eq!(person(0), (Some(9), true));
+    assert_eq!(person(1), (Some(9), true));
+    assert_eq!(segments[0].speaker_id, segments[1].speaker_id);
+    // Its only pinned line was 9's: the rest of that voice is suggested as 9.
+    assert_eq!(person(2), (Some(9), false));
+    assert_eq!(person(3), (Some(7), true));
+    assert_eq!(segments[3].speaker_id, Some(1));
+    assert_eq!(person(4), (Some(7), true));
+    assert_eq!(person(5), (Some(7), true));
+    // Speaker 3 lost its only line.
+    assert!(speakers.iter().all(|s| s.id != 3));
+
+    // A pin covering under half of a line doesn't decide it.
+    let line = seg(0, None);
+    assert!(pin_for(&line, &[pin(600, 2_000, 1)]).is_none());
+    assert_eq!(
+        pin_for(&line, &[pin(400, 2_000, 1)]).map(|p| p.person_id),
+        Some(1)
+    );
+}
+
+#[test]
+fn each_voiceprint_leads_back_to_the_line_it_was_taken_from() {
+    let f = fixture();
+    let alice = named_alice(&f);
+    let speaker = speaker_1(&f);
+    let samples = naming::voice_samples(&f.store, f.dir.path(), &KEY, alice).unwrap();
+    assert_eq!(
+        samples.len(),
+        f.store.voiceprints_for_person(alice).unwrap().len()
+    );
+    assert!(!samples.is_empty());
+    for s in &samples {
+        assert_eq!(s.meeting_id, Some(f.id));
+        let seg = s.segment.as_ref().expect("its line");
+        assert_eq!(seg.speaker_id, Some(speaker.id));
+    }
+}

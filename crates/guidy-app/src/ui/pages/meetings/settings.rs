@@ -41,6 +41,7 @@ use guidy_core::meetings::processing::{
     SpeakerModelStatus, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE, SPEAKER_MODEL_TRAINED_ON,
 };
 use guidy_core::meetings::settings::{MeetingSettings, RecordingControls, RETENTION_CHOICES};
+use guidy_core::meetings::types::{DiarizationOptions, SpeakerModelId};
 
 const REMINDER_CHOICES: [u32; 5] = [5, 10, 15, 20, 30];
 
@@ -107,6 +108,9 @@ enum Threshold {
     Suggest,
 }
 
+/// The live model dropdown's "same as meetings" value (not a model id).
+const LIVE_SAME_MODEL: &str = "__same__";
+
 pub struct MeetingSettingsView {
     name_input: Entity<InputState>,
     emails: Entity<UserEmailsView>,
@@ -116,6 +120,10 @@ pub struct MeetingSettingsView {
     permissions: Option<PermissionReport>,
     requesting: bool,
     speaker_model: Option<SpeakerModelStatus>,
+    /// The speaker models for telling voices apart.
+    diarization: Option<DiarizationOptions>,
+    /// The speaker model being downloaded from its row.
+    downloading_separation: Option<SpeakerModelId>,
     /// Deepgram key for "Redo speakers" in the cloud (never shown back).
     deepgram_key: Entity<InputState>,
     has_deepgram_key: bool,
@@ -196,6 +204,8 @@ impl MeetingSettingsView {
             permissions: None,
             requesting: false,
             speaker_model: None,
+            diarization: None,
+            downloading_separation: None,
             deepgram_key,
             has_deepgram_key: false,
             advanced_open: false,
@@ -214,15 +224,16 @@ impl MeetingSettingsView {
                 (
                     b.permission_status(),
                     b.speaker_model_status(),
-                    b.diarization_options().deepgram_has_key,
+                    b.diarization_options(),
                 )
             },
-            |this: &mut Self, (p, speaker, deepgram), _| {
+            |this: &mut Self, (p, speaker, diarization), _| {
                 if !this.requesting {
                     this.permissions = Some(p);
                 }
                 this.speaker_model = Some(speaker);
-                this.has_deepgram_key = deepgram;
+                this.has_deepgram_key = diarization.deepgram_has_key;
+                this.diarization = Some(diarization);
             },
         );
     }
@@ -475,6 +486,160 @@ impl MeetingSettingsView {
             )
             .stacked()
             .control(v_flex().w_full().gap_1().children(rows))
+            .into_any_element(),
+        )
+    }
+
+    /// Use `id` to tell voices apart, downloading it first when needed.
+    pub fn choose_separation_model(&mut self, id: SpeakerModelId, cx: &mut Context<Self>) {
+        update_meetings(cx, |m| m.speaker_separation_model = id.as_str().to_string());
+        let installed = self
+            .diarization
+            .as_ref()
+            .and_then(|d| d.models.iter().find(|m| m.id == id))
+            .is_some_and(|m| m.installed);
+        if !installed && !id.is_standard() && self.downloading_separation.is_none() {
+            self.downloading_separation = Some(id);
+            cx.notify();
+            run(
+                cx,
+                move |b| b.download_separation_model(id),
+                |this: &mut Self, r, cx| {
+                    this.downloading_separation = None;
+                    if let Err(e) = r {
+                        toast_error("meetings.settings.separation.downloadError", &e, cx);
+                    }
+                    this.reload_status(cx);
+                },
+            );
+        }
+    }
+
+    /// Delete a downloaded speaker model; meetings set to it go back to the
+    /// standard one.
+    fn delete_separation_model(&mut self, id: SpeakerModelId, cx: &mut Context<Self>) {
+        if SpeakerModelId::parse(&meeting_settings(cx).speaker_separation_model) == id {
+            update_meetings(cx, |m| m.speaker_separation_model = String::new());
+        }
+        run(
+            cx,
+            move |b| b.delete_separation_model(id),
+            |this: &mut Self, r, cx| {
+                if let Err(e) = r {
+                    toast_error("meetings.settings.separation.deleteError", &e, cx);
+                }
+                this.reload_status(cx);
+            },
+        );
+    }
+
+    /// Which speaker model tells voices apart: a size and accuracy
+    /// trade-off for the user to make.
+    fn render_separation_model(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let options = self.diarization.as_ref().filter(|d| !d.models.is_empty())?;
+        let theme = cx.theme().clone();
+        let chosen = SpeakerModelId::parse(&meeting_settings(cx).speaker_separation_model);
+        let items: Vec<DropdownOption> = options
+            .models
+            .iter()
+            .map(|m| {
+                let state = if m.installed {
+                    t("meetings.settings.separation.downloaded")
+                } else {
+                    t("meetings.settings.separation.notDownloaded")
+                };
+                DropdownOption::new(m.id.as_str(), format!("{} · {} MB", m.name, m.size_mb))
+                    .description(format!(
+                        "{} {}",
+                        t(&format!(
+                            "meetings.settings.separation.about.{}",
+                            m.id.as_str()
+                        )),
+                        state
+                    ))
+            })
+            .collect();
+        let current = options.models.iter().find(|m| m.id == chosen);
+        let downloading = self.downloading_separation;
+        let deletable =
+            current.filter(|m| m.installed && !m.id.is_standard() && downloading.is_none());
+        let status: Option<AnyElement> = match (downloading, current) {
+            (Some(_), _) => Some(
+                h_flex()
+                    .id("meetings-separation-downloading")
+                    .gap_1()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(crate::ui::kit::spinner(
+                        "meetings-separation-spinner",
+                        icon("loader-circle").xsmall(),
+                    ))
+                    .child(t("meetings.settings.separation.downloading"))
+                    .test_support()
+                    .into_any_element(),
+            ),
+            (None, Some(m)) if !m.installed && !m.id.is_standard() => Some(
+                Button::new("meetings-separation-download")
+                    .primary()
+                    .pill()
+                    .small()
+                    .icon(icon("download"))
+                    .label(t_args(
+                        "meetings.settings.speakerModel.download",
+                        &[("size", &format!("{} MB", m.size_mb))],
+                    ))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.choose_separation_model(chosen, cx)),
+                    )
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
+        Some(
+            SettingRow::new(
+                "meetings-separation-model",
+                t("meetings.settings.separation.title"),
+            )
+            .description(t("meetings.settings.separation.description"))
+            .control(
+                h_flex()
+                    .gap_2()
+                    .children(status)
+                    .when_some(deletable, |d, m| {
+                        let id = m.id;
+                        d.child(
+                            Button::new("meetings-separation-delete")
+                                .ghost()
+                                .xsmall()
+                                .icon(icon("trash"))
+                                .tooltip(t_args(
+                                    "meetings.settings.separation.delete",
+                                    &[("size", &format!("{} MB", m.size_mb))],
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.delete_separation_model(id, cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        Dropdown::new("meetings-separation-dropdown")
+                            .options(items)
+                            .selected(Some(chosen.as_str()))
+                            .min_width(dp(240.))
+                            .menu_width(dp(340.))
+                            .disabled(downloading.is_some())
+                            .on_select({
+                                let weak = cx.entity().downgrade();
+                                move |v, _, cx| {
+                                    let id = SpeakerModelId::parse(v);
+                                    weak.update(cx, |this, cx| {
+                                        this.choose_separation_model(id, cx)
+                                    })
+                                    .ok();
+                                }
+                            }),
+                    ),
+            )
             .into_any_element(),
         )
     }
@@ -844,6 +1009,44 @@ impl Render for MeetingSettingsView {
                 |v, _, cx| update_meetings(cx, |m| m.live_transcription = v),
             ))
             .into_any_element(),
+        ]);
+        if m.live_transcription {
+            // Any downloaded model; a chosen one deleted since still shows.
+            let mut live_options = vec![DropdownOption::new(
+                LIVE_SAME_MODEL,
+                t("meetings.settings.liveTranscription.sameModel"),
+            )];
+            live_options.extend(
+                models
+                    .iter()
+                    .filter(|mi| mi.is_downloaded || m.live_model.as_deref() == Some(&mi.id))
+                    .map(|mi| DropdownOption::new(mi.id.clone(), model_name(mi))),
+            );
+            recording.push(
+                SettingRow::new(
+                    "meetings-live-model",
+                    t("meetings.settings.liveTranscription.model"),
+                )
+                .description(t("meetings.settings.liveTranscription.modelDescription"))
+                .inline_description()
+                .control(
+                    Dropdown::new("meetings-live-model-dropdown")
+                        .options(live_options)
+                        .selected(Some(
+                            m.live_model
+                                .clone()
+                                .unwrap_or_else(|| LIVE_SAME_MODEL.to_string()),
+                        ))
+                        .min_width(dp(220.))
+                        .on_select(|v, _, cx| {
+                            let v = (v != LIVE_SAME_MODEL).then(|| v.to_string());
+                            update_meetings(cx, |m| m.live_model = v);
+                        }),
+                )
+                .into_any_element(),
+            );
+        }
+        recording.extend([
             SettingRow::new("meetings-retention", t("meetings.settings.retention.title"))
                 .description(t("meetings.settings.retention.description"))
                 .control(
@@ -888,6 +1091,7 @@ impl Render for MeetingSettingsView {
             .into_any_element(),
         ]);
         recording.extend(self.render_speaker_model(cx));
+        recording.extend(self.render_separation_model(cx));
         recording.push(self.render_deepgram_key(cx));
 
         // -- other apps (MCP) -----------------------------------------------

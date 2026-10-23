@@ -145,6 +145,18 @@ pub struct Segment {
     pub speaker_id: Option<SpeakerId>,
 }
 
+/// The user's word on who spoke a stretch of a meeting (a line they tagged,
+/// or a speaker they named or confirmed). Kept by time, not by segment row,
+/// so it outlives redoing the speakers or the transcript: the model decides
+/// only the lines nobody pinned.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SegmentPin {
+    pub track: Track,
+    pub t0_ms: i64,
+    pub t1_ms: i64,
+    pub person_id: PersonId,
+}
+
 /// A speaker within one meeting (a voiceprint cluster, or the mic user).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct MeetingSpeaker {
@@ -192,6 +204,21 @@ pub struct Voiceprint {
     pub embedding: Vec<f32>,
     pub source_meeting_id: Option<MeetingId>,
     pub created_at: i64,
+}
+
+/// One of a person's stored voiceprints with the line it was taken from, so
+/// it can be listened to (People, before a merge).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct VoiceSample {
+    pub voiceprint_id: i64,
+    pub meeting_id: Option<MeetingId>,
+    pub meeting_title: Option<String>,
+    pub meeting_started_at: Option<i64>,
+    /// The line it came from; `None` when that can't be told (the meeting
+    /// is gone, or it is a speaker's average voice, not one line's).
+    pub segment: Option<Segment>,
+    /// The line's audio is still kept (retention deletes it).
+    pub has_audio: bool,
 }
 
 /// Fixed JSON structure produced by the summarizer (plan §2.3).
@@ -367,25 +394,90 @@ pub enum TranscriptionEngine {
     Cloud { provider_id: String, model: String },
 }
 
-/// What tells a meeting's speakers apart when they are redone.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// A speaker model that can tell voices apart (see
+/// [`crate::meetings::processing::speaker_model::separation_model`]).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeakerModelId {
+    /// WeSpeaker ResNet34: the standard model, also the one that
+    /// recognizes known people.
+    #[default]
+    Resnet34,
+    /// WeSpeaker CAM++.
+    CamPlusPlus,
+    /// WeSpeaker ResNet152.
+    Resnet152,
+    /// NVIDIA NeMo TitaNet-L.
+    TitanetLarge,
+    /// WeSpeaker ResNet293.
+    Resnet293,
+}
+
+impl SpeakerModelId {
+    /// Smallest first.
+    pub const ALL: [Self; 5] = [
+        Self::Resnet34,
+        Self::CamPlusPlus,
+        Self::Resnet152,
+        Self::TitanetLarge,
+        Self::Resnet293,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Resnet34 => "resnet34",
+            Self::CamPlusPlus => "cam_plus_plus",
+            Self::Resnet152 => "resnet152",
+            Self::TitanetLarge => "titanet_large",
+            Self::Resnet293 => "resnet293",
+        }
+    }
+
+    /// The id in settings; anything unknown (or empty) is the standard one.
+    pub fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.as_str() == s.trim())
+            .unwrap_or_default()
+    }
+
+    pub fn is_standard(self) -> bool {
+        self == Self::Resnet34
+    }
+}
+
+/// What tells a meeting's speakers apart.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiarizationEngine {
-    /// The standard speaker model (what processing uses).
-    #[default]
-    Standard,
-    /// The larger, more accurate speaker model (downloaded on first use).
-    Accurate,
+    /// A speaker model (downloaded on first use, except the standard one).
+    Model(SpeakerModelId),
     /// Deepgram's diarization (uploads the meeting's system audio).
     Deepgram,
 }
 
-/// What redoing a meeting's speakers can use right now.
+impl Default for DiarizationEngine {
+    fn default() -> Self {
+        Self::Model(SpeakerModelId::default())
+    }
+}
+
+/// A speaker model as the settings and the "Redo speakers" menu show it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SpeakerModelOption {
+    pub id: SpeakerModelId,
+    pub name: String,
+    pub size_mb: u64,
+    pub installed: bool,
+}
+
+/// What telling speakers apart can use right now.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct DiarizationOptions {
-    /// The accurate model is downloaded (else its first use downloads it).
-    pub accurate_installed: bool,
-    pub accurate_size_mb: u64,
+    /// Every speaker model, smallest first.
+    pub models: Vec<SpeakerModelOption>,
+    /// The one meetings use (Meetings settings).
+    pub default_model: SpeakerModelId,
     /// A Deepgram API key is saved.
     pub deepgram_has_key: bool,
     /// Deepgram's price, USD per minute of audio.

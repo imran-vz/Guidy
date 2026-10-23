@@ -562,7 +562,7 @@ impl Processor {
                         let flag = Arc::new(AtomicBool::new(false));
                         state.current = Some((id, flag.clone()));
                         let engine = state.engines.remove(&id).unwrap_or_default();
-                        let diarizer = state.diarizers.remove(&id).unwrap_or_default();
+                        let diarizer = state.diarizers.remove(&id);
                         Some((id, flag, engine, diarizer))
                     }
                     None => None,
@@ -673,7 +673,7 @@ impl Processor {
         id: MeetingId,
         cancel: &Arc<AtomicBool>,
         engine: &TranscriptionEngine,
-        diarization: DiarizationEngine,
+        diarization: Option<DiarizationEngine>,
         transcriber: &mut MeetingTranscriber,
     ) -> Result<()> {
         let inner = &self.inner;
@@ -743,17 +743,41 @@ impl Processor {
         let mut embedder = LazyEmbedder {
             app: &inner.app,
             embedder: None,
-            accurate: false,
+            model: SpeakerModelId::Resnet34,
         };
-        let mut accurate = LazyEmbedder {
+        // Without a redo's choice, the model chosen in settings, once it is
+        // downloaded (a run never waits on that download).
+        let diarization = diarization.unwrap_or_else(|| {
+            let chosen = SpeakerModelId::parse(
+                &crate::settings::get_settings(&inner.app)
+                    .meetings
+                    .speaker_separation_model,
+            );
+            if chosen.is_standard()
+                || super::speaker_model::separation_model_installed(&inner.app, chosen)
+            {
+                DiarizationEngine::Model(chosen)
+            } else {
+                log::info!(
+                    "meeting {id}: {chosen:?} isn't downloaded yet; the standard speaker model \
+                     tells the voices apart this time"
+                );
+                start_separation_model_download(&inner.app, chosen);
+                DiarizationEngine::default()
+            }
+        });
+        let mut separation = LazyEmbedder {
             app: &inner.app,
             embedder: None,
-            accurate: true,
+            model: SpeakerModelId::Resnet34,
         };
         let mut deepgram = None;
         let diarizer = match diarization {
-            DiarizationEngine::Standard => Diarizer::Voiceprints,
-            DiarizationEngine::Accurate => Diarizer::Model(&mut accurate),
+            DiarizationEngine::Model(m) if m.is_standard() => Diarizer::Voiceprints,
+            DiarizationEngine::Model(m) => {
+                separation.model = m;
+                Diarizer::Model(&mut separation)
+            }
             DiarizationEngine::Deepgram => {
                 Diarizer::Service(deepgram.insert(super::deepgram::Deepgram::new(
                     crate::settings::provider_api_key(super::deepgram::DEEPGRAM_PROVIDER_ID),
@@ -761,8 +785,8 @@ impl Processor {
                 )?))
             }
         };
-        if diarization != DiarizationEngine::Standard {
-            log::info!("meeting {id}: redoing the speakers with {diarization:?}");
+        if diarization != DiarizationEngine::default() {
+            log::info!("meeting {id}: telling the speakers apart with {diarization:?}");
         }
         let app = inner.app.clone();
         let this = self.clone();
@@ -952,30 +976,45 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
 }
 
 /// Loads a speaker model on first use: the standard one (never downloads
-/// it), or the accurate one (downloading it: the user chose it).
+/// it), or another one for telling voices apart (downloading it: the user
+/// chose it).
 struct LazyEmbedder<'a> {
     app: &'a AppHandle,
     embedder: Option<SpeakerEmbedder>,
-    accurate: bool,
+    model: SpeakerModelId,
 }
 
 impl Embedder for LazyEmbedder<'_> {
     fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
         if self.embedder.is_none() {
-            self.embedder = Some(if self.accurate {
-                let path = super::speaker_model::ensure_accurate_model(self.app, |done, total| {
-                    log::debug!("accurate speaker model: {done} of {total} bytes");
-                })?;
-                // About six times the standard model's work.
-                SpeakerEmbedder::with_threads(&path, 4)?
-            } else {
+            self.embedder = Some(if self.model.is_standard() {
                 // Downloaded only when the user asks (Meetings > Settings).
                 let path = installed_speaker_model(self.app)?;
                 SpeakerEmbedder::new(&path)?
+            } else {
+                let model = super::speaker_model::separation_model(self.model);
+                let path = super::speaker_model::ensure_separation_model(
+                    self.app,
+                    self.model,
+                    |done, total| log::debug!("{}: {done} of {total} bytes", model.name),
+                )?;
+                SpeakerEmbedder::with_threads(&path, model.threads)?
             });
         }
         self.embedder.as_ref().expect("loaded").embed(pcm)
     }
+}
+
+/// Download a separation model in the background (no-op when it is there).
+pub fn start_separation_model_download(app: &AppHandle, id: SpeakerModelId) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("separation-model-download".into())
+        .spawn(move || {
+            if let Err(e) = super::speaker_model::ensure_separation_model(&app, id, |_, _| {}) {
+                log::warn!("{e:#}");
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1754,11 +1793,12 @@ mod tests {
         );
 
         // No local transcription model needed (none is downloaded here).
-        p.enqueue_speakers(id, DiarizationEngine::Accurate).unwrap();
+        p.enqueue_speakers(id, DiarizationEngine::Model(SpeakerModelId::Resnet293))
+            .unwrap();
         assert_eq!(p.inner.state.lock().queue, [id]);
         assert_eq!(
             p.inner.state.lock().diarizers.get(&id),
-            Some(&DiarizationEngine::Accurate)
+            Some(&DiarizationEngine::Model(SpeakerModelId::Resnet293))
         );
         let m = store.get_meeting(id).unwrap().unwrap();
         assert_eq!(m.status, MeetingStatus::Processing);
@@ -1788,7 +1828,7 @@ mod tests {
             .insert_meeting(&meeting(MeetingStatus::Recorded))
             .unwrap();
         assert!(p
-            .enqueue_speakers(recorded, DiarizationEngine::Standard)
+            .enqueue_speakers(recorded, DiarizationEngine::default())
             .is_err());
     }
 

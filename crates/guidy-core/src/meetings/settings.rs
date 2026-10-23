@@ -39,6 +39,9 @@ pub struct MeetingSettings {
     pub llm_cloud_provider_id: String,
     /// Model per provider for meeting summaries (provider id -> model id).
     pub llm_models: std::collections::HashMap<String, String>,
+    /// More cloud models the user added for summaries, offered by "Generate
+    /// summary" next to the default (any number per provider).
+    pub llm_saved_models: Vec<SavedLlmModel>,
     /// Remembered Linear defaults between meetings.
     pub linear_default_team_id: Option<String>,
     pub linear_default_project_id: Option<String>,
@@ -57,6 +60,14 @@ pub struct MeetingSettings {
     /// controls and the meeting page. The stored transcript still comes from
     /// processing after the stop.
     pub live_transcription: bool,
+    /// Transcription model for live transcription. `None` = the meetings
+    /// model (a small, fast one keeps up better on a busy Mac).
+    pub live_model: Option<String>,
+    /// Speaker model that tells voices apart in every meeting (an id of
+    /// [`crate::meetings::processing::speaker_model::SEPARATION_MODELS`]).
+    /// Empty: the standard one. Known people are always recognized with
+    /// the standard model, so changing it keeps everyone's voiceprints.
+    pub speaker_separation_model: String,
     /// Where the controls of a recording in progress are shown.
     pub recording_controls: RecordingControls,
 }
@@ -71,6 +82,14 @@ pub enum RecordingControls {
     Floating,
     /// Wings around the notch (a small island in the menu bar without one).
     Notch,
+}
+
+/// A cloud provider and model added for summaries.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct SavedLlmModel {
+    pub provider_id: String,
+    pub model: String,
 }
 
 /// One of the user's email addresses, with a free-text label ("Work").
@@ -123,6 +142,7 @@ impl Default for MeetingSettings {
             llm_provider_id: BUILTIN_LLM_PROVIDER_ID.to_string(),
             llm_cloud_provider_id: String::new(),
             llm_models: Default::default(),
+            llm_saved_models: Vec::new(),
             linear_default_team_id: None,
             linear_default_project_id: None,
             mcp_enabled: false,
@@ -136,6 +156,8 @@ impl Default for MeetingSettings {
             .map(|(p, m)| (p.to_string(), m.to_string()))
             .collect(),
             live_transcription: true,
+            live_model: None,
+            speaker_separation_model: String::new(),
             recording_controls: RecordingControls::Floating,
         }
     }
@@ -161,6 +183,7 @@ impl std::fmt::Debug for MeetingSettings {
             .field("llm_provider_id", &self.llm_provider_id)
             .field("llm_cloud_provider_id", &self.llm_cloud_provider_id)
             .field("llm_models", &self.llm_models)
+            .field("llm_saved_models", &self.llm_saved_models)
             .field("linear_default_team_id", &self.linear_default_team_id)
             .field("linear_default_project_id", &self.linear_default_project_id)
             .field("mcp_enabled", &self.mcp_enabled)
@@ -174,6 +197,8 @@ impl std::fmt::Debug for MeetingSettings {
                 &self.cloud_transcription_models,
             )
             .field("live_transcription", &self.live_transcription)
+            .field("live_model", &self.live_model)
+            .field("speaker_separation_model", &self.speaker_separation_model)
             .field("recording_controls", &self.recording_controls)
             .finish()
     }

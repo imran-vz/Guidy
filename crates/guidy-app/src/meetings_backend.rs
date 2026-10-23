@@ -227,6 +227,10 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     ) -> MeetingsResult<()>;
     fn merge_people(&self, from: PersonId, into: PersonId) -> MeetingsResult<()>;
     fn delete_person(&self, id: PersonId) -> MeetingsResult<()>;
+    /// A person's voiceprints with the lines they came from, to listen to.
+    fn voice_samples(&self, _id: PersonId) -> MeetingsResult<Vec<VoiceSample>> {
+        Err(unavailable())
+    }
 
     // -- processing & speakers --------------------------------------------
     fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()>;
@@ -259,9 +263,17 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn redo_speakers(&self, _id: MeetingId, _engine: DiarizationEngine) -> MeetingsResult<()> {
         Err(unavailable())
     }
-    /// What redoing speakers can use now.
+    /// What telling speakers apart can use now.
     fn diarization_options(&self) -> DiarizationOptions {
         DiarizationOptions::default()
+    }
+    /// Download a speaker model for telling voices apart (blocking).
+    fn download_separation_model(&self, _id: SpeakerModelId) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// Delete a downloaded speaker model (not the standard one).
+    fn delete_separation_model(&self, _id: SpeakerModelId) -> MeetingsResult<()> {
+        Err(unavailable())
     }
     /// Save (or, empty, remove) the Deepgram API key.
     fn set_deepgram_api_key(&self, _key: &str) -> MeetingsResult<()> {
@@ -569,6 +581,9 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn delete_person(&self, id: PersonId) -> MeetingsResult<()> {
         self.m()?.delete_person(id).map_err(err)
     }
+    fn voice_samples(&self, id: PersonId) -> MeetingsResult<Vec<VoiceSample>> {
+        self.m()?.voice_samples(id).map_err(err)
+    }
 
     fn process_meeting(&self, id: MeetingId) -> MeetingsResult<()> {
         self.m()?.process_meeting(id).map_err(err)
@@ -589,6 +604,12 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn set_deepgram_api_key(&self, key: &str) -> MeetingsResult<()> {
         self.m()?.set_deepgram_api_key(key).map_err(err)
+    }
+    fn download_separation_model(&self, id: SpeakerModelId) -> MeetingsResult<()> {
+        self.m()?.download_separation_model(id).map_err(err)
+    }
+    fn delete_separation_model(&self, id: SpeakerModelId) -> MeetingsResult<()> {
+        self.m()?.delete_separation_model(id).map_err(err)
     }
     fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
         self.manager()
@@ -1018,6 +1039,7 @@ pub mod fake {
         pub segments: HashMap<MeetingId, Vec<Segment>>,
         pub speakers: HashMap<MeetingId, Vec<MeetingSpeaker>>,
         pub people: Vec<Person>,
+        pub voice_samples: HashMap<PersonId, Vec<VoiceSample>>,
         pub user_voice: UserVoice,
         /// Extra suggestions returned before the known people.
         pub attendees: Vec<NameSuggestion>,
@@ -1045,6 +1067,7 @@ pub mod fake {
                 segments: HashMap::new(),
                 speakers: HashMap::new(),
                 people: Vec::new(),
+                voice_samples: HashMap::new(),
                 user_voice: UserVoice::default(),
                 attendees: Vec::new(),
                 progress: HashMap::new(),
@@ -1262,6 +1285,16 @@ pub mod fake {
             self.data.lock().people.retain(|p| p.id != id);
             Ok(())
         }
+        fn voice_samples(&self, id: PersonId) -> MeetingsResult<Vec<VoiceSample>> {
+            self.rec(format!("voice_samples {id}"));
+            Ok(self
+                .data
+                .lock()
+                .voice_samples
+                .get(&id)
+                .cloned()
+                .unwrap_or_default())
+        }
         fn user_voice(&self) -> MeetingsResult<UserVoice> {
             Ok(self.data.lock().user_voice)
         }
@@ -1333,6 +1366,22 @@ pub mod fake {
         fn set_deepgram_api_key(&self, key: &str) -> MeetingsResult<()> {
             self.rec(format!("set_deepgram_api_key {}", key.len()));
             self.data.lock().diarization.deepgram_has_key = !key.trim().is_empty();
+            Ok(())
+        }
+        fn download_separation_model(&self, id: SpeakerModelId) -> MeetingsResult<()> {
+            self.rec(format!("download_separation_model {}", id.as_str()));
+            let mut d = self.data.lock();
+            if let Some(m) = d.diarization.models.iter_mut().find(|m| m.id == id) {
+                m.installed = true;
+            }
+            Ok(())
+        }
+        fn delete_separation_model(&self, id: SpeakerModelId) -> MeetingsResult<()> {
+            self.rec(format!("delete_separation_model {}", id.as_str()));
+            let mut d = self.data.lock();
+            if let Some(m) = d.diarization.models.iter_mut().find(|m| m.id == id) {
+                m.installed = false;
+            }
             Ok(())
         }
         fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {

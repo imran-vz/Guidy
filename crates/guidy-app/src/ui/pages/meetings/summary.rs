@@ -168,6 +168,20 @@ struct ItemInputs {
     _subs: Vec<Subscription>,
 }
 
+/// The settings the generate menu depends on, to notice a change.
+fn choices_key(s: &guidy_core::settings::AppSettings) -> String {
+    let m = &s.meetings;
+    let mut models: Vec<_> = m.llm_models.iter().collect();
+    models.sort();
+    format!(
+        "{}|{:?}|{:?}|{:?}",
+        m.llm_provider_id,
+        models,
+        m.llm_saved_models,
+        s.post_process_models.get(&m.llm_provider_id)
+    )
+}
+
 pub struct SummaryView {
     backend: SharedMeetingsBackend,
     apple_available: bool,
@@ -193,6 +207,8 @@ pub struct SummaryView {
     copied: bool,
     /// What the generate button's menu offers (see [`summary_choices`]).
     choices: Vec<SummaryChoice>,
+    /// The settings `choices` were made from (see [`choices_key`]).
+    choices_key: Option<String>,
     // Summary editor.
     editing: bool,
     title: Entity<InputState>,
@@ -257,6 +273,14 @@ impl SummaryView {
                     this.on_event(ev, cx);
                 }
             }),
+            // Models added or a new default in settings: the menu follows.
+            cx.observe(&state, |this, state, cx| {
+                let key = state.read(cx).app_settings().map(choices_key);
+                if key != this.choices_key {
+                    this.choices_key = key;
+                    this.load_choices(cx);
+                }
+            }),
         ];
         let mut this = Self {
             backend,
@@ -275,6 +299,7 @@ impl SummaryView {
             error: None,
             copied: false,
             choices: Vec::new(),
+            choices_key: None,
             editing: false,
             title,
             short_summary,

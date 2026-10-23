@@ -651,6 +651,64 @@ pub fn redo_choices(
     out
 }
 
+/// How a transcript line was clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineClick {
+    /// A plain click (plays it): no selection, the next range starts here.
+    Plain,
+    /// Shift: everything from the anchor to here.
+    Range,
+    /// Command: this line in or out of the selection.
+    Toggle,
+}
+
+/// The lines from `a` to `b` (either way round), in transcript order
+/// (`order`: every line's id, by time). Empty if either isn't there.
+pub fn line_range(order: &[i64], a: i64, b: i64) -> Vec<i64> {
+    let (Some(i), Some(j)) = (
+        order.iter().position(|&x| x == a),
+        order.iter().position(|&x| x == b),
+    ) else {
+        return Vec::new();
+    };
+    order[i.min(j)..=i.max(j)].to_vec()
+}
+
+/// The selection and anchor after `click` on line `clicked`, as in a
+/// file list: Shift extends from the anchor, Command adds or removes one
+/// line (and moves the anchor), a plain click clears the selection and
+/// moves the anchor. The selection is kept in transcript order.
+pub fn select_lines(
+    order: &[i64],
+    selected: &[i64],
+    anchor: Option<i64>,
+    clicked: i64,
+    click: LineClick,
+) -> (Vec<i64>, Option<i64>) {
+    match click {
+        LineClick::Plain => (Vec::new(), Some(clicked)),
+        LineClick::Range => {
+            let from = anchor.filter(|a| order.contains(a)).unwrap_or(clicked);
+            (line_range(order, from, clicked), Some(from))
+        }
+        LineClick::Toggle => {
+            let on = !selected.contains(&clicked);
+            let picked: Vec<i64> = order
+                .iter()
+                .copied()
+                .filter(|id| {
+                    if *id == clicked {
+                        on
+                    } else {
+                        selected.contains(id)
+                    }
+                })
+                .collect();
+            (picked, Some(clicked))
+        }
+    }
+}
+
 /// One entry of the "Redo speakers" menu.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeakerRedoChoice {
@@ -661,29 +719,66 @@ pub struct SpeakerRedoChoice {
     /// Uploads the audio: ask first.
     pub cloud: bool,
     pub cost: Option<String>,
+    /// The model meetings use (Meetings settings).
+    pub current: bool,
 }
 
-/// The "Redo speakers" menu, the default (the accurate model) first, for a
-/// meeting of `minutes`. Labels come translated: `accurate` and `standard`
-/// are the model names, `download` contains `{{size}}`, `no_key` is the
-/// suffix for Deepgram without a key.
+/// The "Redo speakers" menu for a meeting of `minutes`: first what one
+/// click does (the model chosen in settings, or the most accurate one when
+/// that is the standard one: redoing with the same model changes little),
+/// then the other models smallest first, then Deepgram. Labels come
+/// translated: `standard` names the model when none is listed, `download`
+/// contains `{{size}}`, `no_key` is the suffix for Deepgram without a key.
 pub fn speaker_redo_choices(
     options: &guidy_core::meetings::types::DiarizationOptions,
     minutes: Option<f64>,
-    accurate: &str,
     standard: &str,
     download: &str,
     no_key: &str,
 ) -> Vec<SpeakerRedoChoice> {
-    use guidy_core::meetings::types::DiarizationEngine;
-    let accurate_label = if options.accurate_installed {
-        accurate.to_string()
+    use guidy_core::meetings::types::{DiarizationEngine, SpeakerModelId};
+    let mut out: Vec<SpeakerRedoChoice> = options
+        .models
+        .iter()
+        .map(|m| SpeakerRedoChoice {
+            engine: DiarizationEngine::Model(m.id),
+            label: if m.installed {
+                m.name.clone()
+            } else {
+                format!(
+                    "{} · {}",
+                    m.name,
+                    download.replace("{{size}}", &format!("{} MB", m.size_mb))
+                )
+            },
+            enabled: true,
+            cloud: false,
+            cost: None,
+            current: m.id == options.default_model,
+        })
+        .collect();
+    if out.is_empty() {
+        out.push(SpeakerRedoChoice {
+            engine: DiarizationEngine::default(),
+            label: standard.to_string(),
+            enabled: true,
+            cloud: false,
+            cost: None,
+            current: true,
+        });
+    }
+    let main = if options.default_model.is_standard() {
+        SpeakerModelId::Resnet293
     } else {
-        format!(
-            "{accurate} · {}",
-            download.replace("{{size}}", &format!("{} MB", options.accurate_size_mb))
-        )
+        options.default_model
     };
+    if let Some(i) = out
+        .iter()
+        .position(|c| c.engine == DiarizationEngine::Model(main))
+    {
+        let first = out.remove(i);
+        out.insert(0, first);
+    }
     let cost = options
         .deepgram_usd_per_min
         .zip(minutes)
@@ -693,29 +788,15 @@ pub fn speaker_redo_choices(
         (Some(cost), true) => format!("Deepgram · ~{cost}"),
         (None, true) => "Deepgram".to_string(),
     };
-    vec![
-        SpeakerRedoChoice {
-            engine: DiarizationEngine::Accurate,
-            label: accurate_label,
-            enabled: true,
-            cloud: false,
-            cost: None,
-        },
-        SpeakerRedoChoice {
-            engine: DiarizationEngine::Standard,
-            label: standard.to_string(),
-            enabled: true,
-            cloud: false,
-            cost: None,
-        },
-        SpeakerRedoChoice {
-            engine: DiarizationEngine::Deepgram,
-            label: deepgram,
-            enabled: options.deepgram_has_key,
-            cloud: true,
-            cost,
-        },
-    ]
+    out.push(SpeakerRedoChoice {
+        engine: DiarizationEngine::Deepgram,
+        label: deepgram,
+        enabled: options.deepgram_has_key,
+        cloud: true,
+        cost,
+        current: false,
+    });
+    out
 }
 
 /// A meeting's summary as Markdown, for pasting into notes or a doc: the
@@ -944,11 +1025,50 @@ mod tests {
     }
 
     #[test]
+    fn lines_are_selected_like_files_in_a_list() {
+        let order = [10, 11, 12, 13, 14, 15];
+        // A plain click only sets where a range starts.
+        let (sel, anchor) = select_lines(&order, &[11], None, 12, LineClick::Plain);
+        assert_eq!((sel, anchor), (vec![], Some(12)));
+        // Shift: from there to here, either direction.
+        let (sel, anchor) = select_lines(&order, &[], Some(12), 14, LineClick::Range);
+        assert_eq!(sel, [12, 13, 14]);
+        let (sel, _) = select_lines(&order, &sel, anchor, 10, LineClick::Range);
+        assert_eq!(sel, [10, 11, 12]);
+        // Without an anchor, shift selects just that line.
+        let (sel, anchor) = select_lines(&order, &[], None, 13, LineClick::Range);
+        assert_eq!((sel, anchor), (vec![13], Some(13)));
+        // Command adds and removes single lines, kept in order.
+        let (sel, anchor) = select_lines(&order, &[12, 13], Some(12), 15, LineClick::Toggle);
+        assert_eq!((sel.clone(), anchor), (vec![12, 13, 15], Some(15)));
+        let (sel, _) = select_lines(&order, &sel, anchor, 10, LineClick::Toggle);
+        assert_eq!(sel, [10, 12, 13, 15]);
+        let (sel, _) = select_lines(&order, &sel, anchor, 13, LineClick::Toggle);
+        assert_eq!(sel, [10, 12, 15]);
+        // A line that is gone (a reload) ranges from the clicked one.
+        let (sel, _) = select_lines(&order, &[], Some(99), 11, LineClick::Range);
+        assert_eq!(sel, [11]);
+        assert!(line_range(&order, 10, 99).is_empty());
+    }
+
+    #[test]
     fn the_speaker_redo_menu_offers_the_models_then_deepgram() {
-        use guidy_core::meetings::types::{DiarizationEngine, DiarizationOptions};
+        use guidy_core::meetings::types::{
+            DiarizationEngine, DiarizationOptions, SpeakerModelId, SpeakerModelOption,
+        };
+        let model = |id, name: &str, size_mb, installed| SpeakerModelOption {
+            id,
+            name: name.into(),
+            size_mb,
+            installed,
+        };
         let mut options = DiarizationOptions {
-            accurate_installed: false,
-            accurate_size_mb: 109,
+            models: vec![
+                model(SpeakerModelId::Resnet34, "ResNet34", 26, true),
+                model(SpeakerModelId::TitanetLarge, "TitaNet", 97, false),
+                model(SpeakerModelId::Resnet293, "ResNet293", 110, false),
+            ],
+            default_model: SpeakerModelId::Resnet34,
             deepgram_has_key: false,
             deepgram_usd_per_min: Some(0.0063),
         };
@@ -956,7 +1076,6 @@ mod tests {
             speaker_redo_choices(
                 o,
                 Some(25.0),
-                "Accurate",
                 "Standard",
                 "{{size}} download",
                 "needs a key",
@@ -964,22 +1083,34 @@ mod tests {
         };
         let c = menu(&options);
         let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
+        // The standard model is the default: one click is the most accurate.
         assert_eq!(
             labels,
             [
-                "Accurate · 109 MB download",
-                "Standard",
+                "ResNet293 · 110 MB download",
+                "ResNet34",
+                "TitaNet · 97 MB download",
                 "Deepgram · needs a key"
             ]
         );
-        assert_eq!(c[0].engine, DiarizationEngine::Accurate);
-        assert!(!c[2].enabled);
-        options.accurate_installed = true;
+        assert_eq!(
+            c[0].engine,
+            DiarizationEngine::Model(SpeakerModelId::Resnet293)
+        );
+        assert!(c[1].current && !c[0].current);
+        assert!(!c[3].enabled);
+        // A model chosen in settings is what one click uses.
+        options.default_model = SpeakerModelId::TitanetLarge;
+        options.models[1].installed = true;
         options.deepgram_has_key = true;
         let c = menu(&options);
-        assert_eq!(c[0].label, "Accurate");
-        assert_eq!(c[2].label, "Deepgram · ~$0.16");
-        assert!(c[2].enabled && c[2].cloud);
+        assert_eq!(c[0].label, "TitaNet");
+        assert!(c[0].current);
+        assert_eq!(c[3].label, "Deepgram · ~$0.16");
+        assert!(c[3].enabled && c[3].cloud);
+        // Nothing listed (no meeting notes): still one choice.
+        let c = menu(&DiarizationOptions::default());
+        assert_eq!(c[0].label, "Standard");
     }
 
     #[test]

@@ -173,6 +173,28 @@ static MIGRATIONS: &[M] = &[
     ALTER TABLE meeting_summaries ADD COLUMN cost_usd REAL;
     ALTER TABLE meeting_summaries ADD COLUMN cost_estimated INTEGER NOT NULL DEFAULT 0;",
     ),
+    // 9: `segment_pins`: who the user said spoke a stretch of a meeting (see
+    // `SegmentPin`). By time, so it outlives the segment rows a redo
+    // replaces; goes with the meeting and with the person (a merge moves it).
+    // Lines already named by hand (a confirmed speaker with no automatic
+    // match score: named in the picker, or a tagged line's speaker) are
+    // pinned from the start.
+    M::up(
+        "CREATE TABLE segment_pins (
+        meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        track TEXT NOT NULL,
+        t0_ms INTEGER NOT NULL,
+        t1_ms INTEGER NOT NULL,
+        person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        PRIMARY KEY (meeting_id, track, t0_ms, t1_ms)
+    );
+    CREATE INDEX segment_pins_person ON segment_pins(person_id);
+    INSERT OR IGNORE INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
+        SELECT g.meeting_id, g.track, g.t0_ms, g.t1_ms, s.person_id
+        FROM meeting_segments g JOIN meeting_speakers s ON s.id = g.speaker_id
+        WHERE s.person_id IS NOT NULL AND s.confirmed = 1
+            AND s.match_confidence IS NULL AND s.is_user = 0;",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -1024,6 +1046,81 @@ impl MeetingsStore {
         expect_one(n, "segment", id)
     }
 
+    /// Who `id` is now: themselves, whom they were merged into, or `None`
+    /// once deleted.
+    pub fn resolve_person(&self, id: PersonId) -> Result<Option<PersonId>> {
+        resolve_person_tx(&self.conn.lock(), id)
+    }
+
+    /// Pin `segments` of `meeting_id` to `person_id` (replacing any pin
+    /// they had): the user said that is who spoke them.
+    pub fn pin_segments(
+        &self,
+        meeting_id: MeetingId,
+        segments: &[Segment],
+        person_id: PersonId,
+    ) -> Result<()> {
+        self.with_tx(|tx| {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for s in segments {
+                stmt.execute(params![
+                    meeting_id,
+                    s.track.as_str(),
+                    s.t0_ms,
+                    s.t1_ms,
+                    person_id
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A meeting's pins, by time.
+    pub fn segment_pins(&self, meeting_id: MeetingId) -> Result<Vec<SegmentPin>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT track, t0_ms, t1_ms, person_id FROM segment_pins WHERE meeting_id = ?1
+             ORDER BY t0_ms, track",
+        )?;
+        let rows = stmt.query_map([meeting_id], |row| {
+            let track: String = row.get(0)?;
+            Ok(SegmentPin {
+                track: Track::parse(&track).ok_or_else(|| bad_value(0, "track", &track))?,
+                t0_ms: row.get(1)?,
+                t1_ms: row.get(2)?,
+                person_id: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Replace a meeting's pins (after a redo, on the new segments' times).
+    pub fn replace_segment_pins(&self, meeting_id: MeetingId, pins: &[SegmentPin]) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM segment_pins WHERE meeting_id = ?1",
+                [meeting_id],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
+                 SELECT ?1, ?2, ?3, ?4, id FROM people WHERE id = ?5",
+            )?;
+            for p in pins {
+                stmt.execute(params![
+                    meeting_id,
+                    p.track.as_str(),
+                    p.t0_ms,
+                    p.t1_ms,
+                    p.person_id
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Add a speaker to `meeting_id` (`s.id` and `s.meeting_id` are
     /// ignored) and return it as stored.
     pub fn insert_speaker(
@@ -1256,6 +1353,10 @@ impl MeetingsStore {
             )?;
             tx.execute(
                 "UPDATE action_items SET owner_person_id = ?2 WHERE owner_person_id = ?1",
+                params![from, into],
+            )?;
+            tx.execute(
+                "UPDATE segment_pins SET person_id = ?2 WHERE person_id = ?1",
                 params![from, into],
             )?;
             tx.execute(
@@ -2921,6 +3022,41 @@ mod tests {
                 ("old-client-id".to_string(), SentDraft::Unknown)
             );
         }
+    }
+
+    /// Lines named by hand before pins existed are pinned by migration 9;
+    /// automatic matches aren't.
+    #[test]
+    fn a_version_8_database_pins_the_lines_named_by_hand() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            apply_key(&conn, &KEY).unwrap();
+            Migrations::new(MIGRATIONS[..8].to_vec())
+                .to_latest(&mut conn)
+                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO people (id, display_name, created_at) VALUES (1, 'Ada', 0);
+                 INSERT INTO meetings (id, title, started_at, status) VALUES (1, 'm', 0, 'processed');
+                 INSERT INTO meeting_speakers (id, meeting_id, cluster_label, person_id,
+                     match_confidence, confirmed, is_user)
+                 VALUES (1, 1, 'Speaker 1', 1, NULL, 1, 0), (2, 1, 'Speaker 2', 1, 0.9, 1, 0);
+                 INSERT INTO meeting_segments (meeting_id, track, t0_ms, t1_ms, text, speaker_id)
+                 VALUES (1, 'system', 0, 1000, 'named', 1), (1, 'system', 2000, 3000, 'matched', 2);",
+            )
+            .unwrap();
+        }
+        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        assert_eq!(
+            s.segment_pins(1).unwrap(),
+            [SegmentPin {
+                track: Track::System,
+                t0_ms: 0,
+                t1_ms: 1000,
+                person_id: 1
+            }]
+        );
     }
 
     /// A database created when migration 3 was the last one gets the stage

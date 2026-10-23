@@ -9,7 +9,7 @@
 //! The engines are traits ([`SegmentTranscriber`], [`Embedder`], a VAD
 //! factory), so the whole pipeline runs in tests on synthetic audio.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -760,7 +760,23 @@ impl<'a> Pipeline<'a> {
     /// sidecar, whose segment ids are gone.
     fn merge(&mut self, cache: &ProcessingCache) -> Result<()> {
         let clustering = cache.clustering.clone().unwrap_or_default();
-        let built = build_transcript(cache, &clustering, &self.config);
+        let mut built = build_transcript(cache, &clustering, &self.config);
+        // The user's word on who spoke what outranks the model's.
+        let pins = self.store.segment_pins(self.meeting_id)?;
+        if !pins.is_empty() {
+            // Matches made before a merge name whom they went into, so a
+            // pin finds its person's speaker (`replace_transcript` checks
+            // again, in its transaction).
+            for s in built.0.iter_mut() {
+                if let Some(p) = s.person_id {
+                    s.person_id = self.store.resolve_person(p)?;
+                    if s.person_id.is_none() {
+                        (s.match_confidence, s.confirmed) = (None, false);
+                    }
+                }
+            }
+            apply_pins(&mut built, &pins);
+        }
         // From the check to the new transcript's voiceprints: a person
         // deletion dropping segments from this sidecar waits (and then sees
         // both), and a meeting deletion (row, then sidecars under this lock)
@@ -775,6 +791,13 @@ impl<'a> Pipeline<'a> {
             .store
             .replace_transcript(self.meeting_id, &built.0, &built.1)?;
         let written = self.store_voiceprints(cache, &clustering, &built, &stored);
+        if !pins.is_empty() {
+            // On the new segments' times, so the next redo finds them as is.
+            let moved = repin(&stored.1, &pins);
+            if let Err(e) = self.store.replace_segment_pins(self.meeting_id, &moved) {
+                log::warn!("meeting {}: pins not moved: {e:#}", self.meeting_id);
+            }
+        }
         if written.is_err() {
             if let Err(e) = sidecar::delete_embeddings(self.meetings_dir, self.meeting_id) {
                 log::warn!("meeting {}: {e:#}", self.meeting_id);
@@ -1162,6 +1185,117 @@ fn cluster_local_id(c: usize) -> SpeakerId {
 }
 fn cluster_of_speaker(s: &MeetingSpeaker) -> Option<usize> {
     (!s.is_user && s.id >= 1).then(|| (s.id - 1) as usize)
+}
+
+/// The pin that says who spoke `seg`: one on the same stretch of the same
+/// track, else (after a new transcript moved the lines) the one covering
+/// most of it, at least half.
+pub fn pin_for<'a>(seg: &Segment, pins: &'a [SegmentPin]) -> Option<&'a SegmentPin> {
+    let len = (seg.t1_ms - seg.t0_ms).max(1);
+    pins.iter()
+        .filter(|p| p.track == seg.track)
+        .filter_map(|p| {
+            let exact = p.t0_ms == seg.t0_ms && p.t1_ms == seg.t1_ms;
+            let overlap = (seg.t1_ms.min(p.t1_ms) - seg.t0_ms.max(p.t0_ms)).max(0);
+            (exact || (overlap > 0 && overlap * 2 >= len)).then_some((p, (exact, overlap)))
+        })
+        .max_by_key(|(_, rank)| *rank)
+        .map(|(p, _)| p)
+}
+
+/// Make a built transcript (see [`build_transcript`]) agree with the
+/// user's pins: a pinned line goes to its person's speaker (one they were
+/// surely matched to, else a new one, named), whatever the model said. A
+/// speaker the model only guessed at, or couldn't name, whose pinned lines
+/// are mostly one person's is suggested as them ("Confirm?"). Speakers
+/// left without lines are dropped.
+pub fn apply_pins(
+    (speakers, segments, _): &mut (Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>),
+    pins: &[SegmentPin],
+) {
+    if pins.is_empty() {
+        return;
+    }
+    let pinned: Vec<Option<PersonId>> = segments
+        .iter()
+        .map(|s| pin_for(s, pins).map(|p| p.person_id))
+        .collect();
+
+    for speaker in speakers.iter_mut().filter(|s| !s.is_user && !s.confirmed) {
+        let mut votes: BTreeMap<PersonId, usize> = BTreeMap::new();
+        for (seg, p) in segments.iter().zip(&pinned) {
+            if let (true, Some(p)) = (seg.speaker_id == Some(speaker.id), p) {
+                *votes.entry(*p).or_default() += 1;
+            }
+        }
+        let total: usize = votes.values().sum();
+        if let Some((&p, &n)) = votes.iter().max_by_key(|(_, n)| **n) {
+            if n * 2 > total {
+                speaker.person_id = Some(p);
+                speaker.match_confidence = None;
+            }
+        }
+    }
+
+    let named = |speakers: &[MeetingSpeaker], p: PersonId| {
+        speakers
+            .iter()
+            .find(|s| !s.is_user && s.confirmed && s.person_id == Some(p))
+            .map(|s| s.id)
+    };
+    let mut number = speakers.iter().filter(|s| !s.is_user).count();
+    let mut next_id: SpeakerId = -1;
+    for (seg, p) in segments.iter_mut().zip(&pinned) {
+        let Some(p) = *p else { continue };
+        let target = match named(speakers, p) {
+            Some(id) => id,
+            None => {
+                let id = next_id;
+                next_id -= 1;
+                number += 1;
+                speakers.push(MeetingSpeaker {
+                    id,
+                    meeting_id: 0,
+                    cluster_label: format!("Speaker {number}"),
+                    person_id: Some(p),
+                    match_confidence: None,
+                    confirmed: true,
+                    is_user: false,
+                });
+                id
+            }
+        };
+        seg.speaker_id = Some(target);
+    }
+    speakers.retain(|s| segments.iter().any(|g| g.speaker_id == Some(s.id)));
+}
+
+/// `pins` moved onto the stored `segments` they matched (see [`pin_for`]);
+/// ones that matched none are kept as they were.
+fn repin(segments: &[Segment], pins: &[SegmentPin]) -> Vec<SegmentPin> {
+    let mut used = vec![false; pins.len()];
+    let mut out: Vec<SegmentPin> = segments
+        .iter()
+        .filter_map(|s| {
+            let p = pin_for(s, pins)?;
+            if let Some(i) = pins.iter().position(|q| std::ptr::eq(q, p)) {
+                used[i] = true;
+            }
+            Some(SegmentPin {
+                track: s.track,
+                t0_ms: s.t0_ms,
+                t1_ms: s.t1_ms,
+                person_id: p.person_id,
+            })
+        })
+        .collect();
+    out.extend(
+        pins.iter()
+            .zip(&used)
+            .filter(|(_, used)| !**used)
+            .map(|(p, _)| p.clone()),
+    );
+    out
 }
 
 /// The speakers and timeline segments to store (with local speaker ids), and

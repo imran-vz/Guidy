@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use super::SAMPLE_RATE;
 use crate::host::AppHandle;
+use crate::meetings::types::SpeakerModelId;
 
 /// Display name and training data, shown next to the download button.
 pub const SPEAKER_MODEL_NAME: &str = "WeSpeaker ResNet34";
@@ -27,17 +28,87 @@ pub const SPEAKER_MODEL_SHA256: &str =
     "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012";
 pub const SPEAKER_MODEL_SIZE: u64 = 26_530_550;
 
-/// The more accurate (and larger, slower) model, used only to tell voices
-/// apart when the user redoes a meeting's speakers with it: its voiceprints
-/// live in another space than the standard model's, so recognising known
-/// people still uses the standard one. WeSpeaker ResNet293-LM, same
-/// training data, from the same sherpa-onnx release.
-pub const ACCURATE_MODEL_NAME: &str = "WeSpeaker ResNet293";
-pub const ACCURATE_MODEL_FILE: &str = "wespeaker_en_voxceleb_resnet293_LM.onnx";
-pub const ACCURATE_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet293_LM.onnx";
-pub const ACCURATE_MODEL_SHA256: &str =
-    "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e";
-pub const ACCURATE_MODEL_SIZE: u64 = 114_336_527;
+/// A speaker model that can tell a meeting's voices apart, from the same
+/// sherpa-onnx release. Every model's voiceprints live in their own space,
+/// so only the standard one (ResNet34) recognizes known people; the others
+/// only decide who spoke which line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeparationModel {
+    pub id: SpeakerModelId,
+    pub name: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub size: u64,
+    /// Threads to run it on (the large ones are several times the work).
+    pub threads: i32,
+}
+
+macro_rules! release_url {
+    ($file:literal) => {
+        concat!(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/",
+            $file
+        )
+    };
+}
+
+/// Smallest first.
+pub const SEPARATION_MODELS: [SeparationModel; 5] = [
+    SeparationModel {
+        id: SpeakerModelId::Resnet34,
+        name: SPEAKER_MODEL_NAME,
+        file: SPEAKER_MODEL_FILE,
+        url: SPEAKER_MODEL_URL,
+        sha256: SPEAKER_MODEL_SHA256,
+        size: SPEAKER_MODEL_SIZE,
+        threads: 2,
+    },
+    SeparationModel {
+        id: SpeakerModelId::CamPlusPlus,
+        name: "WeSpeaker CAM++",
+        file: "wespeaker_en_voxceleb_CAM++_LM.onnx",
+        url: release_url!("wespeaker_en_voxceleb_CAM%2B%2B_LM.onnx"),
+        sha256: "e197af7e9d473030cf486b3124149a19bf37014d0e4485e4c70c483b0ec10cb2",
+        size: 29_292_687,
+        threads: 2,
+    },
+    SeparationModel {
+        id: SpeakerModelId::Resnet152,
+        name: "WeSpeaker ResNet152",
+        file: "wespeaker_en_voxceleb_resnet152_LM.onnx",
+        url: release_url!("wespeaker_en_voxceleb_resnet152_LM.onnx"),
+        sha256: "3e1c2c7a02097bdddc27c1cf7382237399abdc3b5b682e59455830673c6686e7",
+        size: 79_158_470,
+        threads: 4,
+    },
+    SeparationModel {
+        id: SpeakerModelId::TitanetLarge,
+        name: "NVIDIA TitaNet Large",
+        file: "nemo_en_titanet_large.onnx",
+        url: release_url!("nemo_en_titanet_large.onnx"),
+        sha256: "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77",
+        size: 101_405_493,
+        // Large on disk, light to run (faster than ResNet34 here).
+        threads: 2,
+    },
+    SeparationModel {
+        id: SpeakerModelId::Resnet293,
+        name: "WeSpeaker ResNet293",
+        file: "wespeaker_en_voxceleb_resnet293_LM.onnx",
+        url: release_url!("wespeaker_en_voxceleb_resnet293_LM.onnx"),
+        sha256: "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e",
+        size: 114_336_527,
+        threads: 4,
+    },
+];
+
+pub fn separation_model(id: SpeakerModelId) -> &'static SeparationModel {
+    SEPARATION_MODELS
+        .iter()
+        .find(|m| m.id == id)
+        .expect("every id is in the catalog")
+}
 
 /// The speaker model isn't downloaded. It downloads only when the user asks
 /// (Meetings > Settings), so processing refuses to start without it.
@@ -136,39 +207,60 @@ fn set_status(app: &AppHandle, status: SpeakerModelStatus) {
     let _ = app.emit(SPEAKER_MODEL_STATUS_EVENT, status);
 }
 
-/// Whether the accurate speaker model is on disk.
-pub fn accurate_model_installed(app: &AppHandle) -> bool {
-    accurate_model_path(app)
-        .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == ACCURATE_MODEL_SIZE))
+pub fn separation_model_path(app: &AppHandle, id: SpeakerModelId) -> Result<PathBuf> {
+    Ok(speaker_model_dir(app)?.join(separation_model(id).file))
 }
 
-pub fn accurate_model_path(app: &AppHandle) -> Result<PathBuf> {
-    Ok(speaker_model_dir(app)?.join(ACCURATE_MODEL_FILE))
+/// Whether a separation model is on disk.
+pub fn separation_model_installed(app: &AppHandle, id: SpeakerModelId) -> bool {
+    let size = separation_model(id).size;
+    separation_model_path(app, id)
+        .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == size))
 }
 
-/// The accurate model's path, downloading it first if needed (the user
-/// chose to redo speakers with it). Blocking, like [`ensure_speaker_model`];
-/// `on_progress` gets `(downloaded, total)` bytes.
-pub fn ensure_accurate_model(
+/// A separation model's path, downloading it first if needed (the user
+/// chose it). Blocking, like [`ensure_speaker_model`]; `on_progress` gets
+/// `(downloaded, total)` bytes. The standard one goes through
+/// [`ensure_speaker_model`] (its download status is shown in settings).
+pub fn ensure_separation_model(
     app: &AppHandle,
+    id: SpeakerModelId,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<PathBuf> {
-    let path = accurate_model_path(app)?;
-    if accurate_model_installed(app) {
+    if id.is_standard() {
+        return ensure_speaker_model(app);
+    }
+    let model = separation_model(id);
+    let path = separation_model_path(app, id)?;
+    if separation_model_installed(app, id) {
         return Ok(path);
     }
     let _guard = download_lock().lock();
-    if accurate_model_installed(app) {
+    if separation_model_installed(app, id) {
         return Ok(path);
     }
     crate::host::async_runtime::block_on(download_verified(
-        ACCURATE_MODEL_URL,
+        model.url,
         &path,
-        ACCURATE_MODEL_SHA256,
-        |downloaded, total| on_progress(downloaded, total.unwrap_or(ACCURATE_MODEL_SIZE)),
+        model.sha256,
+        |downloaded, total| on_progress(downloaded, total.unwrap_or(model.size)),
     ))
-    .context("could not download the accurate speaker model")?;
+    .with_context(|| format!("could not download the speaker model {}", model.name))?;
     Ok(path)
+}
+
+/// Delete a downloaded separation model (never the standard one, which
+/// recognizes people).
+pub fn delete_separation_model(app: &AppHandle, id: SpeakerModelId) -> Result<()> {
+    if id.is_standard() {
+        bail!("the standard speaker model recognizes people and can't be deleted here");
+    }
+    let path = separation_model_path(app, id)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("delete {}", path.display())),
+    }
 }
 
 /// The model path, downloading it first if needed. Blocking: call from a

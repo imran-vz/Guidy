@@ -207,6 +207,108 @@ fn ranked_suggestions(
     Ok(out)
 }
 
+/// A voiceprint this close to a line's (cosine) was taken from it, when
+/// none is the same exactly (one computed again since).
+const SAMPLE_MIN_SIMILARITY: f32 = 0.98;
+
+/// A meeting a voiceprint came from: its lines and their voiceprints.
+struct SourceMeeting {
+    meeting: Meeting,
+    segments: Vec<Segment>,
+    embeddings: Vec<SegmentEmbedding>,
+}
+
+impl SourceMeeting {
+    fn load(
+        store: &MeetingsStore,
+        meetings_dir: &Path,
+        key: &[u8; 32],
+        id: MeetingId,
+    ) -> Result<Option<Self>> {
+        let Some(meeting) = store.get_meeting(id)? else {
+            return Ok(None);
+        };
+        let embeddings = match sidecar::read_embeddings(meetings_dir, id, key) {
+            Ok(e) => e.unwrap_or_default(),
+            Err(e) => {
+                log::warn!("meeting {id}: segment voiceprints unreadable: {e:#}");
+                Vec::new()
+            }
+        };
+        Ok(Some(Self {
+            meeting,
+            segments: store.segments(id)?,
+            embeddings,
+        }))
+    }
+}
+
+/// `person_id`'s voiceprints, each with the line it was taken from (found
+/// in its meeting's per-segment voiceprints), newest meeting first.
+pub fn voice_samples(
+    store: &MeetingsStore,
+    meetings_dir: &Path,
+    key: &[u8; 32],
+    person_id: PersonId,
+) -> Result<Vec<VoiceSample>> {
+    let prints = store.voiceprints_for_person(person_id)?;
+    // The meetings they came from (gone ones stay `None`), each read once.
+    let mut meetings: HashMap<MeetingId, Option<SourceMeeting>> = HashMap::new();
+    for m in prints.iter().filter_map(|v| v.source_meeting_id) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = meetings.entry(m) {
+            slot.insert(SourceMeeting::load(store, meetings_dir, key, m)?);
+        }
+    }
+    let mut out = Vec::with_capacity(prints.len());
+    for v in prints {
+        let found = v
+            .source_meeting_id
+            .and_then(|m| meetings[&m].as_ref())
+            .map(|s| (&s.meeting, &s.segments, &s.embeddings));
+        let segment = found.and_then(|(_, segments, embeddings)| {
+            let id = embeddings
+                .iter()
+                .find(|e| e.embedding == v.embedding)
+                .or_else(|| {
+                    embeddings
+                        .iter()
+                        .filter(|e| e.embedding.len() == v.embedding.len())
+                        .map(|e| (e, super::cluster::cosine(&e.embedding, &v.embedding)))
+                        .filter(|(_, sim)| *sim >= SAMPLE_MIN_SIMILARITY)
+                        .max_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(e, _)| e)
+                })?
+                .segment_id;
+            segments.iter().find(|s| s.id == id).cloned()
+        });
+        let has_audio = match (found, &segment) {
+            (Some((m, _, _)), Some(s)) => match s.track {
+                Track::Mic => m.mic_audio_path.is_some(),
+                Track::System => m.system_audio_path.is_some(),
+            },
+            _ => false,
+        };
+        out.push(VoiceSample {
+            voiceprint_id: v.id,
+            meeting_id: found.map(|(m, _, _)| m.id),
+            meeting_title: found.map(|(m, _, _)| m.title.clone()),
+            meeting_started_at: found.map(|(m, _, _)| m.started_at),
+            segment,
+            has_audio,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.meeting_started_at
+            .cmp(&a.meeting_started_at)
+            .then_with(|| {
+                let t = |s: &VoiceSample| s.segment.as_ref().map(|s| s.t0_ms);
+                t(a).cmp(&t(b))
+            })
+            .then(a.voiceprint_id.cmp(&b.voiceprint_id))
+    });
+    Ok(out)
+}
+
 /// This speaker's voiceprints, longest segments first (at most
 /// [`MAX_PRINTS_PER_MEETING`]). Falls back to the cluster centroid when the
 /// per-segment sidecar is missing.
@@ -336,9 +438,21 @@ pub fn assign(
     speaker.confirmed = true;
     store.update_speaker(&speaker)?;
     if !speaker.is_user {
+        pin_speaker(store, &speaker, person_id)?;
         store_prints(store, meetings_dir, key, &speaker, person_id)?;
     }
     Ok(person_id)
+}
+
+/// Pin every line of `speaker` to `person_id`: the user said who it is, and
+/// a redo of the speakers must not take it back (see [`SegmentPin`]).
+fn pin_speaker(store: &MeetingsStore, speaker: &MeetingSpeaker, person_id: PersonId) -> Result<()> {
+    let lines: Vec<Segment> = store
+        .segments(speaker.meeting_id)?
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(speaker.id))
+        .collect();
+    store.pin_segments(speaker.meeting_id, &lines, person_id)
 }
 
 /// The person a [`PersonRef`] names, creating a new one (or finding them
@@ -416,6 +530,7 @@ pub fn assign_segment(
         }
     };
     store.set_segment_speaker(segment_id, Some(target.id))?;
+    store.pin_segments(meeting_id, std::slice::from_ref(&segment), person_id)?;
 
     let voice = segment_voiceprint(meetings_dir, key, &segment);
     if let Some(voice) = &voice {
@@ -469,6 +584,7 @@ pub fn confirm(
     speaker.confirmed = true;
     store.update_speaker(&speaker)?;
     if !speaker.is_user {
+        pin_speaker(store, &speaker, person_id)?;
         store_prints(store, meetings_dir, key, &speaker, person_id)?;
     }
     Ok(())

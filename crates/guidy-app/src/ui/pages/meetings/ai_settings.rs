@@ -21,7 +21,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::llm::registry::{Cost, ModelEntry};
 use guidy_core::llm::{feature_model, is_builtin_provider, resolve_provider, Feature, ProviderRef};
-use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
+use guidy_core::meetings::settings::{MeetingSettings, SavedLlmModel, BUILTIN_LLM_PROVIDER_ID};
 use guidy_core::settings::AppSettings;
 use std::collections::{HashMap, HashSet};
 
@@ -79,10 +79,144 @@ pub struct SummaryChoice {
     pub current: bool,
 }
 
+/// A cloud model in the user's list ("Your models").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudModel {
+    pub provider_id: String,
+    pub model: String,
+    /// Summaries use it unless another is picked.
+    pub default: bool,
+}
+
+/// The cloud models the user added for summaries: the default first, then
+/// the model set per provider (before the list existed, one per provider),
+/// then the ones added since. No repeats; providers no longer configured
+/// are left out.
+pub fn saved_cloud_models(s: &AppSettings) -> Vec<CloudModel> {
+    let now = MeetingsLlmChoice::from_settings(s);
+    let is_cloud = |id: &str| {
+        SummaryPlace::of(id) == SummaryPlace::Cloud && s.post_process_provider(id).is_some()
+    };
+    let mut out: Vec<CloudModel> = Vec::new();
+    let mut push = |provider_id: &str, model: &str| {
+        let model = model.trim();
+        if model.is_empty()
+            || !is_cloud(provider_id)
+            || out
+                .iter()
+                .any(|c| c.provider_id == provider_id && c.model == model)
+        {
+            return;
+        }
+        out.push(CloudModel {
+            provider_id: provider_id.to_string(),
+            model: model.to_string(),
+            default: now.provider_id == provider_id && now.effective_model == model,
+        });
+    };
+    push(&now.provider_id, &now.effective_model);
+    // In the providers' order, so the list doesn't reshuffle.
+    for p in &s.post_process_providers {
+        if let Some(m) = s.meetings.llm_models.get(&p.id) {
+            push(&p.id, m);
+        }
+    }
+    for m in &s.meetings.llm_saved_models {
+        push(&m.provider_id, &m.model);
+    }
+    out
+}
+
+/// `s.meetings` with `model` of `provider_id` added to the list. With no
+/// usable cloud default yet (summaries run in the cloud but no model is
+/// set), it becomes the default.
+pub fn with_saved_model(s: &AppSettings, provider_id: &str, model: &str) -> MeetingSettings {
+    let model = model.trim();
+    let mut m = s.meetings.clone();
+    if model.is_empty()
+        || saved_cloud_models(s)
+            .iter()
+            .any(|c| c.provider_id == provider_id && c.model == model)
+    {
+        return m;
+    }
+    let now = MeetingsLlmChoice::from_settings(s);
+    if SummaryPlace::of(&now.provider_id) == SummaryPlace::Cloud
+        && now.effective_model.trim().is_empty()
+    {
+        return with_default_model(s, provider_id, model);
+    }
+    m.llm_saved_models.push(SavedLlmModel {
+        provider_id: provider_id.to_string(),
+        model: model.to_string(),
+    });
+    m
+}
+
+/// `s.meetings` without `model` of `provider_id` in the list. The default
+/// stays (pick another one first).
+pub fn without_saved_model(s: &AppSettings, provider_id: &str, model: &str) -> MeetingSettings {
+    let mut m = s.meetings.clone();
+    if saved_cloud_models(s)
+        .iter()
+        .any(|c| c.default && c.provider_id == provider_id && c.model == model)
+    {
+        return m;
+    }
+    m.llm_saved_models
+        .retain(|c| !(c.provider_id == provider_id && c.model == model));
+    if m.llm_models.get(provider_id).map(|x| x.trim()) == Some(model) {
+        m.llm_models.remove(provider_id);
+    }
+    m
+}
+
+/// `s.meetings` with `model` of `provider_id` as the default for summaries.
+/// The previous default stays in the list.
+pub fn with_default_model(s: &AppSettings, provider_id: &str, model: &str) -> MeetingSettings {
+    let mut m = s.meetings.clone();
+    // The current default (perhaps only the post-processing model) and the
+    // model this provider had in `llm_models` (one per provider) stay on
+    // the list instead of being forgotten.
+    let now = MeetingsLlmChoice::from_settings(s);
+    let keep = [
+        (now.provider_id.clone(), now.effective_model.clone()),
+        (
+            provider_id.to_string(),
+            s.meetings
+                .llm_models
+                .get(provider_id)
+                .cloned()
+                .unwrap_or_default(),
+        ),
+    ];
+    for (p, old) in keep {
+        let old = old.trim().to_string();
+        if old.is_empty()
+            || SummaryPlace::of(&p) != SummaryPlace::Cloud
+            || (p == provider_id && old == model)
+            || m.llm_saved_models
+                .iter()
+                .any(|c| c.provider_id == p && c.model == old)
+        {
+            continue;
+        }
+        m.llm_saved_models.push(SavedLlmModel {
+            provider_id: p,
+            model: old,
+        });
+    }
+    m.llm_saved_models
+        .retain(|c| !(c.provider_id == provider_id && c.model == model));
+    let mut m = with_llm_choice(&m, provider_id, Some(model));
+    m.llm_cloud_provider_id = provider_id.to_string();
+    m
+}
+
 /// What "Generate summary" can run with in one click: the downloaded
-/// on-device models, Apple Intelligence when available, then each cloud
-/// provider that has an API key and a model (the meetings one, else the
-/// post-processing one). Anything else is in the full picker.
+/// on-device models, Apple Intelligence when available, then the user's
+/// cloud models (see [`saved_cloud_models`]) whose provider has an API
+/// key. Anything else is in the full picker.
 pub fn summary_choices(
     s: &AppSettings,
     local_models: &[LocalLlmModel],
@@ -104,29 +238,30 @@ pub fn summary_choices(
             current: current(BUILTIN_LLM_PROVIDER_ID, &m.id),
         })
         .collect();
-    for p in &s.post_process_providers {
-        let apple = p.id == APPLE_PROVIDER_ID;
-        if (apple && !apple_available) || (!apple && !has_key(&p.id)) {
-            continue;
+    if apple_available {
+        if let Some(p) = s.post_process_provider(APPLE_PROVIDER_ID) {
+            let model = feature_model(s, Feature::Meetings, &p.id);
+            out.push(SummaryChoice {
+                label: p.label.clone(),
+                local: true,
+                current: now.provider_id == p.id,
+                provider_id: p.id.clone(),
+                model,
+            });
         }
-        let model = feature_model(s, Feature::Meetings, &p.id);
-        if model.trim().is_empty() && !apple {
+    }
+    for c in saved_cloud_models(s) {
+        if !has_key(&c.provider_id) {
             continue;
         }
         out.push(SummaryChoice {
-            label: if apple {
-                p.label.clone()
-            } else {
-                format!("{} · {}", p.label, model)
-            },
-            local: apple,
-            current: current(&p.id, &model),
-            provider_id: p.id.clone(),
-            model,
+            label: format!("{} · {}", provider_label(s, &c.provider_id), c.model),
+            local: false,
+            current: c.default,
+            provider_id: c.provider_id,
+            model: c.model,
         });
     }
-    // On this Mac first, keeping each group's order.
-    out.sort_by_key(|c| !c.local);
     out
 }
 
@@ -194,6 +329,23 @@ fn radio(selected: bool, cx: &App) -> Div {
         .rounded_full()
         .when(selected, |d| d.border_4().border_color(tone.accent))
         .when(!selected, |d| d.border_1().border_color(tone.text_faint))
+}
+
+/// A check mark in a box: accent when checked.
+fn checkbox(checked: bool, cx: &App) -> Div {
+    let tone = design::tone(cx);
+    div()
+        .flex_none()
+        .size(dp(14.))
+        .rounded(dp(3.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(checked, |d| {
+            d.bg(tone.accent)
+                .child(icon("check").size(dp(10.)).text_color(tone.ink))
+        })
+        .when(!checked, |d| d.border_1().border_color(tone.text_faint))
 }
 
 /// Where summaries run: the two tabs of the Summaries settings.
@@ -356,6 +508,9 @@ pub struct AiSettingsView {
     linear_result: Option<Result<String, String>>,
     /// The cloud provider the inputs were last synced for.
     synced_provider: String,
+    /// The cloud provider picked to add models from (or to enter its key);
+    /// `None`: the default's. Picking one doesn't change the default.
+    browsing: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -411,12 +566,20 @@ impl AiSettingsView {
                     this.save_base_url(v, cx);
                 }
             }),
-            cx.subscribe(&model_input, |this, input, ev: &InputEvent, cx| {
-                if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    let v = input.read(cx).value().trim().to_string();
-                    this.set_model(v, cx);
-                }
-            }),
+            cx.subscribe_in(
+                &model_input,
+                window,
+                |this, input, ev: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = ev {
+                        let v = input.read(cx).value().trim().to_string();
+                        if !v.is_empty() {
+                            let pid = this.synced_provider.clone();
+                            this.add_model(pid, v, cx);
+                            input.update(cx, |st, cx| st.set_value("", window, cx));
+                        }
+                    }
+                },
+            ),
             cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
                 if let InputEvent::Change = ev {
                     cx.notify();
@@ -462,6 +625,7 @@ impl AiSettingsView {
             linear_testing: false,
             linear_result: None,
             synced_provider: String::new(),
+            browsing: None,
             _subs: subs,
         };
         this.sync_inputs(true, window, cx);
@@ -504,7 +668,11 @@ impl AiSettingsView {
         let Some(s) = self.settings(cx) else {
             return;
         };
-        let pid = cloud_provider_id(&s);
+        let pid = self
+            .browsing
+            .clone()
+            .filter(|id| s.post_process_provider(id).is_some())
+            .unwrap_or_else(|| cloud_provider_id(&s));
         let changed = force || self.synced_provider != pid;
         let set_if = |input: &Entity<InputState>,
                       value: String,
@@ -519,18 +687,9 @@ impl AiSettingsView {
         let provider = s.post_process_provider(&pid);
         let base = provider.map(|p| p.base_url.clone()).unwrap_or_default();
         set_if(&self.base_url, base, changed, window, cx);
-        let model = s.meetings.llm_models.get(&pid).cloned().unwrap_or_default();
-        set_if(&self.model_input, model, changed, window, cx);
-        // No meetings model: the placeholder shows the one used instead.
-        let fallback = feature_model(&s, Feature::Meetings, &pid);
-        let placeholder = if fallback.is_empty() {
-            t("meetingsAi.llm.modelPlaceholder")
-        } else {
-            SharedString::from(fallback)
-        };
-        self.model_input
-            .update(cx, |st, cx| st.set_placeholder(placeholder, window, cx));
         if changed {
+            // A model id typed for one provider isn't one for the next.
+            set_if(&self.model_input, String::new(), true, window, cx);
             let key = self.api_keys.get(&pid).cloned();
             set_if(&self.api_key, key.unwrap_or_default(), true, window, cx);
             self.synced_provider = pid.clone();
@@ -727,28 +886,50 @@ impl AiSettingsView {
         self.save_meetings(m, cx);
     }
 
-    /// The cloud model for the provider shown.
-    fn set_model(&mut self, model: String, cx: &mut Context<Self>) {
+    /// Show `pid` to add its models or enter its key (the default stays).
+    pub fn browse(&mut self, pid: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.browsing = Some(pid);
+        self.sync_inputs(false, window, cx);
+        cx.notify();
+    }
+
+    /// Add a cloud model to "Your models".
+    pub fn add_model(&mut self, pid: String, model: String, cx: &mut Context<Self>) {
         let Some(s) = self.settings(cx) else {
             return;
         };
-        let pid = self.synced_provider.clone();
-        if s.meetings
-            .llm_models
-            .get(&pid)
-            .map(String::as_str)
-            .unwrap_or("")
-            == model
-        {
+        self.save_meetings(with_saved_model(&s, &pid, &model), cx);
+    }
+
+    /// Take a cloud model off "Your models" (not the default).
+    pub fn remove_model(&mut self, pid: String, model: String, cx: &mut Context<Self>) {
+        let Some(s) = self.settings(cx) else {
             return;
-        }
-        let mut m = s.meetings.clone();
-        if model.is_empty() {
-            m.llm_models.remove(&pid);
+        };
+        self.save_meetings(without_saved_model(&s, &pid, &model), cx);
+    }
+
+    /// Summaries use this cloud model unless another is picked.
+    pub fn make_default(&mut self, pid: String, model: String, cx: &mut Context<Self>) {
+        let Some(s) = self.settings(cx) else {
+            return;
+        };
+        self.save_meetings(with_default_model(&s, &pid, &model), cx);
+    }
+
+    /// A model row of the picker: on the list or off it.
+    fn toggle_model(&mut self, pid: String, model: String, cx: &mut Context<Self>) {
+        let Some(s) = self.settings(cx) else {
+            return;
+        };
+        let saved = saved_cloud_models(&s)
+            .into_iter()
+            .any(|c| c.provider_id == pid && c.model == model);
+        if saved {
+            self.remove_model(pid, model, cx);
         } else {
-            m.llm_models.insert(pid.clone(), model);
+            self.add_model(pid, model, cx);
         }
-        self.save_meetings(m, cx);
     }
 
     fn fetch_catalog(&mut self, pid: String, cx: &mut Context<Self>) {
@@ -803,7 +984,7 @@ impl AiSettingsView {
     }
 
     fn test_connection(&mut self, cx: &mut Context<Self>) {
-        let pid = self.choice(cx).provider_id;
+        let pid = self.synced_provider.clone();
         self.testing = true;
         self.test_result = None;
         self.run(
@@ -1044,7 +1225,10 @@ impl AiSettingsView {
         let updating = self.state.read(cx).settings.is_updating("meetings");
         let weak = cx.entity().downgrade();
         let mut rows = vec![
-            SettingRow::new("meetings-llm-provider", t("meetingsAi.llm.provider"))
+            self.your_models_row(s, cx),
+            SettingRow::new("meetings-llm-provider", t("meetingsAi.llm.addFrom"))
+                .description(t("meetingsAi.llm.addFromDescription"))
+                .inline_description()
                 .control(
                     Dropdown::new("meetings-llm-provider-dropdown")
                         .options(cloud_provider_options(s))
@@ -1052,9 +1236,9 @@ impl AiSettingsView {
                         .min_width(dp(220.))
                         .menu_width(dp(260.))
                         .disabled(updating)
-                        .on_select(move |v, _, cx| {
+                        .on_select(move |v, window, cx| {
                             let v = v.to_string();
-                            weak.update(cx, |this, cx| this.set_provider(v, cx)).ok();
+                            weak.update(cx, |this, cx| this.browse(v, window, cx)).ok();
                         }),
                 )
                 .into_any_element(),
@@ -1135,12 +1319,129 @@ impl AiSettingsView {
         rows
     }
 
+    /// "Your models": every cloud model added for summaries, the default
+    /// marked; "Generate summary" offers all of them.
+    fn your_models_row(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
+        let models = saved_cloud_models(s);
+        let rows: Vec<AnyElement> = models
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let (pid, model) = (c.provider_id.clone(), c.model.clone());
+                let (pid2, model2) = (pid.clone(), model.clone());
+                let name = self
+                    .catalogs
+                    .get(&c.provider_id)
+                    .and_then(|cat| cat.models.iter().find(|m| m.id == c.model))
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| c.model.clone());
+                h_flex()
+                    .id(SharedString::from(format!("meetings-llm-saved-{i}")))
+                    .w_full()
+                    .gap_3()
+                    .px(dp(10.))
+                    .py(dp(8.))
+                    .border_b_1()
+                    .border_color(tone.hairline)
+                    .when(c.default, |d| d.bg(tone.accent_soft))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "meetings-llm-saved-default-{i}"
+                            )))
+                            .cursor_pointer()
+                            .child(radio(c.default, cx))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.make_default(pid.clone(), model.clone(), cx)
+                            }))
+                            .test_support(),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(dp(2.))
+                            .child(
+                                div()
+                                    .text_size(design::TEXT_BODY)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(dp(11.))
+                                    .text_color(tone.text_faint)
+                                    .truncate()
+                                    .child(format!(
+                                        "{} · {}",
+                                        provider_label(s, &c.provider_id),
+                                        c.model
+                                    )),
+                            ),
+                    )
+                    .when(c.default, |d| {
+                        d.child(design::chip(t("meetingsAi.llm.default"), true, cx))
+                    })
+                    .when(!c.default, |d| {
+                        d.child(
+                            Button::new(SharedString::from(format!(
+                                "meetings-llm-saved-remove-{i}"
+                            )))
+                            .ghost()
+                            .xsmall()
+                            .icon(icon("trash"))
+                            .tooltip(t("meetingsAi.llm.removeModel"))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.remove_model(pid2.clone(), model2.clone(), cx)
+                                },
+                            )),
+                        )
+                    })
+                    .test_support()
+                    .into_any_element()
+            })
+            .collect();
+        let empty = models.is_empty().then(|| {
+            div()
+                .id("meetings-llm-saved-empty")
+                .p_3()
+                .text_size(dp(12.))
+                .text_color(tone.text_muted)
+                .child(t("meetingsAi.llm.yourModelsEmpty"))
+                .test_support()
+        });
+        SettingRow::new("meetings-llm-saved", t("meetingsAi.llm.yourModels"))
+            .description(t("meetingsAi.llm.yourModelsDescription"))
+            .inline_description()
+            .stacked()
+            .control(
+                v_flex()
+                    .id("meetings-llm-saved-list")
+                    .w_full()
+                    .rounded(dp(6.))
+                    .border_1()
+                    .border_color(tone.hairline)
+                    .bg(tone.ink)
+                    .overflow_hidden()
+                    .children(rows)
+                    .children(empty),
+            )
+            .into_any_element()
+    }
+
     fn model_row(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
         let pid = self.synced_provider.clone();
         let tone = design::tone(cx);
         let theme = cx.theme().clone();
-        let selected = s.meetings.llm_models.get(&pid).cloned().unwrap_or_default();
-        let effective = feature_model(s, Feature::Meetings, &pid);
+        let saved: Vec<CloudModel> = saved_cloud_models(s)
+            .into_iter()
+            .filter(|c| c.provider_id == pid)
+            .collect();
+        let is_saved = |id: &str| saved.iter().any(|c| c.model == id);
+        let is_default = |id: &str| saved.iter().any(|c| c.default && c.model == id);
         let catalog = self.catalogs.get(&pid);
         let fetching = self.fetching.as_ref() == Some(&pid);
         let error = self
@@ -1156,9 +1457,9 @@ impl AiSettingsView {
         let shown: Vec<&ModelEntry> = all
             .iter()
             .copied()
-            // The model in use always shows, so the choice stays visible.
+            // Models on the list always show, so they can be taken off.
             .filter(|m| {
-                !in_registry || !self.good_only || m.good_for_summaries() || m.id == effective
+                !in_registry || !self.good_only || m.good_for_summaries() || is_saved(&m.id)
             })
             .filter(|m| {
                 query.is_empty()
@@ -1169,7 +1470,8 @@ impl AiSettingsView {
 
         let rows = shown.iter().map(|m| {
             let id = m.id.clone();
-            let is_sel = m.id == effective;
+            let is_sel = is_saved(&m.id);
+            let default = is_default(&m.id);
             let info = m.info.as_ref();
             let meta: Vec<String> = [
                 info.and_then(|i| i.limit.context).map(|c| {
@@ -1193,7 +1495,7 @@ impl AiSettingsView {
                 .when(!is_sel, |d| {
                     d.hover(move |s| s.bg(tone.raised.opacity(0.5)))
                 })
-                .child(radio(is_sel, cx))
+                .child(checkbox(is_sel, cx))
                 .child(
                     v_flex()
                         .flex_1()
@@ -1216,6 +1518,9 @@ impl AiSettingsView {
                 .child(
                     h_flex()
                         .gap(dp(4.))
+                        .when(default, |d| {
+                            d.child(design::chip(t("meetingsAi.llm.default"), true, cx))
+                        })
                         .when(m.good_for_summaries(), |d| {
                             d.child(design::chip(t("meetingsAi.llm.goodForSummaries"), true, cx))
                         })
@@ -1236,7 +1541,12 @@ impl AiSettingsView {
                         .text_color(tone.text_muted)
                         .children(meta.into_iter().map(|l| div().child(l))),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| this.set_model(id.clone(), cx)))
+                .when(!default, |d| {
+                    let pid = pid.clone();
+                    d.on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_model(pid.clone(), id.clone(), cx)
+                    }))
+                })
                 .test_support()
                 .into_any_element()
         });
@@ -1331,17 +1641,6 @@ impl AiSettingsView {
                             .on_click(cx.listener(|this, _, _, cx| this.refresh_registry(cx))),
                     ),
             );
-        let fallback = (selected.is_empty() && !effective.is_empty()).then(|| {
-            div()
-                .id("meetings-llm-model-fallback")
-                .text_size(dp(12.))
-                .text_color(tone.text_muted)
-                .child(t_args(
-                    "meetingsAi.llm.usingPostProcessModel",
-                    &[("model", &effective)],
-                ))
-                .test_support()
-        });
         // The registry's models are shown while the provider's own list
         // can't be read (no key yet): say why.
         let live_error = catalog.and_then(|c| c.live_error.clone()).filter(|_| {
@@ -1375,7 +1674,6 @@ impl AiSettingsView {
                         d.child(Input::new(&self.model_input).small())
                     })
                     .child(picker)
-                    .children(fallback)
                     .children(error),
             )
             .into_any_element()
@@ -1965,10 +2263,11 @@ impl Render for AiSettingsView {
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_label, provider_options, summary_choices, with_llm_choice, MeetingsLlmChoice,
+        provider_label, provider_options, saved_cloud_models, summary_choices, with_default_model,
+        with_llm_choice, with_saved_model, without_saved_model, MeetingsLlmChoice,
         APPLE_PROVIDER_ID,
     };
-    use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
+    use guidy_core::meetings::settings::{MeetingSettings, SavedLlmModel, BUILTIN_LLM_PROVIDER_ID};
 
     #[test]
     fn summary_choices_list_ready_models_local_first() {
@@ -1977,10 +2276,18 @@ mod tests {
         s.meetings
             .llm_models
             .insert("groq".into(), "llama-3.3-70b".into());
+        let saved = |p: &str, m: &str| SavedLlmModel {
+            provider_id: p.into(),
+            model: m.into(),
+        };
+        s.meetings.llm_saved_models = vec![
+            saved("openai", "gpt-5-mini"),
+            saved("groq", "llama-3.1-8b"),
+            saved("mistral", "mistral-large"),
+        ];
+        // A post-processing model isn't one of the user's summary models.
         s.post_process_models
-            .insert("openai".into(), "gpt-5-mini".into());
-        s.post_process_models
-            .insert("anthropic".into(), String::new());
+            .insert("anthropic".into(), "claude-x".into());
         let local = |id: &str, downloaded: bool| crate::meetings_backend::LocalLlmModel {
             id: id.into(),
             name: format!("Local {id}"),
@@ -2000,20 +2307,74 @@ mod tests {
             |p| keys.contains(&p),
         );
         let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
-        // No model for Anthropic, no key for the rest, no Apple Intelligence.
+        // The default, then the added models; none without a key (Mistral),
+        // no Apple Intelligence.
         assert_eq!(
             labels,
             [
                 "Local qwen3-4b",
+                "Groq · llama-3.3-70b",
                 "OpenAI · gpt-5-mini",
-                "Groq · llama-3.3-70b"
+                "Groq · llama-3.1-8b"
             ]
         );
         assert!(c[0].local && !c[1].local);
-        assert!(c[2].current && !c[0].current);
+        assert!(c[1].current && !c[0].current && !c[3].current);
         assert_eq!(
             (c[0].provider_id.as_str(), c[0].model.as_str()),
             (BUILTIN_LLM_PROVIDER_ID, "qwen3-4b")
+        );
+    }
+
+    #[test]
+    fn cloud_models_are_added_made_default_and_removed() {
+        let mut s = guidy_core::settings::get_default_settings();
+        s.meetings.llm_provider_id = "anthropic".into();
+        s.meetings.llm_models.clear();
+        s.post_process_models.clear();
+        let list = |s: &guidy_core::settings::AppSettings| -> Vec<(String, String, bool)> {
+            saved_cloud_models(s)
+                .into_iter()
+                .map(|c| (c.provider_id, c.model, c.default))
+                .collect()
+        };
+        let owned = |p: &str, m: &str, d: bool| (p.to_string(), m.to_string(), d);
+        // No cloud model yet: the first one added is the default.
+        s.meetings = with_saved_model(&s, "anthropic", "claude-sonnet");
+        assert_eq!(list(&s), [owned("anthropic", "claude-sonnet", true)]);
+        // Then more, several per provider.
+        s.meetings = with_saved_model(&s, "openai", "gpt-5");
+        s.meetings = with_saved_model(&s, "anthropic", "claude-opus");
+        s.meetings = with_saved_model(&s, "openai", "gpt-5");
+        assert_eq!(
+            list(&s),
+            [
+                owned("anthropic", "claude-sonnet", true),
+                owned("openai", "gpt-5", false),
+                owned("anthropic", "claude-opus", false)
+            ]
+        );
+        // Another default of the same provider keeps the old one listed.
+        s.meetings = with_default_model(&s, "anthropic", "claude-opus");
+        assert_eq!(s.meetings.llm_provider_id, "anthropic");
+        assert_eq!(list(&s)[0], owned("anthropic", "claude-opus", true));
+        assert!(list(&s).contains(&owned("anthropic", "claude-sonnet", false)));
+        assert_eq!(list(&s).len(), 3);
+        // The default can't be removed; the others can.
+        s.meetings = without_saved_model(&s, "anthropic", "claude-opus");
+        assert_eq!(list(&s).len(), 3);
+        s.meetings = without_saved_model(&s, "anthropic", "claude-sonnet");
+        s.meetings = without_saved_model(&s, "openai", "gpt-5");
+        assert_eq!(list(&s), [owned("anthropic", "claude-opus", true)]);
+        // Summaries on this Mac: cloud models stay listed, none is default.
+        s.meetings = with_saved_model(&s, "openai", "gpt-5");
+        s.meetings.llm_provider_id = BUILTIN_LLM_PROVIDER_ID.into();
+        assert_eq!(
+            list(&s),
+            [
+                owned("anthropic", "claude-opus", false),
+                owned("openai", "gpt-5", false)
+            ]
         );
     }
 
@@ -2361,30 +2722,77 @@ mod ui {
         assert!(mb.called("refresh_llm_registry"));
     }
 
+    /// Models are added from any provider without changing the default;
+    /// one is made the default from the list.
     #[gpui_kit::test]
-    fn model_field_shows_the_post_processing_fallback(cx: &mut TestAppContext) {
+    fn several_cloud_models_are_listed_and_one_is_the_default(cx: &mut TestAppContext) {
         let mb = FakeMeetingsBackend::new();
+        mb.data.lock().ai.catalog = crate::meetings_backend::ModelCatalog {
+            models: vec![entry("good", true), entry("better", true)],
+            in_registry: true,
+            registry_fetched_at: None,
+            live_error: None,
+        };
         let fb = crate::testing::FakeBackend::new();
         fb.with_settings(|s| {
             s.meetings.llm_provider_id = "openai".into();
             s.meetings.llm_models.clear();
+            // Before a meetings model is set, the post-processing one is used.
             s.post_process_models
                 .insert("openai".into(), "gpt-4o-mini".into());
         });
-        let state = setup_with(cx, fb.clone(), mb);
+        setup_with(cx, fb.clone(), mb);
         let (w, view) = open(cx, AiSettingsView::new);
-        let choice = view.read_with(cx, |v, cx| v.choice(cx));
-        assert_eq!(choice.model, "");
-        assert_eq!(choice.effective_model, "gpt-4o-mini");
-        assert!(exists(cx, w, "meetings-llm-model-fallback"));
-        fb.with_settings(|s| {
-            s.meetings
-                .llm_models
-                .insert("openai".into(), "gpt-4.1".into());
-        });
-        state.update(cx, |s, cx| s.refresh_settings(cx));
+        assert!(exists(cx, w, "meetings-llm-saved-0"));
+        assert!(!exists(cx, w, "meetings-llm-saved-remove-0"));
+
+        // Browsing another provider and checking models adds them; the
+        // default stays.
+        cx.update_window(w, |_, window, cx| {
+            view.update(cx, |v, cx| v.browse("anthropic".into(), window, cx))
+        })
+        .unwrap();
         cx.run_until_parked();
-        assert!(!exists(cx, w, "meetings-llm-model-fallback"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-llm-model-good", cx)
+        });
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-llm-model-better", cx)
+        });
+        let m = fb.settings().meetings;
+        assert_eq!(m.llm_provider_id, "openai");
+        let added: Vec<_> = m
+            .llm_saved_models
+            .iter()
+            .map(|c| format!("{}/{}", c.provider_id, c.model))
+            .collect();
+        assert_eq!(added, ["anthropic/good", "anthropic/better"]);
+        assert!(exists(cx, w, "meetings-llm-saved-2"));
+        // Unchecking takes one off.
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-llm-model-better", cx)
+        });
+        assert_eq!(fb.settings().meetings.llm_saved_models.len(), 1);
+        assert!(!exists(cx, w, "meetings-llm-saved-2"));
+
+        // Made the default from the list.
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-llm-saved-default-1", cx)
+        });
+        let m = fb.settings().meetings;
+        assert_eq!(m.llm_provider_id, "anthropic");
+        assert_eq!(
+            m.llm_models.get("anthropic").map(String::as_str),
+            Some("good")
+        );
+        // The old default (the post-processing model) is still listed.
+        assert!(exists(cx, w, "meetings-llm-saved-1"));
+        assert!(fb
+            .settings()
+            .meetings
+            .llm_saved_models
+            .iter()
+            .any(|c| c.provider_id == "openai" && c.model == "gpt-4o-mini"));
     }
 
     #[gpui_kit::test]

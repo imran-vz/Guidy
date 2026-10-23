@@ -1877,6 +1877,67 @@ mod meetings_page {
         assert!(!exists(cx, w, "people-voice-delete"));
     }
 
+    /// The merge panel plays both people's voiceprints before merging.
+    #[gpui_kit::test]
+    fn voiceprints_can_be_heard_before_a_merge(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        {
+            let mut d = meetings.data.lock();
+            let segments = d.segments[&1].clone();
+            use guidy_core::meetings::types::VoiceSample;
+            let sample = |id: i64, seg: usize| VoiceSample {
+                voiceprint_id: id,
+                meeting_id: Some(1),
+                meeting_title: Some("Weekly sync".into()),
+                meeting_started_at: Some(0),
+                segment: Some(segments[seg].clone()),
+                has_audio: true,
+            };
+            d.voice_samples.insert(8, vec![sample(80, 0)]);
+            d.voice_samples.insert(
+                7,
+                vec![
+                    sample(70, 2),
+                    VoiceSample {
+                        has_audio: false,
+                        ..sample(71, 1)
+                    },
+                ],
+            );
+        }
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        with_window(cx, w, |window, cx| window.click("person-merge-8", cx));
+        assert!(meetings.called("voice_samples 8"));
+        assert!(exists(cx, w, "voice-sample-80"));
+        assert!(!exists(cx, w, "voice-sample-70"));
+
+        with_window(cx, w, |window, cx| window.click("voice-sample-80", cx));
+        assert!(meetings.called("segment_audio 1 system 0 2000"));
+
+        let people = page.read_with(cx, |p, _| p.people().clone());
+        people.update(cx, |p, cx| p.pick_merge_target(7, cx));
+        cx.run_until_parked();
+        assert!(meetings.called("voice_samples 7"));
+        assert!(exists(cx, w, "voice-sample-70"));
+        // Its audio is gone: nothing to play.
+        with_window(cx, w, |window, cx| window.click("voice-sample-71", cx));
+        assert!(!meetings.called("segment_audio 1 system 2000"));
+
+        with_window(cx, w, |window, cx| {
+            window.click("person-merge-confirm-8", cx)
+        });
+        assert!(has_dialog(cx, w));
+        assert!(!meetings.called("merge_people"));
+        press_enter(cx, w);
+        assert!(
+            meetings.called("merge_people 8 7"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
     #[gpui_kit::test]
     fn merging_moves_into_the_target(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
@@ -3272,22 +3333,100 @@ mod line_tagging {
         (backend, m)
     }
 
+    /// The standard model (downloaded) and two larger ones (not).
+    fn separation_options() -> guidy_core::meetings::types::DiarizationOptions {
+        use guidy_core::meetings::types::{DiarizationOptions, SpeakerModelId, SpeakerModelOption};
+        let model = |id, name: &str, size_mb, installed| SpeakerModelOption {
+            id,
+            name: name.into(),
+            size_mb,
+            installed,
+        };
+        DiarizationOptions {
+            models: vec![
+                model(SpeakerModelId::Resnet34, "WeSpeaker ResNet34", 26, true),
+                model(
+                    SpeakerModelId::TitanetLarge,
+                    "NVIDIA TitaNet Large",
+                    97,
+                    false,
+                ),
+                model(SpeakerModelId::Resnet293, "WeSpeaker ResNet293", 110, false),
+            ],
+            default_model: SpeakerModelId::Resnet34,
+            deepgram_has_key: false,
+            deepgram_usd_per_min: Some(0.0063),
+        }
+    }
+
+    /// The speaker model that tells voices apart is the user's choice: it
+    /// downloads when chosen and can be deleted again.
+    #[gpui_kit::test]
+    fn the_speaker_model_can_be_chosen_downloaded_and_deleted(cx: &mut TestAppContext) {
+        use guidy_core::meetings::types::SpeakerModelId;
+        let (backend, meetings) = fixture();
+        meetings.data.lock().diarization = separation_options();
+        setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-tab-settings", cx)
+        });
+        assert!(exists(cx, w, "meetings-separation-model"));
+        assert!(!exists(cx, w, "meetings-separation-delete"));
+        let view = page.read_with(cx, |p, _| p.settings_view().clone());
+        view.update(cx, |v, cx| {
+            v.choose_separation_model(SpeakerModelId::TitanetLarge, cx)
+        });
+        cx.run_until_parked();
+        assert!(meetings.called("download_separation_model titanet_large"));
+        assert_eq!(
+            backend.settings().meetings.speaker_separation_model,
+            "titanet_large"
+        );
+        // Downloaded: it can be deleted, and meetings go back to the
+        // standard model.
+        assert!(exists(cx, w, "meetings-separation-delete"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-separation-delete", cx)
+        });
+        assert!(meetings.called("delete_separation_model titanet_large"));
+        assert_eq!(backend.settings().meetings.speaker_separation_model, "");
+        // The standard one needs no download.
+        view.update(cx, |v, cx| {
+            v.choose_separation_model(SpeakerModelId::Resnet34, cx)
+        });
+        cx.run_until_parked();
+        assert!(!meetings.called("download_separation_model resnet34"));
+    }
+
+    /// Live transcription can use its own model.
+    #[gpui_kit::test]
+    fn live_transcription_has_its_own_model_choice(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        backend.with_settings(|s| s.meetings.live_transcription = false);
+        setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-tab-settings", cx)
+        });
+        assert!(!exists(cx, w, "meetings-live-model"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-live-transcription-toggle", cx)
+        });
+        assert!(exists(cx, w, "meetings-live-model"));
+    }
+
     #[gpui_kit::test]
     fn the_speakers_can_be_redone_locally_or_with_deepgram(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
-        meetings.data.lock().diarization = guidy_core::meetings::types::DiarizationOptions {
-            accurate_installed: false,
-            accurate_size_mb: 109,
-            deepgram_has_key: false,
-            deepgram_usd_per_min: Some(0.0063),
-        };
+        meetings.data.lock().diarization = separation_options();
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
-        // One click: the accurate model.
+        // One click: the most accurate model (meetings use the standard one).
         with_window(cx, w, |window, cx| window.click("speakers-redo", cx));
         assert!(
-            meetings.called("redo_speakers 1 Accurate"),
+            meetings.called("redo_speakers 1 Model(Resnet293)"),
             "{:?}",
             meetings.calls()
         );
@@ -3358,6 +3497,108 @@ mod line_tagging {
             "{:?}",
             meetings.calls()
         );
+    }
+
+    /// Several lines are selected (Shift-click a range, Command-click one
+    /// more, or drag) and named with one "Set speaker".
+    #[gpui_kit::test]
+    fn several_lines_are_selected_and_named_at_once(cx: &mut TestAppContext) {
+        use crate::logic::meetings::LineClick;
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        let d = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("a meeting is open");
+        let seg = |cx: &mut TestAppContext, id: i64| {
+            cx.update(|cx| {
+                d.read(cx)
+                    .segments()
+                    .iter()
+                    .find(|s| s.id == id)
+                    .cloned()
+                    .unwrap()
+            })
+        };
+        // A plain click plays, and is where a Shift-click range starts.
+        with_window(cx, w, |window, cx| window.click("segment-1", cx));
+        assert!(meetings.called("segment_audio"));
+        assert!(!exists(cx, w, "selection-bar"));
+        let three = seg(cx, 3);
+        d.update(cx, |d, cx| d.click_line(&three, LineClick::Range, cx));
+        cx.run_until_parked();
+        assert_eq!(d.read_with(cx, |d, _| d.selection().to_vec()), [1, 2, 3]);
+        assert!(exists(cx, w, "selection-bar"));
+        // Command-click takes one off again.
+        let two = seg(cx, 2);
+        d.update(cx, |d, cx| d.click_line(&two, LineClick::Toggle, cx));
+        cx.run_until_parked();
+        assert_eq!(d.read_with(cx, |d, _| d.selection().to_vec()), [1, 3]);
+        d.update(cx, |d, cx| d.click_line(&two, LineClick::Toggle, cx));
+        cx.run_until_parked();
+
+        // One picker for all of them, under the last line.
+        with_window(cx, w, |window, cx| window.click("selection-tag", cx));
+        assert!(exists(cx, w, "line-picker-3"));
+        assert!(!exists(cx, w, "selection-bar"));
+        with_window(cx, w, |window, cx| window.click("speaker-suggestion-1", cx));
+        for id in [1, 2, 3] {
+            assert!(
+                meetings.called(&format!("assign_segment {id} 8")),
+                "{:?}",
+                meetings.calls()
+            );
+        }
+        assert!(d.read_with(cx, |d, _| d.selection().is_empty()));
+
+        // Esc drops a selection.
+        let one = seg(cx, 1);
+        d.update(cx, |d, cx| d.click_line(&one, LineClick::Plain, cx));
+        d.update(cx, |d, cx| d.click_line(&three, LineClick::Range, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "selection-bar"));
+        with_window(cx, w, |window, cx| window.click("selection-clear", cx));
+        assert!(!exists(cx, w, "selection-bar"));
+    }
+
+    /// Dragging across lines selects them (and plays none); Esc drops the
+    /// selection.
+    #[gpui_kit::test]
+    fn dragging_across_lines_selects_them(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        let d = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("a meeting is open");
+        with_window(cx, w, |window, cx| {
+            window.drag_to("segment-1", "segment-3", cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(d.read_with(cx, |d, _| d.selection().to_vec()), [1, 2, 3]);
+        assert!(!meetings.called("segment_audio"), "a drag doesn't play");
+        assert!(exists(cx, w, "selection-bar"));
+        cx.update_window(w, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(d.read_with(cx, |d, _| d.selection().is_empty()));
+        // The next plain click isn't taken for the drag's end: it is where
+        // a Shift-click range starts.
+        with_window(cx, w, |window, cx| window.click("segment-2", cx));
+        let three = cx.update(|cx| {
+            d.read(cx)
+                .segments()
+                .iter()
+                .find(|s| s.id == 3)
+                .cloned()
+                .unwrap()
+        });
+        d.update(cx, |d, cx| {
+            d.click_line(&three, crate::logic::meetings::LineClick::Range, cx)
+        });
+        assert_eq!(d.read_with(cx, |d, _| d.selection().to_vec()), [2, 3]);
     }
 
     #[gpui_kit::test]

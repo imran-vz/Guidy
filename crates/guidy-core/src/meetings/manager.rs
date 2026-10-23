@@ -575,8 +575,20 @@ impl MeetingsManager {
         Ok(())
     }
 
-    /// Move everything (voiceprints, speaker links, action-item owners) from
-    /// `from` into `into`, then delete `from`.
+    /// `id`'s voiceprints with the lines they came from, to listen to
+    /// before a merge (see [`crate::meetings::processing::naming::voice_samples`]).
+    pub fn voice_samples(&self, id: PersonId) -> Result<Vec<VoiceSample>> {
+        let key = crate::secrets::meetings_data_key()?;
+        crate::meetings::processing::naming::voice_samples(
+            &self.store,
+            &self.meetings_dir,
+            &key,
+            id,
+        )
+    }
+
+    /// Move everything (voiceprints, speaker links, action-item owners,
+    /// pinned lines) from `from` into `into`, then delete `from`.
     pub fn merge_people(&self, from: PersonId, into: PersonId) -> Result<()> {
         self.store.merge_people(from, into)?;
         self.emit_people_changed();
@@ -751,8 +763,9 @@ impl MeetingsManager {
 
     /// Redo only a processed meeting's speakers with `engine`, keeping its
     /// transcript (see [`crate::meetings::processing::Processor::enqueue_speakers`]).
-    /// Speaker names come back from known voices; lines tagged by hand are
-    /// redone too.
+    /// The model decides only the lines nobody pinned: lines tagged by hand
+    /// and speakers named or confirmed keep their person (see
+    /// [`SegmentPin`]); the rest are matched again by voice.
     pub fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> Result<()> {
         let Some(meeting) = self.store.get_meeting(id)? else {
             anyhow::bail!("meeting {id} not found");
@@ -769,12 +782,28 @@ impl MeetingsManager {
         self.processing.enqueue_speakers(id, engine)
     }
 
-    /// What redoing speakers can use now.
+    /// What telling speakers apart can use now.
     pub fn diarization_options(&self) -> DiarizationOptions {
         use crate::meetings::processing::{deepgram, speaker_model};
         DiarizationOptions {
-            accurate_installed: speaker_model::accurate_model_installed(&self.app),
-            accurate_size_mb: speaker_model::ACCURATE_MODEL_SIZE / (1024 * 1024),
+            models: speaker_model::SEPARATION_MODELS
+                .iter()
+                .map(|m| SpeakerModelOption {
+                    id: m.id,
+                    name: m.name.to_string(),
+                    size_mb: m.size.div_ceil(1024 * 1024),
+                    installed: if m.id.is_standard() {
+                        speaker_model::speaker_model_installed(&self.app)
+                    } else {
+                        speaker_model::separation_model_installed(&self.app, m.id)
+                    },
+                })
+                .collect(),
+            default_model: SpeakerModelId::parse(
+                &crate::settings::get_settings(&self.app)
+                    .meetings
+                    .speaker_separation_model,
+            ),
             deepgram_has_key: !crate::settings::provider_api_key(deepgram::DEEPGRAM_PROVIDER_ID)
                 .trim()
                 .is_empty(),
@@ -783,6 +812,23 @@ impl MeetingsManager {
                 deepgram::DEEPGRAM_MODEL,
             ),
         }
+    }
+
+    /// Download a speaker model for telling voices apart (blocking; the
+    /// standard one goes through its own download and status).
+    pub fn download_separation_model(&self, id: SpeakerModelId) -> Result<()> {
+        crate::meetings::processing::speaker_model::ensure_separation_model(
+            &self.app,
+            id,
+            |_, _| {},
+        )
+        .map(|_| ())
+    }
+
+    /// Delete a downloaded speaker model (not the standard one). Meetings
+    /// set to use it fall back to the standard one until it is back.
+    pub fn delete_separation_model(&self, id: SpeakerModelId) -> Result<()> {
+        crate::meetings::processing::speaker_model::delete_separation_model(&self.app, id)
     }
 
     /// Save (or, empty, remove) the Deepgram API key.

@@ -32,6 +32,15 @@ use crate::meetings::types::*;
 use crate::settings::{get_settings, VadBackend};
 use segmenter::{Cut, Segmenter, SegmenterParams};
 
+/// The model live transcription asks for: its own choice, else the
+/// meetings model (then, when not downloaded, the same fallbacks).
+pub fn live_model_choice(m: &crate::meetings::settings::MeetingSettings) -> Option<&str> {
+    m.live_model
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .or(m.meeting_model.as_deref())
+}
+
 /// Audio the worker may fall behind by before new audio is dropped (both
 /// tracks together): a stalled decode never grows memory without bound.
 const MAX_BACKLOG_SAMPLES: usize = 60 * SAMPLE_RATE * 2;
@@ -361,7 +370,7 @@ impl Worker {
         self.status(LiveStatus::Off);
     }
 
-    /// The transcriber with the meeting model loaded, a cutter per track,
+    /// The transcriber with the live model (see [`live_model_choice`]) loaded, a cutter per track,
     /// and the language to decode in (`None`: autodetect).
     fn load(&self) -> Result<(MeetingTranscriber, [TrackCutter; 2], Option<String>)> {
         let settings = get_settings(&self.app);
@@ -371,7 +380,7 @@ impl Worker {
             .ok_or_else(|| anyhow::anyhow!("the model manager is not running"))?;
         let (model_id, path) = resolve_meeting_model(
             &models,
-            settings.meetings.meeting_model.as_deref(),
+            live_model_choice(&settings.meetings),
             Some(&settings.selected_model),
         )?;
         let mut transcriber = MeetingTranscriber::new();
@@ -460,6 +469,22 @@ mod tests {
             pcm: Vec::new(),
             partial,
         }
+    }
+
+    #[test]
+    fn live_uses_its_own_model_else_the_meetings_one() {
+        use crate::meetings::settings::MeetingSettings;
+        let mut m = MeetingSettings {
+            meeting_model: Some("parakeet-v3".into()),
+            ..Default::default()
+        };
+        assert_eq!(live_model_choice(&m), Some("parakeet-v3"));
+        m.live_model = Some("moonshine-base".into());
+        assert_eq!(live_model_choice(&m), Some("moonshine-base"));
+        m.live_model = Some(" ".into());
+        assert_eq!(live_model_choice(&m), Some("parakeet-v3"));
+        m.meeting_model = None;
+        assert_eq!(live_model_choice(&m), None);
     }
 
     #[test]
