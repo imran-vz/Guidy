@@ -3,7 +3,7 @@
 use crate::logic::models::{picked_model_ready, picker_groups, ModelCardStatus};
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t, t_args};
 use crate::ui::main_window::MainWindow;
 use crate::ui::model_card::ModelCard;
@@ -200,8 +200,8 @@ impl Render for ModelPicker {
             })
             .collect();
 
-        let section_title = |key: &str| div().px(px(2.)).child(design::eyebrow(t(key), cx));
-        let mut download_section = v_flex().gap(px(10.));
+        let section_title = |key: &str| div().px(dp(2.)).child(design::eyebrow(t(key), cx));
+        let mut download_section = v_flex().gap(dp(10.));
         if !groups.downloadable.is_empty() {
             download_section = download_section
                 .child(section_title("onboarding.downloadModelsTitle"))
@@ -274,7 +274,7 @@ impl Render for ModelPicker {
                     .items_center()
                     .gap_2()
                     .flex_none()
-                    .child(wordmark(px(28.), cx))
+                    .child(wordmark(dp(28.), cx))
                     .child(
                         div()
                             .text_size(design::TEXT_BODY)
@@ -290,7 +290,7 @@ impl Render for ModelPicker {
                     .overflow_y_scroll()
                     .child(
                         v_flex()
-                            .max_w(px(600.))
+                            .max_w(dp(600.))
                             .w_full()
                             .mx_auto()
                             .gap_6()
@@ -298,7 +298,7 @@ impl Render for ModelPicker {
                             .when(!existing.is_empty(), |d| {
                                 d.child(
                                     v_flex()
-                                        .gap(px(10.))
+                                        .gap(dp(10.))
                                         .child(section_title("onboarding.existingModelsTitle"))
                                         .children(existing),
                                 )

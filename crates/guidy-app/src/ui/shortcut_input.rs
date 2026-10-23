@@ -7,7 +7,7 @@ use crate::logic::keyboard::{
     OsType, SystemRecorder,
 };
 use crate::state::{AppEvent, AppState};
-use crate::ui::design;
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{reset_button, t, t_args, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::notification::{Notification, NotificationType};
@@ -381,15 +381,15 @@ impl Render for ShortcutInput {
         // shows what's held so far.
         let cap = move |text: SharedString| {
             div()
-                .px(px(8.))
-                .py(px(5.))
-                .rounded(px(6.))
+                .px(dp(8.))
+                .py(dp(5.))
+                .rounded(dp(6.))
                 .border_1()
                 .border_color(input_border)
                 .bg(tone.raised)
                 .font_family(crate::theme::MONO_FONT)
-                .text_size(px(11.5))
-                .line_height(px(14.))
+                .text_size(dp(11.5))
+                .line_height(dp(14.))
                 .child(text)
         };
         let caps: Vec<SharedString> = if recording {
@@ -405,9 +405,9 @@ impl Render for ShortcutInput {
             .id(SharedString::from(format!("shortcut-chip-{id}")))
             .aria_label(title.clone())
             .track_focus(&self.focus)
-            .gap(px(4.))
-            .p(px(2.))
-            .rounded(px(8.))
+            .gap(dp(4.))
+            .p(dp(2.))
+            .rounded(dp(8.))
             .border_1()
             .cursor_pointer()
             .children(caps.into_iter().map(move |k| {

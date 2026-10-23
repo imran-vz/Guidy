@@ -4,7 +4,7 @@
 use crate::logic::flows::{secure_input_impacted, secure_input_message, SECURE_INPUT_HELP_URL};
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -103,12 +103,12 @@ impl Render for AccessibilityBanner {
         h_flex()
             .id("accessibility-banner")
             .w_full()
-            .max_w(px(768.))
+            .max_w(dp(768.))
             .mb_4()
             .gap_3()
-            .pl(px(14.))
-            .pr(px(10.))
-            .py(px(10.))
+            .pl(dp(14.))
+            .pr(dp(10.))
+            .py(dp(10.))
             .rounded(design::RADIUS_PANEL)
             .border_1()
             .border_color(theme.warning.opacity(0.3))
@@ -180,12 +180,12 @@ impl Render for SecureInputBanner {
         h_flex()
             .id("secure-input-banner")
             .w_full()
-            .max_w(px(768.))
+            .max_w(dp(768.))
             .mb_4()
             .gap_3()
-            .pl(px(14.))
-            .pr(px(10.))
-            .py(px(10.))
+            .pl(dp(14.))
+            .pr(dp(10.))
+            .py(dp(10.))
             .rounded(design::RADIUS_PANEL)
             .border_1()
             .border_color(theme.warning.opacity(0.3))

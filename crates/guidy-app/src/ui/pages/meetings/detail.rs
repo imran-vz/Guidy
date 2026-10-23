@@ -10,7 +10,7 @@ use crate::logic::meetings::{
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill, Stat};
+use crate::ui::design::{self, dp, Pill, Stat};
 use crate::ui::kit::{crumb_title, group, icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -466,8 +466,8 @@ impl MeetingDetail {
         }
         let tone = design::tone(cx);
         let total = talk.total_ms as f32;
-        let label_w = px(84.);
-        let share_w = px(40.);
+        let label_w = dp(84.);
+        let share_w = dp(40.);
         let rows: Vec<AnyElement> = talk
             .speakers
             .iter()
@@ -486,14 +486,14 @@ impl MeetingDetail {
                     tone.line_art.opacity(0.75)
                 };
                 h_flex()
-                    .h(px(28.))
-                    .gap(px(12.))
+                    .h(dp(28.))
+                    .gap(dp(12.))
                     .child(
                         div()
                             .w(label_w)
                             .flex_none()
                             .truncate()
-                            .text_size(px(12.5))
+                            .text_size(dp(12.5))
                             .text_color(if is_user { tone.accent_text } else { tone.text })
                             .child(name),
                     )
@@ -501,13 +501,13 @@ impl MeetingDetail {
                         div()
                             .relative()
                             .flex_1()
-                            .h(px(10.))
+                            .h(dp(10.))
                             .child(
                                 div()
                                     .absolute()
                                     .left_0()
                                     .right_0()
-                                    .top(px(4.5))
+                                    .top(dp(4.5))
                                     .h(px(1.))
                                     .bg(tone.hairline),
                             )
@@ -515,9 +515,9 @@ impl MeetingDetail {
                                 div()
                                     .absolute()
                                     .top(px(1.))
-                                    .h(px(8.))
-                                    .min_w(px(2.))
-                                    .rounded(px(2.))
+                                    .h(dp(8.))
+                                    .min_w(dp(2.))
+                                    .rounded(dp(2.))
                                     .bg(bar)
                                     .left(relative(*t0 as f32 / total))
                                     .w(relative((*t1 - *t0) as f32 / total))
@@ -550,7 +550,7 @@ impl MeetingDetail {
                     h_flex()
                         .px(design::SECTION_X)
                         .pt(design::SECTION_Y)
-                        .pb(px(4.))
+                        .pb(dp(4.))
                         .justify_between()
                         .child(design::eyebrow(t("meetings.detail.talkTime"), cx))
                         .child(design::eyebrow(t("meetings.detail.share"), cx)),
@@ -563,8 +563,8 @@ impl MeetingDetail {
                         .children(rows)
                         .child(
                             h_flex()
-                                .mt(px(4.))
-                                .gap(px(12.))
+                                .mt(dp(4.))
+                                .gap(dp(12.))
                                 .child(
                                     div()
                                         .w(label_w)
@@ -662,7 +662,7 @@ impl MeetingDetail {
         let columns = stats.len();
 
         let actions = h_flex()
-            .gap(px(8.))
+            .gap(dp(8.))
             .when(show_process, |d| {
                 d.child(
                     Button::new("meeting-detail-process")
@@ -698,7 +698,7 @@ impl MeetingDetail {
         let panel = design::panel(cx)
             .child(
                 design::section(false, cx)
-                    .gap(px(6.))
+                    .gap(dp(6.))
                     .child(
                         h_flex()
                             .w_full()
@@ -724,7 +724,7 @@ impl MeetingDetail {
                             ),
                     )
                     .when(!attendees.is_empty(), |d| {
-                        d.child(div().text_size(px(12.)).text_color(tone.text_muted).child(
+                        d.child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
                             format!(
                                 "{}: {}",
                                 t("meetings.detail.attendees"),
@@ -733,7 +733,7 @@ impl MeetingDetail {
                         ))
                     })
                     .when_some(m.error.clone().filter(|_| failed), |d, e| {
-                        d.child(div().text_size(px(12.)).text_color(theme.danger).child(e))
+                        d.child(div().text_size(dp(12.)).text_color(theme.danger).child(e))
                     }),
             )
             .child(
@@ -752,7 +752,7 @@ impl MeetingDetail {
                 d.child(
                     v_flex()
                         .w_full()
-                        .gap(px(8.))
+                        .gap(dp(8.))
                         .px(design::SECTION_X)
                         .py(design::SECTION_Y)
                         .border_t_1()
@@ -776,7 +776,7 @@ impl MeetingDetail {
                         .w_full()
                         .justify_end()
                         .px(design::SECTION_X)
-                        .py(px(10.))
+                        .py(dp(10.))
                         .border_t_1()
                         .border_color(tone.hairline)
                         .child(actions),
@@ -784,7 +784,7 @@ impl MeetingDetail {
             });
 
         v_flex()
-            .gap(px(10.))
+            .gap(dp(10.))
             .w_full()
             .child(back)
             .child(panel)
@@ -797,7 +797,7 @@ impl MeetingDetail {
         let heading = |key: &str| design::eyebrow(t(key), cx);
         let suggestions: AnyElement = if self.suggestions_loading {
             div()
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .child(design::shimmer_text(
                     "speaker-suggestions-loading",
                     t("common.loading"),
@@ -806,7 +806,7 @@ impl MeetingDetail {
                 .into_any_element()
         } else if self.suggestions.is_empty() {
             div()
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .text_color(theme.muted_foreground)
                 .child(t("meetings.speaker.noSuggestions"))
                 .into_any_element()
@@ -847,9 +847,9 @@ impl MeetingDetail {
         v_flex()
             .id(SharedString::from(format!("speaker-picker-{speaker_id}")))
             .w_full()
-            .gap(px(8.))
+            .gap(dp(8.))
             .px(design::SECTION_X)
-            .py(px(12.))
+            .py(dp(12.))
             .border_t_1()
             .border_color(design::tone(cx).hairline)
             .bg(design::tone(cx).ink)
@@ -905,8 +905,8 @@ impl MeetingDetail {
                     .w_full()
                     .gap_3()
                     .pl(design::SECTION_X)
-                    .pr(px(10.))
-                    .py(px(10.))
+                    .pr(dp(10.))
+                    .py(dp(10.))
                     .justify_between()
                     .child(
                         h_flex()
@@ -930,11 +930,11 @@ impl MeetingDetail {
                                 d.child(
                                     div()
                                         .id(SharedString::from(format!("speaker-uncertain-{sid}")))
-                                        .px(px(7.))
-                                        .py(px(2.))
+                                        .px(dp(7.))
+                                        .py(dp(2.))
                                         .rounded(design::RADIUS_CHIP)
                                         .font_family(crate::theme::MONO_FONT)
-                                        .text_size(px(11.))
+                                        .text_size(dp(11.))
                                         .text_color(theme.warning)
                                         .bg(theme.warning.opacity(0.12))
                                         .child(match s.match_confidence {
@@ -1022,16 +1022,16 @@ impl MeetingDetail {
             .id(SharedString::from(format!("block-{i}")))
             .w_full()
             .items_start()
-            .gap(px(12.))
+            .gap(dp(12.))
             .pl(design::SECTION_X)
-            .pr(px(10.))
-            .py(px(10.))
+            .pr(dp(10.))
+            .py(dp(10.))
             .child(
                 v_flex()
-                    .w(px(84.))
+                    .w(dp(84.))
                     .flex_none()
-                    .pt(px(2.))
-                    .gap(px(2.))
+                    .pt(dp(2.))
+                    .gap(dp(2.))
                     .child(
                         div()
                             .id(SharedString::from(format!("block-{i}-speaker")))
@@ -1051,13 +1051,13 @@ impl MeetingDetail {
                     )
                     .child(
                         design::mono(format_offset(block.t0_ms()))
-                            .text_size(px(11.))
+                            .text_size(dp(11.))
                             .text_color(tone.text_faint),
                     )
                     .when(uncertain, |d| {
                         d.child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(dp(11.))
                                 .text_color(theme.warning)
                                 .child(t("meetings.speaker.confirm")),
                         )
@@ -1067,7 +1067,7 @@ impl MeetingDetail {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     .children(block.segments.iter().map(|seg| {
                         let key = self.clip_key(seg.id);
                         let active = st.error.is_none() && st.path.as_ref() == Some(&key);
@@ -1077,15 +1077,15 @@ impl MeetingDetail {
                             .id(SharedString::from(format!("segment-{}", seg.id)))
                             .gap_2()
                             .items_start()
-                            .px(px(6.))
+                            .px(dp(6.))
                             .py(px(1.))
-                            .rounded(px(6.))
+                            .rounded(dp(6.))
                             .cursor_pointer()
                             .when(active, |d| d.bg(tone.accent_soft))
                             .hover(move |d| d.bg(tone.raised.opacity(0.5)))
                             .child(
                                 div()
-                                    .pt(px(4.))
+                                    .pt(dp(4.))
                                     .flex_none()
                                     .text_color(if active {
                                         tone.accent_text
@@ -1125,7 +1125,7 @@ impl MeetingDetail {
         let rows: Vec<AnyElement> = if self.loading {
             vec![div()
                 .px_4()
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
@@ -1135,7 +1135,7 @@ impl MeetingDetail {
             vec![div()
                 .id("transcript-empty")
                 .px_4()
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
@@ -1158,7 +1158,7 @@ impl Render for MeetingDetail {
         v_flex()
             .id("meeting-detail")
             .w_full()
-            .gap(px(22.))
+            .gap(dp(22.))
             .child(self.render_header(cx))
             // ---- G2 slot: summary + action items (summary.rs) -------------
             .child(self.render_summary(window, cx))

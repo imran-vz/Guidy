@@ -6,7 +6,7 @@
 use super::{run, toast_error};
 use crate::logic::meetings::{merge_targets, non_empty, MeetingsEvent};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t, t_args, Dropdown, DropdownOption};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -226,7 +226,7 @@ impl PeopleView {
             v_flex()
                 .min_w_0()
                 .flex_1()
-                .gap(px(2.))
+                .gap(dp(2.))
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                 .child(
                     div()
@@ -276,7 +276,7 @@ impl PeopleView {
                             .w_full()
                             .px_3()
                             .py_2()
-                            .rounded(px(8.))
+                            .rounded(dp(8.))
                             .bg(theme.background)
                             .text_size(design::TEXT_BODY)
                             .line_height(relative(1.6))
@@ -711,7 +711,7 @@ impl Render for PeopleView {
             vec![div()
                 .id("people-empty")
                 .px_4()
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
@@ -727,7 +727,7 @@ impl Render for PeopleView {
         v_flex()
             .id("meetings-people")
             .w_full()
-            .gap(px(8.))
+            .gap(dp(8.))
             .child(crate::ui::kit::group(
                 Some(t("meetings.people.voice.title")),
                 vec![self.render_voice(cx)],
@@ -735,14 +735,14 @@ impl Render for PeopleView {
             ))
             .child(
                 div()
-                    .px(px(2.))
-                    .pt(px(8.))
+                    .px(dp(2.))
+                    .pt(dp(8.))
                     .child(design::eyebrow(t("meetings.people.title"), cx)),
             )
             .child(
                 div()
-                    .px(px(2.))
-                    .text_size(px(12.))
+                    .px(dp(2.))
+                    .text_size(dp(12.))
                     .line_height(relative(1.5))
                     .text_color(theme.muted_foreground)
                     .child(t("meetings.people.description")),

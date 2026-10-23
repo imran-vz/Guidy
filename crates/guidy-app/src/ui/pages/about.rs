@@ -2,7 +2,7 @@
 //! data/log dirs, acknowledgments.
 
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{
     group, icon, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
 };
@@ -84,7 +84,7 @@ impl Render for AboutPage {
                     Dropdown::new("app-language-dropdown")
                         .options(language_options)
                         .selected(Some(current_lang))
-                        .menu_width(px(260.))
+                        .menu_width(dp(260.))
                         .disabled(up("app_language"))
                         .on_select(|v, _, cx| {
                             AppState::global(cx)
@@ -203,7 +203,7 @@ impl Render for AboutPage {
                 .stacked()
                 .control(
                     div()
-                        .text_size(px(12.))
+                        .text_size(dp(12.))
                         .line_height(relative(1.55))
                         .text_color(muted)
                         .child(t("settings.about.acknowledgments.ggml.details")),
@@ -221,20 +221,20 @@ impl Render for AboutPage {
             .unwrap_or_else(|| "—".into());
         let hero = design::panel(cx)
             .child(
-                design::blueprint(px(150.), cx).child(
+                design::blueprint(dp(150.), cx).child(
                     div()
                         .absolute()
                         .size_full()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(design::illustration("waveform", px(260.), px(113.), cx)),
+                        .child(design::illustration("waveform", dp(260.), dp(113.), cx)),
                 ),
             )
             .child(
                 design::section(false, cx)
                     .pt_0()
-                    .gap(px(6.))
+                    .gap(dp(6.))
                     .child(
                         div()
                             .text_size(design::TEXT_HEADLINE)

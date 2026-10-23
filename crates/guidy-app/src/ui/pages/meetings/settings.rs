@@ -22,7 +22,7 @@ use crate::logic::models::format_model_size;
 use crate::meetings_backend::error_message;
 use crate::state::AppEvent;
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{
     group, icon, model_name, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
 };
@@ -413,7 +413,7 @@ impl MeetingSettingsView {
                 h_flex()
                     .id("meetings-speaker-model-progress")
                     .gap_2()
-                    .w(px(220.))
+                    .w(dp(220.))
                     .child(div().flex_1().child(design::track(
                         "meetings-speaker-model-bar",
                         Some((fraction * 100.0) / 100.0),
@@ -485,11 +485,11 @@ impl MeetingSettingsView {
             .control(
                 h_flex()
                     .gap_2()
-                    .w(px(260.))
+                    .w(dp(260.))
                     .child(div().flex_1().child(Slider::new(slider)))
                     .child(
                         div()
-                            .w(px(56.))
+                            .w(dp(56.))
                             .text_right()
                             .text_sm()
                             .font_family(crate::theme::MONO_FONT)
@@ -664,7 +664,7 @@ impl Render for MeetingSettingsView {
                             .gap_2()
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(dp(12.))
                                     .text_color(design::tone(cx).text_muted)
                                     .child(t("meetings.settings.meetingModel.separate")),
                             )
@@ -692,7 +692,7 @@ impl Render for MeetingSettingsView {
                     Dropdown::new("meetings-model-dropdown")
                         .options(model_options)
                         .selected(Some(selected_model))
-                        .min_width(px(220.))
+                        .min_width(dp(220.))
                         .on_select(|v, _, cx| {
                             let v = non_empty(v);
                             if v.is_some() {
@@ -707,7 +707,7 @@ impl Render for MeetingSettingsView {
             div()
                 .w_full()
                 .px(design::SECTION_X)
-                .pb(px(10.))
+                .pb(dp(10.))
                 .child(b)
                 .into_any_element()
         }));
@@ -718,7 +718,7 @@ impl Render for MeetingSettingsView {
                     Dropdown::new("meetings-retention-dropdown")
                         .options(retention_options)
                         .selected(Some(retention_value(m.audio_retention_days)))
-                        .min_width(px(160.))
+                        .min_width(dp(160.))
                         .on_select(|v, _, cx| {
                             let days = parse_retention(v);
                             update_meetings(cx, |m| m.audio_retention_days = days);
@@ -746,7 +746,7 @@ impl Render for MeetingSettingsView {
                 Dropdown::new("meetings-reminder-dropdown")
                     .options(reminder_options)
                     .selected(Some(m.reminder_interval_minutes.to_string()))
-                    .min_width(px(160.))
+                    .min_width(dp(160.))
                     .on_select(|v, _, cx| {
                         if let Ok(n) = v.parse::<u32>() {
                             update_meetings(cx, |m| m.reminder_interval_minutes = n);
@@ -794,8 +794,8 @@ impl Render for MeetingSettingsView {
                     div()
                         .w_full()
                         .px(design::SECTION_X)
-                        .pb(px(10.))
-                        .text_size(px(12.))
+                        .pb(dp(10.))
+                        .text_size(dp(12.))
                         .text_color(cx.theme().danger)
                         .child(t_args(
                             "meetings.settings.mcp.failed",
@@ -884,7 +884,7 @@ fn copy_row(id: &'static str, title: SharedString, value: String, cx: &App) -> A
                         .text_ellipsis()
                         .whitespace_nowrap()
                         .font_family(crate::theme::MONO_FONT)
-                        .text_size(px(12.))
+                        .text_size(dp(12.))
                         .text_color(muted)
                         .child(value.clone()),
                 )

@@ -39,7 +39,7 @@ guidy/                          (cargo workspace)
 
 | Concern | Implementation |
 |---|---|
-| Main window 680×570 | `open_window` with a gpui-kit `Root`; the close button hides the app into the tray |
+| Main window 816×684 minimum, opens at 960×744 (design sizes × `design::SCALE`) | `open_window` with a gpui-kit `Root`; the close button hides the app into the tray |
 | Overlay | `WindowKind::PopUp`, transparent, `focus:false`, positioned on the cursor's monitor (`overlay.rs`); `WindowKind::LayerShell` on Wayland |
 | Meeting controls | While a meeting records, a borderless black panel wraps the notch (`ui/notch.rs`, placement in `logic/notch.rs` from `NSScreen` `safeAreaInsets`/`auxiliaryTop*Area`; a small island mid-menu-bar on displays without one): waveform with pause/resume on hover, elapsed time, stop |
 | MCP server | Off by default (`meetings.mcp_enabled`). `guidy_core::mcp` serves read-only meeting tools (`list_meetings`, `get_meeting`, `get_transcript`) over Streamable HTTP on `127.0.0.1:<meetings.mcp_port>/mcp`, refusing foreign `Origin`/`Host` headers; `guidy --mcp-stdio` relays stdio clients to it |
@@ -63,7 +63,8 @@ The design language is technical drawing: graphite surfaces, hairline grids, upp
 
 - **Licensing.** Zed's `ui`, `theme` and `settings_ui` crates are **GPL-3.0**. Do not depend on them or copy code from them. Use gpui-kit (Apache-2.0) and gpui-pre (Apache-2.0) only.
 - **Themes.** `assets/themes/guidy.json` contains Guidy Dark and Guidy Light. The theme setting (system/light/dark) follows the OS appearance. `design::tone` adds the surface, line and accent tones the theme schema has no slot for. Fonts are Geist for UI text and Geist Mono for labels and numbers (both OFL).
-- **Type.** Body 13 px, titles 15 px, page headlines 17 px. Section names, column heads and metadata are `design::eyebrow` (10.5 px uppercase mono). Numbers are `design::mono`.
+- **Scale.** Sizes in code are design sizes: `design::dp(n)` is `n × design::SCALE` (1.2), and the theme's rem sizes in `guidy.json` carry the same factor for the stock components. Hairlines stay `px(1.)`; the dictation overlay and the notch panel are sized to the screen and not scaled.
+- **Type.** Body 13 px, titles 15 px, page headlines 17 px (design sizes, before the scale). Section names, column heads and metadata are `design::eyebrow` (10.5 px uppercase mono). Numbers are `design::mono`.
 - **Window chrome.** The title bar reads "Guidy / <page>". The sidebar and status bar share the frame colour, and pages sit in an ink "well" inset into the frame (`WELL_INSET`, `RADIUS_WELL`).
 - **Surfaces.** `design::panel` (hairline border, rim light on the top edge) holds sections divided by hairlines; settings groups are an eyebrow over a panel. Facts are a `stat_grid` (eyebrow over mono value).
 - **Glass and motion.** Every panel has a rim light. In-progress work gets `design::sheen` (a slow sweep) on its surface or track, and `design::shimmer_text` on its label. All of it is static when macOS asks for reduced motion.

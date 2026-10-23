@@ -5,7 +5,7 @@ use crate::logic::flows::format_history_date;
 use crate::logic::history::{HistoryList, PAGE_SIZE};
 use crate::playback::{format_time, Playback};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, page, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -271,10 +271,10 @@ impl HistoryPage {
         let duration = st.duration;
         let e = entry.clone();
         h_flex()
-            .gap(px(10.))
+            .gap(dp(10.))
             .w_full()
-            .px(px(10.))
-            .py(px(8.))
+            .px(dp(10.))
+            .py(dp(8.))
             .border_t_1()
             .border_color(tone.hairline)
             .child(
@@ -296,7 +296,7 @@ impl HistoryPage {
                 div()
                     .id(SharedString::from(format!("seek-{id}")))
                     .flex_1()
-                    .h(px(4.))
+                    .h(dp(4.))
                     .rounded_full()
                     .bg(tone.raised)
                     .cursor_pointer()
@@ -356,8 +356,8 @@ impl HistoryPage {
             .child(
                 h_flex()
                     .pl(design::SECTION_X)
-                    .pr(px(10.))
-                    .pt(px(10.))
+                    .pr(dp(10.))
+                    .pt(dp(10.))
                     .justify_between()
                     .child(design::eyebrow(
                         format_history_date(entry.timestamp, &lang),
@@ -418,8 +418,8 @@ impl HistoryPage {
             .child(
                 div()
                     .px(design::SECTION_X)
-                    .pt(px(6.))
-                    .pb(px(12.))
+                    .pt(dp(6.))
+                    .pb(dp(12.))
                     .text_size(design::TEXT_BODY)
                     .line_height(relative(1.6))
                     .when(retrying, |d| {
@@ -428,16 +428,16 @@ impl HistoryPage {
                         let line = |w: f32, i: usize| {
                             div()
                                 .relative()
-                                .h(px(8.))
+                                .h(dp(8.))
                                 .w(relative(w))
                                 .rounded_full()
                                 .bg(tone.raised)
                                 .overflow_hidden()
-                                .child(design::sheen(("skeleton", id as usize * 2 + i), px(4.), cx))
+                                .child(design::sheen(("skeleton", id as usize * 2 + i), dp(4.), cx))
                         };
                         d.child(
                             v_flex()
-                                .gap(px(9.))
+                                .gap(dp(9.))
                                 .child(h_flex().child(design::chip("", true, cx).child(
                                     design::shimmer_text(
                                         ("transcribing", id as usize),
@@ -470,7 +470,7 @@ impl Render for HistoryPage {
                 .child(
                     div()
                         .px(design::SECTION_X)
-                        .py(px(18.))
+                        .py(dp(18.))
                         .text_center()
                         .text_size(design::TEXT_BODY)
                         .text_color(tone.text_muted)
@@ -483,20 +483,20 @@ impl Render for HistoryPage {
         } else if self.list.entries.is_empty() {
             design::panel(cx)
                 .child(
-                    design::blueprint(px(150.), cx).child(
+                    design::blueprint(dp(150.), cx).child(
                         div()
                             .absolute()
                             .size_full()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(design::illustration("waveform", px(220.), px(96.), cx)),
+                            .child(design::illustration("waveform", dp(220.), dp(96.), cx)),
                     ),
                 )
                 .child(
                     div()
                         .px(design::SECTION_X)
-                        .pb(px(16.))
+                        .pb(dp(16.))
                         .text_center()
                         .text_size(design::TEXT_BODY)
                         .text_color(tone.text_muted)
@@ -527,9 +527,9 @@ impl Render for HistoryPage {
                 |_, _, _, _| {},
             )
             .w_full()
-            .h(px(4.));
+            .h(dp(4.));
             v_flex()
-                .gap(px(12.))
+                .gap(dp(12.))
                 .children(rows)
                 .child(sentinel)
                 .into_any_element()
@@ -538,7 +538,7 @@ impl Render for HistoryPage {
             .id("page-history")
             .child(
                 v_flex()
-                    .gap(px(14.))
+                    .gap(dp(14.))
                     .child(
                         h_flex()
                             .justify_between()

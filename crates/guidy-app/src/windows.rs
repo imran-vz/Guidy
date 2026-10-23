@@ -6,6 +6,7 @@
 
 use crate::logic::notch::{notch_frame, NotchFrame, ScreenInfo};
 use crate::shell::{GpuiShell, ShellMsg};
+use crate::ui::design::dp;
 use crate::ui::main_window::MainWindow;
 use crate::ui::notch::{NotchState, NotchView};
 use crate::ui::overlay::OverlayView;
@@ -15,8 +16,13 @@ use guidy_core::host::{Monitor, OverlayPlacement, PhysicalPosition, PhysicalSize
 use guidy_core::AppHandle;
 use std::sync::Arc;
 
+/// The main window's smallest design size (scaled by [`dp`]).
 pub const MAIN_WIDTH: f32 = 680.;
 pub const MAIN_HEIGHT: f32 = 570.;
+/// Its design size when it first opens: roomier than the minimum, still
+/// inside a 13" display at the default resolution.
+const MAIN_DEFAULT_WIDTH: f32 = 800.;
+const MAIN_DEFAULT_HEIGHT: f32 = 620.;
 
 #[derive(Default)]
 pub struct Windows {
@@ -52,10 +58,10 @@ pub fn main_window_options(cx: &App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(MAIN_WIDTH), px(MAIN_HEIGHT)),
+            size(dp(MAIN_DEFAULT_WIDTH), dp(MAIN_DEFAULT_HEIGHT)),
             cx,
         ))),
-        window_min_size: Some(size(px(MAIN_WIDTH), px(MAIN_HEIGHT))),
+        window_min_size: Some(size(dp(MAIN_WIDTH), dp(MAIN_HEIGHT))),
         app_id: Some(guidy_core::host::APP_IDENTIFIER.into()),
         ..TitleBar::window_options()
     }

@@ -7,7 +7,7 @@ use crate::logic::models::{
 };
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, page, page_header, spinner, t, t_args};
 use crate::ui::model_card::ModelCard;
 use gpui_kit::base::TestSupportExt;
@@ -191,9 +191,9 @@ impl ModelsPage {
                 .id("retired-notice")
                 .w_full()
                 .gap_3()
-                .pl(px(14.))
-                .pr(px(10.))
-                .py(px(10.))
+                .pl(dp(14.))
+                .pr(dp(10.))
+                .py(dp(10.))
                 .rounded(design::RADIUS_PANEL)
                 .border_1()
                 .border_color(theme.warning.opacity(0.3))
@@ -210,7 +210,7 @@ impl ModelsPage {
                         )
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(dp(12.))
                                 .text_color(theme.muted_foreground)
                                 .child(t_args(
                                     "settings.models.retiredNotice.description",
@@ -282,7 +282,7 @@ impl ModelsPage {
                             .id(id)
                             .px_2()
                             .py_1()
-                            .rounded(px(4.))
+                            .rounded(dp(4.))
                             .text_sm()
                             .cursor_pointer()
                             .when(active, |d| d.font_weight(FontWeight::MEDIUM))
@@ -296,13 +296,13 @@ impl ModelsPage {
                             })
                     };
                 v_flex()
-                    .w(px(240.))
+                    .w(dp(240.))
                     .gap_1()
                     .child(Input::new(&search).small().cleanable(true))
                     .child(
                         v_flex()
                             .id("model-language-list")
-                            .max_h(px(240.))
+                            .max_h(dp(240.))
                             .overflow_y_scroll()
                             .child(row(
                                 "lang-all".into(),
@@ -452,7 +452,7 @@ impl Render for ModelsPage {
                                 AppState::global(cx).update(cx, |s, cx| s.rescan_models(cx))
                             }),
                     )
-                    .child(div().w(px(1.)).h(px(16.)).bg(design::tone(cx).hairline))
+                    .child(div().w(px(1.)).h(dp(16.)).bg(design::tone(cx).hairline))
                     .child(
                         Toggle::new("filter-streaming")
                             .small()
@@ -515,7 +515,7 @@ impl Render for ModelsPage {
 /// The active model keeps its own card; the rest share one hairline panel.
 fn rows_panel(cards: Vec<(AnyElement, bool)>, cx: &App) -> Div {
     let hairline = design::tone(cx).hairline;
-    let mut out = v_flex().w_full().gap(px(10.));
+    let mut out = v_flex().w_full().gap(dp(10.));
     let mut rows: Vec<AnyElement> = Vec::new();
     let flush = |out: Div, rows: &mut Vec<AnyElement>| {
         if rows.is_empty() {

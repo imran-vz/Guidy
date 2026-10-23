@@ -5,7 +5,7 @@ use crate::logic::flows::{
 };
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::design::Pill;
+use crate::ui::design::{dp, Pill};
 use crate::ui::kit::{
     group, page, reset_button, t, t_args, toggle, Dropdown, DropdownOption, SettingRow, SliderRow,
 };
@@ -279,7 +279,7 @@ impl DebugPage {
                     .gap_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(div().size(px(8.)).rounded_full().bg(if paused {
+                    .child(div().size(dp(8.)).rounded_full().bg(if paused {
                         theme.muted_foreground
                     } else {
                         theme.success
@@ -368,7 +368,7 @@ impl DebugPage {
         };
         let body = v_flex()
             .id("live-logs")
-            .h(px(288.))
+            .h(dp(288.))
             .w_full()
             .overflow_y_scroll()
             .track_scroll(&self.log_scroll)
@@ -406,7 +406,7 @@ impl DebugPage {
                     .child(
                         div()
                             .flex_none()
-                            .w(px(48.))
+                            .w(dp(48.))
                             .text_color(level_color(l.level))
                             .child(log_level_tag(l.level)),
                     )

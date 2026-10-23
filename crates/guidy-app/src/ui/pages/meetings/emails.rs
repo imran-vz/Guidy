@@ -6,7 +6,7 @@ use super::meeting_settings;
 use super::settings::update_meetings;
 use crate::logic::meetings::{add_user_email, EmailError};
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -15,7 +15,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-const LABEL_WIDTH: Pixels = px(120.);
+const LABEL_WIDTH: Pixels = dp(120.);
 
 pub struct UserEmailsView {
     /// One label input per stored address, in order.
@@ -172,9 +172,9 @@ impl Render for UserEmailsView {
                         h_flex()
                             .flex_1()
                             .min_w_0()
-                            .h(px(28.))
-                            .px(px(10.))
-                            .rounded(px(6.))
+                            .h(dp(28.))
+                            .px(dp(10.))
+                            .rounded(dp(6.))
                             .border_1()
                             .border_color(tone.hairline)
                             .bg(tone.ink)
@@ -197,7 +197,7 @@ impl Render for UserEmailsView {
         let error = self.error.map(|e| {
             div()
                 .id("meetings-user-email-error")
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .text_color(cx.theme().danger)
                 .child(match e {
                     EmailError::Invalid => t("meetings.settings.userEmails.invalid"),
@@ -208,7 +208,7 @@ impl Render for UserEmailsView {
         v_flex()
             .id("meetings-user-emails")
             .w_full()
-            .gap(px(6.))
+            .gap(dp(6.))
             .children(rows)
             .child(
                 h_flex()

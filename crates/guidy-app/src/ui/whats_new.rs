@@ -5,7 +5,7 @@ use crate::logic::flows::{
     find_latest_release_note, find_release_note_to_show, is_allowed_note_link,
 };
 use crate::state::AppState;
-use crate::ui::design::Pill;
+use crate::ui::design::{dp, Pill};
 use crate::ui::kit::t_args;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogAction, DialogFooter};
@@ -103,11 +103,11 @@ pub fn open_note_dialog(
         let d2 = on_dismiss.clone();
         dialog
             .title(t_args("whatsNew.title", &[("version", &version)]))
-            .w(px(520.))
+            .w(dp(520.))
             .child(
                 div()
                     .id("whats-new-body")
-                    .max_h(px(360.))
+                    .max_h(dp(360.))
                     .overflow_y_scroll()
                     .child(
                         TextView::markdown("whats-new-markdown", markdown.clone()).on_link_click(

@@ -12,23 +12,33 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::time::Duration;
 
+/// Interface scale. Every size below is a design size (as drawn in
+/// `docs/design/guidy-mock.html`) times this; the theme's rem sizes in
+/// `assets/themes/guidy.json` carry the same factor for the stock components.
+pub const SCALE: f32 = 1.2;
+
+/// A design size at the interface [`SCALE`]. Hairlines stay `px(1.)`.
+pub const fn dp(design: f32) -> Pixels {
+    px(design * SCALE)
+}
+
 // Type scale. Body text is the theme's 14 px; these are the other steps.
-pub const TEXT_TITLE: Pixels = px(15.);
-pub const TEXT_HEADLINE: Pixels = px(17.);
-pub const TEXT_DISPLAY: Pixels = px(30.);
-pub const TEXT_BODY: Pixels = px(13.);
-pub const TEXT_MONO: Pixels = px(12.);
-pub const TEXT_EYEBROW: Pixels = px(10.5);
+pub const TEXT_TITLE: Pixels = dp(15.);
+pub const TEXT_HEADLINE: Pixels = dp(17.);
+pub const TEXT_DISPLAY: Pixels = dp(30.);
+pub const TEXT_BODY: Pixels = dp(13.);
+pub const TEXT_MONO: Pixels = dp(12.);
+pub const TEXT_EYEBROW: Pixels = dp(10.5);
 
 // Spacing and shape.
-pub const SECTION_X: Pixels = px(16.);
-pub const SECTION_Y: Pixels = px(14.);
+pub const SECTION_X: Pixels = dp(16.);
+pub const SECTION_Y: Pixels = dp(14.);
 /// Gap between the window frame and the content well.
-pub const WELL_INSET: Pixels = px(6.);
-pub const RADIUS_WELL: Pixels = px(14.);
-pub const RADIUS_PANEL: Pixels = px(12.);
-pub const RADIUS_CHIP: Pixels = px(5.);
-pub const RADIUS_PILL: Pixels = px(999.);
+pub const WELL_INSET: Pixels = dp(6.);
+pub const RADIUS_WELL: Pixels = dp(14.);
+pub const RADIUS_PANEL: Pixels = dp(12.);
+pub const RADIUS_CHIP: Pixels = dp(5.);
+pub const RADIUS_PILL: Pixels = dp(999.);
 /// Blueprint grid pitch.
 pub const GRID: f32 = 24.;
 
@@ -117,7 +127,7 @@ pub fn tone(cx: &App) -> Tone {
 /// Extra space between eyebrow letters (≈ 0.1em at 10.5 px).
 const EYEBROW_TRACKING: Pixels = px(1.);
 /// Geist Mono's advance at the eyebrow size, for spaces.
-const EYEBROW_SPACE: Pixels = px(6.3);
+const EYEBROW_SPACE: Pixels = dp(6.3);
 
 /// Uppercase mono label: section names, column heads, metadata. Letters
 /// are tracked out like engraved labels; GPUI has no letter spacing, so
@@ -130,7 +140,7 @@ pub fn eyebrow(text: impl Into<SharedString>, cx: &App) -> Div {
         .overflow_hidden()
         .font_family(crate::theme::MONO_FONT)
         .text_size(TEXT_EYEBROW)
-        .line_height(px(14.))
+        .line_height(dp(14.))
         .text_color(tone(cx).text_muted)
         .children(text.to_uppercase().chars().map(|c| {
             if c.is_whitespace() {
@@ -159,13 +169,13 @@ pub fn chip(text: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
     h_flex()
         .flex_none()
         .items_center()
-        .gap(px(4.))
-        .px(px(7.))
-        .py(px(2.))
+        .gap(dp(4.))
+        .px(dp(7.))
+        .py(dp(2.))
         .rounded(RADIUS_CHIP)
         .font_family(crate::theme::MONO_FONT)
-        .text_size(px(11.))
-        .line_height(px(16.))
+        .text_size(dp(11.))
+        .line_height(dp(16.))
         .bg(if accent { t.accent_soft } else { t.raised })
         .text_color(if accent { t.accent_text } else { t.text_muted })
         .when(!text.is_empty(), |d| d.child(text))
@@ -204,8 +214,8 @@ pub fn rim_light(cx: &App) -> impl IntoElement {
     h_flex()
         .absolute()
         .top_0()
-        .left(px(14.))
-        .right(px(14.))
+        .left(dp(14.))
+        .right(dp(14.))
         .h(px(1.))
         .child(div().flex_1().h_full().bg(linear_gradient(
             90.,
@@ -326,7 +336,7 @@ pub fn blueprint(height: Pixels, cx: &App) -> Div {
 
 fn paint_grid(bounds: Bounds<Pixels>, grid: Hsla, mark: Hsla, window: &mut Window) {
     let (o, s) = (bounds.origin, bounds.size);
-    let step = px(GRID);
+    let step = dp(GRID);
     // Center the grid so the middle column lines up with the subject.
     let x0 = o.x + ((s.width / 2.) % step);
     let mut x = x0;
@@ -352,7 +362,7 @@ fn paint_grid(bounds: Bounds<Pixels>, grid: Hsla, mark: Hsla, window: &mut Windo
     let top_y0 = o.y + ((s.height / 2.) % step);
     let top = top_y0 + step * ((inset - (top_y0 - o.y)) / step).ceil().max(0.);
     let bottom = top + step * (((o.y + s.height - inset) - top) / step).floor();
-    let arm = px(4.5);
+    let arm = dp(4.5);
     for (cx_, cy) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
         window.paint_quad(fill(
             Bounds::new(point(cx_ - arm, cy), size(arm * 2. + px(1.), px(1.))),
@@ -373,7 +383,7 @@ pub fn leader(accent: bool, cx: &App) -> impl IntoElement {
         |_, _, _| {},
         move |bounds, _, window, _| {
             let y = bounds.origin.y + bounds.size.height / 2.;
-            let mut path = PathBuilder::stroke(px(1.)).dash_array(&[px(3.), px(3.)]);
+            let mut path = PathBuilder::stroke(px(1.)).dash_array(&[dp(3.), dp(3.)]);
             path.move_to(point(bounds.origin.x, y));
             path.line_to(point(bounds.origin.x + bounds.size.width, y));
             if let Ok(path) = path.build() {
@@ -391,7 +401,7 @@ pub fn callout(label: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
     h_flex()
         .gap_2()
         .items_center()
-        .child(div().flex_1().min_w(px(16.)).child(leader(accent, cx)))
+        .child(div().flex_1().min_w(dp(16.)).child(leader(accent, cx)))
         .child(
             div()
                 .flex_none()
@@ -479,11 +489,11 @@ pub fn stat_grid(stats: Vec<Stat>, columns: usize, cx: &App) -> Div {
                     .flex_1()
                     .min_w_0()
                     .px(SECTION_X)
-                    .py(px(12.))
+                    .py(dp(12.))
                     .when(i + 1 < columns, |d| d.border_r_1().border_color(t.hairline));
                 match stats.next() {
                     Some(s) => cell.child(
-                        v_flex().gap(px(6.)).child(eyebrow(s.label, cx)).child(
+                        v_flex().gap(dp(6.)).child(eyebrow(s.label, cx)).child(
                             mono(s.value)
                                 .line_height(relative(1.4))
                                 .text_color(if s.accent { t.accent_text } else { t.text }),
@@ -500,13 +510,13 @@ pub fn signal_dot(cx: &App) -> Div {
     let t = tone(cx);
     div()
         .flex_none()
-        .size(px(14.))
+        .size(dp(14.))
         .rounded_full()
         .bg(t.accent_soft)
         .flex()
         .items_center()
         .justify_center()
-        .child(div().size(px(7.)).rounded_full().bg(t.accent))
+        .child(div().size(dp(7.)).rounded_full().bg(t.accent))
 }
 
 /// Pill-shaped buttons, as used for actions throughout the app.
@@ -524,9 +534,9 @@ impl Pill for Button {
 pub fn notice(color: Hsla) -> Div {
     div()
         .w_full()
-        .pl(px(14.))
-        .pr(px(10.))
-        .py(px(10.))
+        .pl(dp(14.))
+        .pr(dp(10.))
+        .py(dp(10.))
         .rounded(RADIUS_PANEL)
         .border_1()
         .border_color(color.opacity(0.3))
@@ -538,8 +548,8 @@ pub fn segmented(cx: &App) -> Div {
     let t = tone(cx);
     h_flex()
         .flex_none()
-        .p(px(3.))
-        .gap(px(2.))
+        .p(dp(3.))
+        .gap(dp(2.))
         .rounded(RADIUS_PILL)
         .border_1()
         .border_color(t.hairline)
@@ -556,10 +566,10 @@ pub fn segment(
     let t = tone(cx);
     div()
         .id(id)
-        .px(px(14.))
-        .py(px(5.))
+        .px(dp(14.))
+        .py(dp(5.))
         .rounded(RADIUS_PILL)
-        .text_size(px(12.))
+        .text_size(dp(12.))
         .cursor_pointer()
         .when(selected, |d| {
             d.bg(t.raised)
@@ -581,7 +591,7 @@ pub fn track(id: impl Into<ElementId>, fraction: Option<f32>, cx: &App) -> Div {
     div()
         .relative()
         .w_full()
-        .h(px(4.))
+        .h(dp(4.))
         .rounded_full()
         .bg(t.raised)
         .overflow_hidden()
@@ -594,5 +604,5 @@ pub fn track(id: impl Into<ElementId>, fraction: Option<f32>, cx: &App) -> Div {
                     .w(relative(f.clamp(0.0, 1.0))),
             )
         })
-        .child(sheen(id, px(2.), cx))
+        .child(sheen(id, dp(2.), cx))
 }

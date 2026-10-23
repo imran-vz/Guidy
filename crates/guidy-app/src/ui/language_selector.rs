@@ -4,6 +4,7 @@ use crate::logic::languages::{
     available_languages, effective_language, filter_languages, language_label,
 };
 use crate::state::AppState;
+use crate::ui::design::dp;
 use crate::ui::kit::{reset_button, t, SettingRow};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -132,7 +133,7 @@ impl Render for LanguageSelector {
                 Button::new("language-trigger")
                     .outline()
                     .small()
-                    .w(px(200.))
+                    .w(dp(200.))
                     .label(label_for(&selected))
                     .dropdown_caret(true)
                     .disabled(updating),
@@ -140,13 +141,13 @@ impl Render for LanguageSelector {
             .content(move |_, _, _| {
                 let entity = entity.clone();
                 v_flex()
-                    .w(px(240.))
+                    .w(dp(240.))
                     .gap_1()
                     .child(Input::new(&search).small().cleanable(true))
                     .child(
                         v_flex()
                             .id("language-list")
-                            .max_h(px(240.))
+                            .max_h(dp(240.))
                             .overflow_y_scroll()
                             .when(filtered.is_empty(), |d| {
                                 d.child(
@@ -165,7 +166,7 @@ impl Render for LanguageSelector {
                                     .id(SharedString::from(format!("lang-{code}")))
                                     .px_2()
                                     .py_1()
-                                    .rounded(px(4.))
+                                    .rounded(dp(4.))
                                     .text_sm()
                                     .cursor_pointer()
                                     .when(is_sel, |d| d.bg(active))

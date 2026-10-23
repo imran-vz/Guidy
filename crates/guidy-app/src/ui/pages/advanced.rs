@@ -9,8 +9,10 @@ use crate::logic::flows::{
 use crate::logic::keyboard::OsType;
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
-use crate::ui::design::Pill;
-use crate::ui::kit::{group, icon, page, t, t_args, toggle, Dropdown, DropdownOption, SettingRow};
+use crate::ui::design::{dp, Pill};
+use crate::ui::kit::{
+    group, icon, page, page_header, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
+};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -352,7 +354,7 @@ impl AdvancedPage {
         );
         if s.paste_method == PasteMethod::ExternalScript {
             paste_control = paste_control.child(
-                div().w(px(200.)).child(
+                div().w(dp(200.)).child(
                     Input::new(&self.script_path)
                         .small()
                         .disabled(up("external_script_path")),
@@ -517,7 +519,7 @@ impl AdvancedPage {
                     h_flex()
                         .gap_2()
                         .child(
-                            div().w(px(160.)).child(
+                            div().w(dp(160.)).child(
                                 Input::new(&self.custom_word)
                                     .small()
                                     .disabled(words_updating),
@@ -594,7 +596,7 @@ impl AdvancedPage {
                     h_flex()
                         .gap_2()
                         .child(
-                            div().w(px(110.)).child(
+                            div().w(dp(110.)).child(
                                 gpui_kit::component::input::NumberInput::new(&self.history_limit)
                                     .small()
                                     .disabled(up("history_limit")),
@@ -775,6 +777,11 @@ impl Render for AdvancedPage {
         }
         page()
             .id("page-advanced")
+            .child(page_header(
+                t("settings.advanced.title"),
+                Some(t("settings.advanced.description")),
+                cx,
+            ))
             .child(self.app_group(&s, cx))
             .child(self.output_group(&s, cx))
             .child(self.transcription_group(&s, cx))

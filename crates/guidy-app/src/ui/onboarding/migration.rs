@@ -4,7 +4,7 @@ use crate::logic::migration::{format_time_left, Action, Migration, Phase, RowSta
 use crate::logic::models::format_model_size;
 use crate::state::AppState;
 use crate::ui::brand::wordmark;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, spinner, t, t_args};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -272,7 +272,7 @@ impl Render for ModelMigration {
                     }
                     _ if state == RowState::Ready || (is_chosen && p.replacement.is_downloaded) => {
                         div()
-                            .size(px(22.))
+                            .size(dp(22.))
                             .rounded_full()
                             .flex()
                             .items_center()
@@ -309,7 +309,7 @@ impl Render for ModelMigration {
                         p.retired.id
                     )))
                     .px(design::SECTION_X)
-                    .py(px(12.))
+                    .py(dp(12.))
                     .gap_3()
                     .when(toggleable, |d| {
                         d.cursor_pointer().on_click(move |_, _, cx| {
@@ -327,7 +327,7 @@ impl Render for ModelMigration {
                     .when(show_checks, |d| {
                         d.child(
                             div()
-                                .size(px(20.))
+                                .size(dp(20.))
                                 .rounded_full()
                                 .border_2()
                                 .flex()
@@ -357,8 +357,8 @@ impl Render for ModelMigration {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .mt(px(3.))
-                                    .text_size(px(12.))
+                                    .mt(dp(3.))
+                                    .text_size(dp(12.))
                                     .text_color(theme.muted_foreground)
                                     .child(t_args(
                                         "onboarding.migration.replaces",
@@ -371,7 +371,7 @@ impl Render for ModelMigration {
                                     )),
                             ),
                     )
-                    .child(div().text_size(px(12.)).child(status))
+                    .child(div().text_size(dp(12.)).child(status))
                     .into_any_element()
             })
             .collect();
@@ -404,7 +404,7 @@ impl Render for ModelMigration {
             }
         } else if downloading || !target_failed {
             h_flex()
-                .h(px(40.))
+                .h(dp(40.))
                 .gap_2()
                 .text_size(design::TEXT_BODY)
                 .text_color(theme.muted_foreground)
@@ -448,10 +448,10 @@ impl Render for ModelMigration {
             .gap_5()
             .items_center()
             .justify_center()
-            .child(wordmark(px(24.), cx))
+            .child(wordmark(dp(24.), cx))
             .child(
                 v_flex()
-                    .max_w(px(448.))
+                    .max_w(dp(448.))
                     .items_center()
                     .gap_1p5()
                     .child(
@@ -473,7 +473,7 @@ impl Render for ModelMigration {
                 v_flex()
                     .id("migration-rows")
                     .w_full()
-                    .max_w(px(560.))
+                    .max_w(dp(560.))
                     .min_h_0()
                     .overflow_y_scroll()
                     .rounded(design::RADIUS_PANEL)
@@ -485,7 +485,7 @@ impl Render for ModelMigration {
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(px(560.))
+                    .max_w(dp(560.))
                     .items_center()
                     .child(footer),
             )

@@ -3,7 +3,7 @@
 
 use crate::logic::models::SelectorStatus;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{model_name, t, t_args};
 use crate::updater::{self, UpdateAction, UpdateStatus};
 use gpui_kit::base::TestSupportExt;
@@ -202,7 +202,7 @@ impl StatusBar {
             let url = url.clone();
             dialog
                 .title(t("footer.portableUpdateTitle"))
-                .w(px(420.))
+                .w(dp(420.))
                 .child(div().text_sm().child(if direct {
                     t("footer.portableUpdateMessage")
                 } else {
@@ -324,13 +324,13 @@ impl StatusBar {
             dot.opacity(0.)
         };
         let dot_el = div()
-            .size(px(14.))
+            .size(dp(14.))
             .rounded_full()
             .bg(halo)
             .flex()
             .items_center()
             .justify_center()
-            .child(div().size(px(7.)).rounded_full().bg(dot));
+            .child(div().size(dp(7.)).rounded_full().bg(dot));
         let dot_el: AnyElement = if pulse {
             dot_el
                 .with_animation(
@@ -357,12 +357,12 @@ impl StatusBar {
                     .xsmall()
                     .child(
                         h_flex()
-                            .gap(px(7.))
+                            .gap(dp(7.))
                             .child(dot_el)
-                            .child(div().text_size(px(12.)).text_color(tone.text).child(text)),
+                            .child(div().text_size(dp(12.)).text_color(tone.text).child(text)),
                     )
                     .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
-                        let mut menu = menu.min_w(px(256.)).max_h(px(320.)).scrollable(true);
+                        let mut menu = menu.min_w(dp(256.)).max_h(dp(320.)).scrollable(true);
                         if downloaded.is_empty() {
                             return menu
                                 .item(PopupMenuItem::label(t("modelSelector.noModelsAvailable")));
@@ -401,7 +401,7 @@ impl StatusBar {
                 if progress.len() == 1 {
                     let (id, p) = progress.iter().next().unwrap();
                     let speed = stats.get(id).map(|s| s.speed).unwrap_or(0.0);
-                    d.child(div().w(px(80.)).child(design::track(
+                    d.child(div().w(dp(80.)).child(design::track(
                         "dl-progress",
                         Some((p.percentage as f32) / 100.0),
                         cx,
@@ -419,7 +419,7 @@ impl StatusBar {
                     })
                 } else {
                     d.children(progress.iter().map(|(id, p)| {
-                        div().w(px(32.)).child(design::track(
+                        div().w(dp(32.)).child(design::track(
                             SharedString::from(format!("dl-{id}")),
                             Some((p.percentage as f32) / 100.0),
                             cx,
@@ -443,7 +443,7 @@ impl StatusBar {
         } else {
             theme.muted_foreground
         };
-        let label = div().text_size(px(12.)).text_color(color).child(text);
+        let label = div().text_size(dp(12.)).text_color(color).child(text);
         h_flex()
             .gap_2()
             .child(if self.update.clickable() {
@@ -470,7 +470,7 @@ impl StatusBar {
             .when(
                 self.update.installing && self.update.progress > 0 && self.update.progress < 100,
                 |d| {
-                    d.child(div().w(px(80.)).child(design::track(
+                    d.child(div().w(dp(80.)).child(design::track(
                         "update-progress",
                         Some((self.update.progress as f32) / 100.0),
                         cx,
@@ -486,17 +486,17 @@ impl Render for StatusBar {
         h_flex()
             .id("status-bar")
             .w_full()
-            .h(px(30.))
+            .h(dp(30.))
             .flex_none()
-            .px(px(8.))
+            .px(dp(8.))
             .justify_between()
             .bg(tone.frame)
             .child(self.render_model_selector(cx))
             .child(
                 h_flex()
-                    .gap(px(8.))
-                    .pr(px(6.))
-                    .text_size(px(12.))
+                    .gap(dp(8.))
+                    .pr(dp(6.))
+                    .text_size(dp(12.))
                     .text_color(tone.text_muted)
                     .child(self.render_update_checker(cx))
                     .child(div().text_color(tone.text_faint).child("·"))
@@ -504,7 +504,7 @@ impl Render for StatusBar {
                         div()
                             .id("app-version")
                             .font_family(crate::theme::MONO_FONT)
-                            .text_size(px(11.))
+                            .text_size(dp(11.))
                             .text_color(tone.text_faint)
                             .child(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .test_support(),

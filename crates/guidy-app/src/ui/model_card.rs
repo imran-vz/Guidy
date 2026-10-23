@@ -4,7 +4,7 @@ use crate::logic::languages::{language_label, unique_capability_languages};
 use crate::logic::models::{
     format_model_size, is_legacy_model, quantization_label, ModelCardStatus,
 };
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, model_description, model_name, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -118,11 +118,11 @@ pub fn language_display_text(supported: &[String]) -> String {
 fn pips(value: f32, cx: &App) -> Div {
     let t = design::tone(cx);
     let filled = (value.clamp(0.0, 1.0) * 5.0).round() as usize;
-    h_flex().gap(px(3.)).children((0..5).map(move |i| {
+    h_flex().gap(dp(3.)).children((0..5).map(move |i| {
         div()
-            .w(px(10.))
-            .h(px(4.))
-            .rounded(px(2.))
+            .w(dp(10.))
+            .h(dp(4.))
+            .rounded(dp(2.))
             .bg(if i < filled { t.text } else { t.raised })
     }))
 }
@@ -150,14 +150,14 @@ impl RenderOnce for ModelCard {
             }
         };
 
-        let mut badges = h_flex().gap(px(6.)).flex_wrap();
+        let mut badges = h_flex().gap(dp(6.)).flex_wrap();
         if self.show_recommended && m.is_recommended {
             badges = badges.child(design::chip(t("onboarding.recommended"), true, cx));
         }
         if active {
             badges = badges.child(
                 design::chip("", true, cx)
-                    .child(icon("check").size(px(11.)))
+                    .child(icon("check").size(dp(11.)))
                     .child(t("modelSelector.active")),
             );
         }
@@ -278,11 +278,11 @@ impl RenderOnce for ModelCard {
                                 .flex_1()
                                 .min_w_0()
                                 .px(design::SECTION_X)
-                                .py(px(12.))
-                                .gap(px(8.))
+                                .py(dp(12.))
+                                .gap(dp(8.))
                                 .when(i > 0, |d| d.border_l_1().border_color(tone.hairline))
                                 .child(design::eyebrow(label, cx))
-                                .child(div().h(px(16.)).flex().items_center().child(value))
+                                .child(div().h(dp(16.)).flex().items_center().child(value))
                         })),
                 )
                 .when(!caps.is_empty() || delete.is_some(), |d| {
@@ -290,8 +290,8 @@ impl RenderOnce for ModelCard {
                         h_flex()
                             .w_full()
                             .px(design::SECTION_X)
-                            .py(px(8.))
-                            .gap(px(14.))
+                            .py(dp(8.))
+                            .gap(dp(14.))
                             .border_t_1()
                             .border_color(tone.hairline)
                             .children(caps)
@@ -304,20 +304,20 @@ impl RenderOnce for ModelCard {
             h_flex()
                 .w_full()
                 .px(design::SECTION_X)
-                .pb(px(12.))
-                .gap_x(px(14.))
-                .gap_y(px(6.))
+                .pb(dp(12.))
+                .gap_x(dp(14.))
+                .gap_y(dp(6.))
                 .flex_wrap()
                 .when(scored, |d| {
                     d.child(
                         h_flex()
-                            .gap(px(6.))
+                            .gap(dp(6.))
                             .child(design::eyebrow(t("onboarding.modelCard.accuracy"), cx))
                             .child(pips(m.accuracy_score, cx)),
                     )
                     .child(
                         h_flex()
-                            .gap(px(6.))
+                            .gap(dp(6.))
                             .child(design::eyebrow(t("onboarding.modelCard.speed"), cx))
                             .child(pips(m.speed_score, cx)),
                     )
@@ -353,8 +353,8 @@ impl RenderOnce for ModelCard {
                     v_flex()
                         .w_full()
                         .px(design::SECTION_X)
-                        .pb(px(12.))
-                        .gap(px(8.))
+                        .pb(dp(12.))
+                        .gap(dp(8.))
                         .child(
                             h_flex()
                                 .justify_between()
@@ -395,8 +395,8 @@ impl RenderOnce for ModelCard {
                 v_flex()
                     .w_full()
                     .px(design::SECTION_X)
-                    .pb(px(12.))
-                    .gap(px(8.))
+                    .pb(dp(12.))
+                    .gap(dp(8.))
                     .child(
                         div()
                             .font_family(crate::theme::MONO_FONT)
@@ -492,18 +492,18 @@ impl RenderOnce for ModelCard {
                 h_flex()
                     .w_full()
                     .px(design::SECTION_X)
-                    .pt(px(12.))
-                    .pb(px(if active { 12. } else { 8. }))
-                    .gap(px(12.))
+                    .pt(dp(12.))
+                    .pb(dp(if active { 12. } else { 8. }))
+                    .gap(dp(12.))
                     .justify_between()
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(4.))
+                            .gap(dp(4.))
                             .child(
                                 h_flex()
-                                    .gap(px(8.))
+                                    .gap(dp(8.))
                                     .flex_wrap()
                                     .child(
                                         div()
@@ -519,7 +519,7 @@ impl RenderOnce for ModelCard {
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(dp(12.))
                                     .line_height(relative(1.5))
                                     .text_color(muted)
                                     .child(description),

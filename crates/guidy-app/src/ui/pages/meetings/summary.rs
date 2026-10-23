@@ -6,7 +6,7 @@
 use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::{
     error_box, model_label, provider_options, MeetingsLlmChoice,
@@ -934,7 +934,7 @@ impl SummaryView {
                     )
                     .child(
                         div()
-                            .w(px(200.))
+                            .w(dp(200.))
                             .child(Input::new(&self.picker_model_input).small()),
                     )
                     .child(
@@ -947,7 +947,7 @@ impl SummaryView {
                             )
                             .selected(Some(current.clone()))
                             .placeholder(t("meetingsAi.llm.pickModel"))
-                            .min_width(px(160.))
+                            .min_width(dp(160.))
                             .on_select(move |v, window, cx| {
                                 let v = v.to_string();
                                 weak2
@@ -1250,7 +1250,7 @@ impl SummaryView {
                                 Dropdown::new(SharedString::from(format!("item-owner-{id}")))
                                     .options(owners.clone())
                                     .selected(Some(owner_value(item)))
-                                    .min_width(px(180.))
+                                    .min_width(dp(180.))
                                     .disabled(locked)
                                     .on_select(move |v, _, cx| {
                                         let v = v.to_string();
@@ -1265,7 +1265,7 @@ impl SummaryView {
                             )
                             .child(
                                 div()
-                                    .w(px(140.))
+                                    .w(dp(140.))
                                     .child(Input::new(&inputs.due).small().disabled(locked)),
                             )
                             .when_some(item.linear_issue_identifier.clone(), |d, ident| {

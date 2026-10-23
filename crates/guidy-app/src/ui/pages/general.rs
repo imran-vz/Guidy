@@ -2,8 +2,10 @@
 
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
+use crate::ui::design::dp;
 use crate::ui::kit::{
-    group, page, reset_button, t, t_args, toggle, Dropdown, DropdownOption, SettingRow, SliderRow,
+    group, page, page_header, reset_button, t, t_args, toggle, Dropdown, DropdownOption,
+    SettingRow, SliderRow,
 };
 use crate::ui::language_selector::LanguageSelector;
 use crate::ui::shortcut_input::ShortcutInput;
@@ -147,7 +149,7 @@ impl Render for GeneralPage {
                 Dropdown::new("shortcut-activation-dropdown")
                     .options(activation_options)
                     .selected(activation)
-                    .menu_width(px(320.))
+                    .menu_width(dp(320.))
                     .disabled(st.settings.is_updating("shortcut_activation"))
                     .on_select(|v, _, cx| Self::set("shortcut_activation", json!(v), cx)),
             )
@@ -365,7 +367,16 @@ impl Render for GeneralPage {
 
         page()
             .id("page-general")
-            .child(group(Some(t("settings.general.title")), shortcut_rows, cx))
+            .child(page_header(
+                t("settings.general.title"),
+                Some(t("settings.general.description")),
+                cx,
+            ))
+            .child(group(
+                Some(t("settings.general.shortcutsGroup")),
+                shortcut_rows,
+                cx,
+            ))
             .when_some(model_card, |p, card| p.child(card))
             .child(group(Some(t("settings.sound.title")), sound_rows, cx))
             .test_support()

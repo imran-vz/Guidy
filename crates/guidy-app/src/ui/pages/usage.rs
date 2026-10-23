@@ -8,7 +8,7 @@ use crate::logic::usage::{
     format_wait,
 };
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{group, icon, page, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -114,7 +114,7 @@ impl UsagePage {
                 v_flex()
                     .min_w_0()
                     .flex_1()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     .child(
                         h_flex()
                             .gap_2()
@@ -206,7 +206,7 @@ fn local_model_row(m: &LocalModelUsage, cx: &App) -> AnyElement {
             v_flex()
                 .min_w_0()
                 .flex_1()
-                .gap(px(2.))
+                .gap(dp(2.))
                 .child(
                     h_flex()
                         .gap_2()
@@ -232,7 +232,7 @@ fn local_section(local: &LocalUsageReport, cx: &App) -> Vec<AnyElement> {
             vec![div()
                 .id("usage-local-empty")
                 .px_4()
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(muted)
@@ -295,7 +295,7 @@ fn local_section(local: &LocalUsageReport, cx: &App) -> Vec<AnyElement> {
         .collect();
     vec![
         div()
-            .px(px(2.))
+            .px(dp(2.))
             .child(design::eyebrow(t("usage.local"), cx))
             .into_any_element(),
         totals.into_any_element(),
@@ -322,7 +322,7 @@ impl Render for UsagePage {
             .gap_3()
             .child(
                 v_flex()
-                    .gap(px(4.))
+                    .gap(dp(4.))
                     .child(
                         div()
                             .text_size(design::TEXT_HEADLINE)
@@ -391,7 +391,7 @@ impl Render for UsagePage {
             vec![div()
                 .id("usage-empty")
                 .px_4()
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(muted)
@@ -433,7 +433,7 @@ impl Render for UsagePage {
             .child(heading)
             .child(
                 div()
-                    .px(px(2.))
+                    .px(dp(2.))
                     .child(design::eyebrow(t("usage.cloud"), cx)),
             )
             .child(totals)

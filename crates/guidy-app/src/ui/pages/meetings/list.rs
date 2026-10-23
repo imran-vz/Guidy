@@ -9,7 +9,7 @@ use crate::logic::meetings::{
 use crate::logic::models::format_model_size;
 use crate::meetings_backend::error_message;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -340,7 +340,7 @@ impl MeetingList {
                 .unwrap_or_else(|| t("meetings.status.processing"));
             return v_flex()
                 .w_full()
-                .gap(px(8.))
+                .gap(dp(8.))
                 .child(
                     h_flex().child(design::chip("", true, cx).child(design::shimmer_text(
                         SharedString::from(format!("meeting-stage-{}", m.id)),
@@ -358,7 +358,7 @@ impl MeetingList {
         let failed = m.status == MeetingStatus::Failed;
         let live = m.status == MeetingStatus::Recording;
         h_flex()
-            .gap(px(8.))
+            .gap(dp(8.))
             .min_w_0()
             .child(
                 design::chip(t(status_key(m.status)), live, cx).when(failed, |d| {
@@ -369,7 +369,7 @@ impl MeetingList {
                 d.child(
                     div()
                         .min_w_0()
-                        .text_size(px(12.))
+                        .text_size(dp(12.))
                         .text_color(tone.text_muted)
                         .truncate()
                         .child(e),
@@ -441,13 +441,13 @@ impl MeetingList {
             .w_full()
             .gap_3()
             .pl(design::SECTION_X)
-            .pr(px(10.))
-            .py(px(12.))
+            .pr(dp(10.))
+            .py(dp(12.))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(6.))
+                    .gap(dp(6.))
                     .child(title)
                     .child(design::eyebrow(meta, cx))
                     .child(self.render_status(m, cx)),
@@ -522,7 +522,7 @@ impl Render for MeetingList {
         let notice = |text: SharedString| {
             div()
                 .px(design::SECTION_X)
-                .py(px(18.))
+                .py(dp(18.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(tone.text_muted)
@@ -551,10 +551,10 @@ impl Render for MeetingList {
         v_flex()
             .id("meetings-list")
             .w_full()
-            .gap(px(8.))
+            .gap(dp(8.))
             .child(
                 div()
-                    .px(px(2.))
+                    .px(dp(2.))
                     .child(design::eyebrow(t("meetings.list.title"), cx)),
             )
             .children(model_banner)

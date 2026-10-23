@@ -1,7 +1,7 @@
 //! Shared building blocks in Zed's visual language: settings rows and
 //! groups, dropdowns, toggles, reset buttons, icons, translated strings.
 
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -47,9 +47,9 @@ pub fn group(title: Option<SharedString>, rows: Vec<AnyElement>, cx: &App) -> Di
     let count = rows.len();
     v_flex()
         .w_full()
-        .gap(px(8.))
+        .gap(dp(8.))
         .when_some(title, |this, title| {
-            this.child(div().px(px(2.)).child(design::eyebrow(title, cx)))
+            this.child(div().px(dp(2.)).child(design::eyebrow(title, cx)))
         })
         .child(
             design::panel(cx).children(rows.into_iter().enumerate().map(move |(i, row)| {
@@ -145,7 +145,7 @@ impl RenderOnce for SettingRow {
             self.mode == DescriptionMode::Inline,
             |this| {
                 this.when_some(self.description.clone(), |this, d| {
-                    this.child(div().text_size(px(12.)).text_color(muted).child(d))
+                    this.child(div().text_size(dp(12.)).text_color(muted).child(d))
                 })
             },
         );
@@ -168,9 +168,9 @@ impl RenderOnce for SettingRow {
             .aria_label(self.title.clone())
             .when_some(self.description, |d, desc| d.aria_description(desc))
             .w_full()
-            .min_h(px(48.))
+            .min_h(dp(48.))
             .px(design::SECTION_X)
-            .py(px(10.))
+            .py(dp(10.))
             .flex()
             .items_center()
             .when(self.disabled, |d| d.opacity(0.5))
@@ -236,7 +236,7 @@ impl Dropdown {
             placeholder: "Select an option...".into(),
             disabled: false,
             loading: false,
-            min_width: px(200.),
+            min_width: dp(200.),
             menu_width: None,
             on_select: None,
             on_open: None,
@@ -315,7 +315,7 @@ impl RenderOnce for Dropdown {
             .disabled(self.disabled)
             .w(trigger_width)
             .dropdown_menu(move |menu, _window, _cx| {
-                let mut menu = menu.min_w(menu_width).max_h(px(240.)).scrollable(true);
+                let mut menu = menu.min_w(menu_width).max_h(dp(240.)).scrollable(true);
                 if empty {
                     menu = menu.item(PopupMenuItem::label(t("common.noOptionsFound")));
                 }
@@ -392,7 +392,7 @@ pub fn page() -> Div {
     v_flex()
         .w_full()
         .min_w_0()
-        .max_w(px(768.))
+        .max_w(dp(768.))
         .mx_auto()
         .gap_6()
 }
@@ -403,7 +403,7 @@ pub fn page_header(title: SharedString, description: Option<SharedString>, cx: &
     let tone = design::tone(cx);
     v_flex()
         .w_full()
-        .gap(px(6.))
+        .gap(dp(6.))
         .child(
             div()
                 .text_size(design::TEXT_HEADLINE)
@@ -432,7 +432,7 @@ pub fn crumb_title(
     let tone = design::tone(cx);
     h_flex()
         .min_w_0()
-        .gap(px(8.))
+        .gap(dp(8.))
         .items_baseline()
         .child(
             div()
@@ -474,13 +474,13 @@ pub fn path_display(
             div()
                 .flex_1()
                 .min_w_0()
-                .px(px(8.))
-                .py(px(4.))
+                .px(dp(8.))
+                .py(dp(4.))
                 .rounded(design::RADIUS_CHIP)
                 .bg(design::tone(cx).raised)
                 .text_color(design::tone(cx).text_muted)
                 .font_family(crate::theme::MONO_FONT)
-                .text_size(px(11.))
+                .text_size(dp(11.))
                 .truncate()
                 .child(path),
         )
@@ -624,7 +624,7 @@ impl Render for SliderRow {
         .control(
             h_flex()
                 .gap_2()
-                .w(px(260.))
+                .w(dp(260.))
                 .child(
                     div()
                         .flex_1()
@@ -632,7 +632,7 @@ impl Render for SliderRow {
                 )
                 .child(
                     div()
-                        .w(px(56.))
+                        .w(dp(56.))
                         .text_right()
                         .text_sm()
                         .font_family(crate::theme::MONO_FONT)

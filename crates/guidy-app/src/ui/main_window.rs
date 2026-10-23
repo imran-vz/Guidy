@@ -5,7 +5,7 @@ use crate::logic::flows::OnboardingStep;
 use crate::logic::settings_store::ToastKind;
 use crate::state::{AppEvent, AppState};
 use crate::ui::banners::{AccessibilityBanner, SecureInputBanner};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, t};
 use crate::ui::onboarding::{
     migration::ModelMigration, model_picker::ModelPicker, permissions::PermissionsOnboarding,
@@ -318,13 +318,13 @@ impl MainWindow {
         let visible = self.visible_sections(cx);
         v_flex()
             .id("sidebar")
-            .w(px(176.))
+            .w(dp(176.))
             .h_full()
             .flex_none()
             .bg(tone.frame)
-            .px(px(8.))
-            .pt(px(4.))
-            .gap(px(2.))
+            .px(dp(8.))
+            .pt(dp(4.))
+            .gap(dp(2.))
             .children(
                 visible
                     .into_iter()
@@ -335,10 +335,10 @@ impl MainWindow {
                             .id(SharedString::from(format!("nav-{}", section.id())))
                             .aria_label(t(section.label_key()))
                             .relative()
-                            .gap(px(10.))
-                            .px(px(10.))
-                            .h(px(32.))
-                            .rounded(px(9.))
+                            .gap(dp(10.))
+                            .px(dp(10.))
+                            .h(dp(32.))
+                            .rounded(dp(9.))
                             .cursor_pointer()
                             .text_size(design::TEXT_BODY)
                             .when(active, |d| {
@@ -463,7 +463,7 @@ impl Render for MainWindow {
             .border_color(tone.frame)
             .child(
                 h_flex()
-                    .gap(px(8.))
+                    .gap(dp(8.))
                     .items_center()
                     .text_size(design::TEXT_BODY)
                     .child(icon("audio-lines").small().text_color(tone.accent_text))
@@ -527,9 +527,9 @@ impl Render for MainWindow {
                             v_flex()
                                 .w_full()
                                 .min_w_0()
-                                .px(px(20.))
-                                .pt(px(20.))
-                                .pb(px(28.))
+                                .px(dp(20.))
+                                .pt(dp(20.))
+                                .pb(dp(28.))
                                 .items_center()
                                 .child(self.accessibility_banner.clone())
                                 .child(self.secure_banner.clone())

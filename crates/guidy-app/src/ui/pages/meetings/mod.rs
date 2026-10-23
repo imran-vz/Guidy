@@ -17,7 +17,7 @@ use crate::logic::meetings::{MeetingsEvent, MeetingsInit};
 use crate::logic::settings_store::ToastSpec;
 use crate::meetings_backend::{MeetingsBackend, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, page, page_header, t, t_args};
 use detail::{DetailEvent, MeetingDetail};
 use gpui_kit::base::TestSupportExt;
@@ -133,7 +133,7 @@ pub(crate) fn render_model_download_with(
         Some(
             h_flex()
                 .gap_2()
-                .w(px(200.))
+                .w(dp(200.))
                 .child(div().flex_1().child(design::track(
                     SharedString::from(format!("meeting-model-progress-{place}")),
                     Some((pct as f32) / 100.0),
@@ -541,18 +541,18 @@ impl MeetingsPage {
                 .into_any_element()
         } else {
             div()
-                .size(px(14.))
+                .size(dp(14.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(div().size(px(7.)).rounded_full().bg(tone.text_faint))
+                .child(div().size(dp(7.)).rounded_full().bg(tone.text_faint))
                 .into_any_element()
         };
         let status: AnyElement = match &self.recorder {
             RecorderState::Recording {
                 title, started_at, ..
             } => v_flex()
-                .gap(px(3.))
+                .gap(dp(3.))
                 .min_w_0()
                 .child(
                     h_flex()
@@ -569,7 +569,7 @@ impl MeetingsPage {
                 .child(
                     div()
                         .id("meeting-recording-title")
-                        .text_size(px(12.))
+                        .text_size(dp(12.))
                         .text_color(tone.text_muted)
                         .truncate()
                         .child(title.clone())
@@ -577,7 +577,7 @@ impl MeetingsPage {
                 )
                 .into_any_element(),
             RecorderState::Idle => v_flex()
-                .gap(px(3.))
+                .gap(dp(3.))
                 .child(
                     div()
                         .text_size(design::TEXT_TITLE)
@@ -587,7 +587,7 @@ impl MeetingsPage {
                 .when(!enabled, |d| {
                     d.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(dp(12.))
                             .text_color(tone.text_muted)
                             .child(t("meetings.recorder.disabled")),
                     )
@@ -621,7 +621,7 @@ impl MeetingsPage {
             .child(
                 h_flex()
                     .w_full()
-                    .gap(px(14.))
+                    .gap(dp(14.))
                     .px(design::SECTION_X)
                     .py(design::SECTION_Y)
                     .child(dot)
@@ -647,13 +647,13 @@ impl MeetingsPage {
                     .w_full()
                     .gap_3()
                     .px(design::SECTION_X)
-                    .py(px(10.))
+                    .py(dp(10.))
                     .justify_between()
                     .child(
                         v_flex()
                             .min_w_0()
                             .flex_1()
-                            .gap(px(4.))
+                            .gap(dp(4.))
                             .child(
                                 div()
                                     .text_size(design::TEXT_BODY)

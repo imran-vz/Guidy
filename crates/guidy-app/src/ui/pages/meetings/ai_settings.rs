@@ -11,7 +11,7 @@ use crate::meetings_backend::{
     error_message, LocalLlmModel, MeetingsBackend, ModelCatalog, SharedMeetingsBackend,
 };
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{group, icon, t, t_args, toggle, Dropdown, DropdownOption, SettingRow};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -127,7 +127,7 @@ fn radio(selected: bool, cx: &App) -> Div {
     let tone = design::tone(cx);
     div()
         .flex_none()
-        .size(px(14.))
+        .size(dp(14.))
         .rounded_full()
         .when(selected, |d| d.border_4().border_color(tone.accent))
         .when(!selected, |d| d.border_1().border_color(tone.text_faint))
@@ -908,24 +908,24 @@ impl AiSettingsView {
             .w_full()
             .gap_3()
             .px(design::SECTION_X)
-            .py(px(12.))
+            .py(dp(12.))
             .child(if dot {
                 design::signal_dot(cx).into_any_element()
             } else {
                 div()
                     .flex_none()
-                    .size(px(14.))
+                    .size(dp(14.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(div().size(px(7.)).rounded_full().bg(tone.text_faint))
+                    .child(div().size(dp(7.)).rounded_full().bg(tone.text_faint))
                     .into_any_element()
             })
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     .child(design::eyebrow(t("meetingsAi.llm.activeHeading"), cx))
                     .child(
                         div()
@@ -986,8 +986,8 @@ impl AiSettingsView {
                     Dropdown::new("meetings-llm-provider-dropdown")
                         .options(cloud_provider_options(s))
                         .selected(Some(pid.clone()))
-                        .min_width(px(220.))
-                        .menu_width(px(260.))
+                        .min_width(dp(220.))
+                        .menu_width(dp(260.))
                         .disabled(updating)
                         .on_select(move |v, _, cx| {
                             let v = v.to_string();
@@ -1121,8 +1121,8 @@ impl AiSettingsView {
                 .id(SharedString::from(format!("meetings-llm-model-{}", m.id)))
                 .w_full()
                 .gap_3()
-                .px(px(10.))
-                .py(px(8.))
+                .px(dp(10.))
+                .py(dp(8.))
                 .cursor_pointer()
                 .border_b_1()
                 .border_color(tone.hairline)
@@ -1135,7 +1135,7 @@ impl AiSettingsView {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .gap(px(2.))
+                        .gap(dp(2.))
                         .child(
                             div()
                                 .text_size(design::TEXT_BODY)
@@ -1145,14 +1145,14 @@ impl AiSettingsView {
                         )
                         .child(
                             design::mono(m.id.clone())
-                                .text_size(px(11.))
+                                .text_size(dp(11.))
                                 .text_color(tone.text_faint)
                                 .truncate(),
                         ),
                 )
                 .child(
                     h_flex()
-                        .gap(px(4.))
+                        .gap(dp(4.))
                         .when(m.good_for_summaries(), |d| {
                             d.child(design::chip(t("meetingsAi.llm.goodForSummaries"), true, cx))
                         })
@@ -1165,11 +1165,11 @@ impl AiSettingsView {
                 )
                 .child(
                     v_flex()
-                        .w(px(96.))
+                        .w(dp(96.))
                         .flex_none()
                         .items_end()
                         .font_family(crate::theme::MONO_FONT)
-                        .text_size(px(11.))
+                        .text_size(dp(11.))
                         .text_color(tone.text_muted)
                         .children(meta.into_iter().map(|l| div().child(l))),
                 )
@@ -1181,7 +1181,7 @@ impl AiSettingsView {
             div()
                 .id("meetings-llm-models-empty")
                 .p_3()
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .text_color(tone.text_muted)
                 .child(if fetching && catalog.is_none() {
                     t("meetingsAi.common.loading")
@@ -1202,7 +1202,7 @@ impl AiSettingsView {
         let picker = v_flex()
             .id("meetings-llm-picker")
             .w_full()
-            .rounded(px(6.))
+            .rounded(dp(6.))
             .border_1()
             .border_color(tone.hairline)
             .bg(tone.ink)
@@ -1211,7 +1211,7 @@ impl AiSettingsView {
                 h_flex()
                     .w_full()
                     .gap_2()
-                    .p(px(6.))
+                    .p(dp(6.))
                     .border_b_1()
                     .border_color(tone.hairline)
                     .child(div().flex_1().child(Input::new(&self.search).small()))
@@ -1219,7 +1219,7 @@ impl AiSettingsView {
                         d.child(
                             h_flex()
                                 .gap_2()
-                                .text_size(px(12.))
+                                .text_size(dp(12.))
                                 .text_color(tone.text_muted)
                                 .child(toggle(
                                     "meetings-llm-good-only",
@@ -1241,7 +1241,7 @@ impl AiSettingsView {
                 v_flex()
                     .id("meetings-llm-model-list")
                     .w_full()
-                    .max_h(px(260.))
+                    .max_h(dp(260.))
                     .overflow_y_scroll()
                     .children(rows)
                     .children(empty),
@@ -1251,10 +1251,10 @@ impl AiSettingsView {
                     .w_full()
                     .justify_between()
                     .gap_2()
-                    .px(px(10.))
-                    .py(px(6.))
+                    .px(dp(10.))
+                    .py(dp(6.))
                     .font_family(crate::theme::MONO_FONT)
-                    .text_size(px(11.))
+                    .text_size(dp(11.))
                     .text_color(tone.text_faint)
                     .child(div().min_w_0().truncate().child(format!("{age} · {count}")))
                     .child(
@@ -1271,7 +1271,7 @@ impl AiSettingsView {
         let fallback = (selected.is_empty() && !effective.is_empty()).then(|| {
             div()
                 .id("meetings-llm-model-fallback")
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .text_color(tone.text_muted)
                 .child(t_args(
                     "meetingsAi.llm.usingPostProcessModel",
@@ -1290,7 +1290,7 @@ impl AiSettingsView {
             h_flex()
                 .id("meetings-llm-models-error")
                 .gap_1()
-                .text_size(px(12.))
+                .text_size(dp(12.))
                 .text_color(theme.danger)
                 .child(icon("circle-alert").xsmall())
                 .child(div().min_w_0().truncate().child(e))
@@ -1329,7 +1329,7 @@ impl AiSettingsView {
             .w_full()
             .gap_3()
             .px(design::SECTION_X)
-            .py(px(12.))
+            .py(dp(12.))
             .when(available, |d| {
                 d.cursor_pointer().on_click(move |_, _, cx| {
                     weak.update(cx, |this, cx| {
@@ -1344,14 +1344,14 @@ impl AiSettingsView {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(4.))
+                    .gap(dp(4.))
                     .child(
                         div()
                             .text_size(design::TEXT_BODY)
                             .font_weight(FontWeight::MEDIUM)
                             .child(t("meetingsAi.llm.apple")),
                     )
-                    .child(div().text_size(px(12.)).text_color(tone.text_muted).child(
+                    .child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
                         if available {
                             t("meetingsAi.llm.appleDescription")
                         } else {
@@ -1368,8 +1368,8 @@ impl AiSettingsView {
             div()
                 .w_full()
                 .px(design::SECTION_X)
-                .py(px(10.))
-                .text_size(px(12.))
+                .py(dp(10.))
+                .text_size(dp(12.))
                 .text_color(tone.text_muted)
                 .child(t("meetingsAi.llm.localDescription"))
                 .into_any_element(),
@@ -1635,7 +1635,7 @@ impl LocalModelsView {
         }
         for m in &self.models {
             let id = m.id.clone();
-            let mut tags = h_flex().gap(px(6.)).flex_wrap();
+            let mut tags = h_flex().gap(dp(6.)).flex_wrap();
             if m.is_default {
                 tags = tags.child(design::chip(t("meetingsAi.local.default"), true, cx));
             }
@@ -1652,7 +1652,7 @@ impl LocalModelsView {
             if m.downloaded {
                 tags = tags.child(
                     design::chip("", false, cx)
-                        .child(icon("check").size(px(11.)))
+                        .child(icon("check").size(dp(11.)))
                         .child(t("meetingsAi.local.downloaded")),
                 );
             }
@@ -1660,8 +1660,8 @@ impl LocalModelsView {
                 (_, Some(p)) => {
                     let id = id.clone();
                     v_flex()
-                        .w(px(220.))
-                        .gap(px(6.))
+                        .w(dp(220.))
+                        .gap(dp(6.))
                         .child(
                             div()
                                 .id(SharedString::from(format!("local-progress-{}", m.id)))
@@ -1733,7 +1733,7 @@ impl LocalModelsView {
                     .id(SharedString::from(format!("local-model-{}", m.id)))
                     .w_full()
                     .px(design::SECTION_X)
-                    .py(px(12.))
+                    .py(dp(12.))
                     .gap_4()
                     .justify_between()
                     .when(self.selectable, |d| {
@@ -1757,7 +1757,7 @@ impl LocalModelsView {
                             .id(SharedString::from(format!("local-info-{}", m.id)))
                             .flex_1()
                             .min_w_0()
-                            .gap(px(4.))
+                            .gap(dp(4.))
                             .when(self.selectable && m.downloaded, |d| {
                                 let id = m.id.clone();
                                 d.cursor_pointer().on_click(cx.listener(move |_, _, _, cx| {
@@ -1766,7 +1766,7 @@ impl LocalModelsView {
                             })
                             .child(
                                 h_flex()
-                                    .gap(px(8.))
+                                    .gap(dp(8.))
                                     .flex_wrap()
                                     .child(
                                         div()
@@ -1779,7 +1779,7 @@ impl LocalModelsView {
                             .when(!m.description.is_empty(), |d| {
                                 d.child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(dp(12.))
                                         .line_height(relative(1.5))
                                         .text_color(muted)
                                         .child(m.description.clone()),
@@ -1788,15 +1788,15 @@ impl LocalModelsView {
                             .when(!m.fits_this_mac, |d| {
                                 d.child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(dp(12.))
                                         .text_color(theme.warning)
                                         .child(t("meetingsAi.local.notEnoughRam")),
                                 )
                             })
                             .child(
                                 h_flex()
-                                    .mt(px(2.))
-                                    .gap(px(6.))
+                                    .mt(dp(2.))
+                                    .gap(dp(6.))
                                     .font_family(crate::theme::MONO_FONT)
                                     .text_size(design::TEXT_MONO)
                                     .text_color(muted)
@@ -1851,7 +1851,7 @@ pub fn result_line(id: &'static str, r: &Result<String, String>, cx: &App) -> An
     };
     h_flex()
         .id(id)
-        .max_w(px(320.))
+        .max_w(dp(320.))
         .gap_1()
         .text_xs()
         .text_color(color)

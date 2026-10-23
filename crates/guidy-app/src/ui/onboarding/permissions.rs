@@ -3,7 +3,7 @@
 
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{icon, spinner, t};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::base::TestSupportExt;
@@ -295,7 +295,7 @@ impl PermissionsOnboarding {
         let granted = status == PermissionStatus::Granted;
         let action: AnyElement = match status {
             PermissionStatus::Granted => design::chip("", true, cx)
-                .child(icon("check").size(px(11.)))
+                .child(icon("check").size(dp(11.)))
                 .child(t("onboarding.permissions.granted"))
                 .into_any_element(),
             PermissionStatus::Waiting => design::chip("", true, cx)
@@ -316,9 +316,9 @@ impl PermissionsOnboarding {
         h_flex()
             .id(id)
             .w_full()
-            .gap(px(14.))
+            .gap(dp(14.))
             .px(design::SECTION_X)
-            .py(px(12.))
+            .py(dp(12.))
             .border_t_1()
             .border_color(tone.hairline)
             .child(icon(icon_name).small().text_color(if granted {
@@ -330,7 +330,7 @@ impl PermissionsOnboarding {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(3.))
+                    .gap(dp(3.))
                     .child(
                         div()
                             .text_size(design::TEXT_BODY)
@@ -339,7 +339,7 @@ impl PermissionsOnboarding {
                     )
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(dp(12.))
                             .text_color(tone.text_muted)
                             .child(description),
                     ),
@@ -357,7 +357,7 @@ impl PermissionsOnboarding {
         let mic_pending = self.microphone != PermissionStatus::Granted;
         let ax_pending = !mic_pending && self.accessibility != PermissionStatus::Granted;
         let mac = self.os == OsType::MacOs;
-        design::blueprint(px(228.), cx).child(
+        design::blueprint(dp(228.), cx).child(
             div()
                 .absolute()
                 .size_full()
@@ -367,18 +367,18 @@ impl PermissionsOnboarding {
                 .child(
                     div()
                         .relative()
-                        .w(px(W))
-                        .h(px(H))
+                        .w(dp(W))
+                        .h(dp(H))
                         .child(
-                            design::illustration_state("microphone", px(W), px(H), mic_pending, cx)
+                            design::illustration_state("microphone", dp(W), dp(H), mic_pending, cx)
                                 .absolute(),
                         )
                         .when(mac, |d| {
                             d.child(
                                 design::illustration_state(
                                     "paste-keys",
-                                    px(W),
-                                    px(H),
+                                    dp(W),
+                                    dp(H),
                                     ax_pending,
                                     cx,
                                 )
@@ -392,9 +392,9 @@ impl PermissionsOnboarding {
                                 cx,
                             )
                             .absolute()
-                            .left(px(132.))
+                            .left(dp(132.))
                             .right_0()
-                            .top(px(70.)),
+                            .top(dp(70.)),
                         )
                         .when(mac, |d| {
                             d.child(
@@ -404,9 +404,9 @@ impl PermissionsOnboarding {
                                     cx,
                                 )
                                 .absolute()
-                                .left(px(322.))
-                                .right(px(-8.))
-                                .top(px(146.)),
+                                .left(dp(322.))
+                                .right(dp(-8.))
+                                .top(dp(146.)),
                             )
                         }),
                 ),
@@ -477,11 +477,11 @@ impl Render for PermissionsOnboarding {
             .justify_center()
             .child(
                 design::panel(cx)
-                    .max_w(px(520.))
+                    .max_w(dp(520.))
                     .child(self.render_drawing(cx))
                     .child(
                         design::section(false, cx)
-                            .gap(px(6.))
+                            .gap(dp(6.))
                             .child(
                                 div()
                                     .text_size(design::TEXT_HEADLINE)

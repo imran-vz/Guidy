@@ -13,7 +13,7 @@
 use crate::logic::meetings::{is_linear_url, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsBackend, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, Pill};
+use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption};
 use crate::ui::pages::meetings::ai_settings::error_box;
 use gpui_kit::base::TestSupportExt;
@@ -659,7 +659,7 @@ impl TicketsView {
             )
             .selected(team_id.clone())
             .placeholder(t("meetingsAi.tickets.pickTeam"))
-            .min_width(px(160.))
+            .min_width(dp(160.))
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
                 w.update(cx, |this, cx| {
@@ -691,7 +691,7 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.project_id.clone().unwrap_or_default()))
-            .min_width(px(150.))
+            .min_width(dp(150.))
             .disabled(team_id.is_none())
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
@@ -711,7 +711,7 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.priority.unwrap_or(0).to_string()))
-            .min_width(px(110.))
+            .min_width(dp(110.))
             .on_select(move |v, _, cx| {
                 let p: u8 = v.parse().unwrap_or(0);
                 w.update(cx, |this, cx| {
@@ -733,8 +733,8 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.assignee_id.clone().unwrap_or_default()))
-            .min_width(px(160.))
-            .menu_width(px(260.))
+            .min_width(dp(160.))
+            .menu_width(dp(260.))
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
                 w.update(cx, |this, cx| {
@@ -769,7 +769,7 @@ impl TicketsView {
                     &[("count", &chosen.len().to_string())],
                 )
             })
-            .min_width(px(130.))
+            .min_width(dp(130.))
             .disabled(team_id.is_none())
             .on_select(move |v, _, cx| {
                 let v = v.to_string();

@@ -7,8 +7,8 @@ use crate::logic::flows::{
 use crate::logic::meetings::MeetingsEvent;
 use crate::logic::settings_store::ToastSpec;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::Pill;
-use crate::ui::kit::{group, icon, page, t, Dropdown, DropdownOption, SettingRow};
+use crate::ui::design::{dp, Pill};
+use crate::ui::kit::{group, icon, page, page_header, t, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::LocalModelsView;
 use crate::ui::shortcut_input::ShortcutInput;
 use gpui_kit::base::TestSupportExt;
@@ -81,7 +81,7 @@ fn test_result_line(r: &Result<String, String>, cx: &App) -> AnyElement {
     };
     h_flex()
         .id("pp-test-result")
-        .max_w(px(320.))
+        .max_w(dp(320.))
         .gap_1()
         .text_xs()
         .text_color(color)
@@ -757,7 +757,7 @@ impl PostProcessingPage {
                             ),
                         ])
                         .selected(Some(fmt_str))
-                        .menu_width(px(300.))
+                        .menu_width(dp(300.))
                         .disabled(up(format!("post_process_api_format:{pid}")))
                         .on_select(move |v, _, cx| {
                             if v != fmt_str {
@@ -801,7 +801,7 @@ impl PostProcessingPage {
                     t("meetingsAi.byok.baseUrlEditable")
                 })
                 .control(
-                    div().w(px(320.)).child(
+                    div().w(dp(320.)).child(
                         Input::new(&self.base_url)
                             .small()
                             .disabled(up(format!("post_process_base_url:{pid}"))),
@@ -814,7 +814,7 @@ impl PostProcessingPage {
             SettingRow::new("pp-api-key", t("settings.postProcessing.api.apiKey.title"))
                 .description(t("settings.postProcessing.api.apiKey.description"))
                 .control(
-                    div().w(px(320.)).child(
+                    div().w(dp(320.)).child(
                         Input::new(&self.api_key)
                             .small()
                             .mask_toggle()
@@ -866,7 +866,7 @@ impl PostProcessingPage {
                                 )
                                 .selected(Some(current_model.clone()))
                                 .placeholder(placeholder)
-                                .menu_width(px(320.))
+                                .menu_width(dp(320.))
                                 .loading(fetching)
                                 .disabled(up(format!("post_process_model:{pid}")))
                                 .on_select(move |v, _, cx| {
@@ -990,7 +990,7 @@ impl PostProcessingPage {
                             } else {
                                 t("settings.postProcessing.prompts.selectPrompt")
                             })
-                            .min_width(px(260.))
+                            .min_width(dp(260.))
                             .disabled(
                                 st.settings.is_updating("post_process_selected_prompt_id")
                                     || self.creating,
@@ -1129,6 +1129,11 @@ impl Render for PostProcessingPage {
             .filter(|_| builtin && self.show_local_models);
         page()
             .id("page-post-processing")
+            .child(page_header(
+                t("settings.postProcessing.title"),
+                Some(t("settings.postProcessing.description")),
+                cx,
+            ))
             .child(group(
                 Some(t("settings.postProcessing.hotkey.title")),
                 vec![self.shortcut.clone().into_any_element()],

@@ -195,6 +195,8 @@
     },
     "general": {
       "title": "General",
+      "description": "How you start dictation, the language it listens for, and what you hear.",
+      "shortcutsGroup": "Shortcuts",
       "shortcut": {
         "title": "Guidy Shortcuts",
         "description": "Configure keyboard shortcuts to trigger speech-to-text recording",
@@ -301,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Advanced",
+      "description": "Startup, pasting, transcription tuning and history.",
       "groups": {
         "app": "App",
         "output": "Output",
@@ -452,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Post Process",
+      "description": "Clean up or rewrite a transcription with an AI model before it is pasted.",
       "hotkey": {
         "title": "Hotkey"
       },
