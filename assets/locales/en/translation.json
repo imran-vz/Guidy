@@ -801,10 +801,17 @@
   },
   "meetings": {
     "title": "Meetings",
+    "selection": {
+      "hint": "Drag, or Shift-click, to tag several lines",
+      "count_one": "{{count}} line selected",
+      "count_other": "{{count}} lines selected",
+      "keys": "Shift-click: range · ⌘-click: add or remove · Esc: clear",
+      "setSpeaker": "Set speaker",
+      "clear": "Clear"
+    },
     "speakersRedo": {
       "action": "Redo speakers",
-      "tooltip": "Tell the speakers apart again with the {{model}}. The transcript stays; people are matched again by voice, and lines you tagged by hand are redone.",
-      "accurate": "accurate speaker model",
+      "tooltip": "Tell the speakers apart again with {{model}}. The transcript stays. Lines you tagged and speakers you named keep their person; the rest are matched again by voice.",
       "standard": "Standard speaker model",
       "download": "{{size}} download, once",
       "error": "Couldn't redo the speakers",
@@ -992,6 +999,17 @@
       "merge": "Merge",
       "mergeInto": "Merge into...",
       "mergeHint": "Pick the person to keep. Voiceprints and speaker names move to them.",
+      "mergeIntoName": "Merge into {{name}}",
+      "samples": {
+        "hint": "Listen to the voiceprints first: each was taken from one line of a meeting.",
+        "none": "No voiceprints.",
+        "play": "Play",
+        "pause": "Pause",
+        "noText": "(no words)",
+        "noLine": "The line it came from isn't there any more",
+        "audioDeleted": "audio deleted",
+        "loadError": "Couldn't load the voiceprints"
+      },
       "mergeTitle": "Merge people?",
       "mergeConfirm": "{{from}} will be merged into {{into}}, then removed.",
       "mergeError": "Couldn't merge people",
@@ -1073,6 +1091,23 @@
         "chosenMissing": "{{name}} isn't downloaded yet. Meetings use your dictation model until it is.",
         "chosenUnknown": "{{name}} isn't installed. Choose another model, or turn off \"Use a different model\"."
       },
+      "separation": {
+        "title": "Telling voices apart",
+        "description": "The speaker model that decides who spoke each line. Larger models tell similar voices apart better, but take more space and make processing slower. People you've named are always recognized with the standard model, so switching keeps their voiceprints.",
+        "downloaded": "Downloaded.",
+        "notDownloaded": "Downloads when chosen.",
+        "downloading": "Downloading...",
+        "delete": "Delete this model ({{size}})",
+        "downloadError": "Couldn't download the speaker model",
+        "deleteError": "Couldn't delete the speaker model",
+        "about": {
+          "resnet34": "Standard. Small and fast, and it also recognizes people you've named.",
+          "cam_plus_plus": "About as small, and the fastest.",
+          "resnet152": "Better with similar voices; processing takes about 3 times as long.",
+          "titanet_large": "From NVIDIA, also trained on phone calls, which can suit call audio. About as fast as the standard one.",
+          "resnet293": "The most accurate here; processing takes about 6 times as long."
+        }
+      },
       "speakerModel": {
         "title": "Speaker recognition",
         "description": "Tells voices apart and recognizes people you've named before. Uses {{name}} ({{trainedOn}}), {{size}}. Downloaded only when you click Download.",
@@ -1117,7 +1152,10 @@
       },
       "liveTranscription": {
         "title": "Live transcription",
-        "description": "Transcribe the meeting on this Mac as it happens. Uses the meeting model while recording; the full transcript is still made after the meeting."
+        "description": "Transcribe the meeting on this Mac as it happens. The full transcript is still made after the meeting.",
+        "model": "Model for live transcription",
+        "modelDescription": "A small, fast model keeps up best while you're in a call. The transcript made after the meeting uses the meetings model.",
+        "sameModel": "Same as meetings"
       },
       "reminderInterval": {
         "title": "Reminder interval",
@@ -1236,7 +1274,7 @@
       "builtin": "Built-in (on this Mac)",
       "builtinDescription": "Runs a local model with llama.cpp. Nothing leaves your Mac.",
       "model": "Model",
-      "modelDescription": "Only models that output text are listed. \"Good for summaries\" means the model supports structured output, which summaries rely on.",
+      "modelDescription": "Check a model to add it to your models. Only models that output text are listed. \"Good for summaries\" means the model supports structured output, which summaries rely on.",
       "modelPlaceholder": "Model id",
       "pickModel": "Select a model",
       "noLocalModels": "Download a model below",
@@ -1257,7 +1295,7 @@
       "apiKey": "API key",
       "apiKeyDescription": "Saved in your Keychain and shared with Post Process.",
       "getKey": "Get a {{provider}} key",
-      "modelDescriptionCustom": "Type the model id your endpoint expects, or pick one it lists.",
+      "modelDescriptionCustom": "Type the model id your endpoint expects and press Enter to add it, or check one it lists.",
       "searchModels": "Search models",
       "goodOnly": "Good for summaries",
       "goodForSummaries": "summaries",
@@ -1278,7 +1316,14 @@
       "needsLocalModel": "Download a model to summarize on this Mac",
       "localDescription": "Runs offline on this Mac. Choose a downloaded model.",
       "appleUnavailableHint": "Not available on this Mac. Turn it on in System Settings > Apple Intelligence & Siri.",
-      "unavailable": "unavailable"
+      "unavailable": "unavailable",
+      "yourModels": "Your models",
+      "yourModelsDescription": "Generate summary offers every model here, so you can pick one per meeting. The selected one is the default.",
+      "yourModelsEmpty": "No cloud models yet. Pick a provider below, add its API key and check the models you want.",
+      "default": "default",
+      "removeModel": "Remove from your models",
+      "addFrom": "Add models from",
+      "addFromDescription": "Pick a provider to enter its key and check models to add. This doesn't change the default."
     },
     "local": {
       "heading": "Local models",
