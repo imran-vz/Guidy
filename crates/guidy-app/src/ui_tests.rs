@@ -1672,8 +1672,9 @@ mod meetings_page {
         meetings.data.lock().upcoming = vec![CalendarEvent {
             id: "ev-1".into(),
             title: "Standup".into(),
-            start_at: 1_700_000_000_000,
-            end_at: 1_700_000_900_000,
+            // Starts in ten minutes: ended events drop off the list.
+            start_at: guidy_core::meetings::recorder::now_ms() + 600_000,
+            end_at: guidy_core::meetings::recorder::now_ms() + 1_500_000,
             meeting_url: Some("https://meet.google.com/abc".into()),
             attendees: vec![],
         }];

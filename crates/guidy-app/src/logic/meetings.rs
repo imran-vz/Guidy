@@ -406,6 +406,51 @@ pub fn format_meeting_date(at_ms: i64, locale: &str) -> String {
     crate::logic::flows::format_history_date(at_ms / 1000, locale)
 }
 
+/// The day of `at_ms` as people say it, relative to `now_ms` (local time):
+/// "Today", "Tomorrow", "Yesterday", else a short date ("Mon, Oct 20",
+/// with the year when it isn't this year's).
+pub fn day_label(at_ms: i64, now_ms: i64, locale: &str) -> String {
+    use chrono::{Datelike, Local, TimeZone};
+    let (Some(at), Some(now)) = (
+        Local.timestamp_millis_opt(at_ms).single(),
+        Local.timestamp_millis_opt(now_ms).single(),
+    ) else {
+        return String::new();
+    };
+    match (at.date_naive() - now.date_naive()).num_days() {
+        0 => guidy_i18n::t("meetings.day.today"),
+        1 => guidy_i18n::t("meetings.day.tomorrow"),
+        -1 => guidy_i18n::t("meetings.day.yesterday"),
+        _ => {
+            let loc = crate::logic::flows::chrono_locale(locale);
+            let fmt = if at.year() == now.year() {
+                "%a, %b %-d"
+            } else {
+                "%a, %b %-d, %Y"
+            };
+            at.format_localized(fmt, loc).to_string()
+        }
+    }
+}
+
+/// Calendar events still worth starting notes for: not ended more than
+/// [`UPCOMING_GRACE_MS`] ago, soonest first.
+pub fn upcoming_to_show(
+    events: &[guidy_core::meetings::types::CalendarEvent],
+    now_ms: i64,
+) -> Vec<guidy_core::meetings::types::CalendarEvent> {
+    let mut out: Vec<_> = events
+        .iter()
+        .filter(|e| e.end_at >= now_ms - UPCOMING_GRACE_MS)
+        .cloned()
+        .collect();
+    out.sort_by_key(|e| e.start_at);
+    out
+}
+
+/// How long after its end a calendar event still shows as upcoming.
+pub const UPCOMING_GRACE_MS: i64 = 60 * 60 * 1000;
+
 /// Uncertain automatic match: shows "Confirm?".
 pub fn needs_confirmation(s: &MeetingSpeaker) -> bool {
     !s.confirmed && s.person_id.is_some()
@@ -542,6 +587,48 @@ pub fn apply_progress(meetings: &mut [Meeting], p: &ProcessingProgress) {
 mod tests {
     use super::*;
     use guidy_core::meetings::types::{ProcessingStage, Track};
+
+    #[test]
+    fn days_read_relative_to_today() {
+        use chrono::{Local, TimeZone};
+        guidy_i18n::set_language("en");
+        let noon = Local
+            .with_ymd_and_hms(2026, 10, 23, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        let h = 3_600_000;
+        assert_eq!(day_label(noon + 5 * h, noon, "en"), "Today");
+        assert_eq!(day_label(noon + 20 * h, noon, "en"), "Tomorrow");
+        assert_eq!(day_label(noon - 13 * h, noon, "en"), "Yesterday");
+        assert_eq!(day_label(noon - 72 * h, noon, "en"), "Tue, Oct 20");
+        assert_eq!(
+            day_label(noon - 365 * 24 * h, noon, "en"),
+            "Thu, Oct 23, 2025"
+        );
+    }
+
+    #[test]
+    fn upcoming_drops_events_over_an_hour_past_and_sorts() {
+        let ev = |id: &str, start: i64, end: i64| guidy_core::meetings::types::CalendarEvent {
+            id: id.into(),
+            title: id.into(),
+            start_at: start,
+            end_at: end,
+            meeting_url: None,
+            attendees: Vec::new(),
+        };
+        let now = 10 * 3_600_000;
+        let shown = upcoming_to_show(
+            &[
+                ev("tomorrow", now + 18 * 3_600_000, now + 19 * 3_600_000),
+                ev("ended-long-ago", now - 3 * 3_600_000, now - 2 * 3_600_000),
+                ev("just-ended", now - 3_600_000, now - 30 * 60_000),
+            ],
+            now,
+        );
+        let ids: Vec<_> = shown.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["just-ended", "tomorrow"]);
+    }
 
     #[test]
     fn a_failed_reset_shows_cores_status_with_the_error() {

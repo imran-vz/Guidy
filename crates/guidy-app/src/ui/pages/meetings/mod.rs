@@ -632,12 +632,14 @@ impl MeetingsPage {
     }
 
     fn render_upcoming(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if matches!(self.recorder, RecorderState::Recording { .. }) || self.upcoming.is_empty() {
+        let now = guidy_core::meetings::recorder::now_ms();
+        let upcoming = crate::logic::meetings::upcoming_to_show(&self.upcoming, now);
+        if matches!(self.recorder, RecorderState::Recording { .. }) || upcoming.is_empty() {
             return None;
         }
         let enabled = meeting_settings(cx).enabled;
-        let rows: Vec<AnyElement> = self
-            .upcoming
+        let lang = guidy_i18n::language();
+        let rows: Vec<AnyElement> = upcoming
             .iter()
             .enumerate()
             .map(|(i, ev)| {
@@ -661,7 +663,12 @@ impl MeetingsPage {
                                     .child(ev.title.clone()),
                             )
                             .child(design::eyebrow(
-                                format!("{} – {}", clock_time(ev.start_at), clock_time(ev.end_at)),
+                                format!(
+                                    "{} · {} – {}",
+                                    crate::logic::meetings::day_label(ev.start_at, now, &lang),
+                                    clock_time(ev.start_at),
+                                    clock_time(ev.end_at)
+                                ),
                                 cx,
                             )),
                     )

@@ -604,7 +604,8 @@ pub fn format_history_date(timestamp_secs: i64, locale: &str) -> String {
     dt.format_localized("%B %-d, %Y %H:%M", loc).to_string()
 }
 
-fn chrono_locale(code: &str) -> chrono::Locale {
+/// The chrono locale for an app language code.
+pub fn chrono_locale(code: &str) -> chrono::Locale {
     let tag = match code {
         "en" => "en_US",
         "zh" => "zh_CN",

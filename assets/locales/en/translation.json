@@ -801,6 +801,11 @@
   },
   "meetings": {
     "title": "Meetings",
+    "day": {
+      "today": "Today",
+      "tomorrow": "Tomorrow",
+      "yesterday": "Yesterday"
+    },
     "description": "Record a meeting on this Mac, then read the transcript with named speakers.",
     "init": {
       "starting": "Starting meeting notes...",

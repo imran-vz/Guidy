@@ -3,8 +3,7 @@
 
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    apply_progress, can_process, duration_minutes, format_meeting_date, non_empty, status_key,
-    MeetingsEvent,
+    apply_progress, can_process, duration_minutes, non_empty, status_key, MeetingsEvent,
 };
 use crate::logic::models::format_model_size;
 use crate::meetings_backend::error_message;
@@ -18,6 +17,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, Win
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::processing::{SpeakerModelStatus, SPEAKER_MODEL_SIZE};
+use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::types::{Meeting, MeetingId, MeetingStatus, ProcessingProgress};
 use std::collections::{HashMap, HashSet};
 
@@ -382,7 +382,11 @@ impl MeetingList {
         let id = m.id;
         let lang = guidy_i18n::language();
         let busy = self.busy.contains(&id);
-        let mut meta = format_meeting_date(m.started_at, &lang);
+        let mut meta = format!(
+            "{} · {}",
+            crate::logic::meetings::day_label(m.started_at, now_ms(), &lang),
+            super::clock_time(m.started_at)
+        );
         if let Some(d) = m.duration_ms() {
             let mins = duration_minutes(d).to_string();
             meta.push_str(" · ");
