@@ -749,6 +749,53 @@ impl MeetingsManager {
         self.processing.enqueue_with(id, engine)
     }
 
+    /// Redo only a processed meeting's speakers with `engine`, keeping its
+    /// transcript (see [`crate::meetings::processing::Processor::enqueue_speakers`]).
+    /// Speaker names come back from known voices; lines tagged by hand are
+    /// redone too.
+    pub fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> Result<()> {
+        let Some(meeting) = self.store.get_meeting(id)? else {
+            anyhow::bail!("meeting {id} not found");
+        };
+        if meeting.status != MeetingStatus::Processed {
+            anyhow::bail!(
+                "the speakers can only be redone once the meeting is processed (it is {})",
+                meeting.status.as_str()
+            );
+        }
+        if !crate::meetings::processing::jobs::has_audio(&meeting) {
+            anyhow::bail!(crate::meetings::processing::jobs::AUDIO_DELETED);
+        }
+        self.processing.enqueue_speakers(id, engine)
+    }
+
+    /// What redoing speakers can use now.
+    pub fn diarization_options(&self) -> DiarizationOptions {
+        use crate::meetings::processing::{deepgram, speaker_model};
+        DiarizationOptions {
+            accurate_installed: speaker_model::accurate_model_installed(&self.app),
+            accurate_size_mb: speaker_model::ACCURATE_MODEL_SIZE / (1024 * 1024),
+            deepgram_has_key: !crate::settings::provider_api_key(deepgram::DEEPGRAM_PROVIDER_ID)
+                .trim()
+                .is_empty(),
+            deepgram_usd_per_min: crate::llm::usage::transcription_usd_per_min(
+                deepgram::DEEPGRAM_PROVIDER_ID,
+                deepgram::DEEPGRAM_MODEL,
+            ),
+        }
+    }
+
+    /// Save (or, empty, remove) the Deepgram API key.
+    pub fn set_deepgram_api_key(&self, key: &str) -> Result<()> {
+        let id = crate::meetings::processing::deepgram::DEEPGRAM_PROVIDER_ID;
+        let key = key.trim();
+        if key.is_empty() {
+            crate::secrets::delete(&crate::secrets::provider_api_key(id))
+        } else {
+            crate::settings::set_provider_api_key(id, key)
+        }
+    }
+
     /// The cloud providers a meeting can be transcribed with (OpenAI,
     /// Groq), the configured one (or the automatic choice) first.
     pub fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {

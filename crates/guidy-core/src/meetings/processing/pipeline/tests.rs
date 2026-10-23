@@ -255,6 +255,7 @@ fn run_accented(
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
@@ -434,6 +435,51 @@ fn a_lost_checkpoint_restarts_from_the_beginning() {
 }
 
 #[test]
+fn a_stored_transcript_resumes_at_the_voiceprints() {
+    let seg = |id: i64, track: Track, t0_ms: i64, text: &str| Segment {
+        id,
+        meeting_id: 1,
+        track,
+        t0_ms,
+        t1_ms: t0_ms + 1_000,
+        text: text.into(),
+        words: Vec::new(),
+        speaker_id: Some(1),
+    };
+    let segments = [
+        seg(1, Track::System, 5_000, "later"),
+        seg(2, Track::Mic, 9_000, "mine"),
+        seg(3, Track::System, 1_000, "first"),
+    ];
+    let cache = cache_from_segments(&segments, true, true, 60_000);
+    let order: Vec<(Track, i64)> = cache
+        .units
+        .iter()
+        .map(|u| (u.track, u.span.t0_ms))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (Track::Mic, 9_000),
+            (Track::System, 1_000),
+            (Track::System, 5_000)
+        ]
+    );
+    assert_eq!(cache.transcripts[1].as_ref().unwrap().text, "first");
+    assert_eq!(
+        (cache.mic_ms, cache.system_ms),
+        (Some(60_000), Some(60_000))
+    );
+    let (resumed, next) = resume_point(Some(ProcessingStage::Transcribe), Some(cache));
+    assert_eq!(next, ProcessingStage::Voiceprints);
+    assert_eq!(resumed.units.len(), 3);
+    // A track whose audio is gone isn't rebuilt.
+    let cache = cache_from_segments(&segments, false, true, 60_000);
+    assert_eq!(cache.units.len(), 2);
+    assert_eq!(cache.mic_ms, None);
+}
+
+#[test]
 fn resume_point_logic() {
     use ProcessingStage::*;
     let full = {
@@ -559,6 +605,7 @@ fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) ->
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| hook(&p)),
     }
@@ -912,6 +959,7 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             // The user deletes the meeting (and its sidecars) while it runs.
@@ -957,6 +1005,7 @@ fn a_run_no_longer_processing_saves_nothing() {
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             // Restored (as `Processor::finish` does) while it is in VAD.
@@ -1004,6 +1053,7 @@ fn mic_only_meeting_has_just_the_user() {
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut t,
         embedder: &mut e,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(|_| {}),
     }
@@ -1038,6 +1088,7 @@ fn no_audio_is_an_error() {
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut t,
         embedder: &mut e,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(|_| {}),
     }
@@ -1072,6 +1123,7 @@ fn a_cancel_during_the_merge_lets_it_complete() {
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             if p.stage == ProcessingStage::Merge {
@@ -1214,6 +1266,7 @@ fn a_segment_in_two_scripts_is_mixed() {
     );
     assert_eq!(segment_language("", &langs), None);
 }
+
 #[test]
 fn batches_group_pending_units_of_one_track_up_to_the_limit() {
     let unit = |track, t0, t1| Unit {
@@ -1309,6 +1362,7 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
         vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
         transcriber: &mut transcriber,
         embedder: &mut embedder,
+        diarizer: Default::default(),
         cancel: &cancel,
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
@@ -1351,4 +1405,69 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
     for (_, t0, t1, _, words) in &batched {
         assert!(words.iter().all(|w| w.t0_ms >= *t0 && w.t1_ms <= *t1));
     }
+}
+
+/// Four system segments; their standard voiceprints all look alike.
+fn one_voice_cache() -> ProcessingCache {
+    let mut cache = ProcessingCache::new();
+    cache.system_ms = Some(20_000);
+    cache.units = (0..4)
+        .map(|i| Unit {
+            track: Track::System,
+            span: vad::Span {
+                t0_ms: i * 5_000,
+                t1_ms: i * 5_000 + 4_000,
+            },
+        })
+        .collect();
+    cache.transcripts = (0..4)
+        .map(|i| {
+            Some(UnitTranscript {
+                text: format!("line {i}"),
+                words: Vec::new(),
+            })
+        })
+        .collect();
+    cache.embeddings = (0..4)
+        .map(|i| Some(Some(vec![1.0, 0.01 * i as f32, 0.0])))
+        .collect();
+    cache
+}
+
+#[test]
+fn a_diarization_service_decides_the_system_speakers() {
+    let cache = one_voice_cache();
+    let config = PipelineConfig::default();
+    // The standard voiceprints say one speaker...
+    let c = cluster_units(&cache, &config, &[], &[]);
+    assert_eq!(c.labels.iter().flatten().max(), Some(&0));
+    // ...the service hears two, and isn't sure about the last line.
+    let source = ClusterSource::SystemLabels(vec![Some(4), Some(7), Some(4), None]);
+    let c = cluster_units_with(&cache, &config, &[], &[], &source);
+    assert_eq!(c.labels, vec![Some(0), Some(1), Some(0), None]);
+    // Centroids still come from the standard voiceprints (for matching).
+    assert_eq!(c.centroids.len(), 2);
+    assert!(c.centroids.iter().all(Option::is_some));
+}
+
+#[test]
+fn a_better_models_voiceprints_decide_the_clusters() {
+    let cache = one_voice_cache();
+    let config = PipelineConfig::default();
+    // The accurate model tells lines 1 and 3 apart from 0 and 2.
+    let a = Some(vec![1.0, 0.0, 0.0]);
+    let b = Some(vec![0.0, 0.0, 1.0]);
+    let source = ClusterSource::Vectors(vec![a.clone(), b.clone(), a, b]);
+    let c = cluster_units_with(&cache, &config, &[], &[], &source);
+    assert_eq!(c.labels, vec![Some(0), Some(1), Some(0), Some(1)]);
+    // A line it can't embed is left to the timing rule: here, a second
+    // from the same speaker on both sides.
+    let source = ClusterSource::Vectors(vec![
+        Some(vec![1.0, 0.0, 0.0]),
+        None,
+        Some(vec![1.0, 0.0, 0.0]),
+        Some(vec![1.0, 0.01, 0.0]),
+    ]);
+    let c = cluster_units_with(&cache, &config, &[], &[], &source);
+    assert_eq!(c.labels[1], Some(0));
 }

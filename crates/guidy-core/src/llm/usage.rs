@@ -230,6 +230,8 @@ const TRANSCRIPTION_USD_PER_MIN: &[(&str, &str, f64)] = &[
     ("groq", "whisper-large-v3-turbo", 0.04 / 60.0),
     ("groq", "whisper-large-v3", 0.111 / 60.0),
     ("openai", "whisper-1", CLOUD_TRANSCRIPTION_USD_PER_MIN),
+    // Nova-3 pre-recorded ($0.0043) plus the diarization add-on (~$0.002).
+    ("deepgram", "nova-3", 0.0063),
 ];
 
 /// The price of `model` on `provider_id`, USD per audio minute.

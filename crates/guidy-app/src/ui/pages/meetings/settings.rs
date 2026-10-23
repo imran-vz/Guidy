@@ -116,6 +116,9 @@ pub struct MeetingSettingsView {
     permissions: Option<PermissionReport>,
     requesting: bool,
     speaker_model: Option<SpeakerModelStatus>,
+    /// Deepgram key for "Redo speakers" in the cloud (never shown back).
+    deepgram_key: Entity<InputState>,
+    has_deepgram_key: bool,
     advanced_open: bool,
     ai: Entity<AiSettingsView>,
     _subs: Vec<Subscription>,
@@ -139,6 +142,11 @@ impl MeetingSettingsView {
                     .default_value(v)
             })
         };
+        let deepgram_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(t("meetings.settings.deepgram.placeholder"))
+        });
         let match_slider = slider(current.speaker_match_threshold, cx);
         let suggest_slider = slider(current.speaker_suggest_threshold, cx);
         let subs = vec![
@@ -154,6 +162,18 @@ impl MeetingSettingsView {
                     }
                 }
             }),
+            cx.subscribe_in(
+                &deepgram_key,
+                window,
+                |this, input, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        let key = input.read(cx).value().trim().to_string();
+                        if !key.is_empty() {
+                            this.save_deepgram_key(key, window, cx);
+                        }
+                    }
+                },
+            ),
             cx.subscribe(&match_slider, |this, _, ev: &SliderEvent, cx| {
                 this.on_slider(Threshold::Match, ev, cx)
             }),
@@ -176,6 +196,8 @@ impl MeetingSettingsView {
             permissions: None,
             requesting: false,
             speaker_model: None,
+            deepgram_key,
+            has_deepgram_key: false,
             advanced_open: false,
             ai: cx.new(|cx| AiSettingsView::new(window, cx)),
             _subs: subs,
@@ -188,14 +210,80 @@ impl MeetingSettingsView {
     pub fn reload_status(&mut self, cx: &mut Context<Self>) {
         run(
             cx,
-            |b| (b.permission_status(), b.speaker_model_status()),
-            |this: &mut Self, (p, speaker), _| {
+            |b| {
+                (
+                    b.permission_status(),
+                    b.speaker_model_status(),
+                    b.diarization_options().deepgram_has_key,
+                )
+            },
+            |this: &mut Self, (p, speaker, deepgram), _| {
                 if !this.requesting {
                     this.permissions = Some(p);
                 }
                 this.speaker_model = Some(speaker);
+                this.has_deepgram_key = deepgram;
             },
         );
+    }
+
+    /// Save (`key` non-empty) or remove the Deepgram key; the input is
+    /// cleared either way (keys are never shown back).
+    fn save_deepgram_key(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.deepgram_key
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        let saved = !key.is_empty();
+        run(
+            cx,
+            move |b| b.set_deepgram_api_key(&key),
+            move |this: &mut Self, r, cx| match r {
+                Ok(()) => this.has_deepgram_key = saved,
+                Err(e) => toast_error("meetings.settings.deepgram.error", &e, cx),
+            },
+        );
+    }
+
+    fn render_deepgram_key(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        SettingRow::new(
+            "meetings-deepgram-key",
+            t("meetings.settings.deepgram.title"),
+        )
+        .description(t("meetings.settings.deepgram.description"))
+        .inline_description()
+        .stacked()
+        .control(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(Input::new(&self.deepgram_key).small().mask_toggle()),
+                )
+                .when(self.has_deepgram_key, |d| {
+                    d.child(
+                        h_flex()
+                            .gap_1()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(icon("check").xsmall().text_color(theme.success))
+                            .child(t("meetings.settings.deepgram.saved")),
+                    )
+                    .child(
+                        Button::new("meetings-deepgram-remove")
+                            .ghost()
+                            .pill()
+                            .small()
+                            .label(t("meetings.settings.deepgram.remove"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_deepgram_key(String::new(), window, cx)
+                            })),
+                    )
+                }),
+        )
+        .into_any_element()
     }
 
     fn request_permissions(&mut self, cx: &mut Context<Self>) {
@@ -800,6 +888,7 @@ impl Render for MeetingSettingsView {
             .into_any_element(),
         ]);
         recording.extend(self.render_speaker_model(cx));
+        recording.push(self.render_deepgram_key(cx));
 
         // -- other apps (MCP) -----------------------------------------------
         let mut mcp = vec![

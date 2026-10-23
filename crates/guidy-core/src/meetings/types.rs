@@ -367,6 +367,31 @@ pub enum TranscriptionEngine {
     Cloud { provider_id: String, model: String },
 }
 
+/// What tells a meeting's speakers apart when they are redone.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiarizationEngine {
+    /// The standard speaker model (what processing uses).
+    #[default]
+    Standard,
+    /// The larger, more accurate speaker model (downloaded on first use).
+    Accurate,
+    /// Deepgram's diarization (uploads the meeting's system audio).
+    Deepgram,
+}
+
+/// What redoing a meeting's speakers can use right now.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct DiarizationOptions {
+    /// The accurate model is downloaded (else its first use downloads it).
+    pub accurate_installed: bool,
+    pub accurate_size_mb: u64,
+    /// A Deepgram API key is saved.
+    pub deepgram_has_key: bool,
+    /// Deepgram's price, USD per minute of audio.
+    pub deepgram_usd_per_min: Option<f64>,
+}
+
 /// A cloud provider a meeting can be transcribed with.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct CloudTranscriptionOption {

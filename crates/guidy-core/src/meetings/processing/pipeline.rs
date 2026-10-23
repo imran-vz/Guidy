@@ -64,6 +64,27 @@ pub trait Embedder {
     fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>>;
 }
 
+/// A diarization service: who spoke each of a track's speech segments.
+pub trait SpeakerTurns {
+    /// One speaker label per segment of `pcms` (consecutive speech segments
+    /// of the system track, in order), `None` where it can't tell or the
+    /// segment mixes voices.
+    fn speakers(&mut self, pcms: Vec<Vec<f32>>) -> Result<Vec<Option<usize>>>;
+}
+
+/// How the cluster stage tells speakers apart.
+#[derive(Default)]
+pub enum Diarizer<'a> {
+    /// The segments' voiceprints (the standard speaker model).
+    #[default]
+    Voiceprints,
+    /// A more accurate speaker model's voiceprints, for telling voices
+    /// apart only (known people are matched with the standard ones).
+    Model(&'a mut dyn Embedder),
+    /// A diarization service's speaker turns, for system audio.
+    Service(&'a mut dyn SpeakerTurns),
+}
+
 /// Tunables, from settings plus fixed defaults.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
@@ -110,6 +131,52 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self::from_settings(&MeetingSettings::default())
     }
+}
+
+/// A checkpoint rebuilt from a meeting's stored transcript, complete up to
+/// transcription: redoing only the speakers resumes it at the voiceprints,
+/// without transcribing again. Each stored segment is a unit (mic first,
+/// then system, each by time); `mic` / `system` say which tracks have
+/// audio, `duration_ms` is the recording's length.
+pub fn cache_from_segments(
+    segments: &[Segment],
+    mic: bool,
+    system: bool,
+    duration_ms: i64,
+) -> ProcessingCache {
+    let mut sorted: Vec<&Segment> = segments
+        .iter()
+        .filter(|s| match s.track {
+            Track::Mic => mic,
+            Track::System => system,
+        })
+        .collect();
+    sorted.sort_by_key(|s| (s.track != Track::Mic, s.t0_ms, s.id));
+    let duration_ms = duration_ms.max(sorted.iter().map(|s| s.t1_ms).max().unwrap_or(0));
+    let mut cache = ProcessingCache::new();
+    cache.mic_ms = mic.then_some(duration_ms);
+    cache.system_ms = system.then_some(duration_ms);
+    cache.units = sorted
+        .iter()
+        .map(|s| Unit {
+            track: s.track,
+            span: vad::Span {
+                t0_ms: s.t0_ms,
+                t1_ms: s.t1_ms,
+            },
+        })
+        .collect();
+    cache.transcripts = sorted
+        .iter()
+        .map(|s| {
+            Some(UnitTranscript {
+                text: s.text.clone(),
+                words: s.words.clone(),
+            })
+        })
+        .collect();
+    cache.embeddings = vec![None; sorted.len()];
+    cache
 }
 
 /// The stage after `s` (`Done` stays `Done`).
@@ -200,6 +267,8 @@ pub struct Pipeline<'a> {
     pub vad: Box<dyn FnMut() -> Result<Box<dyn SpeechScorer>> + 'a>,
     pub transcriber: &'a mut dyn SegmentTranscriber,
     pub embedder: &'a mut dyn Embedder,
+    /// How the cluster stage tells speakers apart.
+    pub diarizer: Diarizer<'a>,
     pub cancel: &'a AtomicBool,
     pub on_progress: Box<dyn FnMut(ProcessingProgress) + 'a>,
 }
@@ -616,13 +685,71 @@ impl<'a> Pipeline<'a> {
     }
 
     fn cluster(&mut self, cache: &mut ProcessingCache) -> Result<()> {
-        cache.clustering = Some(cluster_units(
+        let source = self.cluster_source(cache)?;
+        cache.clustering = Some(cluster_units_with(
             cache,
             &self.config,
             &super::naming::known_voices(self.store)?,
             &self.store.user_voiceprints()?,
+            &source,
         ));
         Ok(())
+    }
+
+    /// What the chosen [`Diarizer`] says about who spoke each unit.
+    fn cluster_source(&mut self, cache: &ProcessingCache) -> Result<ClusterSource> {
+        let n = cache.units.len();
+        match self.diarizer {
+            Diarizer::Voiceprints => Ok(ClusterSource::Voiceprints),
+            Diarizer::Model(_) => {
+                // The units the standard model could embed: the same
+                // speech, through the better model.
+                let mut vectors = vec![None; n];
+                for (i, slot) in vectors.iter_mut().enumerate() {
+                    if !matches!(cache.embeddings.get(i), Some(Some(Some(_)))) {
+                        continue;
+                    }
+                    self.check_cancel()?;
+                    let unit = cache.units[i];
+                    let pcm = self
+                        .source(unit.track)?
+                        .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
+                    if let Diarizer::Model(e) = &mut self.diarizer {
+                        *slot = e.embed(&pcm)?.map(|v| cluster::normalized(&v));
+                    }
+                    self.progress(ProcessingStage::Cluster, i as f32 / n.max(1) as f32, None);
+                }
+                Ok(ClusterSource::Vectors(vectors))
+            }
+            Diarizer::Service(_) => {
+                let system: Vec<usize> = (0..n)
+                    .filter(|&i| {
+                        cache.units[i].track == Track::System
+                            && cache.transcripts[i]
+                                .as_ref()
+                                .is_some_and(|t| !t.text.is_empty())
+                    })
+                    .collect();
+                let mut pcms = Vec::with_capacity(system.len());
+                for &i in &system {
+                    let unit = cache.units[i];
+                    pcms.push(
+                        self.source(unit.track)?
+                            .read_range(unit.span.t0_ms, unit.span.t1_ms)?,
+                    );
+                }
+                self.check_cancel()?;
+                let found = match &mut self.diarizer {
+                    Diarizer::Service(s) => s.speakers(pcms)?,
+                    _ => unreachable!("matched above"),
+                };
+                let mut labels = vec![None; n];
+                for (&i, l) in system.iter().zip(found) {
+                    labels[i] = l;
+                }
+                Ok(ClusterSource::SystemLabels(labels))
+            }
+        }
     }
 
     /// Store the transcript and its per-segment voiceprints.
@@ -834,11 +961,42 @@ fn others_on_mic(
 /// Cluster the units that have speech (system, plus mic speech that isn't
 /// the user's: see [`others_on_mic`]) and match the clusters to known
 /// people. Mic units keep `None` (the user) unless they are in a cluster.
+/// What decides who spoke which segment.
+#[derive(Debug, Clone, Default)]
+pub enum ClusterSource {
+    /// Clusters of the segments' (standard model) voiceprints.
+    #[default]
+    Voiceprints,
+    /// Clusters of these voiceprints, one per unit (a more accurate model);
+    /// known people are still matched with the standard ones.
+    Vectors(Vec<Option<Vec<f32>>>),
+    /// A diarization service's speaker per unit, for system audio (`None`:
+    /// it couldn't tell, or the segment mixes voices).
+    SystemLabels(Vec<Option<usize>>),
+}
+
 pub fn cluster_units(
     cache: &ProcessingCache,
     config: &PipelineConfig,
     known: &[KnownVoice],
     user_voice: &[Vec<f32>],
+) -> Clustering {
+    cluster_units_with(
+        cache,
+        config,
+        known,
+        user_voice,
+        &ClusterSource::Voiceprints,
+    )
+}
+
+/// [`cluster_units`], with the speakers decided by `source`.
+pub fn cluster_units_with(
+    cache: &ProcessingCache,
+    config: &PipelineConfig,
+    known: &[KnownVoice],
+    user_voice: &[Vec<f32>],
+    source: &ClusterSource,
 ) -> Clustering {
     let n = cache.units.len();
     let on_mic = others_on_mic(cache, config, user_voice);
@@ -850,14 +1008,24 @@ pub fn cluster_units(
                     .is_some_and(|t| !t.text.is_empty())
         })
         .collect();
-    let embedded: Vec<usize> = speech
-        .iter()
-        .copied()
-        .filter(|&i| matches!(cache.embeddings.get(i), Some(Some(Some(_)))))
-        .collect();
+    let vector_of = |i: usize| -> Option<Vec<f32>> {
+        match source {
+            ClusterSource::Vectors(v) => v.get(i).cloned().flatten(),
+            _ => cache.embeddings.get(i).cloned().flatten().flatten(),
+        }
+    };
+    let embedded: Vec<usize> = match source {
+        // The service's labels stand in for clustering.
+        ClusterSource::SystemLabels(_) => Vec::new(),
+        _ => speech
+            .iter()
+            .copied()
+            .filter(|&i| vector_of(i).is_some())
+            .collect(),
+    };
     let vectors: Vec<Vec<f32>> = embedded
         .iter()
-        .map(|&i| cache.embeddings[i].clone().flatten().expect("embedded"))
+        .map(|&i| vector_of(i).expect("embedded"))
         .collect();
     let (labels_embedded, k_embedded) = cluster::agglomerate(&vectors, &config.cluster);
 
@@ -887,17 +1055,23 @@ pub fn cluster_units(
         .iter()
         .map(|&i| (cache.units[i].span.t0_ms, cache.units[i].span.t1_ms))
         .collect();
-    let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
-    let attached = cluster::attach_by_time(&spans, &system_labels);
-    let any_voice = system_labels.iter().any(Option::is_some);
-    for (&i, l) in system.iter().zip(attached) {
-        labels[i] = if rejected[i] {
-            None
-        } else if any_voice {
-            l
-        } else {
-            Some(k_embedded)
-        };
+    if let ClusterSource::SystemLabels(external) = source {
+        for &i in &system {
+            labels[i] = external.get(i).copied().flatten();
+        }
+    } else {
+        let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
+        let attached = cluster::attach_by_time(&spans, &system_labels);
+        let any_voice = system_labels.iter().any(Option::is_some);
+        for (&i, l) in system.iter().zip(attached) {
+            labels[i] = if rejected[i] {
+                None
+            } else if any_voice {
+                l
+            } else {
+                Some(k_embedded)
+            };
+        }
     }
     log::info!(
         "diarization: {} segment(s) with speech, {} with a voiceprint, {k_embedded} cluster(s), \

@@ -23,7 +23,7 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use super::cloud::CloudTranscriber;
 use super::pipeline::{
-    next_stage, overall_fraction, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
+    next_stage, overall_fraction, Diarizer, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
 };
 use super::speaker_model::{
     installed_speaker_model, speaker_model_installed, SpeakerEmbedder, SpeakerModelMissing,
@@ -46,6 +46,8 @@ struct JobState {
     queue: VecDeque<MeetingId>,
     /// The engine of each queued meeting that doesn't use the local one.
     engines: HashMap<MeetingId, TranscriptionEngine>,
+    /// How each queued "redo speakers" tells the speakers apart.
+    diarizers: HashMap<MeetingId, DiarizationEngine>,
     /// The running job and its cancel flag. The flag is new for each run,
     /// so it also tells a run apart from a later one of the same meeting.
     current: Option<(MeetingId, Arc<AtomicBool>)>,
@@ -114,7 +116,15 @@ impl Processor {
     /// the audio of a queued meeting. Its previous status and error are
     /// saved in the row, so a cancel restores them even after a restart.
     pub fn enqueue(&self, id: MeetingId) -> Result<()> {
-        self.enqueue_job(id, TranscriptionEngine::Local, false)
+        self.enqueue_job(id, TranscriptionEngine::Local, Start::Resume)
+    }
+
+    /// Queue redoing only `id`'s speakers with `engine`, keeping its
+    /// transcript: the stored segments become a checkpoint complete up to
+    /// transcription, and the run resumes at the voiceprints. For a
+    /// processed meeting whose audio is still there; Deepgram needs its key.
+    pub fn enqueue_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> Result<()> {
+        self.enqueue_job(id, TranscriptionEngine::Local, Start::Speakers(engine))
     }
 
     /// Queue a fresh run of `id` transcribed by `engine` (a redo): unlike
@@ -133,14 +143,14 @@ impl Processor {
             }
             engine => engine,
         };
-        self.enqueue_job(id, engine, true)
+        self.enqueue_job(id, engine, Start::Fresh)
     }
 
-    fn enqueue_job(&self, id: MeetingId, engine: TranscriptionEngine, fresh: bool) -> Result<()> {
+    fn enqueue_job(&self, id: MeetingId, engine: TranscriptionEngine, start: Start) -> Result<()> {
         let deadline = std::time::Instant::now() + STOP_WAIT;
         loop {
             self.wait_until_stopped(id, deadline)?;
-            if self.enqueue_once(id, &engine, fresh)? {
+            if self.enqueue_once(id, &engine, start)? {
                 return Ok(());
             }
         }
@@ -170,21 +180,39 @@ impl Processor {
         &self,
         id: MeetingId,
         engine: &TranscriptionEngine,
-        fresh: bool,
+        start: Start,
     ) -> Result<bool> {
+        let fresh = start == Start::Fresh;
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
         };
         if meeting.status == MeetingStatus::Recording {
             bail!("the meeting is still being recorded");
         }
-        // Where it will resume from (if its checkpoint is intact).
-        let next = match meeting
+        let stage = meeting
             .processing_stage
             .as_deref()
-            .and_then(ProcessingStage::parse)
-        {
+            .and_then(ProcessingStage::parse);
+        if let Start::Speakers(diarizer) = start {
+            if stage != Some(ProcessingStage::Done) {
+                bail!("the meeting needs a transcript before its speakers can be redone");
+            }
+            if diarizer == DiarizationEngine::Deepgram
+                && crate::settings::provider_api_key(super::deepgram::DEEPGRAM_PROVIDER_ID)
+                    .trim()
+                    .is_empty()
+            {
+                return Err(super::cloud::CloudKeyMissing {
+                    provider_id: super::deepgram::DEEPGRAM_PROVIDER_ID.into(),
+                    label: super::deepgram::DEEPGRAM_LABEL.into(),
+                }
+                .into());
+            }
+        }
+        // Where it will resume from (if its checkpoint is intact).
+        let next = match stage {
             _ if fresh => ProcessingStage::Decode,
+            _ if matches!(start, Start::Speakers(_)) => ProcessingStage::Voiceprints,
             None | Some(ProcessingStage::Done) => ProcessingStage::Decode,
             Some(ProcessingStage::Merge) => ProcessingStage::Merge,
             Some(stage) => next_stage(stage),
@@ -237,14 +265,17 @@ impl Processor {
         let needs_audio = next <= ProcessingStage::Voiceprints;
         let marked = self.settle(&mut state, id, || {
             let marked = self.inner.store.mark_processing(id, needs_audio)?;
-            if marked && fresh {
-                if let Err(e) = self.start_over(id) {
-                    // Not queued after all: undo the mark.
-                    if let Err(e2) = self.restore_status(id) {
-                        log::warn!("meeting {id}: {e2:#}");
-                    }
-                    return Err(e);
+            let prepared = match start {
+                Start::Fresh if marked => self.start_over(id),
+                Start::Speakers(_) if marked => self.prepare_speakers(id),
+                _ => Ok(()),
+            };
+            if let Err(e) = prepared {
+                // Not queued after all: undo the mark.
+                if let Err(e2) = self.restore_status(id) {
+                    log::warn!("meeting {id}: {e2:#}");
                 }
+                return Err(e);
             }
             anyhow::Ok(marked)
         });
@@ -273,6 +304,10 @@ impl Processor {
         } else {
             state.engines.insert(id, engine.clone());
         }
+        match start {
+            Start::Speakers(d) => state.diarizers.insert(id, d),
+            _ => state.diarizers.remove(&id),
+        };
         let start = !state.running;
         state.running = true;
         drop(state);
@@ -291,6 +326,7 @@ impl Processor {
                     state.queue.remove(pos);
                     state.progress.remove(&id);
                     state.engines.remove(&id);
+                    state.diarizers.remove(&id);
                     if let Err(e2) = self.settle(&mut state, id, || self.restore_status(id)) {
                         log::warn!("meeting {id}: {e2:#}");
                     }
@@ -314,6 +350,7 @@ impl Processor {
             state.queue.remove(pos);
             state.progress.remove(&id);
             state.engines.remove(&id);
+            state.diarizers.remove(&id);
             // Settling, so an enqueue can't mark it again in between and
             // then be left queued but not `Processing`.
             let restored = self.settle(&mut state, id, || self.restore_status(id));
@@ -360,6 +397,26 @@ impl Processor {
         state.settling.remove(&id);
         self.inner.settled.notify_all();
         r.unwrap_or_else(|panic| resume_unwind(panic))
+    }
+
+    /// Make a processed meeting's stored transcript its checkpoint, complete
+    /// up to transcription (see [`super::pipeline::cache_from_segments`]),
+    /// so its run redoes only the speakers. Callers just marked it.
+    fn prepare_speakers(&self, id: MeetingId) -> Result<()> {
+        let store = &self.inner.store;
+        let Some(meeting) = store.get_meeting(id)? else {
+            bail!("meeting {id} not found");
+        };
+        let cache = super::pipeline::cache_from_segments(
+            &store.segments(id)?,
+            meeting.mic_audio_path.is_some(),
+            meeting.system_audio_path.is_some(),
+            meeting.duration_ms().unwrap_or(0),
+        );
+        let key = crate::secrets::meetings_data_key()?;
+        super::sidecar::write_cache(&self.inner.meetings_dir, id, &key, &cache)?;
+        store.set_processing_stage_if_processing(id, Some(ProcessingStage::Transcribe))?;
+        Ok(())
     }
 
     /// Forget a just-marked meeting's progress, so its run starts over from
@@ -505,12 +562,13 @@ impl Processor {
                         let flag = Arc::new(AtomicBool::new(false));
                         state.current = Some((id, flag.clone()));
                         let engine = state.engines.remove(&id).unwrap_or_default();
-                        Some((id, flag, engine))
+                        let diarizer = state.diarizers.remove(&id).unwrap_or_default();
+                        Some((id, flag, engine, diarizer))
                     }
                     None => None,
                 }
             };
-            let Some((id, cancel, engine)) = next else {
+            let Some((id, cancel, engine, diarizer)) = next else {
                 // Free the meeting model before deciding to exit, so a job
                 // queued meanwhile never races the unload.
                 if let Some(t) = transcriber.as_mut() {
@@ -525,7 +583,9 @@ impl Processor {
             };
             let t =
                 transcriber.get_or_insert_with(|| MeetingTranscriber::with_engine(self.engine()));
-            let outcome = catch_unwind(AssertUnwindSafe(|| self.run_job(id, &cancel, &engine, t)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                self.run_job(id, &cancel, &engine, diarizer, t)
+            }));
             let outcome = outcome.unwrap_or_else(|panic| {
                 let msg = panic
                     .downcast_ref::<String>()
@@ -613,6 +673,7 @@ impl Processor {
         id: MeetingId,
         cancel: &Arc<AtomicBool>,
         engine: &TranscriptionEngine,
+        diarization: DiarizationEngine,
         transcriber: &mut MeetingTranscriber,
     ) -> Result<()> {
         let inner = &self.inner;
@@ -682,7 +743,27 @@ impl Processor {
         let mut embedder = LazyEmbedder {
             app: &inner.app,
             embedder: None,
+            accurate: false,
         };
+        let mut accurate = LazyEmbedder {
+            app: &inner.app,
+            embedder: None,
+            accurate: true,
+        };
+        let mut deepgram = None;
+        let diarizer = match diarization {
+            DiarizationEngine::Standard => Diarizer::Voiceprints,
+            DiarizationEngine::Accurate => Diarizer::Model(&mut accurate),
+            DiarizationEngine::Deepgram => {
+                Diarizer::Service(deepgram.insert(super::deepgram::Deepgram::new(
+                    crate::settings::provider_api_key(super::deepgram::DEEPGRAM_PROVIDER_ID),
+                    Some(id),
+                )?))
+            }
+        };
+        if diarization != DiarizationEngine::Standard {
+            log::info!("meeting {id}: redoing the speakers with {diarization:?}");
+        }
         let app = inner.app.clone();
         let this = self.clone();
         let run = cancel.clone();
@@ -700,6 +781,7 @@ impl Processor {
             vad: Box::new(move || make_detector(&app)),
             transcriber: segment_transcriber,
             embedder: &mut embedder,
+            diarizer,
             cancel,
             on_progress: Box::new(move |p| this.report_progress(&run, p)),
         }
@@ -710,6 +792,17 @@ impl Processor {
         }
         result
     }
+}
+
+/// How a queued run begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// From where an earlier run stopped (or the start).
+    Resume,
+    /// From the start, whatever an earlier run left.
+    Fresh,
+    /// Only the speakers, from the stored transcript.
+    Speakers(DiarizationEngine),
 }
 
 /// How long [`Processor::enqueue`] waits for a cancelled run of the same
@@ -858,18 +951,28 @@ impl SegmentTranscriber for LazyTranscriber<'_> {
     }
 }
 
-/// Loads the speaker model on first use (never downloads it).
+/// Loads a speaker model on first use: the standard one (never downloads
+/// it), or the accurate one (downloading it: the user chose it).
 struct LazyEmbedder<'a> {
     app: &'a AppHandle,
     embedder: Option<SpeakerEmbedder>,
+    accurate: bool,
 }
 
 impl Embedder for LazyEmbedder<'_> {
     fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
         if self.embedder.is_none() {
-            // Downloaded only when the user asks (Meetings > Settings).
-            let path = installed_speaker_model(self.app)?;
-            self.embedder = Some(SpeakerEmbedder::new(&path)?);
+            self.embedder = Some(if self.accurate {
+                let path = super::speaker_model::ensure_accurate_model(self.app, |done, total| {
+                    log::debug!("accurate speaker model: {done} of {total} bytes");
+                })?;
+                // About six times the standard model's work.
+                SpeakerEmbedder::with_threads(&path, 4)?
+            } else {
+                // Downloaded only when the user asks (Meetings > Settings).
+                let path = installed_speaker_model(self.app)?;
+                SpeakerEmbedder::new(&path)?
+            });
         }
         self.embedder.as_ref().expect("loaded").embed(pcm)
     }
@@ -1601,6 +1704,92 @@ mod tests {
             model: String::new(),
         };
         assert_eq!(local_model_choice(&cloud, &settings), None);
+    }
+
+    /// Redoing the speakers keeps the transcript: the stored segments become
+    /// the checkpoint and the run resumes at the voiceprints.
+    #[test]
+    fn redoing_the_speakers_resumes_from_the_stored_transcript() {
+        let app = TestApp::new();
+        app.app
+            .manage(Arc::new(ModelManager::new(&app.app).unwrap()));
+        let speaker = super::super::speaker_model::speaker_model_path(&app.app).unwrap();
+        std::fs::create_dir_all(speaker.parent().unwrap()).unwrap();
+        std::fs::File::create(&speaker)
+            .unwrap()
+            .set_len(super::super::SPEAKER_MODEL_SIZE)
+            .unwrap();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
+        p.inner.state.lock().running = true;
+        let id = store
+            .insert_meeting(&Meeting {
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+        let seg = |t0_ms: i64, text: &str| Segment {
+            id: 0,
+            meeting_id: id,
+            track: Track::Mic,
+            t0_ms,
+            t1_ms: t0_ms + 1_000,
+            text: text.into(),
+            words: Vec::new(),
+            speaker_id: None,
+        };
+        store
+            .replace_transcript(id, &[], &[seg(0, "one"), seg(2_000, "two")])
+            .unwrap();
+
+        // No Deepgram key: refused, typed, untouched.
+        let e = p
+            .enqueue_speakers(id, DiarizationEngine::Deepgram)
+            .unwrap_err();
+        assert!(e.is::<super::super::CloudKeyMissing>(), "{e:#}");
+        assert_eq!(
+            store.get_meeting(id).unwrap().unwrap().status,
+            MeetingStatus::Processed
+        );
+
+        // No local transcription model needed (none is downloaded here).
+        p.enqueue_speakers(id, DiarizationEngine::Accurate).unwrap();
+        assert_eq!(p.inner.state.lock().queue, [id]);
+        assert_eq!(
+            p.inner.state.lock().diarizers.get(&id),
+            Some(&DiarizationEngine::Accurate)
+        );
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processing);
+        assert_eq!(m.processing_stage.as_deref(), Some("transcribe"));
+        let key = crate::secrets::meetings_data_key().unwrap();
+        let cache = super::super::sidecar::read_cache(dir.path(), id, &key)
+            .unwrap()
+            .unwrap();
+        let texts: Vec<_> = cache
+            .transcripts
+            .iter()
+            .map(|t| t.as_ref().unwrap().text.as_str())
+            .collect();
+        assert_eq!(texts, ["one", "two"]);
+
+        // Cancelled before it ran: the meeting is as it was.
+        p.cancel(id).unwrap();
+        assert!(p.inner.state.lock().diarizers.is_empty());
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(
+            (m.status, m.processing_stage.as_deref()),
+            (MeetingStatus::Processed, Some("done"))
+        );
+
+        // A meeting without a transcript has no speakers to redo.
+        let recorded = store
+            .insert_meeting(&meeting(MeetingStatus::Recorded))
+            .unwrap();
+        assert!(p
+            .enqueue_speakers(recorded, DiarizationEngine::Standard)
+            .is_err());
     }
 
     /// A cloud redo needs no local model (only the speaker model and the

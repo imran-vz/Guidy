@@ -27,6 +27,18 @@ pub const SPEAKER_MODEL_SHA256: &str =
     "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012";
 pub const SPEAKER_MODEL_SIZE: u64 = 26_530_550;
 
+/// The more accurate (and larger, slower) model, used only to tell voices
+/// apart when the user redoes a meeting's speakers with it: its voiceprints
+/// live in another space than the standard model's, so recognising known
+/// people still uses the standard one. WeSpeaker ResNet293-LM, same
+/// training data, from the same sherpa-onnx release.
+pub const ACCURATE_MODEL_NAME: &str = "WeSpeaker ResNet293";
+pub const ACCURATE_MODEL_FILE: &str = "wespeaker_en_voxceleb_resnet293_LM.onnx";
+pub const ACCURATE_MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet293_LM.onnx";
+pub const ACCURATE_MODEL_SHA256: &str =
+    "f65dbc820e534eef64ae12d1e289e20244d60e60f7f00d7b092092b1c458be2e";
+pub const ACCURATE_MODEL_SIZE: u64 = 114_336_527;
+
 /// The speaker model isn't downloaded. It downloads only when the user asks
 /// (Meetings > Settings), so processing refuses to start without it.
 /// Downcast an `anyhow::Error` to this to point the user there.
@@ -122,6 +134,41 @@ pub fn speaker_model_status(app: &AppHandle) -> SpeakerModelStatus {
 fn set_status(app: &AppHandle, status: SpeakerModelStatus) {
     *status_cell().lock() = Some(status.clone());
     let _ = app.emit(SPEAKER_MODEL_STATUS_EVENT, status);
+}
+
+/// Whether the accurate speaker model is on disk.
+pub fn accurate_model_installed(app: &AppHandle) -> bool {
+    accurate_model_path(app)
+        .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == ACCURATE_MODEL_SIZE))
+}
+
+pub fn accurate_model_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(speaker_model_dir(app)?.join(ACCURATE_MODEL_FILE))
+}
+
+/// The accurate model's path, downloading it first if needed (the user
+/// chose to redo speakers with it). Blocking, like [`ensure_speaker_model`];
+/// `on_progress` gets `(downloaded, total)` bytes.
+pub fn ensure_accurate_model(
+    app: &AppHandle,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<PathBuf> {
+    let path = accurate_model_path(app)?;
+    if accurate_model_installed(app) {
+        return Ok(path);
+    }
+    let _guard = download_lock().lock();
+    if accurate_model_installed(app) {
+        return Ok(path);
+    }
+    crate::host::async_runtime::block_on(download_verified(
+        ACCURATE_MODEL_URL,
+        &path,
+        ACCURATE_MODEL_SHA256,
+        |downloaded, total| on_progress(downloaded, total.unwrap_or(ACCURATE_MODEL_SIZE)),
+    ))
+    .context("could not download the accurate speaker model")?;
+    Ok(path)
 }
 
 /// The model path, downloading it first if needed. Blocking: call from a
@@ -252,9 +299,13 @@ pub struct SpeakerEmbedder {
 
 impl SpeakerEmbedder {
     pub fn new(model: &Path) -> Result<Self> {
+        Self::with_threads(model, 2)
+    }
+
+    pub fn with_threads(model: &Path, num_threads: i32) -> Result<Self> {
         let config = sherpa_onnx::SpeakerEmbeddingExtractorConfig {
             model: Some(model.to_string_lossy().into_owned()),
-            num_threads: 2,
+            num_threads,
             debug: false,
             provider: Some("cpu".into()),
         };
@@ -289,6 +340,41 @@ impl SpeakerEmbedder {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A speaker model file loads and embeds the fixture: halves of one
+    /// voice are similar, the voice and silence-free noise aren't. Run with
+    /// `GUIDY_TEST_SPEAKER_MODEL=<onnx> cargo test -p guidy-core --lib
+    /// speaker_model::tests::embeds -- --ignored --nocapture`
+    // IGNORE-REASON: needs a downloaded speaker model.
+    #[test]
+    #[ignore]
+    fn embeds_with_a_real_model() {
+        let model =
+            std::env::var_os("GUIDY_TEST_SPEAKER_MODEL").expect("set GUIDY_TEST_SPEAKER_MODEL");
+        let wav = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/audio/speech-16k-mono.wav"
+        );
+        let pcm = crate::audio_toolkit::read_wav_samples(wav).unwrap();
+        let e = SpeakerEmbedder::new(Path::new(&model)).unwrap();
+        let half = pcm.len() / 2;
+        let started = std::time::Instant::now();
+        let a = e.embed(&pcm[..half]).unwrap().unwrap();
+        let b = e.embed(&pcm[half..]).unwrap().unwrap();
+        let noise: Vec<f32> = (0..half)
+            .map(|i| ((i * 7919 % 1000) as f32 / 1000.0 - 0.5) * 0.2)
+            .collect();
+        let n = e.embed(&noise).unwrap().unwrap();
+        let cos = super::super::cluster::cosine;
+        println!(
+            "dim {} · same voice {:.2} · voice vs noise {:.2} · {} ms for two halves",
+            e.dim(),
+            cos(&a, &b),
+            cos(&a, &n),
+            started.elapsed().as_millis()
+        );
+        assert!(cos(&a, &b) > cos(&a, &n));
+    }
 
     /// A one-shot HTTP server that answers every request with `body`.
     async fn serve(body: Vec<u8>) -> String {

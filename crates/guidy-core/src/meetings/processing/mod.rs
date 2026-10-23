@@ -21,6 +21,7 @@
 
 pub mod cloud;
 pub mod cluster;
+pub mod deepgram;
 pub mod jobs;
 pub mod naming;
 pub mod pipeline;

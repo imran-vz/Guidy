@@ -651,6 +651,73 @@ pub fn redo_choices(
     out
 }
 
+/// One entry of the "Redo speakers" menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeakerRedoChoice {
+    pub engine: guidy_core::meetings::types::DiarizationEngine,
+    pub label: String,
+    /// `false`: shown, can't be picked (Deepgram without a key).
+    pub enabled: bool,
+    /// Uploads the audio: ask first.
+    pub cloud: bool,
+    pub cost: Option<String>,
+}
+
+/// The "Redo speakers" menu, the default (the accurate model) first, for a
+/// meeting of `minutes`. Labels come translated: `accurate` and `standard`
+/// are the model names, `download` contains `{{size}}`, `no_key` is the
+/// suffix for Deepgram without a key.
+pub fn speaker_redo_choices(
+    options: &guidy_core::meetings::types::DiarizationOptions,
+    minutes: Option<f64>,
+    accurate: &str,
+    standard: &str,
+    download: &str,
+    no_key: &str,
+) -> Vec<SpeakerRedoChoice> {
+    use guidy_core::meetings::types::DiarizationEngine;
+    let accurate_label = if options.accurate_installed {
+        accurate.to_string()
+    } else {
+        format!(
+            "{accurate} · {}",
+            download.replace("{{size}}", &format!("{} MB", options.accurate_size_mb))
+        )
+    };
+    let cost = options
+        .deepgram_usd_per_min
+        .zip(minutes)
+        .map(|(rate, minutes)| format!("${:.2}", (rate * minutes).max(0.01)));
+    let deepgram = match (&cost, options.deepgram_has_key) {
+        (_, false) => format!("Deepgram · {no_key}"),
+        (Some(cost), true) => format!("Deepgram · ~{cost}"),
+        (None, true) => "Deepgram".to_string(),
+    };
+    vec![
+        SpeakerRedoChoice {
+            engine: DiarizationEngine::Accurate,
+            label: accurate_label,
+            enabled: true,
+            cloud: false,
+            cost: None,
+        },
+        SpeakerRedoChoice {
+            engine: DiarizationEngine::Standard,
+            label: standard.to_string(),
+            enabled: true,
+            cloud: false,
+            cost: None,
+        },
+        SpeakerRedoChoice {
+            engine: DiarizationEngine::Deepgram,
+            label: deepgram,
+            enabled: options.deepgram_has_key,
+            cloud: true,
+            cost,
+        },
+    ]
+}
+
 /// A meeting's summary as Markdown, for pasting into notes or a doc: the
 /// title, `date`, the summary, decisions, topics and action items (with
 /// owner, due date and Linear issue). Empty sections are left out.
@@ -874,6 +941,45 @@ mod tests {
         );
         let ids: Vec<_> = shown.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["just-ended", "tomorrow"]);
+    }
+
+    #[test]
+    fn the_speaker_redo_menu_offers_the_models_then_deepgram() {
+        use guidy_core::meetings::types::{DiarizationEngine, DiarizationOptions};
+        let mut options = DiarizationOptions {
+            accurate_installed: false,
+            accurate_size_mb: 109,
+            deepgram_has_key: false,
+            deepgram_usd_per_min: Some(0.0063),
+        };
+        let menu = |o: &DiarizationOptions| {
+            speaker_redo_choices(
+                o,
+                Some(25.0),
+                "Accurate",
+                "Standard",
+                "{{size}} download",
+                "needs a key",
+            )
+        };
+        let c = menu(&options);
+        let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Accurate · 109 MB download",
+                "Standard",
+                "Deepgram · needs a key"
+            ]
+        );
+        assert_eq!(c[0].engine, DiarizationEngine::Accurate);
+        assert!(!c[2].enabled);
+        options.accurate_installed = true;
+        options.deepgram_has_key = true;
+        let c = menu(&options);
+        assert_eq!(c[0].label, "Accurate");
+        assert_eq!(c[2].label, "Deepgram · ~$0.16");
+        assert!(c[2].enabled && c[2].cloud);
     }
 
     #[test]

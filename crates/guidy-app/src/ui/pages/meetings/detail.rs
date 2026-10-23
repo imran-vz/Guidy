@@ -6,7 +6,7 @@ use super::{meeting_model_missing, meeting_settings, render_model_download, run,
 use crate::logic::meetings::{
     can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker,
     needs_confirmation, non_empty, speaker_name, status_key, talk_time, transcript_issue,
-    MeetingsEvent, RedoChoice, SpeakerBlock, TalkTime, TranscriptIssue,
+    MeetingsEvent, RedoChoice, SpeakerBlock, SpeakerRedoChoice, TalkTime, TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -21,8 +21,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
 use guidy_core::meetings::types::{
-    CloudTranscriptionOption, LiveStatus, Meeting, MeetingId, MeetingSpeaker, MeetingStatus,
-    Person, ProcessingProgress, Segment, SpeakerId, Track, TranscriptionEngine,
+    CloudTranscriptionOption, DiarizationOptions, LiveStatus, Meeting, MeetingId, MeetingSpeaker,
+    MeetingStatus, Person, ProcessingProgress, Segment, SpeakerId, Track, TranscriptionEngine,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -67,6 +67,8 @@ pub struct MeetingDetail {
     pending_seek: Option<i64>,
     /// Cloud providers the transcript can be redone with.
     cloud_options: Vec<CloudTranscriptionOption>,
+    /// What "Redo speakers" can use.
+    diarization: DiarizationOptions,
     /// "Copy transcript" just copied (shows a check for a moment).
     transcript_copied: bool,
     ticking: bool,
@@ -129,6 +131,7 @@ impl MeetingDetail {
             cancelling: false,
             pending_seek: None,
             cloud_options: Vec::new(),
+            diarization: DiarizationOptions::default(),
             transcript_copied: false,
             ticking: false,
             _subs: subs,
@@ -169,13 +172,22 @@ impl MeetingDetail {
                 let people = b.list_people()?;
                 let progress = b.processing_progress(id);
                 let cloud = b.cloud_transcription_options();
-                Ok((meeting, segments, speakers, people, progress, cloud))
+                let diarization = b.diarization_options();
+                Ok((
+                    meeting,
+                    segments,
+                    speakers,
+                    people,
+                    progress,
+                    (cloud, diarization),
+                ))
             },
             |this: &mut Self, r, cx| {
                 this.loading = false;
                 match r {
-                    Ok((meeting, segments, speakers, people, progress, cloud)) => {
+                    Ok((meeting, segments, speakers, people, progress, (cloud, diarization))) => {
                         this.cloud_options = cloud;
+                        this.diarization = diarization;
                         this.talk =
                             talk_time(&segments, meeting.as_ref().and_then(|m| m.duration_ms()));
                         this.meeting = meeting;
@@ -514,6 +526,125 @@ impl MeetingDetail {
                     true
                 })
         });
+    }
+
+    /// The "Redo speakers" choices.
+    pub(crate) fn speaker_redo_choices(&self) -> Vec<SpeakerRedoChoice> {
+        let minutes = self
+            .meeting
+            .as_ref()
+            .and_then(|m| m.duration_ms())
+            .map(|ms| ms as f64 / 60_000.0);
+        crate::logic::meetings::speaker_redo_choices(
+            &self.diarization,
+            minutes,
+            &t("meetings.speakersRedo.accurate"),
+            &t("meetings.speakersRedo.standard"),
+            &t("meetings.speakersRedo.download"),
+            &t("meetings.redo.noKeyShort"),
+        )
+    }
+
+    /// Redo the speakers with `choice` (Deepgram asks first: it uploads
+    /// the audio).
+    pub(crate) fn choose_speaker_redo(
+        &mut self,
+        choice: SpeakerRedoChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !choice.enabled {
+            return;
+        }
+        let engine = choice.engine;
+        let run_it = move |this: &mut Self, cx: &mut Context<Self>| {
+            let id = this.meeting_id;
+            this.processing_busy = true;
+            cx.notify();
+            run(
+                cx,
+                move |b| b.redo_speakers(id, engine),
+                |this: &mut Self, r, cx| {
+                    this.processing_busy = false;
+                    match r {
+                        Ok(()) => {
+                            if let Some(m) = &mut this.meeting {
+                                m.status = MeetingStatus::Processing;
+                            }
+                        }
+                        Err(e) => toast_error("meetings.speakersRedo.error", &e, cx),
+                    }
+                },
+            );
+        };
+        if !choice.cloud {
+            run_it(self, cx);
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        let description = match &choice.cost {
+            Some(cost) => t_args("meetings.speakersRedo.confirmDeepgram", &[("cost", cost)]),
+            None => t("meetings.speakersRedo.confirmDeepgramUnpriced"),
+        };
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            alert
+                .title(t("meetings.speakersRedo.confirmTitle"))
+                .description(description.clone())
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    weak.update(cx, |this, cx| run_it(this, cx)).ok();
+                    true
+                })
+        });
+    }
+
+    /// "Redo speakers" with the accurate model, and a menu of the others.
+    fn speakers_button(&self, cx: &mut Context<Self>) -> DropdownButton {
+        let choices = self.speaker_redo_choices();
+        let busy = self.processing_busy;
+        let main = choices[0].clone();
+        let button = Button::new("speakers-redo")
+            .ghost()
+            .small()
+            .pill()
+            .icon(icon("users"))
+            .label(t("meetings.speakersRedo.action"))
+            .tooltip(t_args(
+                "meetings.speakersRedo.tooltip",
+                &[("model", &main.label)],
+            ))
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.choose_speaker_redo(main.clone(), window, cx)
+            }));
+        let weak = cx.entity().downgrade();
+        DropdownButton::new("speakers-redo-split")
+            .button(button)
+            .disabled(busy)
+            .menu_accessibility_label(t("meetings.redo.more"))
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.label(t("meetings.redo.localTitle"));
+                for c in &choices {
+                    if c.cloud {
+                        menu = menu.separator().label(t("meetings.redo.cloudTitle"));
+                    }
+                    let choice = c.clone();
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(c.label.clone())
+                            .disabled(!c.enabled)
+                            .on_click(move |_, window, cx| {
+                                let choice = choice.clone();
+                                weak.update(cx, |this, cx| {
+                                    this.choose_speaker_redo(choice, window, cx)
+                                })
+                                .ok();
+                            }),
+                    );
+                }
+                menu
+            })
     }
 
     /// "Redo transcript" with the current meeting model, and a menu of the
@@ -1239,7 +1370,27 @@ impl MeetingDetail {
                     .into_any_element()
             })
             .collect();
-        Some(group(Some(t("meetings.detail.speakers")), rows, cx).into_any_element())
+        let redo = self
+            .meeting
+            .as_ref()
+            .is_some_and(|m| m.status == MeetingStatus::Processed && can_process(m))
+            .then(|| self.speakers_button(cx));
+        Some(
+            v_flex()
+                .w_full()
+                .gap(dp(8.))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .px(dp(2.))
+                        .items_center()
+                        .justify_between()
+                        .child(design::eyebrow(t("meetings.detail.speakers"), cx))
+                        .children(redo),
+                )
+                .child(group(None, rows, cx))
+                .into_any_element(),
+        )
     }
 
     fn render_block(&self, i: usize, block: &SpeakerBlock, cx: &mut Context<Self>) -> AnyElement {

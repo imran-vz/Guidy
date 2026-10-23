@@ -255,6 +255,19 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
         Vec::new()
     }
+    /// Redo only a processed meeting's speakers, keeping its transcript.
+    fn redo_speakers(&self, _id: MeetingId, _engine: DiarizationEngine) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// What redoing speakers can use now.
+    fn diarization_options(&self) -> DiarizationOptions {
+        DiarizationOptions::default()
+    }
+    /// Save (or, empty, remove) the Deepgram API key.
+    fn set_deepgram_api_key(&self, _key: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+
     /// The speaker-embedding model (downloads on first use).
     fn speaker_model_status(&self) -> SpeakerModelStatus {
         SpeakerModelStatus::Missing
@@ -565,6 +578,17 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn retranscribe(&self, id: MeetingId, engine: TranscriptionEngine) -> MeetingsResult<()> {
         self.m()?.retranscribe(id, engine).map_err(err)
+    }
+    fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> MeetingsResult<()> {
+        self.m()?.redo_speakers(id, engine).map_err(err)
+    }
+    fn diarization_options(&self) -> DiarizationOptions {
+        self.manager()
+            .map(|m| m.diarization_options())
+            .unwrap_or_default()
+    }
+    fn set_deepgram_api_key(&self, key: &str) -> MeetingsResult<()> {
+        self.m()?.set_deepgram_api_key(key).map_err(err)
     }
     fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
         self.manager()
@@ -1005,6 +1029,7 @@ pub mod fake {
         /// error.
         pub fail_process: Option<String>,
         pub cloud_options: Vec<CloudTranscriptionOption>,
+        pub diarization: DiarizationOptions,
         /// G2: summaries, action items, Linear, LLM.
         pub ai: FakeAiData,
     }
@@ -1028,6 +1053,7 @@ pub mod fake {
                 init: MeetingsInit::Ready,
                 fail_process: None,
                 cloud_options: Vec::new(),
+                diarization: Default::default(),
                 ai: FakeAiData::default(),
             }
         }
@@ -1293,6 +1319,21 @@ pub mod fake {
         }
         fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
             self.data.lock().cloud_options.clone()
+        }
+        fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> MeetingsResult<()> {
+            self.rec(format!("redo_speakers {id} {engine:?}"));
+            if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
+                m.status = MeetingStatus::Processing;
+            }
+            Ok(())
+        }
+        fn diarization_options(&self) -> DiarizationOptions {
+            self.data.lock().diarization.clone()
+        }
+        fn set_deepgram_api_key(&self, key: &str) -> MeetingsResult<()> {
+            self.rec(format!("set_deepgram_api_key {}", key.len()));
+            self.data.lock().diarization.deepgram_has_key = !key.trim().is_empty();
+            Ok(())
         }
         fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
             self.data.lock().progress.get(&id).cloned()

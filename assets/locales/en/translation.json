@@ -801,6 +801,17 @@
   },
   "meetings": {
     "title": "Meetings",
+    "speakersRedo": {
+      "action": "Redo speakers",
+      "tooltip": "Tell the speakers apart again with the {{model}}. The transcript stays; people are matched again by voice, and lines you tagged by hand are redone.",
+      "accurate": "accurate speaker model",
+      "standard": "Standard speaker model",
+      "download": "{{size}} download, once",
+      "error": "Couldn't redo the speakers",
+      "confirmTitle": "Find the speakers with Deepgram?",
+      "confirmDeepgram": "The other participants' audio from this meeting is uploaded to Deepgram to tell them apart, for about {{cost}}. The transcript stays as it is.",
+      "confirmDeepgramUnpriced": "The other participants' audio from this meeting is uploaded to Deepgram to tell them apart. The transcript stays as it is."
+    },
     "day": {
       "today": "Today",
       "tomorrow": "Tomorrow",
@@ -1095,6 +1106,14 @@
         "description": "Where pause, stop and the live transcript are while a meeting records.",
         "floating": "Floating, at the screen edge",
         "notch": "Around the notch"
+      },
+      "deepgram": {
+        "title": "Deepgram API key",
+        "description": "Lets you redo a meeting's speakers in the cloud with Deepgram, which tells voices apart well on calls. Stored in the Keychain.",
+        "placeholder": "Paste a key and press Enter",
+        "saved": "Saved",
+        "remove": "Remove",
+        "error": "Couldn't save the Deepgram key"
       },
       "liveTranscription": {
         "title": "Live transcription",

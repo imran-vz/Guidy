@@ -3273,6 +3273,65 @@ mod line_tagging {
     }
 
     #[gpui_kit::test]
+    fn the_speakers_can_be_redone_locally_or_with_deepgram(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().diarization = guidy_core::meetings::types::DiarizationOptions {
+            accurate_installed: false,
+            accurate_size_mb: 109,
+            deepgram_has_key: false,
+            deepgram_usd_per_min: Some(0.0063),
+        };
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        // One click: the accurate model.
+        with_window(cx, w, |window, cx| window.click("speakers-redo", cx));
+        assert!(
+            meetings.called("redo_speakers 1 Accurate"),
+            "{:?}",
+            meetings.calls()
+        );
+
+        let d = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("a meeting is open");
+        let deepgram = |cx: &mut TestAppContext| {
+            cx.update(|cx| d.read(cx).speaker_redo_choices())
+                .into_iter()
+                .find(|c| c.cloud)
+                .unwrap()
+        };
+        // Without a key: listed, does nothing.
+        let choice = deepgram(cx);
+        assert!(!choice.enabled);
+        cx.update_window(w, |_, window, cx| {
+            d.update(cx, |d, cx| d.choose_speaker_redo(choice, window, cx))
+        })
+        .unwrap();
+        assert!(!meetings.called("redo_speakers 1 Deepgram"));
+        // With one: asks first (it uploads the audio).
+        meetings.data.lock().diarization.deepgram_has_key = true;
+        d.update(cx, |d, cx| d.load(cx));
+        cx.run_until_parked();
+        let choice = deepgram(cx);
+        assert!(choice.enabled);
+        cx.update_window(w, |_, window, cx| {
+            d.update(cx, |d, cx| d.choose_speaker_redo(choice, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!meetings.called("redo_speakers 1 Deepgram"));
+        cx.update_window(w, |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            meetings.called("redo_speakers 1 Deepgram"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
+    #[gpui_kit::test]
     fn an_unknown_voice_is_highlighted_and_its_turn_can_be_named(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());
