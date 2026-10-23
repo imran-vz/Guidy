@@ -115,10 +115,7 @@ pub fn run() -> i32 {
             Request::Run { options } => match session.as_mut() {
                 Some((session, info)) => {
                     inject_fault("run", info.on_gpu);
-                    match session.run(&pcm, &options) {
-                        Ok(transcript) => Response::Transcript(transcript),
-                        Err(e) => Response::Error(e.to_string()),
-                    }
+                    run_response(session.run(&pcm, &options))
                 }
                 None => not_loaded(),
             },
@@ -475,5 +472,78 @@ fn take_stdout_for_protocol() -> io::Result<File> {
             return Err(io::Error::last_os_error());
         }
         Ok(File::from_raw_handle(handle as _))
+    }
+}
+
+/// The reply to a run. A decode stopped because its output began repeating
+/// itself, or because it hit its length budget, still carries the text
+/// before that (repeats dropped): that is the run's result, with a warning,
+/// rather than an error that would throw away the whole run (a long
+/// meeting's processing, or a dictation).
+fn run_response(result: transcribe_cpp::Result<transcribe_cpp::Transcript>) -> Response {
+    use transcribe_cpp::Error;
+    let e = match result {
+        Ok(transcript) => return Response::Transcript(transcript),
+        Err(e) => e,
+    };
+    let message = e.to_string();
+    match e {
+        Error::OutputRepetition {
+            partial: Some(p), ..
+        }
+        | Error::OutputTruncated {
+            partial: Some(p), ..
+        } => {
+            warn!("Keeping the partial transcript: {message}");
+            Response::Transcript(*p)
+        }
+        _ => Response::Error(message),
+    }
+}
+
+#[cfg(test)]
+mod run_response_tests {
+    use super::*;
+    use transcribe_cpp::{Error, Transcript};
+
+    fn transcript(text: &str) -> Transcript {
+        Transcript {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    fn text(r: Response) -> Option<String> {
+        match r {
+            Response::Transcript(t) => Some(t.text),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_stopped_loop_keeps_the_text_before_it() {
+        let r = run_response(Err(Error::OutputRepetition {
+            message: "loop".into(),
+            partial: Some(Box::new(transcript("we agreed to"))),
+        }));
+        assert_eq!(text(r).as_deref(), Some("we agreed to"));
+        let r = run_response(Err(Error::OutputTruncated {
+            message: "budget".into(),
+            partial: Some(Box::new(transcript("long"))),
+        }));
+        assert_eq!(text(r).as_deref(), Some("long"));
+    }
+
+    #[test]
+    fn other_failures_stay_errors() {
+        let r = run_response(Err(Error::OutputRepetition {
+            message: "loop".into(),
+            partial: None,
+        }));
+        assert!(matches!(r, Response::Error(_)));
+        assert_eq!(
+            text(run_response(Ok(transcript("fine")))).as_deref(),
+            Some("fine")
+        );
     }
 }

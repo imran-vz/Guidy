@@ -190,6 +190,18 @@ pub fn word_run_options(language: Option<String>) -> RunOptions {
     }
 }
 
+/// The timestamps to ask a model for, given the finest it can produce:
+/// words when it has them, else whatever it does have. Asking a model
+/// for finer ones than it produces fails the run ("unsupported timestamp
+/// granularity"), e.g. streaming models without word alignment; their
+/// segments then just have no word times.
+pub fn meeting_timestamps(max: TimestampKind) -> TimestampKind {
+    match max {
+        TimestampKind::Word | TimestampKind::Token => TimestampKind::Word,
+        _ => TimestampKind::Auto,
+    }
+}
+
 /// The code `languages` (a model's list) has for `hint`: the same code, else
 /// the first one of the same base language (`en` -> `en-US`, `pt-PT` -> `pt`).
 fn model_language(languages: &[String], hint: &str) -> Option<String> {
@@ -439,6 +451,46 @@ mod tests {
                 .unwrap_err()
                 .known
         );
+    }
+
+    #[test]
+    fn models_without_word_times_are_not_asked_for_them() {
+        assert_eq!(meeting_timestamps(TimestampKind::Word), TimestampKind::Word);
+        assert_eq!(
+            meeting_timestamps(TimestampKind::Token),
+            TimestampKind::Word
+        );
+        assert_eq!(
+            meeting_timestamps(TimestampKind::Segment),
+            TimestampKind::Auto
+        );
+        assert_eq!(meeting_timestamps(TimestampKind::None), TimestampKind::Auto);
+    }
+
+    /// Meeting transcription with a real model, whatever timestamps it has.
+    /// Run with: `GUIDY_TRANSCRIBE_WORKER_EXE=<abs path>/target/debug/guidy
+    /// GUIDY_TEST_MODEL=<gguf> cargo test -p guidy-core --lib
+    /// meeting::tests::transcribes -- --ignored --nocapture`
+    // IGNORE-REASON: needs a downloaded model and the worker binary.
+    #[test]
+    #[ignore]
+    fn transcribes_words_with_a_real_model() {
+        let t = crate::host::testing::TestApp::new();
+        let model = std::env::var_os("GUIDY_TEST_MODEL").expect("set GUIDY_TEST_MODEL");
+        let wav = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/audio/speech-16k-mono.wav"
+        );
+        let pcm = crate::audio_toolkit::read_wav_samples(wav).expect("read wav");
+        let mut m = MeetingTranscriber::new();
+        let info = m.load(&t.app, Path::new(&model)).expect("load");
+        println!("max timestamps: {:?}", info.capabilities.max_timestamp_kind);
+        let out = m
+            .transcribe_words(pcm, Some("en".into()))
+            .expect("transcribe");
+        println!("{} ({} words timed)", out.text, out.words.len());
+        assert!(out.text.split_whitespace().count() >= 3);
+        m.unload();
     }
 
     #[test]
