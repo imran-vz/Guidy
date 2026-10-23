@@ -88,6 +88,33 @@ pub(crate) fn meeting_model_missing(cx: &App) -> Option<MeetingModelMissing> {
     .err()
 }
 
+/// The downloaded transcription models, the one meetings use now first,
+/// then by name.
+pub(crate) fn local_model_choices(cx: &App) -> Vec<crate::logic::meetings::LocalModelChoice> {
+    let state = AppState::global(cx).read(cx);
+    let current = state.app_settings().and_then(|settings| {
+        resolve_meeting_model_id(
+            &state.models.models,
+            settings.meetings.meeting_model.as_deref(),
+            Some(&settings.selected_model),
+        )
+        .ok()
+    });
+    let mut choices: Vec<crate::logic::meetings::LocalModelChoice> = state
+        .models
+        .models
+        .iter()
+        .filter(|m| m.is_downloaded)
+        .map(|m| crate::logic::meetings::LocalModelChoice {
+            id: m.id.clone(),
+            name: crate::ui::kit::model_name(m),
+            current: current.as_deref() == Some(m.id.as_str()),
+        })
+        .collect();
+    choices.sort_by(|a, b| b.current.cmp(&a.current).then_with(|| a.name.cmp(&b.name)));
+    choices
+}
+
 /// "Download meeting model" (or its progress) for a missing meeting model.
 /// `place` keeps element ids unique (`meeting-model-download-<place>`).
 pub(crate) fn render_model_download(

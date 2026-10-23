@@ -222,6 +222,58 @@ pub fn record_call(
     cost
 }
 
+// ----- cloud transcription -----------------------------------------------------
+
+/// Cloud speech-to-text prices, USD per audio minute. Transcription is billed
+/// by audio length, not tokens, so these aren't in the models.dev registry.
+const TRANSCRIPTION_USD_PER_MIN: &[(&str, &str, f64)] = &[
+    ("groq", "whisper-large-v3-turbo", 0.04 / 60.0),
+    ("groq", "whisper-large-v3", 0.111 / 60.0),
+    ("openai", "whisper-1", CLOUD_TRANSCRIPTION_USD_PER_MIN),
+];
+
+/// The price of `model` on `provider_id`, USD per audio minute.
+pub fn transcription_usd_per_min(provider_id: &str, model: &str) -> Option<f64> {
+    TRANSCRIPTION_USD_PER_MIN
+        .iter()
+        .find(|(p, m, _)| *p == provider_id && *m == model)
+        .map(|(_, _, usd)| *usd)
+}
+
+/// Price `audio_ms` of audio sent to a cloud speech-to-text model.
+pub fn price_transcription(provider_id: &str, model: &str, audio_ms: u64) -> Cost {
+    let usd = transcription_usd_per_min(provider_id, model).map(|r| audio_ms as f64 / 60_000.0 * r);
+    Cost {
+        usd,
+        estimated: usd.is_some(),
+    }
+}
+
+/// Record one cloud transcription request (`audio_ms` uploaded) in the
+/// ledger, as a call with no tokens. Returns its cost.
+pub fn record_transcription(
+    provider_id: &str,
+    model: &str,
+    audio_ms: u64,
+    meeting_id: Option<i64>,
+) -> Cost {
+    let cost = price_transcription(provider_id, model, audio_ms);
+    let record = UsageRecord {
+        at_ms: crate::meetings::store::now_ms(),
+        feature: UsageFeature::MeetingTranscription,
+        provider_id: provider_id.to_string(),
+        model: model.to_string(),
+        input_tokens: 0,
+        output_tokens: 0,
+        cost,
+        meeting_id,
+    };
+    if let Err(e) = ledger_record(&record) {
+        log::warn!("transcription usage not recorded: {e:#}");
+    }
+    cost
+}
+
 // ----- local models ------------------------------------------------------------
 
 /// What runs a local model.
@@ -835,5 +887,37 @@ mod tests {
         assert_eq!(r.features[0].feature, UsageFeature::Dictation);
         clear().unwrap();
         assert_eq!(report().unwrap().local.runs, 0);
+    }
+
+    #[test]
+    fn cloud_transcription_is_priced_per_audio_minute() {
+        let _turn = LEDGER.lock();
+        init_in_memory();
+        clear().unwrap();
+        let hour = 3_600_000;
+        let turbo = price_transcription("groq", "whisper-large-v3-turbo", hour);
+        assert!((turbo.usd.unwrap() - 0.04).abs() < 1e-12);
+        assert!(turbo.estimated);
+        let large = price_transcription("groq", "whisper-large-v3", hour);
+        assert!((large.usd.unwrap() - 0.111).abs() < 1e-12);
+        assert_eq!(
+            price_transcription("groq", "unknown", hour),
+            Cost::default()
+        );
+
+        // Ten minutes on OpenAI, in the meeting's transcription spend.
+        let cost = record_transcription("openai", "whisper-1", 600_000, Some(9));
+        assert!((cost.usd.unwrap() - 0.06).abs() < 1e-12);
+        let r = report().unwrap();
+        assert_eq!(r.calls, 1);
+        assert!((r.total_usd - 0.06).abs() < 1e-12);
+        let m = &r.models[0];
+        assert_eq!(
+            (m.provider_id.as_str(), m.model.as_str()),
+            ("openai", "whisper-1")
+        );
+        assert_eq!((m.input_tokens, m.estimated_calls), (0, 1));
+        assert_eq!(r.features[0].feature, UsageFeature::MeetingTranscription);
+        clear().unwrap();
     }
 }

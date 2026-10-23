@@ -723,6 +723,41 @@ impl MeetingsManager {
         self.processing.enqueue(id)
     }
 
+    /// Transcribe a meeting again from scratch with `engine` (e.g. a cloud
+    /// speech-to-text provider), then redo speakers and the timeline, as
+    /// [`Self::process_meeting`] does but never resuming an earlier run.
+    /// Only for a `Processed`, `Failed` or `Recorded` meeting whose audio is
+    /// still there. A cloud engine with an empty model uses the one
+    /// configured for its provider; without its API key this fails with
+    /// [`crate::meetings::processing::CloudKeyMissing`].
+    pub fn retranscribe(&self, id: MeetingId, engine: TranscriptionEngine) -> Result<()> {
+        let Some(meeting) = self.store.get_meeting(id)? else {
+            anyhow::bail!("meeting {id} not found");
+        };
+        if !matches!(
+            meeting.status,
+            MeetingStatus::Processed | MeetingStatus::Failed | MeetingStatus::Recorded
+        ) {
+            anyhow::bail!(
+                "the meeting can't be transcribed again while it is {}",
+                meeting.status.as_str()
+            );
+        }
+        if !crate::meetings::processing::jobs::has_audio(&meeting) {
+            anyhow::bail!(crate::meetings::processing::jobs::AUDIO_DELETED);
+        }
+        self.processing.enqueue_with(id, engine)
+    }
+
+    /// The cloud providers a meeting can be transcribed with (OpenAI,
+    /// Groq), the configured one (or the automatic choice) first.
+    pub fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
+        let settings = crate::settings::get_settings(&self.app);
+        crate::meetings::processing::cloud::transcription_options(&settings, |id| {
+            !crate::settings::provider_api_key(id).trim().is_empty()
+        })
+    }
+
     /// Stop (or unqueue) processing. Completed stages are kept, so
     /// [`Self::process_meeting`] resumes; the meeting goes back to `Recorded`.
     pub fn cancel_processing(&self, id: MeetingId) -> Result<()> {

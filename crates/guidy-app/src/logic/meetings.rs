@@ -5,8 +5,9 @@
 use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
-    events, ActionItem, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person,
-    ProcessingProgress, RecorderState, Segment, SpeakerId, StoredSummary,
+    events, ActionItem, CloudTranscriptionOption, Meeting, MeetingId, MeetingSpeaker,
+    MeetingStatus, Person, ProcessingProgress, RecorderState, Segment, SpeakerId, StoredSummary,
+    TranscriptionEngine,
 };
 use serde_json::Value;
 
@@ -511,6 +512,145 @@ pub fn can_process(m: &Meeting) -> bool {
     }
 }
 
+/// Why a transcript looks unreliable (see [`transcript_issue`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptIssue {
+    /// The model got stuck repeating itself ("thank you thank you ...").
+    Repetition,
+    /// Far fewer words than that much talking holds: speech was missed or
+    /// came out as noise.
+    TooFewWords,
+}
+
+/// Talking time before the word rate means anything.
+const MIN_SPEECH_MS_FOR_RATE: i64 = 90_000;
+/// Conversational speech runs at 120-160 words a minute; well under half
+/// of the lowest is missing text, not slow talking.
+const MIN_WORDS_PER_MINUTE: f64 = 45.0;
+/// The same 1-3 words this many times in a row is a decoding loop.
+const LOOP_REPEATS: usize = 4;
+/// Segments stuck in a loop before the whole transcript is suspect.
+const MIN_LOOPED_SEGMENTS: usize = 2;
+
+/// Whether a stored transcript looks like the model struggled, so the UI
+/// can offer to transcribe it again (e.g. with a cloud model). Conservative:
+/// it flags decoding loops and transcripts with far too few words for the
+/// time people spent talking, never mere accents or jargon.
+pub fn transcript_issue(segments: &[Segment]) -> Option<TranscriptIssue> {
+    let looped = segments.iter().filter(|s| has_loop(&s.text)).count();
+    if looped >= MIN_LOOPED_SEGMENTS {
+        return Some(TranscriptIssue::Repetition);
+    }
+    let speech_ms: i64 = segments.iter().map(|s| (s.t1_ms - s.t0_ms).max(0)).sum();
+    if speech_ms >= MIN_SPEECH_MS_FOR_RATE {
+        let words: usize = segments
+            .iter()
+            .map(|s| s.text.split_whitespace().count())
+            .sum();
+        let per_minute = words as f64 / (speech_ms as f64 / 60_000.0);
+        if per_minute < MIN_WORDS_PER_MINUTE {
+            return Some(TranscriptIssue::TooFewWords);
+        }
+    }
+    None
+}
+
+/// Whether `text` repeats a run of 1-3 words [`LOOP_REPEATS`] times in a row
+/// (case and punctuation ignored).
+fn has_loop(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    (1..=3).any(|n| {
+        let span = n * LOOP_REPEATS;
+        words.len() >= span
+            && (0..=words.len() - span).any(|start| {
+                let unit = &words[start..start + n];
+                (1..LOOP_REPEATS).all(|k| &words[start + k * n..start + (k + 1) * n] == unit)
+            })
+    })
+}
+
+/// A downloaded model a meeting can be transcribed with on this Mac.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalModelChoice {
+    pub id: String,
+    pub name: String,
+    /// Meetings use it now (the meeting model, or its fallback).
+    pub current: bool,
+}
+
+/// One entry of the "Redo transcript" menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RedoChoice {
+    pub label: String,
+    /// `None`: shown but can't be picked (a cloud provider without a key).
+    pub engine: Option<TranscriptionEngine>,
+    pub current: bool,
+    /// Uploads the audio: ask first.
+    pub cloud: bool,
+    /// For the confirmation: provider, model and estimated cost.
+    pub provider: String,
+    pub model: String,
+    pub cost: Option<String>,
+}
+
+/// The "Redo transcript" menu: the downloaded models (the current one
+/// first), then the cloud providers, priced for a meeting of `minutes`.
+/// `no_key` is the label suffix for a provider without an API key.
+pub fn redo_choices(
+    local: &[LocalModelChoice],
+    cloud: &[CloudTranscriptionOption],
+    minutes: Option<f64>,
+    no_key: &str,
+) -> Vec<RedoChoice> {
+    let mut out: Vec<RedoChoice> = local
+        .iter()
+        .map(|m| RedoChoice {
+            label: m.name.clone(),
+            engine: Some(TranscriptionEngine::LocalModel {
+                model_id: m.id.clone(),
+            }),
+            current: m.current,
+            cloud: false,
+            provider: String::new(),
+            model: m.name.clone(),
+            cost: None,
+        })
+        .collect();
+    for o in cloud {
+        let cost = guidy_core::llm::usage::transcription_usd_per_min(&o.provider_id, &o.model)
+            .zip(minutes)
+            .map(|(rate, minutes)| format!("${:.2}", (rate * minutes).max(0.01)));
+        let label = if !o.has_key {
+            format!("{} · {no_key}", o.label)
+        } else {
+            match &cost {
+                Some(cost) => format!("{} · {} · ~{cost}", o.label, o.model),
+                None => format!("{} · {}", o.label, o.model),
+            }
+        };
+        out.push(RedoChoice {
+            label,
+            engine: o.has_key.then(|| TranscriptionEngine::Cloud {
+                provider_id: o.provider_id.clone(),
+                model: o.model.clone(),
+            }),
+            current: false,
+            cloud: true,
+            provider: o.label.clone(),
+            model: o.model.clone(),
+            cost,
+        });
+    }
+    out
+}
+
 /// A meeting's summary as Markdown, for pasting into notes or a doc: the
 /// title, `date`, the summary, decisions, topics and action items (with
 /// owner, due date and Linear issue). Empty sections are left out.
@@ -681,6 +821,19 @@ mod tests {
     use super::*;
     use guidy_core::meetings::types::{ProcessingStage, Track};
 
+    fn timed(t0_ms: i64, len_ms: i64, text: &str) -> Segment {
+        Segment {
+            id: 0,
+            meeting_id: 1,
+            track: Track::System,
+            t0_ms,
+            t1_ms: t0_ms + len_ms,
+            text: text.into(),
+            words: Vec::new(),
+            speaker_id: None,
+        }
+    }
+
     #[test]
     fn days_read_relative_to_today() {
         use chrono::{Local, TimeZone};
@@ -721,6 +874,56 @@ mod tests {
         );
         let ids: Vec<_> = shown.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["just-ended", "tomorrow"]);
+    }
+
+    #[test]
+    fn the_redo_menu_lists_local_models_then_priced_cloud_providers() {
+        let local = vec![
+            LocalModelChoice {
+                id: "qwen".into(),
+                name: "Qwen3-ASR".into(),
+                current: true,
+            },
+            LocalModelChoice {
+                id: "nemo".into(),
+                name: "Nemotron".into(),
+                current: false,
+            },
+        ];
+        let cloud = vec![
+            CloudTranscriptionOption {
+                provider_id: "groq".into(),
+                label: "Groq".into(),
+                model: "whisper-large-v3-turbo".into(),
+                has_key: true,
+            },
+            CloudTranscriptionOption {
+                provider_id: "openai".into(),
+                label: "OpenAI".into(),
+                model: "whisper-1".into(),
+                has_key: false,
+            },
+        ];
+        let c = redo_choices(&local, &cloud, Some(30.0), "needs an API key");
+        let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Qwen3-ASR",
+                "Nemotron",
+                "Groq · whisper-large-v3-turbo · ~$0.02",
+                "OpenAI · needs an API key",
+            ]
+        );
+        assert!(c[0].current && !c[0].cloud);
+        assert_eq!(
+            c[1].engine,
+            Some(TranscriptionEngine::LocalModel {
+                model_id: "nemo".into()
+            })
+        );
+        assert!(c[2].cloud && c[2].engine.is_some());
+        assert!(c[3].engine.is_none(), "no key: not pickable");
     }
 
     #[test]
@@ -783,6 +986,50 @@ mod tests {
             text,
             "# Weekly sync\n\n[00:05] Imran: Let's ship it.\n[01:05] Ada: Agreed.\n"
         );
+    }
+
+    #[test]
+    fn decoding_loops_are_flagged_but_one_emphatic_repeat_is_not() {
+        assert!(has_loop("Thank you. Thank you. Thank you. Thank you."));
+        assert!(has_loop("we we we we need to"));
+        assert!(has_loop(
+            "so the plan is the plan is the plan is the plan is"
+        ));
+        assert!(!has_loop("no no no, that's fine"));
+        assert!(!has_loop("very very good, very very nice"));
+        let ok = vec![
+            timed(0, 4_000, "Thank you. Thank you. Thank you. Thank you."),
+            timed(5_000, 3_000, "Let's get started with the roadmap."),
+        ];
+        assert_eq!(transcript_issue(&ok), None, "one loop is not enough");
+        let looping = vec![
+            timed(0, 4_000, "yeah yeah yeah yeah yeah"),
+            timed(5_000, 4_000, "the the the the the"),
+        ];
+        assert_eq!(
+            transcript_issue(&looping),
+            Some(TranscriptIssue::Repetition)
+        );
+    }
+
+    #[test]
+    fn too_few_words_for_the_talking_time_is_flagged() {
+        // Two minutes of talking with a handful of words.
+        let sparse: Vec<Segment> = (0..12)
+            .map(|i| timed(i * 10_000, 10_000, "uh hm"))
+            .collect();
+        assert_eq!(
+            transcript_issue(&sparse),
+            Some(TranscriptIssue::TooFewWords)
+        );
+        // The same time at a normal rate.
+        let sentence = "we should ship the new onboarding flow next week after review";
+        let normal: Vec<Segment> = (0..12)
+            .map(|i| timed(i * 10_000, 10_000, &format!("{sentence} {sentence}")))
+            .collect();
+        assert_eq!(transcript_issue(&normal), None);
+        // A short meeting says too little to judge.
+        assert_eq!(transcript_issue(&[timed(0, 30_000, "ok")]), None);
     }
 
     #[test]

@@ -49,6 +49,11 @@ pub enum MeetingsError {
     /// The speaker recognition model isn't downloaded (it downloads only
     /// from Meetings > Settings).
     SpeakerModelMissing,
+    /// A cloud transcription's provider has no API key saved.
+    CloudKeyMissing {
+        provider_id: String,
+        label: String,
+    },
     NoLinearKey,
     LinearUnauthorized,
     /// The job was cancelled ([`guidy_core::llm::CANCELLED`]): not an error
@@ -61,7 +66,7 @@ impl MeetingsError {
     pub fn from_anyhow(e: &anyhow::Error) -> Self {
         use guidy_core::linear::LinearError;
         use guidy_core::managers::transcription::meeting::MeetingModelMissing;
-        use guidy_core::meetings::processing::SpeakerModelMissing;
+        use guidy_core::meetings::processing::{CloudKeyMissing, SpeakerModelMissing};
         if guidy_core::llm::is_cancelled_error(e) {
             return Self::Cancelled;
         }
@@ -75,6 +80,12 @@ impl MeetingsError {
             }
             if cause.downcast_ref::<SpeakerModelMissing>().is_some() {
                 return Self::SpeakerModelMissing;
+            }
+            if let Some(m) = cause.downcast_ref::<CloudKeyMissing>() {
+                return Self::CloudKeyMissing {
+                    provider_id: m.provider_id.clone(),
+                    label: m.label.clone(),
+                };
             }
             match cause.downcast_ref::<LinearError>() {
                 Some(LinearError::MissingApiKey) => return Self::NoLinearKey,
@@ -95,6 +106,9 @@ impl MeetingsError {
                 known,
             } => format!("{TAG}model-missing{TAG}{model_id}{TAG}{name}{TAG}{known}"),
             Self::SpeakerModelMissing => format!("{TAG}speaker-model-missing"),
+            Self::CloudKeyMissing { provider_id, label } => {
+                format!("{TAG}cloud-key-missing{TAG}{provider_id}{TAG}{label}")
+            }
             Self::NoLinearKey => format!("{TAG}no-linear-key"),
             Self::LinearUnauthorized => format!("{TAG}linear-unauthorized"),
             Self::Cancelled => format!("{TAG}cancelled"),
@@ -117,6 +131,10 @@ impl MeetingsError {
                 known: *known == "true",
             },
             ["speaker-model-missing"] => Self::SpeakerModelMissing,
+            ["cloud-key-missing", id, label] => Self::CloudKeyMissing {
+                provider_id: id.to_string(),
+                label: label.to_string(),
+            },
             ["no-linear-key"] => Self::NoLinearKey,
             ["linear-unauthorized"] => Self::LinearUnauthorized,
             ["cancelled"] => Self::Cancelled,
@@ -139,7 +157,8 @@ impl MeetingsError {
             Self::SpeakerModelMissing => t("meetings.errors.speakerModelMissing"),
             Self::NoLinearKey => t("meetings.errors.noLinearKey"),
             Self::LinearUnauthorized => t("meetings.errors.linearUnauthorized"),
-            Self::Cancelled | Self::Other(_) => return None,
+            // No translation yet: `message` falls back to English.
+            Self::CloudKeyMissing { .. } | Self::Cancelled | Self::Other(_) => return None,
         })
     }
 
@@ -148,6 +167,9 @@ impl MeetingsError {
         match self {
             Self::Other(s) => s.clone(),
             Self::Cancelled => guidy_core::llm::CANCELLED.to_string(),
+            Self::CloudKeyMissing { label, .. } => {
+                format!("{label} has no API key; add one to transcribe with it")
+            }
             e => e.localized().unwrap_or_default(),
         }
     }
@@ -214,6 +236,17 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId>;
     fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()>;
 
+    /// Transcribe a processed, failed or recorded meeting again from scratch
+    /// with `engine` (e.g. a cloud provider; an empty model is the one
+    /// configured for it). Progress as for `process_meeting`.
+    fn retranscribe(&self, _id: MeetingId, _engine: TranscriptionEngine) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// The cloud providers a meeting can be transcribed with, the
+    /// configured (or automatic) choice first.
+    fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
+        Vec::new()
+    }
     /// The speaker-embedding model (downloads on first use).
     fn speaker_model_status(&self) -> SpeakerModelStatus {
         SpeakerModelStatus::Missing
@@ -521,6 +554,14 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn cancel_processing(&self, id: MeetingId) -> MeetingsResult<()> {
         self.m()?.cancel_processing(id).map_err(err)
+    }
+    fn retranscribe(&self, id: MeetingId, engine: TranscriptionEngine) -> MeetingsResult<()> {
+        self.m()?.retranscribe(id, engine).map_err(err)
+    }
+    fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
+        self.manager()
+            .map(|m| m.cloud_transcription_options())
+            .unwrap_or_default()
     }
     fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
         self.manager()?.processing_progress(id)
@@ -869,6 +910,20 @@ mod error_tests {
             MeetingsError::parse(&err(linear)),
             MeetingsError::NoLinearKey
         );
+        let no_key = anyhow::Error::new(guidy_core::meetings::processing::CloudKeyMissing {
+            provider_id: "groq".into(),
+            label: "Groq".into(),
+        })
+        .context("transcribe meeting 4");
+        let e = MeetingsError::parse(&err(no_key));
+        assert_eq!(
+            e,
+            MeetingsError::CloudKeyMissing {
+                provider_id: "groq".into(),
+                label: "Groq".into(),
+            }
+        );
+        assert!(e.message().contains("Groq has no API key"));
         assert_eq!(
             MeetingsError::parse(&unavailable()),
             MeetingsError::Unavailable
@@ -932,8 +987,10 @@ pub mod fake {
         pub next_id: i64,
         pub speaker_model: SpeakerModelStatus,
         pub init: MeetingsInit,
-        /// `process_meeting` fails with this (encoded) error.
+        /// `process_meeting` and `retranscribe` fail with this (encoded)
+        /// error.
         pub fail_process: Option<String>,
+        pub cloud_options: Vec<CloudTranscriptionOption>,
         /// G2: summaries, action items, Linear, LLM.
         pub ai: FakeAiData,
     }
@@ -956,6 +1013,7 @@ pub mod fake {
                 speaker_model: SpeakerModelStatus::Ready,
                 init: MeetingsInit::Ready,
                 fail_process: None,
+                cloud_options: Vec::new(),
                 ai: FakeAiData::default(),
             }
         }
@@ -1201,6 +1259,26 @@ pub mod fake {
         fn cancel_processing(&self, id: MeetingId) -> MeetingsResult<()> {
             self.rec(format!("cancel_processing {id}"));
             Ok(())
+        }
+        fn retranscribe(&self, id: MeetingId, engine: TranscriptionEngine) -> MeetingsResult<()> {
+            let engine = match engine {
+                TranscriptionEngine::Local => "local".to_string(),
+                TranscriptionEngine::LocalModel { model_id } => format!("local {model_id}"),
+                TranscriptionEngine::Cloud { provider_id, model } => {
+                    format!("cloud {provider_id} {model}")
+                }
+            };
+            self.rec(format!("retranscribe {id} {engine}"));
+            if let Some(e) = self.data.lock().fail_process.clone() {
+                return Err(e);
+            }
+            if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
+                m.status = MeetingStatus::Processing;
+            }
+            Ok(())
+        }
+        fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
+            self.data.lock().cloud_options.clone()
         }
         fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress> {
             self.data.lock().progress.get(&id).cloned()

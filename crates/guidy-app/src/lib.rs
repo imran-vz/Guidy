@@ -183,6 +183,10 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         overlay_demo(&app);
     }
     #[cfg(debug_assertions)]
+    if std::env::var_os("GUIDY_DEV_DEMO_MEETING").is_some() {
+        demo_meeting(&app, cx);
+    }
+    #[cfg(debug_assertions)]
     if let Ok(mode) = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO") {
         recording_widget_demo(&app, mode == "expanded", cx);
     }
@@ -225,6 +229,111 @@ fn overlay_demo(app: &AppHandle) {
                 "stream-text-event",
                 serde_json::json!({"committed": committed, "tentative": words[i]}),
             );
+        }
+    });
+}
+
+/// Debug builds: add a processed meeting whose transcript a local model
+/// garbled (repetition loops), to see the meeting page and the redo flow
+/// without recording, and open it. Its audio files don't exist, so a redo
+/// itself fails.
+#[cfg(debug_assertions)]
+fn demo_meeting(app: &AppHandle, cx: &mut App) {
+    use guidy_core::meetings::manager::MeetingsManager;
+    use guidy_core::meetings::types::*;
+    let (tx, rx) = smol::channel::bounded::<MeetingId>(1);
+    cx.spawn(async move |cx| {
+        if let Ok(id) = rx.recv().await {
+            cx.update(|cx| open_url_link(&format!("guidy://meetings/{id}"), cx));
+        }
+    })
+    .detach();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let manager = (0..100).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            app.try_state::<Arc<MeetingsManager>>()
+        });
+        let Some(manager) = manager else {
+            log::warn!("demo meeting: meeting notes never started");
+            return;
+        };
+        let store = manager.store();
+        if let Some(m) = store
+            .list_meetings()
+            .ok()
+            .and_then(|m| m.into_iter().find(|m| m.title.starts_with("Roadmap")))
+        {
+            let _ = tx.try_send(m.id);
+            return;
+        }
+        let now = guidy_core::meetings::recorder::now_ms();
+        let result = (|| -> anyhow::Result<()> {
+            let id = store.insert_meeting(&Meeting {
+                id: 0,
+                title: "Roadmap review".into(),
+                calendar_event_id: None,
+                calendar_event: None,
+                started_at: now - 40 * 60_000,
+                ended_at: Some(now - 5 * 60_000),
+                mic_audio_path: Some("demo-mic.opus".into()),
+                system_audio_path: Some("demo-system.opus".into()),
+                status: MeetingStatus::Processed,
+                error: None,
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+            })?;
+            let speaker = |id: SpeakerId, label: &str, is_user: bool| MeetingSpeaker {
+                id,
+                meeting_id: id,
+                cluster_label: label.into(),
+                person_id: None,
+                match_confidence: None,
+                confirmed: is_user,
+                is_user,
+            };
+            let lines = [
+                (
+                    1,
+                    "Okay, so the first thing on the roadmap is the onboarding rework.",
+                ),
+                (0, "Right. Did we settle on the the the the the timeline?"),
+                (1, "Thank you. Thank you. Thank you. Thank you."),
+                (0, "Sorry, you cut out there."),
+                (
+                    1,
+                    "I said we ship it in two weeks, after the design review.",
+                ),
+            ];
+            let segments: Vec<Segment> = lines
+                .iter()
+                .enumerate()
+                .map(|(i, (speaker, text))| Segment {
+                    id: 0,
+                    meeting_id: id,
+                    track: if *speaker == 0 {
+                        Track::Mic
+                    } else {
+                        Track::System
+                    },
+                    t0_ms: i as i64 * 12_000,
+                    t1_ms: i as i64 * 12_000 + 9_000,
+                    text: (*text).into(),
+                    words: Vec::new(),
+                    speaker_id: Some(*speaker),
+                })
+                .collect();
+            store.replace_transcript(
+                id,
+                &[speaker(0, "me", true), speaker(1, "Speaker 1", false)],
+                &segments,
+            )?;
+            store.set_meeting_status(id, MeetingStatus::Processed, None)?;
+            let _ = app.emit(events::MEETING_CHANGED, id);
+            let _ = tx.try_send(id);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            log::warn!("demo meeting: {e:#}");
         }
     });
 }

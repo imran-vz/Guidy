@@ -6,6 +6,7 @@
 //! - [`timeline`]: merging the two tracks, with the D9 echo safety net.
 //! - [`pipeline`]: the resumable stage runner for one meeting.
 //! - [`jobs`]: the background queue (one meeting at a time) and cancel.
+//! - [`cloud`]: transcription through a cloud speech-to-text API instead.
 //! - [`speaker_model`]: the sherpa-onnx speaker model download + extractor.
 //! - [`sidecar`]: encrypted checkpoint / per-segment voiceprint files.
 //! - [`naming`]: speaker suggestions and naming (stores voiceprints).
@@ -18,6 +19,7 @@
 //! Silero VAD and sherpa-onnx embeddings run in-process (CPU, small models),
 //! as Silero already does for dictation.
 
+pub mod cloud;
 pub mod cluster;
 pub mod jobs;
 pub mod naming;
@@ -35,6 +37,7 @@ use anyhow::Result;
 
 use crate::meetings::audio_store::TrackReader;
 
+pub use cloud::{CloudApiError, CloudKeyMissing};
 pub use jobs::Processor;
 pub use sidecar::delete_sidecars;
 pub use speaker_model::{

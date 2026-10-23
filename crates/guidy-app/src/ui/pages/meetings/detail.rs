@@ -5,23 +5,24 @@
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
     can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker,
-    needs_confirmation, non_empty, speaker_name, status_key, talk_time, MeetingsEvent,
-    SpeakerBlock, TalkTime,
+    needs_confirmation, non_empty, speaker_name, status_key, talk_time, transcript_issue,
+    MeetingsEvent, RedoChoice, SpeakerBlock, TalkTime, TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill, Stat};
-use crate::ui::kit::{crumb_title, group, icon, t};
+use crate::ui::kit::{crumb_title, group, icon, t, t_args};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
 use guidy_core::meetings::types::{
-    LiveStatus, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
-    Segment, SpeakerId, Track,
+    CloudTranscriptionOption, LiveStatus, Meeting, MeetingId, MeetingSpeaker, MeetingStatus,
+    Person, ProcessingProgress, Segment, SpeakerId, Track, TranscriptionEngine,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -56,6 +57,8 @@ pub struct MeetingDetail {
     cancelling: bool,
     /// Deep link: seek and play here once the transcript has loaded.
     pending_seek: Option<i64>,
+    /// Cloud providers the transcript can be redone with.
+    cloud_options: Vec<CloudTranscriptionOption>,
     /// "Copy transcript" just copied (shows a check for a moment).
     transcript_copied: bool,
     ticking: bool,
@@ -117,6 +120,7 @@ impl MeetingDetail {
             processing_busy: false,
             cancelling: false,
             pending_seek: None,
+            cloud_options: Vec::new(),
             transcript_copied: false,
             ticking: false,
             _subs: subs,
@@ -156,12 +160,14 @@ impl MeetingDetail {
                 let speakers = b.speakers(id)?;
                 let people = b.list_people()?;
                 let progress = b.processing_progress(id);
-                Ok((meeting, segments, speakers, people, progress))
+                let cloud = b.cloud_transcription_options();
+                Ok((meeting, segments, speakers, people, progress, cloud))
             },
             |this: &mut Self, r, cx| {
                 this.loading = false;
                 match r {
-                    Ok((meeting, segments, speakers, people, progress)) => {
+                    Ok((meeting, segments, speakers, people, progress, cloud)) => {
+                        this.cloud_options = cloud;
                         this.talk =
                             talk_time(&segments, meeting.as_ref().and_then(|m| m.duration_ms()));
                         this.meeting = meeting;
@@ -354,6 +360,166 @@ impl MeetingDetail {
                 }
             },
         );
+    }
+
+    /// Whether the transcript can be redone: the meeting is done (or failed)
+    /// and its audio is still there.
+    fn can_redo(&self) -> bool {
+        self.meeting.as_ref().is_some_and(|m| {
+            matches!(m.status, MeetingStatus::Processed | MeetingStatus::Failed) && can_process(m)
+        })
+    }
+
+    /// Transcribe the meeting again with `engine`.
+    fn redo(&mut self, engine: TranscriptionEngine, cx: &mut Context<Self>) {
+        let id = self.meeting_id;
+        self.processing_busy = true;
+        cx.notify();
+        run(
+            cx,
+            move |b| b.retranscribe(id, engine),
+            |this: &mut Self, r, cx| {
+                this.processing_busy = false;
+                match r {
+                    Ok(()) => {
+                        if let Some(m) = &mut this.meeting {
+                            m.status = MeetingStatus::Processing;
+                            m.error = None;
+                        }
+                    }
+                    Err(e) => toast_error("meetings.redo.error", &e, cx),
+                }
+            },
+        );
+    }
+
+    /// The "Redo transcript" choices: the downloaded models, then the
+    /// cloud providers.
+    pub(crate) fn redo_choices(&self, cx: &App) -> Vec<RedoChoice> {
+        let minutes = self
+            .meeting
+            .as_ref()
+            .and_then(|m| m.duration_ms())
+            .map(|ms| ms as f64 / 60_000.0);
+        crate::logic::meetings::redo_choices(
+            &super::local_model_choices(cx),
+            &self.cloud_options,
+            minutes,
+            &t("meetings.redo.noKeyShort"),
+        )
+    }
+
+    /// Redo with `choice`: right away on this Mac; a cloud provider asks
+    /// first, as it uploads the audio and costs money.
+    pub(crate) fn choose_redo(
+        &mut self,
+        choice: RedoChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = choice.engine.clone() else {
+            return;
+        };
+        if !choice.cloud {
+            self.redo(engine, cx);
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        let description = match &choice.cost {
+            Some(cost) => t_args(
+                "meetings.redo.confirmCloud",
+                &[
+                    ("provider", &choice.provider),
+                    ("model", &choice.model),
+                    ("cost", cost),
+                ],
+            ),
+            None => t_args(
+                "meetings.redo.confirmCloudUnpriced",
+                &[("provider", &choice.provider), ("model", &choice.model)],
+            ),
+        };
+        let title = t_args(
+            "meetings.redo.confirmTitle",
+            &[("provider", &choice.provider)],
+        );
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            let engine = engine.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    let engine = engine.clone();
+                    weak.update(cx, |this, cx| this.redo(engine, cx)).ok();
+                    true
+                })
+        });
+    }
+
+    /// "Redo transcript" with the current meeting model, and a menu of the
+    /// other models and the cloud providers. `primary` styles it as the
+    /// suggested action.
+    fn redo_button(
+        &self,
+        id: &'static str,
+        primary: bool,
+        cx: &mut Context<Self>,
+    ) -> DropdownButton {
+        let choices = self.redo_choices(cx);
+        let current = choices.iter().find(|c| c.current && !c.cloud).cloned();
+        let busy = self.processing_busy;
+        let main = Button::new(id)
+            .small()
+            .pill()
+            .icon(icon("rotate-ccw"))
+            .label(t("meetings.redo.action"))
+            .map(|b| if primary { b.primary() } else { b.secondary() })
+            .when_some(current.clone(), |b, c| {
+                b.tooltip(t_args("meetings.redo.tooltip", &[("model", &c.label)]))
+            })
+            .disabled(busy || current.is_none())
+            .when_some(current, |b, c| {
+                b.on_click(
+                    cx.listener(move |this, _, window, cx| this.choose_redo(c.clone(), window, cx)),
+                )
+            });
+        let weak = cx.entity().downgrade();
+        DropdownButton::new(SharedString::from(format!("{id}-split")))
+            .button(main)
+            .disabled(busy)
+            .menu_accessibility_label(t("meetings.redo.more"))
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu;
+                let mut section = None;
+                for c in &choices {
+                    if section != Some(c.cloud) {
+                        if section.is_some() {
+                            menu = menu.separator();
+                        }
+                        menu = menu.label(if c.cloud {
+                            t("meetings.redo.cloudTitle")
+                        } else {
+                            t("meetings.redo.localTitle")
+                        });
+                        section = Some(c.cloud);
+                    }
+                    let choice = c.clone();
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(c.label.clone())
+                            .checked(c.current)
+                            .disabled(c.engine.is_none())
+                            .on_click(move |_, window, cx| {
+                                let choice = choice.clone();
+                                weak.update(cx, |this, cx| this.choose_redo(choice, window, cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                menu
+            })
     }
 
     // -- G2 panes ---------------------------------------------------------------
@@ -692,6 +858,9 @@ impl MeetingDetail {
                         .on_click(cx.listener(|this, _, _, cx| this.process(cx))),
                 )
             })
+            .when(self.can_redo(), |d| {
+                d.child(self.redo_button("meeting-detail-redo", false, cx))
+            })
             .when(processing, |d| {
                 d.child(
                     Button::new("meeting-detail-cancel")
@@ -781,7 +950,7 @@ impl MeetingDetail {
                         .child(design::track("meeting-detail-progress", Some(fraction), cx)),
                 )
             })
-            .when(show_process || processing, |d| {
+            .when(show_process || processing || self.can_redo(), |d| {
                 d.child(
                     h_flex()
                         .w_full()
@@ -1197,6 +1366,50 @@ impl MeetingDetail {
         )
     }
 
+    /// A transcript that looks unreliable offers to be redone.
+    fn render_quality_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.can_redo() || self.processing_busy {
+            return None;
+        }
+        let issue = transcript_issue(&self.segments)?;
+        let tone = design::tone(cx);
+        let warning = cx.theme().warning;
+        let what = match issue {
+            TranscriptIssue::Repetition => t("meetings.redo.issueRepetition"),
+            TranscriptIssue::TooFewWords => t("meetings.redo.issueTooFewWords"),
+        };
+        Some(
+            div()
+                .id("transcript-quality")
+                .p(dp(10.))
+                .child(
+                    design::notice(warning).child(
+                        h_flex()
+                            .gap(dp(12.))
+                            .items_center()
+                            .child(icon("triangle-alert").small().text_color(warning))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(dp(2.))
+                                    .text_size(dp(12.5))
+                                    .line_height(relative(1.45))
+                                    .child(div().text_color(tone.text).child(what))
+                                    .child(
+                                        div()
+                                            .text_color(tone.text_muted)
+                                            .child(t("meetings.redo.issueHint")),
+                                    ),
+                            )
+                            .child(self.redo_button("transcript-quality-redo", true, cx)),
+                    ),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
     fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(live) = self.render_live_transcript(cx) {
             return live;
@@ -1223,10 +1436,15 @@ impl MeetingDetail {
                 .test_support()
                 .into_any_element()]
         } else {
-            group_by_speaker(&self.segments)
-                .iter()
-                .enumerate()
-                .map(|(i, b)| self.render_block(i, b, cx))
+            let notice = self.render_quality_notice(cx);
+            notice
+                .into_iter()
+                .chain(
+                    group_by_speaker(&self.segments)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| self.render_block(i, b, cx)),
+                )
                 .collect()
         };
         let copy = (!self.loading && !self.segments.is_empty()).then(|| {

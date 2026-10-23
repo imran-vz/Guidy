@@ -1116,3 +1116,141 @@ fn a_segment_in_two_scripts_is_mixed() {
     );
     assert_eq!(segment_language("", &langs), None);
 }
+#[test]
+fn batches_group_pending_units_of_one_track_up_to_the_limit() {
+    let unit = |track, t0, t1| Unit {
+        track,
+        span: vad::Span::new(t0, t1),
+    };
+    let units = [
+        unit(Track::Mic, 0, 3000),
+        unit(Track::Mic, 4000, 7000),
+        unit(Track::Mic, 8000, 9000),
+        unit(Track::System, 0, 2000),
+        unit(Track::System, 3000, 20000),
+        unit(Track::System, 21000, 22000),
+    ];
+    let all = [true; 6];
+    assert_eq!(
+        batches(&units, &all, 7000),
+        vec![vec![0, 1, 2], vec![3], vec![4], vec![5]]
+    );
+    assert_eq!(
+        batches(&units, &all, 6000),
+        vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5]]
+    );
+    // Done units are skipped (a resumed run).
+    let pending = [false, true, true, false, false, true];
+    assert_eq!(batches(&units, &pending, 60_000), vec![vec![1, 2], vec![5]]);
+    assert!(batches(&units, &[false; 6], 60_000).is_empty());
+}
+
+/// [`FakeTranscriber`] behind the batch interface: it records the audio
+/// length of each segment in each call.
+struct BatchingTranscriber<'c> {
+    inner: FakeTranscriber<'c>,
+    limit_ms: i64,
+    calls: Rc<std::cell::RefCell<Vec<Vec<i64>>>>,
+}
+
+impl SegmentTranscriber for BatchingTranscriber<'_> {
+    fn transcribe(&mut self, _pcm: Vec<f32>) -> Result<(String, Vec<Word>)> {
+        panic!("a batching transcriber gets batches");
+    }
+
+    fn batch_limit_ms(&self) -> Option<i64> {
+        Some(self.limit_ms)
+    }
+
+    fn transcribe_batch(&mut self, pcms: Vec<Vec<f32>>) -> Result<Vec<(String, Vec<Word>)>> {
+        self.calls.borrow_mut().push(
+            pcms.iter()
+                .map(|p| (p.len() * 1000 / SAMPLE_RATE) as i64)
+                .collect(),
+        );
+        pcms.into_iter().map(|p| self.inner.say(p, None)).collect()
+    }
+}
+
+#[test]
+fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units() {
+    // The same meeting, one segment at a time.
+    let reference = fixture();
+    run(&reference, None).result.unwrap();
+
+    let f = fixture();
+    let cancel = AtomicBool::new(false);
+    let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let limit_ms = 7_000;
+    let mut transcriber = BatchingTranscriber {
+        inner: FakeTranscriber {
+            calls: Rc::new(Cell::new(0)),
+            cancel_after: None,
+            accented: None,
+        },
+        limit_ms,
+        calls: calls.clone(),
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let progress = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = progress.clone();
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        key: KEY,
+        config: PipelineConfig {
+            user_label: "Imran".into(),
+            preferred_language: Some("en".into()),
+            ..PipelineConfig::default()
+        },
+        mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        cancel: &cancel,
+        on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
+    }
+    .run()
+    .unwrap();
+
+    let calls = calls.borrow().clone();
+    // 2 mic units, then 6 system ones: [mic, mic], then system pairs.
+    let units: Vec<usize> = calls.iter().map(Vec::len).collect();
+    assert_eq!(units, vec![2, 2, 2, 2], "{calls:?}");
+    for call in &calls {
+        let total: i64 = call.iter().sum();
+        assert!(total <= limit_ms, "{call:?}");
+    }
+    // One progress report per batch.
+    let transcribing = progress
+        .borrow()
+        .iter()
+        .filter(|p| {
+            p.stage == ProcessingStage::Transcribe
+                && p.fraction > overall_fraction(ProcessingStage::Transcribe, 0.0)
+        })
+        .count();
+    assert_eq!(transcribing, calls.len());
+
+    // Same transcript as one segment at a time: texts, times and words.
+    let strip = |segments: Vec<Segment>| -> Vec<(Track, i64, i64, String, Vec<Word>)> {
+        segments
+            .into_iter()
+            .map(|s| (s.track, s.t0_ms, s.t1_ms, s.text, s.words))
+            .collect()
+    };
+    let batched = strip(f.store.segments(f.id).unwrap());
+    assert_eq!(
+        batched,
+        strip(reference.store.segments(reference.id).unwrap())
+    );
+    assert!(!batched.is_empty());
+    // Words are in meeting time, inside their own segment.
+    for (_, t0, t1, _, words) in &batched {
+        assert!(words.iter().all(|w| w.t0_ms >= *t0 && w.t1_ms <= *t1));
+    }
+}

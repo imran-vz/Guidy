@@ -3030,3 +3030,199 @@ mod recording_widget {
         );
     }
 }
+
+mod redo_transcript {
+    use super::*;
+    use crate::testing::{meeting_fixture, segment_fixture, speaker_fixture, FakeMeetingsBackend};
+    use crate::ui::pages::meetings::MeetingsPage;
+    use guidy_core::meetings::types::{CloudTranscriptionOption, MeetingStatus};
+
+    fn has_dialog(cx: &mut TestAppContext, w: AnyWindowHandle) -> bool {
+        cx.update_window(w, |_, window, cx| {
+            gpui_kit::component::WindowExt::has_active_dialog(window, cx)
+        })
+        .unwrap()
+    }
+
+    /// Meeting 1, processed, with `texts` as its transcript (10 s each);
+    /// Groq has a key, OpenAI doesn't.
+    fn fixture(texts: &[&str]) -> (Arc<FakeBackend>, Arc<FakeMeetingsBackend>) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| {
+            s.meetings.enabled = true;
+            s.meetings.meeting_model = Some("qwen".into());
+        });
+        backend.data.lock().models = ["qwen", "whisper", "parakeet"]
+            .map(|id| {
+                let mut m = crate::logic::models::test_model(id);
+                m.is_downloaded = id != "parakeet";
+                m
+            })
+            .into();
+        let m = FakeMeetingsBackend::new();
+        {
+            let mut d = m.data.lock();
+            d.meetings = vec![meeting_fixture(1, "Weekly sync", MeetingStatus::Processed)];
+            d.speakers
+                .insert(1, vec![speaker_fixture(5, 1, "Speaker 1", None, false)]);
+            d.segments.insert(
+                1,
+                texts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, text)| {
+                        let mut s = segment_fixture(i as i64 + 1, 1, 5, i as i64 * 10_000, text);
+                        s.t1_ms = s.t0_ms + 10_000;
+                        s
+                    })
+                    .collect(),
+            );
+            d.cloud_options = vec![
+                CloudTranscriptionOption {
+                    provider_id: "groq".into(),
+                    label: "Groq".into(),
+                    model: "whisper-large-v3-turbo".into(),
+                    has_key: true,
+                },
+                CloudTranscriptionOption {
+                    provider_id: "openai".into(),
+                    label: "OpenAI".into(),
+                    model: "whisper-1".into(),
+                    has_key: false,
+                },
+            ];
+        }
+        (backend, m)
+    }
+
+    fn press_enter(cx: &mut TestAppContext, w: AnyWindowHandle) {
+        cx.update_window(w, |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn detail(
+        cx: &mut TestAppContext,
+        page: &Entity<MeetingsPage>,
+    ) -> Entity<crate::ui::pages::meetings::detail::MeetingDetail> {
+        page.read_with(cx, |p, _| p.detail().cloned())
+            .expect("a meeting is open")
+    }
+
+    #[gpui_kit::test]
+    fn a_processed_transcript_can_be_redone_in_the_cloud(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Hello everyone, let's get going with the plan."]);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        assert!(!exists(cx, w, "transcript-quality"), "a good transcript");
+        // One click: the model meetings use now, no questions.
+        with_window(cx, w, |window, cx| window.click("meeting-detail-redo", cx));
+        assert!(!has_dialog(cx, w));
+        assert!(
+            meetings.called("retranscribe 1 local qwen"),
+            "{:?}",
+            meetings.calls()
+        );
+
+        // The menu: a cloud provider asks first; one without a key does nothing.
+        let d = detail(cx, &page);
+        let choices = cx.update(|cx| d.read(cx).redo_choices(cx));
+        let pick = |provider: &str| {
+            choices
+                .iter()
+                .find(|c| c.cloud && c.provider == provider)
+                .cloned()
+                .unwrap()
+        };
+        cx.update_window(w, |_, window, cx| {
+            d.update(cx, |d, cx| d.choose_redo(pick("OpenAI"), window, cx))
+        })
+        .unwrap();
+        assert!(!has_dialog(cx, w));
+        cx.update_window(w, |_, window, cx| {
+            d.update(cx, |d, cx| d.choose_redo(pick("Groq"), window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(has_dialog(cx, w));
+        assert!(!meetings.called("retranscribe 1 cloud"));
+        press_enter(cx, w);
+        assert!(
+            meetings.called("retranscribe 1 cloud groq whisper-large-v3-turbo"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_summary_and_transcript_can_be_copied(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Let's ship it on Friday."]);
+        meetings.data.lock().ai.summaries.insert(
+            1,
+            guidy_core::meetings::types::StoredSummary {
+                meeting_id: 1,
+                title: "Weekly sync".into(),
+                short_summary: "Shipping Friday.".into(),
+                decisions: vec!["Ship on Friday".into()],
+                topics: Vec::new(),
+                generated_by: "groq/x".into(),
+                generated_at: 0,
+                usage: None,
+            },
+        );
+        setup_meetings(cx, backend, meetings);
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        let clipboard = |cx: &mut TestAppContext| {
+            cx.update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+                .unwrap_or_default()
+        };
+
+        with_window(cx, w, |window, cx| window.click("transcript-copy", cx));
+        let text = clipboard(cx);
+        assert!(text.starts_with("# Weekly sync\n"), "{text}");
+        assert!(
+            text.contains("[00:00] Speaker 1: Let's ship it on Friday."),
+            "{text}"
+        );
+
+        with_window(cx, w, |window, cx| window.click("summary-copy", cx));
+        let md = clipboard(cx);
+        assert!(md.contains("## Summary\n\nShipping Friday."), "{md}");
+        assert!(md.contains("## Decisions\n\n- Ship on Friday"), "{md}");
+    }
+
+    #[gpui_kit::test]
+    fn a_looping_transcript_offers_a_redo(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&[
+            "thank you thank you thank you thank you",
+            "okay so",
+            "the the the the the",
+        ]);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        assert!(exists(cx, w, "transcript-quality"));
+        with_window(cx, w, |window, cx| {
+            window.click("transcript-quality-redo", cx)
+        });
+        assert!(
+            meetings.called("retranscribe 1 local qwen"),
+            "{:?}",
+            meetings.calls()
+        );
+        // The menu offers every downloaded model, the current one marked.
+        let d = detail(cx, &page);
+        let local: Vec<(String, bool)> = cx.update(|cx| {
+            d.read(cx)
+                .redo_choices(cx)
+                .into_iter()
+                .filter(|c| !c.cloud)
+                .map(|c| (c.model, c.current))
+                .collect()
+        });
+        assert_eq!(local.len(), 2, "{local:?}");
+        assert!(local[0].1, "the current model first: {local:?}");
+    }
+}

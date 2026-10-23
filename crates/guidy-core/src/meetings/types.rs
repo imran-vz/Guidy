@@ -352,6 +352,32 @@ pub struct ProcessingProgress {
     pub message: Option<String>,
 }
 
+/// What transcribes a meeting's speech.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionEngine {
+    /// The local meeting model (transcribe.cpp worker).
+    #[default]
+    Local,
+    /// This downloaded local model (a `ModelManager` id), whatever the
+    /// meeting model setting says.
+    LocalModel { model_id: String },
+    /// A cloud speech-to-text API: a `post_process_providers` id that offers
+    /// one (`groq`, `openai`) and its model.
+    Cloud { provider_id: String, model: String },
+}
+
+/// A cloud provider a meeting can be transcribed with.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CloudTranscriptionOption {
+    pub provider_id: String,
+    pub label: String,
+    /// The model configured for it (or its default).
+    pub model: String,
+    /// An API key is saved for it.
+    pub has_key: bool,
+}
+
 /// What the recorder is doing right now (drives the tray and the UI).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub enum RecorderState {

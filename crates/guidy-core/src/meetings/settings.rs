@@ -47,6 +47,12 @@ pub struct MeetingSettings {
     pub mcp_enabled: bool,
     /// Loopback port of the MCP server.
     pub mcp_port: u16,
+    /// Cloud speech-to-text provider for "transcribe again in the cloud".
+    /// Empty: automatic (Groq if it has a key, else OpenAI if it has one,
+    /// else Groq).
+    pub cloud_transcription_provider_id: String,
+    /// Cloud speech-to-text model per provider (provider id -> model id).
+    pub cloud_transcription_models: std::collections::HashMap<String, String>,
     /// Transcribe a recording as it happens, shown in the recording
     /// controls and the meeting page. The stored transcript still comes from
     /// processing after the stop.
@@ -121,6 +127,14 @@ impl Default for MeetingSettings {
             linear_default_project_id: None,
             mcp_enabled: false,
             mcp_port: crate::mcp::DEFAULT_PORT,
+            cloud_transcription_provider_id: String::new(),
+            cloud_transcription_models: [
+                ("groq", "whisper-large-v3-turbo"),
+                ("openai", "whisper-1"),
+            ]
+            .into_iter()
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+            .collect(),
             live_transcription: true,
             recording_controls: RecordingControls::Floating,
         }
@@ -151,6 +165,14 @@ impl std::fmt::Debug for MeetingSettings {
             .field("linear_default_project_id", &self.linear_default_project_id)
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_port", &self.mcp_port)
+            .field(
+                "cloud_transcription_provider_id",
+                &self.cloud_transcription_provider_id,
+            )
+            .field(
+                "cloud_transcription_models",
+                &self.cloud_transcription_models,
+            )
             .field("live_transcription", &self.live_transcription)
             .field("recording_controls", &self.recording_controls)
             .finish()

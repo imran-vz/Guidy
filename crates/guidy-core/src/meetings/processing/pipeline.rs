@@ -43,6 +43,20 @@ pub trait SegmentTranscriber {
     fn transcribe_in(&mut self, pcm: Vec<f32>, _language: &str) -> Result<(String, Vec<Word>)> {
         self.transcribe(pcm)
     }
+
+    /// The most audio (ms) one [`transcribe_batch`](Self::transcribe_batch)
+    /// call takes. `Some` makes the pipeline send consecutive segments of a
+    /// track together (a cloud API, priced and rate-limited per request);
+    /// `None` (the default) sends one segment at a time.
+    fn batch_limit_ms(&self) -> Option<i64> {
+        None
+    }
+
+    /// Transcribe several segments; one result per segment, in order, with
+    /// times relative to the start of its own `pcm`.
+    fn transcribe_batch(&mut self, pcms: Vec<Vec<f32>>) -> Result<Vec<(String, Vec<Word>)>> {
+        pcms.into_iter().map(|pcm| self.transcribe(pcm)).collect()
+    }
 }
 
 /// Computes a voiceprint for one segment's PCM (`None` if too short).
@@ -363,6 +377,10 @@ impl<'a> Pipeline<'a> {
     }
 
     fn transcribe(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        if let Some(limit_ms) = self.transcriber.batch_limit_ms() {
+            self.transcribe_batched(cache, limit_ms)?;
+            return self.unify_language(cache);
+        }
         let n = cache.units.len();
         let mut last_save = Instant::now();
         for i in 0..n {
@@ -393,6 +411,91 @@ impl<'a> Pipeline<'a> {
             }
         }
         self.unify_language(cache)
+    }
+
+    /// [`Self::transcribe`] for a batching transcriber: the pending units in
+    /// groups (see [`batches`]), one call each, progress and checkpoints per
+    /// group.
+    fn transcribe_batched(&mut self, cache: &mut ProcessingCache, limit_ms: i64) -> Result<()> {
+        let n = cache.units.len();
+        let pending: Vec<bool> = cache.transcripts.iter().map(Option::is_none).collect();
+        let mut last_save = Instant::now();
+        for batch in batches(&cache.units, &pending, limit_ms) {
+            if let Err(e) = self.check_cancel() {
+                self.save(cache)?;
+                return Err(e);
+            }
+            match self.transcribe_group(cache, &batch) {
+                Ok(done) => {
+                    for (i, t) in batch.into_iter().zip(done) {
+                        cache.transcripts[i] = Some(t);
+                    }
+                }
+                Err(e) => {
+                    // Keep what is done so a retry resumes here.
+                    self.save(cache)?;
+                    return Err(e);
+                }
+            }
+            let done = cache.transcripts.iter().filter(|t| t.is_some()).count();
+            self.progress(
+                ProcessingStage::Transcribe,
+                done as f32 / n.max(1) as f32,
+                None,
+            );
+            if last_save.elapsed() >= CHECKPOINT_EVERY {
+                self.save(cache)?;
+                last_save = Instant::now();
+            }
+        }
+        Ok(())
+    }
+
+    /// The transcripts of the units `batch` (indices into `cache.units`),
+    /// from one [`SegmentTranscriber::transcribe_batch`] call. Empty audio
+    /// is not sent.
+    fn transcribe_group(
+        &mut self,
+        cache: &ProcessingCache,
+        batch: &[usize],
+    ) -> Result<Vec<UnitTranscript>> {
+        let mut pcms = Vec::with_capacity(batch.len());
+        for &i in batch {
+            let unit = cache.units[i];
+            pcms.push(
+                self.source(unit.track)?
+                    .read_range(unit.span.t0_ms, unit.span.t1_ms)?,
+            );
+        }
+        let sent: Vec<usize> = (0..pcms.len()).filter(|&k| !pcms[k].is_empty()).collect();
+        let results = if sent.is_empty() {
+            Vec::new()
+        } else {
+            let audio = sent.iter().map(|&k| std::mem::take(&mut pcms[k])).collect();
+            self.transcriber.transcribe_batch(audio)?
+        };
+        if results.len() != sent.len() {
+            bail!(
+                "the transcriber returned {} result(s) for {} segment(s)",
+                results.len(),
+                sent.len()
+            );
+        }
+        let mut by_unit: Vec<Option<(String, Vec<Word>)>> = vec![None; batch.len()];
+        for (&k, r) in sent.iter().zip(results) {
+            by_unit[k] = Some(r);
+        }
+        Ok(batch
+            .iter()
+            .zip(by_unit)
+            .map(|(&i, r)| {
+                let (text, words) = r.unwrap_or_default();
+                UnitTranscript {
+                    text: text.trim().to_string(),
+                    words: offset_words(words, cache.units[i].span),
+                }
+            })
+            .collect())
     }
 
     /// One unit's transcript, in `language` when given.
@@ -654,6 +757,34 @@ pub fn main_language(
     let preferred = preferred?.split(['-', '_']).next()?.to_ascii_lowercase();
     let n = words.get(preferred.as_str()).copied().unwrap_or(0);
     (share(n) >= PREFERRED_LANGUAGE_MIN_SHARE).then_some(preferred)
+}
+
+/// Groups of units (indices) for a batching transcriber: the `pending`
+/// ones, in unit order, each group on one track and holding at most
+/// `limit_ms` of speech (a longer unit is a group of its own).
+pub fn batches(units: &[Unit], pending: &[bool], limit_ms: i64) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut current_ms = 0;
+    for (i, unit) in units.iter().enumerate() {
+        if !pending.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let len = unit.span.len_ms();
+        let same_track = current
+            .first()
+            .is_some_and(|&j| units[j].track == unit.track);
+        if !current.is_empty() && (!same_track || current_ms + len > limit_ms) {
+            out.push(std::mem::take(&mut current));
+            current_ms = 0;
+        }
+        current.push(i);
+        current_ms += len;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 /// Shift words from segment time to meeting time, clamped to the segment.

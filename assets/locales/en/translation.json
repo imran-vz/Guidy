@@ -811,6 +811,21 @@
       "transcript": "Copy transcript",
       "copied": "Copied"
     },
+    "redo": {
+      "action": "Redo transcript",
+      "localTitle": "On this Mac",
+      "cloudTitle": "Cloud",
+      "error": "Couldn't start transcribing again",
+      "issueRepetition": "Parts of this transcript repeat themselves, which usually means the model lost track of the audio.",
+      "issueTooFewWords": "This transcript has far fewer words than the talking time suggests, so parts of the meeting were probably missed.",
+      "issueHint": "A cloud model often does better on hard audio.",
+      "tooltip": "Transcribe again with {{model}}. Replaces the transcript and speakers; people you named are matched again by voice.",
+      "more": "Other models",
+      "noKeyShort": "needs an API key (Meetings › Settings › AI)",
+      "confirmTitle": "Transcribe with {{provider}}?",
+      "confirmCloud": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}, for about {{cost}}. The transcript and speakers are replaced.",
+      "confirmCloudUnpriced": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}. The transcript and speakers are replaced."
+    },
     "widget": {
       "recording": "Recording",
       "paused": "Paused",

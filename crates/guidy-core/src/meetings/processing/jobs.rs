@@ -6,6 +6,10 @@
 //! cancel kills that worker mid-run; VAD and voiceprints check the cancel
 //! flag between segments. The meeting model is unloaded when the queue
 //! drains.
+//!
+//! A job can instead transcribe with a cloud speech-to-text API
+//! ([`TranscriptionEngine::Cloud`], see [`super::cloud`]); such a redo
+//! always starts over from decoding ([`Processor::enqueue_with`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
@@ -17,6 +21,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use parking_lot::{Condvar, Mutex, MutexGuard};
 
+use super::cloud::CloudTranscriber;
 use super::pipeline::{
     next_stage, overall_fraction, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
 };
@@ -39,6 +44,8 @@ use crate::settings::{get_settings, VadBackend};
 #[derive(Default)]
 struct JobState {
     queue: VecDeque<MeetingId>,
+    /// The engine of each queued meeting that doesn't use the local one.
+    engines: HashMap<MeetingId, TranscriptionEngine>,
     /// The running job and its cancel flag. The flag is new for each run,
     /// so it also tells a run apart from a later one of the same meeting.
     current: Option<(MeetingId, Arc<AtomicBool>)>,
@@ -107,10 +114,33 @@ impl Processor {
     /// the audio of a queued meeting. Its previous status and error are
     /// saved in the row, so a cancel restores them even after a restart.
     pub fn enqueue(&self, id: MeetingId) -> Result<()> {
+        self.enqueue_job(id, TranscriptionEngine::Local, false)
+    }
+
+    /// Queue a fresh run of `id` transcribed by `engine` (a redo): unlike
+    /// [`Self::enqueue`] it never resumes, but starts over from decoding,
+    /// so no checkpoint of an earlier run (e.g. a failed run's local
+    /// transcripts) is reused. Otherwise as [`Self::enqueue`] (a no-op when
+    /// already queued or running). A cloud engine needs no local model,
+    /// but its provider's API key ([`super::cloud::CloudKeyMissing`]); an
+    /// empty model is the one configured for the provider.
+    pub fn enqueue_with(&self, id: MeetingId, engine: TranscriptionEngine) -> Result<()> {
+        let engine = match engine {
+            TranscriptionEngine::Cloud { provider_id, model } if model.trim().is_empty() => {
+                let settings = get_settings(&self.inner.app);
+                let model = super::cloud::configured_model(&settings.meetings, &provider_id);
+                TranscriptionEngine::Cloud { provider_id, model }
+            }
+            engine => engine,
+        };
+        self.enqueue_job(id, engine, true)
+    }
+
+    fn enqueue_job(&self, id: MeetingId, engine: TranscriptionEngine, fresh: bool) -> Result<()> {
         let deadline = std::time::Instant::now() + STOP_WAIT;
         loop {
             self.wait_until_stopped(id, deadline)?;
-            if self.enqueue_once(id)? {
+            if self.enqueue_once(id, &engine, fresh)? {
                 return Ok(());
             }
         }
@@ -133,9 +163,15 @@ impl Processor {
         Ok(())
     }
 
-    /// [`Self::enqueue`], unless a cancelled run of `id` is (again) still
-    /// stopping: then false, and nothing changed.
-    fn enqueue_once(&self, id: MeetingId) -> Result<bool> {
+    /// [`Self::enqueue`] (`fresh`: [`Self::enqueue_with`]), unless a
+    /// cancelled run of `id` is (again) still stopping: then false, and
+    /// nothing changed.
+    fn enqueue_once(
+        &self,
+        id: MeetingId,
+        engine: &TranscriptionEngine,
+        fresh: bool,
+    ) -> Result<bool> {
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
         };
@@ -148,6 +184,7 @@ impl Processor {
             .as_deref()
             .and_then(ProcessingStage::parse)
         {
+            _ if fresh => ProcessingStage::Decode,
             None | Some(ProcessingStage::Done) => ProcessingStage::Decode,
             Some(ProcessingStage::Merge) => ProcessingStage::Merge,
             Some(stage) => next_stage(stage),
@@ -158,18 +195,31 @@ impl Processor {
         if next <= ProcessingStage::Voiceprints && !has_audio(&meeting) {
             bail!(AUDIO_DELETED);
         }
+        if let TranscriptionEngine::Cloud { provider_id, .. } = engine {
+            let settings = get_settings(&self.inner.app);
+            let provider = super::cloud::transcription_provider(&settings, provider_id)?;
+            if crate::settings::provider_api_key(provider_id)
+                .trim()
+                .is_empty()
+            {
+                return Err(super::cloud::CloudKeyMissing {
+                    provider_id: provider.id,
+                    label: provider.label,
+                }
+                .into());
+            }
+        }
         // Fail fast (nothing queued) when a model a remaining stage needs
         // isn't downloaded: the UI gets the typed `MeetingModelMissing` /
         // `SpeakerModelMissing` error to point at the download. Only in the
         // running app (with its model manager): unit tests have no models.
         if let Some(models) = self.inner.app.try_state::<Arc<ModelManager>>() {
             if next <= ProcessingStage::Transcribe {
-                let settings = get_settings(&self.inner.app);
-                resolve_meeting_model(
-                    &models,
-                    settings.meetings.meeting_model.as_deref(),
-                    Some(&settings.selected_model),
-                )?;
+                if let Some((configured, dictation)) =
+                    local_model_choice(engine, &get_settings(&self.inner.app))
+                {
+                    resolve_meeting_model(&models, configured.as_deref(), Some(&dictation))?;
+                }
             }
             if next <= ProcessingStage::Voiceprints && !speaker_model_installed(&self.inner.app) {
                 return Err(SpeakerModelMissing.into());
@@ -186,7 +236,17 @@ impl Processor {
         // waits until it is marked and queued.
         let needs_audio = next <= ProcessingStage::Voiceprints;
         let marked = self.settle(&mut state, id, || {
-            self.inner.store.mark_processing(id, needs_audio)
+            let marked = self.inner.store.mark_processing(id, needs_audio)?;
+            if marked && fresh {
+                if let Err(e) = self.start_over(id) {
+                    // Not queued after all: undo the mark.
+                    if let Err(e2) = self.restore_status(id) {
+                        log::warn!("meeting {id}: {e2:#}");
+                    }
+                    return Err(e);
+                }
+            }
+            anyhow::Ok(marked)
         });
         if !marked? {
             drop(state);
@@ -208,6 +268,11 @@ impl Processor {
         };
         state.progress.insert(id, queued.clone());
         state.queue.push_back(id);
+        if *engine == TranscriptionEngine::Local {
+            state.engines.remove(&id);
+        } else {
+            state.engines.insert(id, engine.clone());
+        }
         let start = !state.running;
         state.running = true;
         drop(state);
@@ -225,6 +290,7 @@ impl Processor {
                 if let Some(pos) = state.queue.iter().position(|q| *q == id) {
                     state.queue.remove(pos);
                     state.progress.remove(&id);
+                    state.engines.remove(&id);
                     if let Err(e2) = self.settle(&mut state, id, || self.restore_status(id)) {
                         log::warn!("meeting {id}: {e2:#}");
                     }
@@ -247,6 +313,7 @@ impl Processor {
         if let Some(pos) = state.queue.iter().position(|q| *q == id) {
             state.queue.remove(pos);
             state.progress.remove(&id);
+            state.engines.remove(&id);
             // Settling, so an enqueue can't mark it again in between and
             // then be left queued but not `Processing`.
             let restored = self.settle(&mut state, id, || self.restore_status(id));
@@ -293,6 +360,22 @@ impl Processor {
         state.settling.remove(&id);
         self.inner.settled.notify_all();
         r.unwrap_or_else(|panic| resume_unwind(panic))
+    }
+
+    /// Forget a just-marked meeting's progress, so its run starts over from
+    /// decoding. The stage it had is saved by `mark_processing`, so a cancel
+    /// still restores a processed meeting's `done`. (After a crash,
+    /// [`Self::resume_interrupted`] resumes such a run with the local
+    /// engine, from wherever it got to: acceptable, the engine isn't kept
+    /// across restarts.)
+    fn start_over(&self, id: MeetingId) -> Result<()> {
+        self.inner
+            .store
+            .set_processing_stage_if_processing(id, None)?;
+        if let Err(e) = super::sidecar::delete_cache(&self.inner.meetings_dir, id) {
+            log::warn!("meeting {id}: {e:#}");
+        }
+        Ok(())
     }
 
     /// Undo [`Self::enqueue`]'s `Processing`: back to the status saved when
@@ -421,12 +504,13 @@ impl Processor {
                     Some(id) => {
                         let flag = Arc::new(AtomicBool::new(false));
                         state.current = Some((id, flag.clone()));
-                        Some((id, flag))
+                        let engine = state.engines.remove(&id).unwrap_or_default();
+                        Some((id, flag, engine))
                     }
                     None => None,
                 }
             };
-            let Some((id, cancel)) = next else {
+            let Some((id, cancel, engine)) = next else {
                 // Free the meeting model before deciding to exit, so a job
                 // queued meanwhile never races the unload.
                 if let Some(t) = transcriber.as_mut() {
@@ -441,7 +525,7 @@ impl Processor {
             };
             let t =
                 transcriber.get_or_insert_with(|| MeetingTranscriber::with_engine(self.engine()));
-            let outcome = catch_unwind(AssertUnwindSafe(|| self.run_job(id, &cancel, t)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| self.run_job(id, &cancel, &engine, t)));
             let outcome = outcome.unwrap_or_else(|panic| {
                 let msg = panic
                     .downcast_ref::<String>()
@@ -528,6 +612,7 @@ impl Processor {
         &self,
         id: MeetingId,
         cancel: &Arc<AtomicBool>,
+        engine: &TranscriptionEngine,
         transcriber: &mut MeetingTranscriber,
     ) -> Result<()> {
         let inner = &self.inner;
@@ -557,20 +642,42 @@ impl Processor {
         let system = open(&meeting.system_audio_path)?;
 
         let language = Some(settings.selected_language.clone()).filter(|l| l != "auto");
-        let mut segment_transcriber = LazyTranscriber {
-            app: &inner.app,
-            transcriber,
-            configured: settings.meetings.meeting_model.clone(),
-            dictation: settings.selected_model.clone(),
-            language,
-            ready: false,
-            usage: crate::llm::usage::LocalRun {
-                kind: crate::llm::usage::LocalKind::Transcription,
-                feature: crate::llm::usage::UsageFeature::MeetingTranscription,
-                meeting_id: Some(id),
-                compute_ms: Some(0),
-                ..Default::default()
-            },
+        let (mut local, mut cloud) = (None, None);
+        let segment_transcriber: &mut dyn SegmentTranscriber = match engine {
+            TranscriptionEngine::Local | TranscriptionEngine::LocalModel { .. } => {
+                let (configured, dictation) =
+                    local_model_choice(engine, &settings).expect("a local engine");
+                local.insert(LazyTranscriber {
+                    app: &inner.app,
+                    transcriber,
+                    configured,
+                    dictation,
+                    language,
+                    ready: false,
+                    usage: crate::llm::usage::LocalRun {
+                        kind: crate::llm::usage::LocalKind::Transcription,
+                        feature: crate::llm::usage::UsageFeature::MeetingTranscription,
+                        meeting_id: Some(id),
+                        compute_ms: Some(0),
+                        ..Default::default()
+                    },
+                })
+            }
+            TranscriptionEngine::Cloud { provider_id, model } => {
+                let provider = super::cloud::transcription_provider(&settings, provider_id)?;
+                log::info!(
+                    "meeting {id}: transcribing with {} ({model})",
+                    provider.label
+                );
+                cloud.insert(CloudTranscriber::new(
+                    &provider,
+                    crate::settings::provider_api_key(provider_id),
+                    model.clone(),
+                    language.as_deref(),
+                    Some(id),
+                    Some(cancel.clone()),
+                )?)
+            }
         };
         let mut embedder = LazyEmbedder {
             app: &inner.app,
@@ -591,14 +698,15 @@ impl Processor {
             mic,
             system,
             vad: Box::new(move || make_detector(&app)),
-            transcriber: &mut segment_transcriber,
+            transcriber: segment_transcriber,
             embedder: &mut embedder,
             cancel,
             on_progress: Box::new(move |p| this.report_progress(&run, p)),
         }
         .run();
-        if segment_transcriber.usage.audio_ms > 0 {
-            crate::llm::usage::record_local_run(&segment_transcriber.usage);
+        // Cloud requests are recorded as they are made.
+        if let Some(t) = local.as_ref().filter(|t| t.usage.audio_ms > 0) {
+            crate::llm::usage::record_local_run(&t.usage);
         }
         result
     }
@@ -640,6 +748,27 @@ fn make_detector(app: &AppHandle) -> Result<Box<dyn SpeechScorer>> {
         log::warn!("Silero VAD unavailable for meeting processing ({e:#}); using Earshot");
         crate::managers::audio::create_detector(VadBackend::Earshot, app)
     })
+}
+
+/// For a local engine, the models it may transcribe with: `(configured,
+/// dictation)` as [`resolve_meeting_model`] takes them. The meeting model
+/// setting with the dictation model as its fallback, or exactly the model
+/// a [`TranscriptionEngine::LocalModel`] names (no fallback: the user
+/// picked it). `None` for a cloud engine.
+fn local_model_choice(
+    engine: &TranscriptionEngine,
+    settings: &crate::settings::AppSettings,
+) -> Option<(Option<String>, String)> {
+    match engine {
+        TranscriptionEngine::Local => Some((
+            settings.meetings.meeting_model.clone(),
+            settings.selected_model.clone(),
+        )),
+        TranscriptionEngine::LocalModel { model_id } => {
+            Some((Some(model_id.clone()), String::new()))
+        }
+        TranscriptionEngine::Cloud { .. } => None,
+    }
 }
 
 /// Loads the meeting model on the first segment, so a run resuming past
@@ -1449,5 +1578,122 @@ mod tests {
         p.finish(id, Ok(()));
         assert!(!super::super::sidecar::embeddings_path(dir.path(), id).exists());
         assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
+    }
+
+    #[test]
+    fn a_chosen_local_model_has_no_fallback() {
+        let mut settings = crate::settings::get_default_settings();
+        settings.meetings.meeting_model = Some("qwen".into());
+        settings.selected_model = "nemotron".into();
+        assert_eq!(
+            local_model_choice(&TranscriptionEngine::Local, &settings),
+            Some((Some("qwen".into()), "nemotron".into()))
+        );
+        let whisper = TranscriptionEngine::LocalModel {
+            model_id: "whisper".into(),
+        };
+        assert_eq!(
+            local_model_choice(&whisper, &settings),
+            Some((Some("whisper".into()), String::new()))
+        );
+        let cloud = TranscriptionEngine::Cloud {
+            provider_id: "groq".into(),
+            model: String::new(),
+        };
+        assert_eq!(local_model_choice(&cloud, &settings), None);
+    }
+
+    /// A cloud redo needs no local model (only the speaker model and the
+    /// provider's key), and always starts over.
+    #[test]
+    fn a_cloud_redo_needs_no_local_model_and_starts_over() {
+        let app = TestApp::new();
+        // A running app's model manager with nothing downloaded, and the
+        // speaker model on disk.
+        app.app
+            .manage(Arc::new(ModelManager::new(&app.app).unwrap()));
+        let speaker = super::super::speaker_model::speaker_model_path(&app.app).unwrap();
+        std::fs::create_dir_all(speaker.parent().unwrap()).unwrap();
+        std::fs::File::create(&speaker)
+            .unwrap()
+            .set_len(super::super::SPEAKER_MODEL_SIZE)
+            .unwrap();
+        crate::settings::set_provider_api_key("groq", "gsk-test").unwrap();
+        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
+        p.inner.state.lock().running = true;
+        let done = store
+            .insert_meeting(&Meeting {
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+
+        // The local engine needs its model.
+        let e = p.enqueue(done).unwrap_err();
+        assert!(e.chain().any(|c| c.is::<MeetingModelMissing>()), "{e:#}");
+        let groq = TranscriptionEngine::Cloud {
+            provider_id: "groq".into(),
+            model: String::new(),
+        };
+        p.enqueue_with(done, groq).unwrap();
+        assert_eq!(p.inner.state.lock().queue, [done]);
+        assert_eq!(
+            p.inner.state.lock().engines.get(&done),
+            Some(&TranscriptionEngine::Cloud {
+                provider_id: "groq".into(),
+                model: "whisper-large-v3-turbo".into(),
+            })
+        );
+        let m = store.get_meeting(done).unwrap().unwrap();
+        assert_eq!(
+            (m.status, m.processing_stage),
+            (MeetingStatus::Processing, None)
+        );
+        // Cancelled before it ran: complete again.
+        p.cancel(done).unwrap();
+        assert!(p.inner.state.lock().engines.is_empty());
+        let m = store.get_meeting(done).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert_eq!(m.processing_stage.as_deref(), Some("done"));
+
+        // A failed run's checkpoint (local transcripts) isn't resumed.
+        let failed = store
+            .insert_meeting(&Meeting {
+                error: Some("boom".into()),
+                processing_stage: Some(ProcessingStage::Transcribe.as_str().into()),
+                ..meeting(MeetingStatus::Failed)
+            })
+            .unwrap();
+        let cache = super::super::sidecar::ProcessingCache::new();
+        super::super::sidecar::write_cache(dir.path(), failed, &[3u8; 32], &cache).unwrap();
+        let openai = TranscriptionEngine::Cloud {
+            provider_id: "openai".into(),
+            model: "whisper-1".into(),
+        };
+        // No OpenAI key: refused, typed, untouched.
+        let e = p.enqueue_with(failed, openai).unwrap_err();
+        assert_eq!(
+            e.downcast_ref::<super::super::CloudKeyMissing>()
+                .map(|m| m.label.as_str()),
+            Some("OpenAI")
+        );
+        assert_eq!(
+            store.get_meeting(failed).unwrap().unwrap().status,
+            MeetingStatus::Failed
+        );
+        let groq = TranscriptionEngine::Cloud {
+            provider_id: "groq".into(),
+            model: "whisper-large-v3".into(),
+        };
+        p.enqueue_with(failed, groq).unwrap();
+        assert_eq!(p.progress(failed).unwrap().stage, ProcessingStage::Decode);
+        let m = store.get_meeting(failed).unwrap().unwrap();
+        assert_eq!(
+            (m.status, m.processing_stage),
+            (MeetingStatus::Processing, None)
+        );
+        assert!(!super::super::sidecar::cache_path(dir.path(), failed).exists());
     }
 }
