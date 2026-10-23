@@ -806,6 +806,11 @@
       "tomorrow": "Tomorrow",
       "yesterday": "Yesterday"
     },
+    "copy": {
+      "summary": "Copy",
+      "transcript": "Copy transcript",
+      "copied": "Copied"
+    },
     "widget": {
       "recording": "Recording",
       "paused": "Paused",
@@ -1110,6 +1115,9 @@
       "generate": "Generate summary",
       "regenerate": "Regenerate",
       "regenerateWith": "Regenerate with...",
+      "generateWith": "Generate with {{model}}",
+      "otherModels": "Other models",
+      "otherModel": "Other model…",
       "generating": "Summarizing the meeting...",
       "generatingLocal": "Summarizing the meeting. This can take a few minutes with a local model.",
       "progress": "Summarizing ({{done}} of {{total}} steps)",

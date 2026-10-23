@@ -56,6 +56,8 @@ pub struct MeetingDetail {
     cancelling: bool,
     /// Deep link: seek and play here once the transcript has loaded.
     pending_seek: Option<i64>,
+    /// "Copy transcript" just copied (shows a check for a moment).
+    transcript_copied: bool,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -115,6 +117,7 @@ impl MeetingDetail {
             processing_busy: false,
             cancelling: false,
             pending_seek: None,
+            transcript_copied: false,
             ticking: false,
             _subs: subs,
         };
@@ -1226,7 +1229,65 @@ impl MeetingDetail {
                 .map(|(i, b)| self.render_block(i, b, cx))
                 .collect()
         };
-        group(Some(t("meetings.detail.transcript")), rows, cx).into_any_element()
+        let copy = (!self.loading && !self.segments.is_empty()).then(|| {
+            Button::new("transcript-copy")
+                .ghost()
+                .pill()
+                .small()
+                .icon(icon(if self.transcript_copied {
+                    "check"
+                } else {
+                    "copy"
+                }))
+                .label(if self.transcript_copied {
+                    t("meetings.copy.copied")
+                } else {
+                    t("meetings.copy.transcript")
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx)))
+        });
+        v_flex()
+            .w_full()
+            .gap(dp(8.))
+            .child(
+                h_flex()
+                    .w_full()
+                    .px(dp(2.))
+                    .items_center()
+                    .justify_between()
+                    .child(design::eyebrow(t("meetings.detail.transcript"), cx))
+                    .children(copy),
+            )
+            .child(group(None, rows, cx))
+            .into_any_element()
+    }
+
+    /// Copy the transcript as `[mm:ss] Speaker: text` lines under the
+    /// meeting's title and date.
+    fn copy_transcript(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = &self.meeting else { return };
+        let text = crate::logic::meetings::transcript_text(
+            &m.title,
+            &format_meeting_date(m.started_at, &guidy_i18n::language()),
+            &self.segments,
+            &self.speakers,
+            &self.people,
+            &meeting_settings(cx).user_display_name,
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.transcript_copied = true;
+        cx.notify();
+        cx.spawn(async |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1_500))
+                .await;
+            this.update(cx, |this, cx| {
+                this.transcript_copied = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 

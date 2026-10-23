@@ -67,6 +67,69 @@ impl MeetingsLlmChoice {
     }
 }
 
+/// A provider and model a summary can be generated with right away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryChoice {
+    pub provider_id: String,
+    pub model: String,
+    pub label: String,
+    /// Runs on this Mac (the built-in runtime, Apple Intelligence).
+    pub local: bool,
+    /// The provider and model summaries use now.
+    pub current: bool,
+}
+
+/// What "Generate summary" can run with in one click: the downloaded
+/// on-device models, Apple Intelligence when available, then each cloud
+/// provider that has an API key and a model (the meetings one, else the
+/// post-processing one). Anything else is in the full picker.
+pub fn summary_choices(
+    s: &AppSettings,
+    local_models: &[LocalLlmModel],
+    apple_available: bool,
+    has_key: impl Fn(&str) -> bool,
+) -> Vec<SummaryChoice> {
+    let now = MeetingsLlmChoice::from_settings(s);
+    let current = |provider_id: &str, model: &str| {
+        now.provider_id == provider_id && now.effective_model == model
+    };
+    let mut out: Vec<SummaryChoice> = local_models
+        .iter()
+        .filter(|m| m.downloaded)
+        .map(|m| SummaryChoice {
+            provider_id: BUILTIN_LLM_PROVIDER_ID.into(),
+            model: m.id.clone(),
+            label: m.name.clone(),
+            local: true,
+            current: current(BUILTIN_LLM_PROVIDER_ID, &m.id),
+        })
+        .collect();
+    for p in &s.post_process_providers {
+        let apple = p.id == APPLE_PROVIDER_ID;
+        if (apple && !apple_available) || (!apple && !has_key(&p.id)) {
+            continue;
+        }
+        let model = feature_model(s, Feature::Meetings, &p.id);
+        if model.trim().is_empty() && !apple {
+            continue;
+        }
+        out.push(SummaryChoice {
+            label: if apple {
+                p.label.clone()
+            } else {
+                format!("{} · {}", p.label, model)
+            },
+            local: apple,
+            current: current(&p.id, &model),
+            provider_id: p.id.clone(),
+            model,
+        });
+    }
+    // On this Mac first, keeping each group's order.
+    out.sort_by_key(|c| !c.local);
+    out
+}
+
 /// Provider choices for meetings: the built-in runtime first, then the
 /// post-processing providers (BYOK). Apple Intelligence only when available.
 pub fn provider_options(s: &AppSettings, apple_available: bool) -> Vec<DropdownOption> {
@@ -1902,9 +1965,57 @@ impl Render for AiSettingsView {
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_label, provider_options, with_llm_choice, MeetingsLlmChoice, APPLE_PROVIDER_ID,
+        provider_label, provider_options, summary_choices, with_llm_choice, MeetingsLlmChoice,
+        APPLE_PROVIDER_ID,
     };
     use guidy_core::meetings::settings::{MeetingSettings, BUILTIN_LLM_PROVIDER_ID};
+
+    #[test]
+    fn summary_choices_list_ready_models_local_first() {
+        let mut s = guidy_core::settings::get_default_settings();
+        s.meetings.llm_provider_id = "groq".into();
+        s.meetings
+            .llm_models
+            .insert("groq".into(), "llama-3.3-70b".into());
+        s.post_process_models
+            .insert("openai".into(), "gpt-5-mini".into());
+        s.post_process_models
+            .insert("anthropic".into(), String::new());
+        let local = |id: &str, downloaded: bool| crate::meetings_backend::LocalLlmModel {
+            id: id.into(),
+            name: format!("Local {id}"),
+            description: String::new(),
+            size_mb: 0,
+            is_default: false,
+            recommended_ram_gb: None,
+            fits_this_mac: true,
+            downloaded,
+            download_progress: None,
+        };
+        let keys = ["groq", "openai", "anthropic"];
+        let c = summary_choices(
+            &s,
+            &[local("qwen3-4b", true), local("qwen3-8b", false)],
+            false,
+            |p| keys.contains(&p),
+        );
+        let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
+        // No model for Anthropic, no key for the rest, no Apple Intelligence.
+        assert_eq!(
+            labels,
+            [
+                "Local qwen3-4b",
+                "OpenAI · gpt-5-mini",
+                "Groq · llama-3.3-70b"
+            ]
+        );
+        assert!(c[0].local && !c[1].local);
+        assert!(c[2].current && !c[0].current);
+        assert_eq!(
+            (c[0].provider_id.as_str(), c[0].model.as_str()),
+            (BUILTIN_LLM_PROVIDER_ID, "qwen3-4b")
+        );
+    }
 
     #[test]
     fn choice_defaults_to_builtin() {

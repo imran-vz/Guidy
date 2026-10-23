@@ -9,11 +9,12 @@ use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill};
 use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
 use crate::ui::pages::meetings::ai_settings::{
-    error_box, model_label, provider_options, MeetingsLlmChoice,
+    error_box, model_label, provider_options, summary_choices, MeetingsLlmChoice, SummaryChoice,
 };
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -188,6 +189,10 @@ pub struct SummaryView {
     job_provider: Option<String>,
     cancelling: bool,
     error: Option<String>,
+    /// "Copy" just copied (shows a check for a moment).
+    copied: bool,
+    /// What the generate button's menu offers (see [`summary_choices`]).
+    choices: Vec<SummaryChoice>,
     // Summary editor.
     editing: bool,
     title: Entity<InputState>,
@@ -268,6 +273,8 @@ impl SummaryView {
             progress: None,
             cancelling: false,
             error: None,
+            copied: false,
+            choices: Vec::new(),
             editing: false,
             title,
             short_summary,
@@ -438,6 +445,26 @@ impl SummaryView {
                 this.speakers = speakers.unwrap_or_default();
                 this.people = people.unwrap_or_default();
             },
+        );
+        self.load_choices(cx);
+    }
+
+    /// Refresh the generate menu: downloaded on-device models and the
+    /// providers with an API key (read off the UI thread: the Keychain).
+    fn load_choices(&mut self, cx: &mut Context<Self>) {
+        let Some(settings) = AppState::global(cx).read(cx).app_settings().cloned() else {
+            return;
+        };
+        let apple = self.apple_available;
+        self.run(
+            cx,
+            move |b| {
+                let local = b.local_llm_models().unwrap_or_default();
+                summary_choices(&settings, &local, apple, |p| {
+                    !guidy_core::settings::provider_api_key(p).trim().is_empty()
+                })
+            },
+            |this, choices, _| this.choices = choices,
         );
     }
 
@@ -840,6 +867,45 @@ impl SummaryView {
         )
     }
 
+    /// Copy the summary and action items as Markdown.
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        let id = self.meeting_id;
+        super::run(
+            cx,
+            move |b| b.get_meeting(id),
+            |this: &mut Self, meeting, cx| {
+                let Some(summary) = &this.summary else { return };
+                let date = match meeting {
+                    Ok(Some(m)) => crate::logic::meetings::format_meeting_date(
+                        m.started_at,
+                        &guidy_i18n::language(),
+                    ),
+                    _ => String::new(),
+                };
+                let text = crate::logic::meetings::summary_markdown(
+                    summary,
+                    &this.items,
+                    &this.people,
+                    &super::meeting_settings(cx).user_display_name,
+                    &date,
+                );
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                this.copied = true;
+                cx.spawn(async |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(1_500))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.copied = false;
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            },
+        );
+    }
+
     fn header(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_summary = self.summary.is_some();
         h_flex()
@@ -848,6 +914,19 @@ impl SummaryView {
             .justify_end()
             .when(has_summary && !self.editing, |d| {
                 d.child(
+                    Button::new("summary-copy")
+                        .ghost()
+                        .pill()
+                        .small()
+                        .icon(icon(if self.copied { "check" } else { "copy" }))
+                        .label(if self.copied {
+                            t("meetings.copy.copied")
+                        } else {
+                            t("meetings.copy.summary")
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
+                )
+                .child(
                     Button::new("summary-edit")
                         .ghost()
                         .pill()
@@ -858,39 +937,80 @@ impl SummaryView {
                         .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
                 )
             })
-            .child(
-                Button::new("summary-regenerate-with")
-                    .secondary()
-                    .pill()
-                    .small()
-                    .label(t("meetingsAi.summary.regenerateWith"))
-                    .disabled(self.generating)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.picker_open {
-                            this.picker_open = false;
-                            cx.notify();
-                        } else {
-                            this.open_picker(window, cx)
-                        }
-                    })),
-            )
-            .child(
-                Button::new("summary-generate")
-                    .primary()
-                    .when(self.generating, |b| b.secondary())
-                    .pill()
-                    .small()
-                    .icon(icon("sparkles"))
-                    .label(if has_summary {
-                        t("meetingsAi.summary.regenerate")
-                    } else {
-                        t("meetingsAi.summary.generate")
-                    })
-                    .loading(self.generating)
-                    .disabled(self.generating)
-                    .on_click(cx.listener(|this, _, _, cx| this.generate(None, cx))),
-            )
+            .child(self.generate_button(has_summary, cx))
             .into_any_element()
+    }
+
+    /// "Generate summary" with the meetings model, and a menu of the other
+    /// ready models (on this Mac first) and the full picker.
+    fn generate_button(&self, has_summary: bool, cx: &mut Context<Self>) -> DropdownButton {
+        let current = self.choices.iter().find(|c| c.current);
+        let main = Button::new("summary-generate")
+            .primary()
+            .when(self.generating, |b| b.secondary())
+            .pill()
+            .small()
+            .icon(icon("sparkles"))
+            .label(if has_summary {
+                t("meetingsAi.summary.regenerate")
+            } else {
+                t("meetingsAi.summary.generate")
+            })
+            .when_some(current, |b, c| {
+                b.tooltip(t_args(
+                    "meetingsAi.summary.generateWith",
+                    &[("model", &c.label)],
+                ))
+            })
+            .loading(self.generating)
+            .disabled(self.generating)
+            .on_click(cx.listener(|this, _, _, cx| this.generate(None, cx)));
+        let choices = self.choices.clone();
+        let weak = cx.entity().downgrade();
+        DropdownButton::new("summary-generate-split")
+            .button(main)
+            .disabled(self.generating)
+            .menu_accessibility_label(t("meetingsAi.summary.otherModels"))
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu;
+                let mut section = None;
+                for c in &choices {
+                    if section != Some(c.local) {
+                        if section.is_some() {
+                            menu = menu.separator();
+                        }
+                        menu = menu.label(if c.local {
+                            t("meetings.redo.localTitle")
+                        } else {
+                            t("meetings.redo.cloudTitle")
+                        });
+                        section = Some(c.local);
+                    }
+                    let run = (c.provider_id.clone(), c.model.clone());
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(c.label.clone())
+                            .checked(c.current)
+                            .on_click(move |_, _, cx| {
+                                let run = run.clone();
+                                weak.update(cx, |this, cx| this.generate(Some(run), cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                if !choices.is_empty() {
+                    menu = menu.separator();
+                }
+                let weak = weak.clone();
+                menu.item(
+                    PopupMenuItem::new(t("meetingsAi.summary.otherModel")).on_click(
+                        move |_, window, cx| {
+                            weak.update(cx, |this, cx| this.open_picker(window, cx))
+                                .ok();
+                        },
+                    ),
+                )
+            })
     }
 
     fn picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1569,13 +1689,16 @@ mod ui {
                 .insert("guidy_local".into(), "qwen3-4b".into());
         });
         setup_with(cx, fb, mb.clone());
-        let (w, _) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
         with_window(cx, w, |window, cx| window.click("summary-generate", cx));
         assert!(mb.called("summarize 1 default"), "{:?}", mb.calls());
 
-        with_window(cx, w, |window, cx| {
-            window.click("summary-regenerate-with", cx)
-        });
+        // "Other model…" in the generate menu.
+        cx.update_window(w, |_, window, cx| {
+            view.update(cx, |v, cx| v.open_picker(window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
         assert!(exists(cx, w, "summary-picker"));
         assert!(mb.called("llm_models guidy_local"));
         with_window(cx, w, |window, cx| window.click("summary-picker-run", cx));

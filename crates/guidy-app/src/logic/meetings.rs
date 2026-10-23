@@ -5,8 +5,8 @@
 use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
-    events, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
-    RecorderState, Segment, SpeakerId,
+    events, ActionItem, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person,
+    ProcessingProgress, RecorderState, Segment, SpeakerId, StoredSummary,
 };
 use serde_json::Value;
 
@@ -511,6 +511,99 @@ pub fn can_process(m: &Meeting) -> bool {
     }
 }
 
+/// A meeting's summary as Markdown, for pasting into notes or a doc: the
+/// title, `date`, the summary, decisions, topics and action items (with
+/// owner, due date and Linear issue). Empty sections are left out.
+pub fn summary_markdown(
+    summary: &StoredSummary,
+    items: &[ActionItem],
+    people: &[Person],
+    user_display_name: &str,
+    date: &str,
+) -> String {
+    let mut out = format!(
+        "# {}
+",
+        summary.title.trim()
+    );
+    if !date.is_empty() {
+        out.push_str(&format!("\n{date}\n"));
+    }
+    let short = summary.short_summary.trim();
+    if !short.is_empty() {
+        out.push_str(&format!("\n## Summary\n\n{short}\n"));
+    }
+    let mut list = |heading: &str, lines: Vec<String>| {
+        let lines: Vec<String> = lines.into_iter().filter(|l| !l.trim().is_empty()).collect();
+        if !lines.is_empty() {
+            out.push_str(&format!("\n## {heading}\n\n"));
+            for l in lines {
+                out.push_str(&format!("- {}\n", l.trim()));
+            }
+        }
+    };
+    list("Decisions", summary.decisions.clone());
+    list("Topics", summary.topics.clone());
+    let user = guidy_core::meetings::summarize::user_name(user_display_name);
+    list(
+        "Action items",
+        items
+            .iter()
+            .filter(|i| i.ticket_state != guidy_core::meetings::types::TicketState::Discarded)
+            .map(|i| {
+                let owner = if i.owner_is_user {
+                    Some(user.clone())
+                } else {
+                    i.owner_person_id
+                        .and_then(|id| people.iter().find(|p| p.id == id))
+                        .map(|p| p.display_name.clone())
+                        .or_else(|| i.owner_name.clone())
+                };
+                let mut line = format!("[ ] {}", i.text.trim());
+                let details: Vec<String> = owner
+                    .into_iter()
+                    .chain(i.due.clone().map(|d| format!("due {d}")))
+                    .filter(|d| !d.trim().is_empty())
+                    .collect();
+                if !details.is_empty() {
+                    line.push_str(&format!(" ({})", details.join(", ")));
+                }
+                if let Some(issue) = &i.linear_issue_identifier {
+                    line.push_str(&format!(" [{issue}]"));
+                }
+                line
+            })
+            .collect(),
+    );
+    out
+}
+
+/// A meeting's transcript as text: the title and `date`, then one
+/// `[mm:ss] Speaker: text` line per segment, with people's names (the same
+/// lines the MCP server gives other apps).
+pub fn transcript_text(
+    title: &str,
+    date: &str,
+    segments: &[Segment],
+    speakers: &[MeetingSpeaker],
+    people: &[Person],
+    user_display_name: &str,
+) -> String {
+    use guidy_core::meetings::summarize;
+    let user = summarize::user_name(user_display_name);
+    let names = summarize::speaker_names(speakers, people, &user);
+    let mut out = format!("# {}\n", title.trim());
+    if !date.is_empty() {
+        out.push_str(&format!("\n{date}\n"));
+    }
+    out.push('\n');
+    for line in summarize::transcript_lines(segments, &names, &user) {
+        out.push_str(&line.render());
+        out.push('\n');
+    }
+    out
+}
+
 /// Retention dropdown value: `"3"`, `"7"`, `"30"` or `"forever"`.
 pub fn retention_value(days: Option<u32>) -> String {
     days.map(|d| d.to_string())
@@ -628,6 +721,68 @@ mod tests {
         );
         let ids: Vec<_> = shown.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["just-ended", "tomorrow"]);
+    }
+
+    #[test]
+    fn the_summary_copies_as_markdown_without_empty_sections() {
+        use crate::testing::{action_item_fixture, person_fixture};
+        let summary = StoredSummary {
+            meeting_id: 1,
+            title: "Weekly sync".into(),
+            short_summary: "We agreed to ship.".into(),
+            decisions: vec!["Ship on Friday".into(), " ".into()],
+            topics: Vec::new(),
+            generated_by: "groq/x".into(),
+            generated_at: 0,
+            usage: None,
+        };
+        let mut mine = action_item_fixture(1, 1, "Write the release notes");
+        mine.owner_is_user = true;
+        mine.due = Some("Friday".into());
+        let mut ada = action_item_fixture(2, 1, "Review the PR");
+        ada.owner_person_id = Some(7);
+        ada.linear_issue_identifier = Some("ENG-12".into());
+        let mut dropped = action_item_fixture(3, 1, "Discarded idea");
+        dropped.ticket_state = guidy_core::meetings::types::TicketState::Discarded;
+        let md = summary_markdown(
+            &summary,
+            &[mine, ada, dropped],
+            &[person_fixture(7, "Ada", None)],
+            "Imran",
+            "October 23, 2026 14:19",
+        );
+        assert_eq!(
+            md,
+            "# Weekly sync\n\nOctober 23, 2026 14:19\n\n## Summary\n\nWe agreed to ship.\n\n\
+             ## Decisions\n\n- Ship on Friday\n\n## Action items\n\n\
+             - [ ] Write the release notes (Imran, due Friday)\n\
+             - [ ] Review the PR (Ada) [ENG-12]\n"
+        );
+    }
+
+    #[test]
+    fn the_transcript_copies_with_times_and_names() {
+        use crate::testing::{person_fixture, segment_fixture, speaker_fixture};
+        let speakers = vec![
+            speaker_fixture(5, 1, "Speaker 1", Some(7), false),
+            speaker_fixture(6, 1, "me", None, true),
+        ];
+        let segments = vec![
+            segment_fixture(1, 1, 6, 5_000, "Let's ship it."),
+            segment_fixture(2, 1, 5, 65_000, "Agreed."),
+        ];
+        let text = transcript_text(
+            "Weekly sync",
+            "",
+            &segments,
+            &speakers,
+            &[person_fixture(7, "Ada", None)],
+            "Imran",
+        );
+        assert_eq!(
+            text,
+            "# Weekly sync\n\n[00:05] Imran: Let's ship it.\n[01:05] Ada: Agreed.\n"
+        );
     }
 
     #[test]
