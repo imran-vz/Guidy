@@ -861,13 +861,23 @@ pub fn cluster_units(
         .collect();
     let (labels_embedded, k_embedded) = cluster::agglomerate(&vectors, &config.cluster);
 
+    // A segment unlike the rest of its cluster is someone else (or two
+    // voices at once): unknown, for the user to name, not a guess.
     let mut labels: Vec<Option<usize>> = vec![None; n];
-    for (&i, &l) in embedded.iter().zip(&labels_embedded) {
-        labels[i] = Some(l);
+    let mut rejected = vec![false; n];
+    for (&i, l) in embedded
+        .iter()
+        .zip(cluster::reject_outliers(&vectors, &labels_embedded))
+    {
+        match l {
+            Some(l) => labels[i] = Some(l),
+            None => rejected[i] = true,
+        }
     }
-    // Short or un-embeddable system speech joins the nearest system cluster
-    // in time; with no system voiceprints at all, it is one speaker. (Other
-    // people's mic speech is all embedded.)
+    // Short or un-embeddable system speech joins a cluster only inside that
+    // speaker's turn (see `attach_by_time`), else stays unknown; with no
+    // system voiceprints at all (no speaker model), it is one speaker.
+    // (Other people's mic speech is all embedded.)
     let system: Vec<usize> = speech
         .iter()
         .copied()
@@ -879,9 +889,27 @@ pub fn cluster_units(
         .collect();
     let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
     let attached = cluster::attach_by_time(&spans, &system_labels);
+    let any_voice = system_labels.iter().any(Option::is_some);
     for (&i, l) in system.iter().zip(attached) {
-        labels[i] = Some(l.unwrap_or(k_embedded));
+        labels[i] = if rejected[i] {
+            None
+        } else if any_voice {
+            l
+        } else {
+            Some(k_embedded)
+        };
     }
+    log::info!(
+        "diarization: {} segment(s) with speech, {} with a voiceprint, {k_embedded} cluster(s), \
+         {} unlike their cluster, {} left unknown",
+        speech.len(),
+        embedded.len(),
+        rejected.iter().filter(|r| **r).count(),
+        speech
+            .iter()
+            .filter(|&&i| labels[i].is_none() && cache.units[i].track == Track::System)
+            .count(),
+    );
 
     // A cluster of mic speech only that still sounds like the user (as a
     // whole, segments are noisier) is the user after all.

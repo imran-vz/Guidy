@@ -3226,3 +3226,101 @@ mod redo_transcript {
         assert!(local[0].1, "the current model first: {local:?}");
     }
 }
+
+mod line_tagging {
+    use super::*;
+    use crate::testing::{
+        meeting_fixture, person_fixture, segment_fixture, speaker_fixture, FakeMeetingsBackend,
+    };
+    use crate::ui::pages::meetings::MeetingsPage;
+    use guidy_core::meetings::types::MeetingStatus;
+
+    /// Meeting 1: Prashanth's line, two lines nobody could place, then
+    /// Prashanth again. People: Prashanth (7), Mageshwari (8).
+    fn fixture() -> (Arc<FakeBackend>, Arc<FakeMeetingsBackend>) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let m = FakeMeetingsBackend::new();
+        {
+            let mut d = m.data.lock();
+            d.meetings = vec![meeting_fixture(
+                1,
+                "TCPL stand-up",
+                MeetingStatus::Processed,
+            )];
+            d.people = vec![
+                person_fixture(7, "Prashanth", None),
+                person_fixture(8, "Mageshwari", None),
+            ];
+            d.speakers
+                .insert(1, vec![speaker_fixture(5, 1, "Speaker 1", Some(7), false)]);
+            let unknown = |id: i64, t0: i64, text: &str| {
+                let mut s = segment_fixture(id, 1, 5, t0, text);
+                s.speaker_id = None;
+                s
+            };
+            d.segments.insert(
+                1,
+                vec![
+                    segment_fixture(1, 1, 5, 0, "Can I do?"),
+                    unknown(2, 3_000, "Hi, how are you doing on TCPR?"),
+                    unknown(3, 6_000, "And two were related to tech."),
+                    segment_fixture(4, 1, 5, 9_000, "Okay, and how is SLS?"),
+                ],
+            );
+        }
+        (backend, m)
+    }
+
+    #[gpui_kit::test]
+    fn an_unknown_voice_is_highlighted_and_its_turn_can_be_named(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        // Blocks: Prashanth, the unknown turn, Prashanth.
+        assert!(!exists(cx, w, "block-0-tag"));
+        assert!(exists(cx, w, "block-1-tag"), "unknown gets 'Who is this?'");
+        with_window(cx, w, |window, cx| window.click("block-1-tag", cx));
+        assert!(meetings.called("segment_suggestions 2"));
+        assert!(
+            exists(cx, w, "line-picker-2"),
+            "under the turn's first line"
+        );
+        // Suggestions: Prashanth, then Mageshwari.
+        with_window(cx, w, |window, cx| window.click("speaker-suggestion-1", cx));
+        assert!(
+            meetings.called("assign_segment 2 8"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(
+            meetings.called("assign_segment 3 8"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
+    #[gpui_kit::test]
+    fn one_wrongly_named_line_can_be_renamed_without_playing_it(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        with_window(cx, w, |window, cx| window.click("segment-4-tag", cx));
+        assert!(meetings.called("segment_suggestions 4"));
+        assert!(
+            exists(cx, w, "line-picker-4"),
+            "right under the clicked line"
+        );
+        assert!(!meetings.called("segment_audio"), "tagging doesn't play");
+        with_window(cx, w, |window, cx| window.click("speaker-suggestion-1", cx));
+        assert!(
+            meetings.called("assign_segment 4 8"),
+            "{:?}",
+            meetings.calls()
+        );
+        // Only that line.
+        assert!(!meetings.called("assign_segment 1"));
+    }
+}

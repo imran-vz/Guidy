@@ -71,13 +71,50 @@ pub struct ClusterParams {
 
 impl Default for ClusterParams {
     fn default() -> Self {
+        // Two people merged into one is worse than one person split in two
+        // (naming the second "Speaker" fixes that, nothing fixes a merge):
+        // call audio squeezes voices together, so the cut stays low.
         Self {
             min_threshold: 0.35,
-            max_threshold: 0.8,
-            default_threshold: 0.55,
+            max_threshold: 0.65,
+            default_threshold: 0.5,
             min_gap: 0.1,
         }
     }
+}
+
+/// A member of a cluster this unlike the rest of it (cosine similarity to
+/// the centroid of the other members) is taken out: it is someone else, or
+/// two voices in one segment. Only for clusters of at least
+/// [`OUTLIER_MIN_CLUSTER`].
+pub const OUTLIER_MIN_SIMILARITY: f32 = 0.4;
+pub const OUTLIER_MIN_CLUSTER: usize = 3;
+
+/// `labels` (one per vector of `vectors`) with the members that don't sound
+/// like the rest of their cluster unlabelled (see [`OUTLIER_MIN_SIMILARITY`]).
+pub fn reject_outliers(vectors: &[Vec<f32>], labels: &[usize]) -> Vec<Option<usize>> {
+    let units: Vec<Vec<f32>> = vectors.iter().map(|v| normalized(v)).collect();
+    let mut sums: std::collections::HashMap<usize, (Vec<f32>, usize)> = Default::default();
+    for (v, &l) in units.iter().zip(labels) {
+        let entry = sums.entry(l).or_insert_with(|| (vec![0.0; v.len()], 0));
+        if entry.0.len() == v.len() {
+            entry.0.iter_mut().zip(v).for_each(|(a, b)| *a += b);
+            entry.1 += 1;
+        }
+    }
+    units
+        .iter()
+        .zip(labels)
+        .map(|(v, &l)| {
+            let (sum, n) = &sums[&l];
+            if *n < OUTLIER_MIN_CLUSTER {
+                return Some(l);
+            }
+            // The centroid of the other members.
+            let rest: Vec<f32> = sum.iter().zip(v).map(|(s, x)| s - x).collect();
+            (cosine(v, &rest) >= OUTLIER_MIN_SIMILARITY).then_some(l)
+        })
+        .collect()
 }
 
 /// One merge of the dendrogram: clusters `a` and `b` (indices of their first
@@ -211,9 +248,15 @@ pub fn agglomerate(embeddings: &[Vec<f32>], params: &ClusterParams) -> (Vec<usiz
     (labels, label_of_root.len())
 }
 
-/// Give each unlabelled item the label of the nearest labelled one in time
-/// (overlapping counts as distance 0; ties go to the earlier one). Items stay
-/// unlabelled only when nothing is labelled. `spans` are `(t0_ms, t1_ms)`.
+/// Speech this close to its neighbours counts as part of the same turn.
+pub const ATTACH_MAX_GAP_MS: i64 = 2_000;
+
+/// Give an unlabelled item (speech too short for a voiceprint) a label only
+/// when that is clearly the speaker: the nearest labelled items before and
+/// after it agree, and each is within [`ATTACH_MAX_GAP_MS`] (overlapping
+/// counts as next to it; a side with nothing labelled doesn't object).
+/// Anything else stays unlabelled, an unknown speaker for the user to name,
+/// rather than a guess. `spans` are `(t0_ms, t1_ms)`.
 pub fn attach_by_time(spans: &[(i64, i64)], labels: &[Option<usize>]) -> Vec<Option<usize>> {
     let labelled: Vec<(usize, usize)> = labels
         .iter()
@@ -224,19 +267,34 @@ pub fn attach_by_time(spans: &[(i64, i64)], labels: &[Option<usize>]) -> Vec<Opt
         .iter()
         .enumerate()
         .map(|(i, l)| {
-            l.or_else(|| {
-                let (t0, t1) = spans[i];
+            if l.is_some() {
+                return *l;
+            }
+            let (t0, t1) = spans[i];
+            // Nearest labelled item ending before / starting after, by gap
+            // (overlaps are gap 0, on both sides).
+            let side = |before: bool| {
                 labelled
                     .iter()
-                    .min_by_key(|(j, _)| {
-                        let (u0, u1) = spans[*j];
-                        let gap = (u0 - t1).max(t0 - u1).max(0);
-                        let overlap = (t1.min(u1) - t0.max(u0)).max(0);
-                        // Prefer the largest overlap among overlapping ones.
-                        (gap, -overlap)
+                    .filter_map(|&(j, l)| {
+                        let (u0, u1) = spans[j];
+                        let gap = if before { t0 - u1 } else { u0 - t1 };
+                        let overlaps = u0 < t1 && t0 < u1;
+                        let on_side = if before { u0 <= t0 } else { u0 >= t0 };
+                        (on_side || overlaps).then_some((gap.max(0), l))
                     })
-                    .map(|(_, l)| *l)
-            })
+                    .min_by_key(|(gap, _)| *gap)
+            };
+            let near = |before: bool| {
+                side(before)
+                    .filter(|(gap, _)| *gap <= ATTACH_MAX_GAP_MS)
+                    .map(|(_, l)| l)
+            };
+            match (near(true), near(false)) {
+                (Some(a), Some(b)) => (a == b).then_some(a),
+                (Some(l), None) | (None, Some(l)) => Some(l),
+                (None, None) => None,
+            }
         })
         .collect()
 }
@@ -403,26 +461,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attaches_short_segments_to_the_nearest_cluster() {
+    fn short_segments_join_a_speaker_only_when_both_sides_agree() {
         let spans = [
             (0, 5000),
             (5100, 5800),
             (6000, 12000),
             (12100, 12500),
-            (20000, 20400),
+            (16000, 16400),
+            (21000, 26000),
+            (26100, 26500),
+            (26600, 30000),
         ];
-        let labels = [Some(0), None, Some(1), None, None];
+        let labels = [Some(0), None, Some(1), None, None, Some(2), None, Some(2)];
         let got = attach_by_time(&spans, &labels);
-        assert_eq!(got, vec![Some(0), Some(0), Some(1), Some(1), Some(1)]);
-        // Overlap wins over a nearer edge.
-        let spans = [(0, 3000), (3300, 6000), (2900, 3250)];
-        let got = attach_by_time(&spans, &[Some(0), Some(1), None]);
-        assert_eq!(got[2], Some(0));
-        // Among overlapping ones, the larger overlap wins.
-        let spans = [(0, 3000), (2500, 6000), (2800, 3200)];
-        let got = attach_by_time(&spans, &[Some(0), Some(1), None]);
-        assert_eq!(got[2], Some(1));
+        assert_eq!(
+            got,
+            vec![
+                Some(0),
+                None,    // between two speakers: unknown, not a guess
+                Some(1), // right after speaker 1, nothing after it nearby
+                Some(1),
+                None, // seconds from anyone: unknown
+                Some(2),
+                Some(2), // inside one speaker's turn
+                Some(2),
+            ]
+        );
         assert_eq!(attach_by_time(&[(0, 1)], &[None]), vec![None]);
+    }
+
+    #[test]
+    fn a_voice_unlike_the_rest_of_its_cluster_is_taken_out() {
+        let a = |x: f32| vec![1.0, x, 0.0];
+        let other = vec![0.0, 0.2, 1.0];
+        let vectors = vec![a(0.1), a(0.0), a(0.2), other.clone(), a(-0.1)];
+        let got = reject_outliers(&vectors, &[0, 0, 0, 0, 0]);
+        assert_eq!(got, vec![Some(0), Some(0), Some(0), None, Some(0)]);
+        // Too small a cluster to judge.
+        let got = reject_outliers(&[a(0.0), other], &[0, 0]);
+        assert_eq!(got, vec![Some(0), Some(0)]);
     }
 
     #[test]

@@ -1003,6 +1003,63 @@ impl MeetingsStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn get_segment(&self, id: i64) -> Result<Option<Segment>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                &format!("SELECT {SEGMENT_COLS} FROM meeting_segments WHERE id = ?1"),
+                [id],
+                map_segment,
+            )
+            .optional()?)
+    }
+
+    /// Give one segment to `speaker_id` (`None`: an unknown speaker).
+    pub fn set_segment_speaker(&self, id: i64, speaker_id: Option<SpeakerId>) -> Result<()> {
+        let n = self.conn.lock().execute(
+            "UPDATE meeting_segments SET speaker_id = ?2 WHERE id = ?1",
+            params![id, speaker_id],
+        )?;
+        expect_one(n, "segment", id)
+    }
+
+    /// Add a speaker to `meeting_id` (`s.id` and `s.meeting_id` are
+    /// ignored) and return it as stored.
+    pub fn insert_speaker(
+        &self,
+        meeting_id: MeetingId,
+        s: &MeetingSpeaker,
+    ) -> Result<MeetingSpeaker> {
+        let id = {
+            let conn = self.conn.lock();
+            conn.execute(
+                "INSERT INTO meeting_speakers (meeting_id, cluster_label, person_id,
+                    match_confidence, confirmed, is_user)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    meeting_id,
+                    s.cluster_label,
+                    s.person_id,
+                    s.match_confidence.map(f64::from),
+                    s.confirmed,
+                    s.is_user
+                ],
+            )?;
+            conn.last_insert_rowid()
+        };
+        self.get_speaker(id)?
+            .ok_or_else(|| anyhow!("speaker {id} vanished after insert"))
+    }
+
+    /// Remove a speaker (its segments, if any, become unknown).
+    pub fn delete_speaker(&self, id: SpeakerId) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("DELETE FROM meeting_speakers WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     /// A meeting's speakers, by id.
     pub fn speakers(&self, meeting_id: MeetingId) -> Result<Vec<MeetingSpeaker>> {
         let conn = self.conn.lock();

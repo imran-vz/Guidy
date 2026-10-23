@@ -706,6 +706,104 @@ fn reassigning_moves_the_voiceprints() {
 }
 
 #[test]
+fn tagging_one_line_moves_it_and_its_voiceprint() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    // Name a speaker wrongly, as a merged cluster would be.
+    let s = f.store.speakers(f.id).unwrap()[2].clone();
+    let wrong = naming::assign(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        s.id,
+        PersonRef::New {
+            display_name: "Prashanth".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    let prints_before = f.store.voiceprints_for_person(wrong).unwrap().len();
+    // A line of theirs that has its own voiceprint.
+    let printed: Vec<i64> = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
+        .unwrap()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.segment_id)
+        .collect();
+    let line = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .find(|seg| seg.speaker_id == Some(s.id) && printed.contains(&seg.id))
+        .unwrap();
+    let speakers_before = f.store.speakers(f.id).unwrap().len();
+
+    let right = naming::assign_segment(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        line.id,
+        PersonRef::New {
+            display_name: "Mageshwari".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert_ne!(right, wrong);
+    let moved = f.store.get_segment(line.id).unwrap().unwrap();
+    let speaker = f
+        .store
+        .get_speaker(moved.speaker_id.unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(speaker.person_id, Some(right));
+    assert!(speaker.confirmed);
+    assert_eq!(f.store.speakers(f.id).unwrap().len(), speakers_before + 1);
+    // Its voiceprint left Prashanth and went to Mageshwari.
+    assert_eq!(f.store.voiceprints_for_person(right).unwrap().len(), 1);
+    assert_eq!(
+        f.store.voiceprints_for_person(wrong).unwrap().len(),
+        prints_before - 1
+    );
+
+    // A second line of the same speaker joins Mageshwari's speaker.
+    let other = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .find(|seg| seg.speaker_id == Some(s.id));
+    if let Some(other) = other {
+        naming::assign_segment(
+            &f.store,
+            f.dir.path(),
+            &KEY,
+            other.id,
+            PersonRef::Existing(right),
+        )
+        .unwrap();
+        assert_eq!(
+            f.store.get_segment(other.id).unwrap().unwrap().speaker_id,
+            moved.speaker_id
+        );
+    }
+    // Suggestions for a line include people already in the meeting.
+    let names: Vec<String> = naming::segment_suggestions(
+        &f.store,
+        f.dir.path(),
+        &KEY,
+        line.id,
+        &MeetingSettings::default(),
+    )
+    .unwrap()
+    .into_iter()
+    .map(|s| s.display_name)
+    .collect();
+    assert!(names.contains(&"Prashanth".to_string()), "{names:?}");
+}
+
+#[test]
 fn confirm_stores_voiceprints_and_needs_a_person() {
     let f = fixture();
     run(&f, None).result.unwrap();

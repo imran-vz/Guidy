@@ -36,6 +36,14 @@ pub enum DetailEvent {
     OpenSettings,
 }
 
+/// What the name picker names: a whole speaker, or some lines (an unknown
+/// speaker's turn, or one line the diarization got wrong).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PickTarget {
+    Speaker(SpeakerId),
+    Lines(Vec<i64>),
+}
+
 pub struct MeetingDetail {
     pub meeting_id: MeetingId,
     meeting: Option<Meeting>,
@@ -47,7 +55,7 @@ pub struct MeetingDetail {
     loading: bool,
     progress: Option<ProcessingProgress>,
     /// The speaker whose name picker is open.
-    picker: Option<SpeakerId>,
+    picker: Option<PickTarget>,
     suggestions: Vec<NameSuggestion>,
     suggestions_loading: bool,
     name_input: Entity<InputState>,
@@ -228,7 +236,44 @@ impl MeetingDetail {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.picker = Some(speaker_id);
+        self.picker = Some(PickTarget::Speaker(speaker_id));
+        self.suggestions.clear();
+        self.suggestions_loading = true;
+        self.name_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.email_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+        let target = PickTarget::Speaker(speaker_id);
+        run(
+            cx,
+            move |b| b.speaker_suggestions(speaker_id),
+            move |this: &mut Self, r, _| {
+                if this.picker.as_ref() != Some(&target) {
+                    return;
+                }
+                this.suggestions_loading = false;
+                match r {
+                    Ok(s) => this.suggestions = s,
+                    Err(e) => log::warn!("Failed to load speaker suggestions: {e}"),
+                }
+            },
+        );
+    }
+
+    /// Name the speaker of `segment_ids` (one line, or an unknown turn),
+    /// suggesting people by the first line's voice.
+    pub fn open_line_picker(
+        &mut self,
+        segment_ids: Vec<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(&first) = segment_ids.first() else {
+            return;
+        };
+        let target = PickTarget::Lines(segment_ids);
+        self.picker = Some(target.clone());
         self.suggestions.clear();
         self.suggestions_loading = true;
         self.name_input
@@ -238,9 +283,9 @@ impl MeetingDetail {
         cx.notify();
         run(
             cx,
-            move |b| b.speaker_suggestions(speaker_id),
+            move |b| b.segment_suggestions(first),
             move |this: &mut Self, r, _| {
-                if this.picker != Some(speaker_id) {
+                if this.picker.as_ref() != Some(&target) {
                     return;
                 }
                 this.suggestions_loading = false;
@@ -299,7 +344,7 @@ impl MeetingDetail {
     }
 
     fn assign(&mut self, person: PersonRef, cx: &mut Context<Self>) {
-        let Some(speaker_id) = self.picker else {
+        let Some(target) = self.picker.clone() else {
             return;
         };
         if self.assigning {
@@ -309,7 +354,20 @@ impl MeetingDetail {
         cx.notify();
         run(
             cx,
-            move |b| b.assign_speaker(speaker_id, person),
+            move |b| match target {
+                PickTarget::Speaker(speaker_id) => b.assign_speaker(speaker_id, person),
+                PickTarget::Lines(ids) => {
+                    // A new person is created once, then each line joins them.
+                    let mut person = person;
+                    let mut id = None;
+                    for segment_id in ids {
+                        let pid = b.assign_segment(segment_id, person.clone())?;
+                        person = PersonRef::Existing(pid);
+                        id = Some(pid);
+                    }
+                    id.ok_or_else(|| "no lines to name".to_string())
+                }
+            },
             |this: &mut Self, r, cx| {
                 this.assigning = false;
                 match r {
@@ -972,7 +1030,7 @@ impl MeetingDetail {
             .into_any_element()
     }
 
-    fn render_picker(&self, speaker_id: SpeakerId, cx: &mut Context<Self>) -> AnyElement {
+    fn render_picker(&self, id: SharedString, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let heading = |key: &str| design::eyebrow(t(key), cx);
         let suggestions: AnyElement = if self.suggestions_loading {
@@ -1025,7 +1083,7 @@ impl MeetingDetail {
         };
         let can_save = !self.name_input.read(cx).value().trim().is_empty();
         v_flex()
-            .id(SharedString::from(format!("speaker-picker-{speaker_id}")))
+            .id(id)
             .w_full()
             .gap(dp(8.))
             .px(design::SECTION_X)
@@ -1175,8 +1233,8 @@ impl MeetingDetail {
                 v_flex()
                     .w_full()
                     .child(row)
-                    .when(self.picker == Some(sid), |d| {
-                        d.child(self.render_picker(sid, cx))
+                    .when(self.picker == Some(PickTarget::Speaker(sid)), |d| {
+                        d.child(self.render_picker(format!("speaker-picker-{sid}").into(), cx))
                     })
                     .into_any_element()
             })
@@ -1190,15 +1248,23 @@ impl MeetingDetail {
         let speaker = block
             .speaker_id
             .and_then(|id| self.speakers.iter().find(|s| s.id == id));
+        let unknown = speaker.is_none();
         let name = speaker
             .map(|s| self.speaker_label(s, cx))
-            .unwrap_or_else(|| "?".into());
+            .unwrap_or_else(|| t("meetings.speaker.unknown").to_string());
         let is_user = speaker.is_some_and(|s| s.is_user);
         let pickable = speaker.filter(|s| !s.is_user).map(|s| s.id);
         let uncertain = speaker.is_some_and(needs_confirmation);
         let st = Playback::global().state();
+        let block_ids: Vec<i64> = block.segments.iter().map(|s| s.id).collect();
+        // The line picker opens right under the (first) line it names, so it
+        // is next to where it was clicked even in a long turn.
+        let picker_line = match &self.picker {
+            Some(PickTarget::Lines(ids)) => ids.first().copied(),
+            _ => None,
+        };
         // Who and when on the left, what they said on the right.
-        h_flex()
+        let row = h_flex()
             .id(SharedString::from(format!("block-{i}")))
             .w_full()
             .items_start()
@@ -1206,6 +1272,12 @@ impl MeetingDetail {
             .pl(design::SECTION_X)
             .pr(dp(10.))
             .py(dp(10.))
+            // An unknown voice is highlighted until someone names it.
+            .when(unknown, |d| {
+                d.bg(theme.warning.opacity(0.07))
+                    .border_l_2()
+                    .border_color(theme.warning.opacity(0.6))
+            })
             .child(
                 v_flex()
                     .w(dp(84.))
@@ -1217,7 +1289,13 @@ impl MeetingDetail {
                             .id(SharedString::from(format!("block-{i}-speaker")))
                             .text_size(design::TEXT_BODY)
                             .truncate()
-                            .text_color(if is_user { tone.accent_text } else { tone.text })
+                            .text_color(if unknown {
+                                theme.warning
+                            } else if is_user {
+                                tone.accent_text
+                            } else {
+                                tone.text
+                            })
                             .when(pickable.is_some(), |d| {
                                 d.cursor_pointer().hover(|s| s.underline())
                             })
@@ -1241,6 +1319,23 @@ impl MeetingDetail {
                                 .text_color(theme.warning)
                                 .child(t("meetings.speaker.confirm")),
                         )
+                    })
+                    .when(unknown, |d| {
+                        let ids = block_ids.clone();
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("block-{i}-tag")))
+                                .mt(dp(4.))
+                                .text_size(dp(11.))
+                                .text_color(theme.warning)
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .child(t("meetings.speaker.whoIsThis"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_line_picker(ids.clone(), window, cx)
+                                }))
+                                .test_support(),
+                        )
                     }),
             )
             .child(
@@ -1253,8 +1348,12 @@ impl MeetingDetail {
                         let active = st.error.is_none() && st.path.as_ref() == Some(&key);
                         let playing = active && st.playing;
                         let s = seg.clone();
-                        h_flex()
+                        let seg_id = seg.id;
+                        let line = h_flex()
                             .id(SharedString::from(format!("segment-{}", seg.id)))
+                            .group(SharedString::from(format!("segment-{}", seg.id)))
+                            .w_full()
+                            .min_w_0()
                             .gap_2()
                             .items_start()
                             .px(dp(6.))
@@ -1277,9 +1376,36 @@ impl MeetingDetail {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
                                     .text_size(design::TEXT_BODY)
                                     .line_height(relative(1.6))
                                     .child(seg.text.clone()),
+                            )
+                            // "Who said this?": name one line's speaker.
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("segment-{seg_id}-tag")))
+                                    .flex_none()
+                                    .mt(dp(3.))
+                                    .p(dp(3.))
+                                    .rounded(dp(5.))
+                                    .text_color(tone.text_faint)
+                                    // Faint until the line is hovered.
+                                    .opacity(0.35)
+                                    .group_hover(format!("segment-{seg_id}"), |s| s.opacity(1.))
+                                    .hover(move |s| s.bg(tone.raised).text_color(tone.text))
+                                    .child(icon("user-round-pen").xsmall())
+                                    .tooltip(|window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(t(
+                                            "meetings.speaker.whoSaidThis",
+                                        ))
+                                        .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_line_picker(vec![seg_id], window, cx)
+                                    }))
+                                    .test_support(),
                             )
                             .tooltip({
                                 let tip = format!(
@@ -1293,11 +1419,19 @@ impl MeetingDetail {
                                 }
                             })
                             .on_click(cx.listener(move |this, _, _, cx| this.play(&s, cx)))
-                            .test_support()
+                            .test_support();
+                        v_flex().w_full().min_w_0().child(line).when(
+                            picker_line == Some(seg_id),
+                            |d| {
+                                d.child(div().pt(dp(6.)).pb(dp(10.)).child(
+                                    self.render_picker(format!("line-picker-{seg_id}").into(), cx),
+                                ))
+                            },
+                        )
                     })),
             )
-            .test_support()
-            .into_any_element()
+            .test_support();
+        row.into_any_element()
     }
 
     /// While this meeting records: what live transcription has heard so far.

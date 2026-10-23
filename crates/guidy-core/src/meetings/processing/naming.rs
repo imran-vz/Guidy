@@ -53,21 +53,78 @@ pub fn suggestions(
     let Some(speaker) = store.get_speaker(speaker_id)? else {
         bail!("speaker {speaker_id} not found");
     };
-    let meeting = store.get_meeting(speaker.meeting_id)?;
+    let voice = store.speaker_embedding(speaker_id)?;
+    ranked_suggestions(
+        store,
+        speaker.meeting_id,
+        voice.as_deref(),
+        Some(speaker_id),
+        settings,
+    )
+}
+
+/// Picker suggestions for one segment (tagging a single line): like
+/// [`suggestions`], ranked by that segment's voiceprint, and including the
+/// people already named in the meeting (the line may well be one of them).
+pub fn segment_suggestions(
+    store: &MeetingsStore,
+    meetings_dir: &Path,
+    key: &[u8; 32],
+    segment_id: i64,
+    settings: &MeetingSettings,
+) -> Result<Vec<NameSuggestion>> {
+    let Some(segment) = store.get_segment(segment_id)? else {
+        bail!("segment {segment_id} not found");
+    };
+    let voice = segment_voiceprint(meetings_dir, key, &segment);
+    ranked_suggestions(store, segment.meeting_id, voice.as_deref(), None, settings)
+}
+
+/// One segment's voiceprint from the meeting's sidecar, if it has one.
+fn segment_voiceprint(meetings_dir: &Path, key: &[u8; 32], segment: &Segment) -> Option<Vec<f32>> {
+    match sidecar::read_embeddings(meetings_dir, segment.meeting_id, key) {
+        Ok(v) => v?
+            .into_iter()
+            .find(|e| e.segment_id == segment.id && !e.embedding.is_empty())
+            .map(|e| e.embedding),
+        Err(e) => {
+            log::warn!(
+                "meeting {}: segment voiceprints unreadable: {e:#}",
+                segment.meeting_id
+            );
+            None
+        }
+    }
+}
+
+/// Attendees, then known people ranked by similarity to `voice`. With
+/// `naming: Some(speaker)`, people already given to the meeting's other
+/// speakers are left out.
+fn ranked_suggestions(
+    store: &MeetingsStore,
+    meeting_id: MeetingId,
+    voice: Option<&[f32]>,
+    naming: Option<SpeakerId>,
+    settings: &MeetingSettings,
+) -> Result<Vec<NameSuggestion>> {
+    let meeting = store.get_meeting(meeting_id)?;
     let people = store.list_people()?;
     let person_by_id: HashMap<PersonId, &Person> = people.iter().map(|p| (p.id, p)).collect();
-    let similarity: HashMap<PersonId, f32> = match store.speaker_embedding(speaker_id)? {
-        Some(c) if !c.is_empty() => rank_people(&c, &known_voices(store)?).into_iter().collect(),
+    let similarity: HashMap<PersonId, f32> = match voice {
+        Some(c) if !c.is_empty() => rank_people(c, &known_voices(store)?).into_iter().collect(),
         _ => HashMap::new(),
     };
 
     // People already given to the meeting's other speakers.
-    let assigned: Vec<&Person> = store
-        .speakers(speaker.meeting_id)?
-        .iter()
-        .filter(|s| s.id != speaker_id)
-        .filter_map(|s| s.person_id.and_then(|id| person_by_id.get(&id).copied()))
-        .collect();
+    let assigned: Vec<&Person> = match naming {
+        Some(speaker_id) => store
+            .speakers(meeting_id)?
+            .iter()
+            .filter(|s| s.id != speaker_id)
+            .filter_map(|s| s.person_id.and_then(|id| person_by_id.get(&id).copied()))
+            .collect(),
+        None => Vec::new(),
+    };
     let is_assigned = |name: Option<&str>, email: Option<&str>| {
         assigned.iter().any(|p| match (email, p.email.as_deref()) {
             (Some(a), Some(b)) => same_text(a, b),
@@ -232,18 +289,22 @@ pub fn store_prints(
     Ok(added)
 }
 
-/// Remove from `person_id` the voiceprints this speaker gave them (after the
-/// speaker is reassigned to someone else).
-fn remove_prints(
+/// Remove this speaker's voiceprints from everyone but `keep`: they were
+/// given to someone else before (a reassignment, or two voices merged into
+/// one speaker and named), and would keep matching the wrong person.
+fn remove_prints_from_others(
     store: &MeetingsStore,
     meetings_dir: &Path,
     key: &[u8; 32],
     speaker: &MeetingSpeaker,
-    person_id: PersonId,
+    keep: PersonId,
 ) -> Result<()> {
     let prints = speaker_prints(store, meetings_dir, key, speaker)?;
-    for v in store.voiceprints_for_person(person_id)? {
-        if v.source_meeting_id == Some(speaker.meeting_id) && prints.contains(&v.embedding) {
+    for v in store.voiceprints()? {
+        if v.person_id != keep
+            && v.source_meeting_id == Some(speaker.meeting_id)
+            && prints.contains(&v.embedding)
+        {
             store.delete_voiceprint(v.id)?;
         }
     }
@@ -262,7 +323,28 @@ pub fn assign(
     let Some(mut speaker) = store.get_speaker(speaker_id)? else {
         bail!("speaker {speaker_id} not found");
     };
-    let person_id = match person {
+    let person_id = resolve_person(store, person)?;
+    let previous = speaker.person_id;
+    if !speaker.is_user {
+        remove_prints_from_others(store, meetings_dir, key, &speaker, person_id)?;
+    }
+    if previous != Some(person_id) {
+        // The automatic match (if any) was for someone else.
+        speaker.match_confidence = None;
+    }
+    speaker.person_id = Some(person_id);
+    speaker.confirmed = true;
+    store.update_speaker(&speaker)?;
+    if !speaker.is_user {
+        store_prints(store, meetings_dir, key, &speaker, person_id)?;
+    }
+    Ok(person_id)
+}
+
+/// The person a [`PersonRef`] names, creating a new one (or finding them
+/// by email).
+fn resolve_person(store: &MeetingsStore, person: PersonRef) -> Result<PersonId> {
+    Ok(match person {
         PersonRef::Existing(id) => match store.get_person(id)? {
             Some(p) => p.id,
             None => bail!("person {id} not found"),
@@ -285,20 +367,88 @@ pub fn assign(
                 None => store.insert_person(name, email)?.id,
             }
         }
+    })
+}
+
+/// Say who spoke one segment (a line the diarization left unknown or got
+/// wrong). It moves to that person's speaker in the meeting (created when
+/// they have none yet), and its voiceprint moves too: out of the person it
+/// was wrongly given to, into this one's, so the next meeting knows both
+/// voices better. A speaker left without segments is removed.
+pub fn assign_segment(
+    store: &MeetingsStore,
+    meetings_dir: &Path,
+    key: &[u8; 32],
+    segment_id: i64,
+    person: PersonRef,
+) -> Result<PersonId> {
+    let Some(segment) = store.get_segment(segment_id)? else {
+        bail!("segment {segment_id} not found");
     };
-    let previous = speaker.person_id;
-    if let Some(old) = previous.filter(|&old| old != person_id) {
-        remove_prints(store, meetings_dir, key, &speaker, old)?;
+    let person_id = resolve_person(store, person)?;
+    let meeting_id = segment.meeting_id;
+    let speakers = store.speakers(meeting_id)?;
+    let previous = segment
+        .speaker_id
+        .and_then(|id| speakers.iter().find(|s| s.id == id).cloned());
+    let target = match speakers
+        .iter()
+        .find(|s| s.person_id == Some(person_id) && !s.is_user)
+    {
+        Some(s) => s.clone(),
+        None => {
+            let name = store
+                .get_person(person_id)?
+                .map(|p| p.display_name)
+                .unwrap_or_default();
+            store.insert_speaker(
+                meeting_id,
+                &MeetingSpeaker {
+                    id: 0,
+                    meeting_id,
+                    cluster_label: name,
+                    person_id: Some(person_id),
+                    match_confidence: None,
+                    confirmed: true,
+                    is_user: false,
+                },
+            )?
+        }
+    };
+    store.set_segment_speaker(segment_id, Some(target.id))?;
+
+    let voice = segment_voiceprint(meetings_dir, key, &segment);
+    if let Some(voice) = &voice {
+        // Out of whoever it was wrongly given to (one print each)...
+        let mut cleared = HashSet::new();
+        for v in store.voiceprints()? {
+            if v.person_id != person_id
+                && v.source_meeting_id == Some(meeting_id)
+                && &v.embedding == voice
+                && cleared.insert(v.person_id)
+            {
+                store.delete_voiceprint(v.id)?;
+            }
+        }
+        // ...into this person's, within the per-meeting cap.
+        let mine: Vec<Vec<f32>> = store
+            .voiceprints_for_person(person_id)?
+            .into_iter()
+            .filter(|v| v.source_meeting_id == Some(meeting_id))
+            .map(|v| v.embedding)
+            .collect();
+        if !mine.contains(voice) && mine.len() < MAX_PRINTS_PER_MEETING {
+            store.add_voiceprint(person_id, voice, Some(meeting_id))?;
+        }
     }
-    if previous != Some(person_id) {
-        // The automatic match (if any) was for someone else.
-        speaker.match_confidence = None;
-    }
-    speaker.person_id = Some(person_id);
-    speaker.confirmed = true;
-    store.update_speaker(&speaker)?;
-    if !speaker.is_user {
-        store_prints(store, meetings_dir, key, &speaker, person_id)?;
+    if let Some(old) = previous.filter(|s| s.id != target.id && !s.is_user) {
+        let left = store
+            .segments(meeting_id)?
+            .iter()
+            .any(|s| s.speaker_id == Some(old.id));
+        if !left {
+            store.delete_speaker(old.id)?;
+        }
     }
     Ok(person_id)
 }

@@ -234,6 +234,14 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn processing_progress(&self, id: MeetingId) -> Option<ProcessingProgress>;
     fn speaker_suggestions(&self, speaker_id: SpeakerId) -> MeetingsResult<Vec<NameSuggestion>>;
     fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId>;
+    /// Suggestions for tagging one line with who said it.
+    fn segment_suggestions(&self, _segment_id: i64) -> MeetingsResult<Vec<NameSuggestion>> {
+        Err(unavailable())
+    }
+    /// Say who spoke one line.
+    fn assign_segment(&self, _segment_id: i64, _person: PersonRef) -> MeetingsResult<PersonId> {
+        Err(unavailable())
+    }
     fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()>;
 
     /// Transcribe a processed, failed or recorded meeting again from scratch
@@ -571,6 +579,12 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> MeetingsResult<PersonId> {
         self.m()?.assign_speaker(speaker_id, person).map_err(err)
+    }
+    fn segment_suggestions(&self, segment_id: i64) -> MeetingsResult<Vec<NameSuggestion>> {
+        self.m()?.segment_suggestions(segment_id).map_err(err)
+    }
+    fn assign_segment(&self, segment_id: i64, person: PersonRef) -> MeetingsResult<PersonId> {
+        self.m()?.assign_segment(segment_id, person).map_err(err)
     }
     fn confirm_speaker(&self, speaker_id: SpeakerId) -> MeetingsResult<()> {
         self.m()?.confirm_speaker(speaker_id).map_err(err)
@@ -1298,6 +1312,34 @@ pub mod fake {
                 similarity: None,
             }));
             Ok(v)
+        }
+        fn segment_suggestions(&self, segment_id: i64) -> MeetingsResult<Vec<NameSuggestion>> {
+            self.rec(format!("segment_suggestions {segment_id}"));
+            let d = self.data.lock();
+            Ok(d.people
+                .iter()
+                .map(|p| NameSuggestion {
+                    display_name: p.display_name.clone(),
+                    email: p.email.clone(),
+                    person_id: Some(p.id),
+                    source: SuggestionSource::KnownPerson,
+                    similarity: None,
+                })
+                .collect())
+        }
+        fn assign_segment(&self, segment_id: i64, person: PersonRef) -> MeetingsResult<PersonId> {
+            let pid = match &person {
+                PersonRef::Existing(pid) => *pid,
+                PersonRef::New { display_name, .. } => {
+                    let mut d = self.data.lock();
+                    d.next_id += 1;
+                    let id = d.next_id;
+                    d.people.push(person_fixture(id, display_name, None));
+                    id
+                }
+            };
+            self.rec(format!("assign_segment {segment_id} {pid}"));
+            Ok(pid)
         }
         fn assign_speaker(
             &self,

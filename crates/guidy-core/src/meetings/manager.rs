@@ -807,6 +807,41 @@ impl MeetingsManager {
         Ok(person_id)
     }
 
+    /// Picker suggestions for tagging one line (see
+    /// [`crate::meetings::processing::naming::segment_suggestions`]).
+    pub fn segment_suggestions(&self, segment_id: i64) -> Result<Vec<NameSuggestion>> {
+        let settings = crate::settings::get_settings(&self.app).meetings;
+        let key = crate::secrets::meetings_data_key()?;
+        crate::meetings::processing::naming::segment_suggestions(
+            &self.store,
+            &self.meetings_dir,
+            &key,
+            segment_id,
+            &settings,
+        )
+    }
+
+    /// Say who spoke one line (one the diarization left unknown or got
+    /// wrong); its voiceprint moves with it. Returns the person id.
+    pub fn assign_segment(&self, segment_id: i64, person: PersonRef) -> Result<PersonId> {
+        let key = crate::secrets::meetings_data_key()?;
+        let meeting_id = self
+            .store
+            .get_segment(segment_id)?
+            .map(|s| s.meeting_id)
+            .ok_or_else(|| anyhow::anyhow!("segment {segment_id} not found"))?;
+        let person_id = crate::meetings::processing::naming::assign_segment(
+            &self.store,
+            &self.meetings_dir,
+            &key,
+            segment_id,
+            person,
+        )?;
+        self.emit_meeting_changed(meeting_id);
+        self.emit_people_changed();
+        Ok(person_id)
+    }
+
     /// Accept an uncertain automatic match ("Confirm?").
     pub fn confirm_speaker(&self, speaker_id: SpeakerId) -> Result<()> {
         let key = crate::secrets::meetings_data_key()?;

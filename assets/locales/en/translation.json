@@ -965,7 +965,10 @@
       "cancel": "Cancel",
       "assignError": "Couldn't name the speaker",
       "confirmError": "Couldn't confirm the speaker",
-      "unnamed": "Speaker {{n}}"
+      "unnamed": "Speaker {{n}}",
+      "unknown": "Unknown",
+      "whoIsThis": "Who is this?",
+      "whoSaidThis": "Who said this?"
     },
     "people": {
       "title": "People",
