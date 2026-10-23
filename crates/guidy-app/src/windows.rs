@@ -5,14 +5,18 @@
 //! "showing" reopens it; all state lives in models outside the views.
 
 use crate::logic::notch::{notch_frame, NotchFrame, ScreenInfo};
+use crate::logic::recording_widget::{widget_frame, WidgetFrame};
 use crate::shell::{GpuiShell, ShellMsg};
+use crate::state::AppState;
 use crate::ui::design::dp;
 use crate::ui::main_window::MainWindow;
 use crate::ui::notch::{NotchState, NotchView};
 use crate::ui::overlay::OverlayView;
+use crate::ui::recording_widget::{RecordingWidgetState, RecordingWidgetView};
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use guidy_core::host::{Monitor, OverlayPlacement, PhysicalPosition, PhysicalSize, WorkArea};
+use guidy_core::meetings::settings::RecordingControls;
 use guidy_core::AppHandle;
 use std::sync::Arc;
 
@@ -30,6 +34,7 @@ pub struct Windows {
     pub main_view: Option<WeakEntity<MainWindow>>,
     pub overlay: Option<(AnyWindowHandle, OverlayPlacement)>,
     pub notch: Option<AnyWindowHandle>,
+    pub recording_widget: Option<AnyWindowHandle>,
 }
 
 impl Global for Windows {}
@@ -296,10 +301,27 @@ pub fn hide_overlay(cx: &mut App) {
     }
 }
 
+/// Where the controls of a recording in progress go (a setting).
+fn recording_controls(cx: &App) -> RecordingControls {
+    AppState::global(cx)
+        .read(cx)
+        .app_settings()
+        .map(|s| s.meetings.recording_controls)
+        .unwrap_or_default()
+}
+
+/// Show the controls the settings pick while a meeting records (the
+/// floating widget or the notch wings), and close them when it stops.
+pub fn sync_recording_controls(cx: &mut App) {
+    sync_notch(cx);
+    sync_recording_widget(cx);
+}
+
 /// Show the meeting controls around the notch while a meeting records, and
 /// close them when it stops. macOS only.
-pub fn sync_notch(cx: &mut App) {
-    let visible = NotchState::global(cx).is_some_and(|n| n.read(cx).model.visible());
+fn sync_notch(cx: &mut App) {
+    let visible = NotchState::global(cx).is_some_and(|n| n.read(cx).model.visible())
+        && recording_controls(cx) == RecordingControls::Notch;
     if !visible {
         if let Some(handle) = windows(cx).notch.take() {
             let _ = cx.update_window(handle, |_, window, _| window.remove_window());
@@ -347,13 +369,114 @@ pub fn sync_notch(cx: &mut App) {
             let any: AnyWindowHandle = handle.into();
             let _ = cx.update_window(any, |_, window, _| {
                 configure_overlay_panel(window);
-                place_over_menu_bar(window, &frame);
+                place_panel(window, notch_rect(&frame), MENU_BAR_LEVEL);
             });
             windows(cx).notch = Some(any);
         }
         Err(e) => log::error!("Failed to open the notch controls: {e}"),
     }
 }
+
+/// Show the floating recording widget while a meeting records, and close it
+/// when it stops. macOS only.
+fn sync_recording_widget(cx: &mut App) {
+    let visible = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.visible())
+        && recording_controls(cx) == RecordingControls::Floating;
+    if !visible {
+        if let Some(handle) = windows(cx).recording_widget.take() {
+            let _ = cx.update_window(handle, |_, window, _| window.remove_window());
+        }
+        return;
+    }
+    if let Some(handle) = windows(cx).recording_widget {
+        if cx
+            .update_window(handle, |_, window, _| window.refresh())
+            .is_ok()
+        {
+            return;
+        }
+        windows(cx).recording_widget = None;
+    }
+    let Some(frame) = recording_widget_frame(cx) else {
+        return;
+    };
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(frame.width as f32), px(frame.height as f32)),
+        })),
+        titlebar: None,
+        focus: false,
+        show: true,
+        kind: WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        window_background: WindowBackgroundAppearance::Transparent,
+        app_id: Some(format!(
+            "{}.recording-widget",
+            guidy_core::host::APP_IDENTIFIER
+        )),
+        ..Default::default()
+    };
+    match cx.open_window(options, |window, cx| {
+        cx.new(|cx| RecordingWidgetView::new(window, cx))
+    }) {
+        Ok(handle) => {
+            let any: AnyWindowHandle = handle.into();
+            let _ = cx.update_window(any, |_, window, _| {
+                configure_overlay_panel(window);
+                place_panel(window, widget_rect(&frame), FLOATING_LEVEL);
+            });
+            windows(cx).recording_widget = Some(any);
+        }
+        Err(e) => log::error!("Failed to open the recording widget: {e}"),
+    }
+}
+
+/// Show the recording widget at the size of its state (pill or panel).
+/// GPUI doesn't follow a native resize of these borderless panels, so the
+/// window is reopened at the new size. Call it outside the widget's own
+/// event handlers (it closes that window).
+pub fn place_recording_widget(cx: &mut App) {
+    if let Some(handle) = windows(cx).recording_widget.take() {
+        let _ = cx.update_window(handle, |_, window, _| window.remove_window());
+    }
+    sync_recording_widget(cx);
+}
+
+/// The recording widget's frame on the primary display.
+#[cfg(target_os = "macos")]
+fn recording_widget_frame(cx: &App) -> Option<WidgetFrame> {
+    let expanded = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.expanded);
+    let screens = macos_screens();
+    Some(widget_frame(
+        screens.first()?,
+        expanded,
+        crate::ui::design::SCALE as f64,
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn recording_widget_frame(_cx: &App) -> Option<WidgetFrame> {
+    None
+}
+
+/// A panel frame in Cocoa coordinates: x, y, width, height.
+type Rect = (f64, f64, f64, f64);
+
+fn notch_rect(f: &NotchFrame) -> Rect {
+    (f.x, f.y, f.width, f.height)
+}
+
+fn widget_rect(f: &WidgetFrame) -> Rect {
+    (f.x, f.y, f.width, f.height)
+}
+
+/// NSMainMenuWindowLevel (24) + 2: above the menu bar.
+const MENU_BAR_LEVEL: isize = 26;
+/// NSFloatingWindowLevel: above other apps' windows, below menus.
+const FLOATING_LEVEL: isize = 3;
 
 /// The display with a notch (else the primary one) and where the controls
 /// go on it.
@@ -500,9 +623,9 @@ fn macos_screens() -> Vec<ScreenInfo> {
     out
 }
 
-/// Move the panel to `frame` (Cocoa coordinates) above the menu bar, on
+/// Move the panel to `frame` (Cocoa coordinates) at window `level`, on
 /// every Space and over full-screen apps.
-fn place_over_menu_bar(window: &Window, frame: &NotchFrame) {
+fn place_panel(window: &Window, frame: Rect, level: isize) {
     #[cfg(target_os = "macos")]
     {
         use cocoa::{CGPoint, CGRect, CGSize};
@@ -520,27 +643,21 @@ fn place_over_menu_bar(window: &Window, frame: &NotchFrame) {
                 if ns_window.is_null() {
                     return;
                 }
-                // NSMainMenuWindowLevel (24) + 2: above the menu bar.
-                let _: () = msg_send![ns_window, setLevel: 26isize];
+                let _: () = msg_send![ns_window, setLevel: level];
                 // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
                 let behavior: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
                 let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+                let (x, y, width, height) = frame;
                 let rect = CGRect {
-                    origin: CGPoint {
-                        x: frame.x,
-                        y: frame.y,
-                    },
-                    size: CGSize {
-                        width: frame.width,
-                        height: frame.height,
-                    },
+                    origin: CGPoint { x, y },
+                    size: CGSize { width, height },
                 };
                 let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES];
             }
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, frame);
+    let _ = (window, frame, level);
 }
 
 /// Displays in logical points (GPUI exposes no scale factor; placement math

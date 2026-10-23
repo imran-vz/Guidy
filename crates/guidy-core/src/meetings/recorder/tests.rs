@@ -20,6 +20,10 @@ struct Rig {
 }
 
 fn rig() -> Rig {
+    rig_with_live(None)
+}
+
+fn rig_with_live(live: Option<Arc<dyn LiveSink>>) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let repo = Arc::new(MemRepo::default());
     let capture = Arc::new(FakeCapture::default());
@@ -50,6 +54,7 @@ fn rig() -> Rig {
         on_state: Arc::new(move |state: &RecorderState| st.lock().push(state.clone())),
         on_meeting_changed: Arc::new(move |id| ch.lock().push(id)),
         on_recording_finished: Arc::new(move |id| fin.lock().push(id)),
+        live,
     });
     Rig {
         rec,
@@ -171,6 +176,10 @@ fn pause_writes_silence_and_freezes_the_elapsed_time() {
     r.capture.feed(Track::Mic, &tone);
     assert!(r.rec.take_level() > 0.0);
     assert_eq!(r.rec.take_level(), 0.0, "reset after reading");
+    let [mic, system] = r.rec.take_track_levels();
+    assert!(mic > 0.0);
+    assert_eq!(system, 0.0, "nothing on system audio");
+    assert_eq!(r.rec.take_track_levels(), [0.0, 0.0], "reset after reading");
 
     assert!(r.rec.set_paused(true, T0 + 1_000));
     assert!(!r.rec.set_paused(true, T0 + 1_500), "already paused");
@@ -200,6 +209,64 @@ fn pause_writes_silence_and_freezes_the_elapsed_time() {
     let paused = &audio[16_000 + 800..32_000 - 800];
     assert!(paused.iter().all(|x| x.abs() < 0.01));
     assert!(audio[32_000 + 800..].iter().any(|x| x.abs() > 0.1));
+}
+
+/// Records what a [`LiveSink`] is told.
+#[derive(Default)]
+struct FakeLive {
+    calls: Mutex<Vec<String>>,
+}
+
+impl LiveSink for FakeLive {
+    fn start(&self, meeting_id: MeetingId) {
+        self.calls.lock().push(format!("start {meeting_id}"));
+    }
+    fn push(&self, track: Track, samples: &[f32]) {
+        let peak = samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let mut calls = self.calls.lock();
+        let entry = format!("push {} {}", track.as_str(), peak > 0.1);
+        if calls.last() != Some(&entry) {
+            calls.push(entry);
+        }
+    }
+    fn stop(&self) {
+        self.calls.lock().push("stop".into());
+    }
+}
+
+#[test]
+fn the_live_sink_gets_the_recording_with_silence_while_paused() {
+    let live = Arc::new(FakeLive::default());
+    let r = rig_with_live(Some(live.clone()));
+    let id = r.rec.start(None, T0).unwrap();
+    let tone: Vec<f32> = (0..1_600).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+    r.capture.feed(Track::System, &tone);
+    r.rec.set_paused(true, T0 + 1_000);
+    r.capture.feed(Track::System, &tone);
+    r.rec.set_paused(false, T0 + 2_000);
+    r.capture.feed(Track::Mic, &tone);
+    r.rec.stop(T0 + 3_000).unwrap();
+    assert_eq!(
+        *live.calls.lock(),
+        [
+            format!("start {id}"),
+            "push system true".into(),
+            "push system false".into(),
+            "push mic true".into(),
+            "stop".into(),
+        ]
+    );
+}
+
+#[test]
+fn a_failed_capture_start_stops_the_live_sink() {
+    let live = Arc::new(FakeLive::default());
+    let r = rig_with_live(Some(live.clone()));
+    *r.capture.fail.lock() = true;
+    assert!(r.rec.start(None, T0).is_err());
+    let calls = live.calls.lock().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1], "stop");
 }
 
 #[test]

@@ -86,6 +86,8 @@ pub struct RecorderDeps {
     /// for processing like a normal stop. May be called with `op` held: it
     /// must not call back into the recorder synchronously.
     pub on_recording_finished: Shared<dyn Fn(MeetingId) + Send + Sync>,
+    /// Gets a copy of the audio while recording (live transcription).
+    pub live: Option<Arc<dyn LiveSink>>,
 }
 
 enum WriterMsg {
@@ -211,6 +213,9 @@ pub struct MeetingRecorder {
     /// Peak input level (an `f32`'s bits, 0.0..=1.0) since the last
     /// [`MeetingRecorder::take_level`].
     level: Arc<AtomicU32>,
+    /// The same per track (mic, system), read by
+    /// [`MeetingRecorder::take_track_levels`].
+    track_levels: Arc<[AtomicU32; 2]>,
 }
 
 fn local_time(ms: i64, fmt: &str) -> String {
@@ -233,6 +238,7 @@ impl MeetingRecorder {
             state: Mutex::new(RecorderState::Idle),
             prompts: Mutex::new(Prompts::default()),
             level: Arc::new(AtomicU32::new(0)),
+            track_levels: Arc::new([AtomicU32::new(0), AtomicU32::new(0)]),
         }
     }
 
@@ -425,6 +431,11 @@ impl MeetingRecorder {
         let sink_paused = paused.clone();
         let level = self.level.clone();
         level.store(0, Ordering::Relaxed);
+        let track_levels = self.track_levels.clone();
+        for l in track_levels.iter() {
+            l.store(0, Ordering::Relaxed);
+        }
+        let live = self.deps.live.clone();
         let sink: CaptureSink = Arc::new(move |track, mut samples: Vec<f32>| {
             if samples.is_empty() {
                 return;
@@ -433,7 +444,12 @@ impl MeetingRecorder {
                 samples.fill(0.0);
             } else {
                 // Non-negative floats order like their bits.
-                level.fetch_max(rms_level(&samples).to_bits(), Ordering::Relaxed);
+                let bits = rms_level(&samples).to_bits();
+                level.fetch_max(bits, Ordering::Relaxed);
+                track_levels[track_index(track)].fetch_max(bits, Ordering::Relaxed);
+            }
+            if let Some(live) = &live {
+                live.push(track, &samples);
             }
             // Unbounded channel: never blocks the audio thread.
             let _ = sink_tx.lock().send(WriterMsg::Samples(track, samples));
@@ -448,9 +464,15 @@ impl MeetingRecorder {
                 errors.push(msg);
             }
         });
+        if let Some(live) = &self.deps.live {
+            live.start(id);
+        }
         let capture = match self.deps.capture.start(sink, on_error) {
             Ok(c) => c,
             Err(e) => {
+                if let Some(live) = &self.deps.live {
+                    live.stop();
+                }
                 let _ = tx.send(WriterMsg::Finish);
                 let _ = writer.join();
                 return Err(e.context("start meeting capture"));
@@ -494,6 +516,9 @@ impl MeetingRecorder {
         };
         if pause {
             self.level.store(0, Ordering::Relaxed);
+            for l in self.track_levels.iter() {
+                l.store(0, Ordering::Relaxed);
+            }
         }
         log::info!(
             "meetings: {} recording",
@@ -506,6 +531,11 @@ impl MeetingRecorder {
     /// Peak input level (0.0..=1.0) since the last call, then reset.
     pub fn take_level(&self) -> f32 {
         f32::from_bits(self.level.swap(0, Ordering::Relaxed))
+    }
+
+    /// [`Self::take_level`] per track: `[mic, system]`.
+    pub fn take_track_levels(&self) -> [f32; 2] {
+        [0, 1].map(|i| f32::from_bits(self.track_levels[i].swap(0, Ordering::Relaxed)))
     }
 
     /// Stop recording at `now`. Returns the meeting id, or `None` when idle.
@@ -526,6 +556,9 @@ impl MeetingRecorder {
             if let Err(e) = capture.stop() {
                 log::warn!("meetings: stopping capture failed: {e:#}");
             }
+        }
+        if let Some(live) = &self.deps.live {
+            live.stop();
         }
         let _ = session.tx.send(WriterMsg::Finish);
         let mut errors = std::mem::take(&mut *session.capture_errors.lock());
@@ -890,6 +923,13 @@ impl MeetingRecorder {
             (self.deps.on_meeting_changed)(*id);
         }
         Ok(outcome.files_deleted)
+    }
+}
+
+fn track_index(track: Track) -> usize {
+    match track {
+        Track::Mic => 0,
+        Track::System => 1,
     }
 }
 

@@ -2944,3 +2944,89 @@ mod meetings_fixes {
         assert!(!exists(cx, w, "local-models"));
     }
 }
+
+mod recording_widget {
+    use super::*;
+    use crate::testing::FakeMeetingsBackend;
+    use crate::ui::recording_widget::{RecordingWidgetState, RecordingWidgetView};
+    use guidy_core::meetings::types::{LiveLine, LiveStatus, LiveUpdate, RecorderState, Track};
+
+    fn recording(meeting_id: i64) -> RecorderState {
+        RecorderState::Recording {
+            meeting_id,
+            title: "Weekly sync".into(),
+            started_at: 0,
+            scheduled_end_at: None,
+            paused_at: None,
+            paused_ms: 0,
+        }
+    }
+
+    fn line(id: u64, track: Track, text: &str, tentative: bool) -> LiveUpdate {
+        LiveUpdate {
+            meeting_id: 4,
+            status: Some(LiveStatus::Live),
+            line: Some(LiveLine {
+                id,
+                track,
+                t0_ms: id as i64 * 1_000,
+                t1_ms: id as i64 * 1_000 + 900,
+                text: text.into(),
+                tentative,
+            }),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn the_widget_follows_the_recording_and_its_controls_reach_the_backend(
+        cx: &mut TestAppContext,
+    ) {
+        let meetings = FakeMeetingsBackend::new();
+        setup_meetings(cx, FakeBackend::new(), meetings.clone());
+        let widget = cx.update(RecordingWidgetState::install);
+        let (w, _) = open(cx, RecordingWidgetView::new);
+        assert!(!exists(cx, w, "recording-widget-pill"), "hidden while idle");
+
+        cx.update(|cx| {
+            widget.update(cx, |s, cx| {
+                s.apply_live(&line(0, Track::System, "Can you see my screen?", false), cx);
+                s.set_recorder(recording(4), cx);
+            })
+        });
+        assert!(exists(cx, w, "recording-widget-pill"));
+        assert!(!exists(cx, w, "recording-widget-panel"));
+
+        // Expanded (the window itself is reopened at the panel's size).
+        cx.update(|cx| {
+            widget.update(cx, |s, cx| {
+                s.model.expanded = true;
+                s.apply_live(&line(1, Track::Mic, "Yes, go ahead", true), cx);
+            })
+        });
+        assert!(exists(cx, w, "recording-widget-panel"));
+        assert!(exists(cx, w, "recording-widget-title"));
+        assert!(exists(cx, w, "source-mic"));
+        assert!(exists(cx, w, "source-system"));
+        assert!(exists(cx, w, "live-row-0"));
+        assert!(exists(cx, w, "live-row-1"));
+
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-pause", cx)
+        });
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-stop", cx)
+        });
+        let calls = meetings.calls();
+        assert!(
+            calls.contains(&"set_recording_paused true".to_string()),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"stop_recording".to_string()), "{calls:?}");
+
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(RecorderState::Idle, cx)));
+        assert!(
+            !exists(cx, w, "recording-widget-panel"),
+            "gone after the stop"
+        );
+    }
+}

@@ -20,8 +20,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
 use guidy_core::meetings::types::{
-    Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress, Segment,
-    SpeakerId,
+    LiveStatus, Meeting, MeetingId, MeetingSpeaker, MeetingStatus, Person, ProcessingProgress,
+    Segment, SpeakerId, Track,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -71,7 +71,7 @@ impl MeetingDetail {
         let email_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t("meetings.speaker.emailPlaceholder"))
         });
-        let subs = vec![
+        let mut subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| {
                 if let AppEvent::Meetings(ev) = ev {
@@ -89,6 +89,14 @@ impl MeetingDetail {
                 }
             }),
         ];
+        // The live transcript while this meeting records.
+        if let Some(widget) = crate::ui::recording_widget::RecordingWidgetState::global(cx) {
+            subs.push(cx.observe(&widget, |this, w, cx| {
+                if w.read(cx).model.live.meeting_id == this.meeting_id {
+                    cx.notify();
+                }
+            }));
+        }
         let mut this = Self {
             meeting_id,
             meeting: None,
@@ -1120,7 +1128,76 @@ impl MeetingDetail {
             .into_any_element()
     }
 
+    /// While this meeting records: what live transcription has heard so far.
+    fn render_live_transcript(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.meeting.as_ref()?.status != MeetingStatus::Recording {
+            return None;
+        }
+        let tone = design::tone(cx);
+        let widget = crate::ui::recording_widget::RecordingWidgetState::global(cx)?;
+        let model = &widget.read(cx).model;
+        let live = (model.live.meeting_id == self.meeting_id).then_some(&model.live);
+        let rows = live
+            .map(|l| crate::logic::recording_widget::rows(&l.lines))
+            .unwrap_or_default();
+        let hint = div()
+            .px(design::SECTION_X)
+            .py(dp(12.))
+            .text_size(dp(12.))
+            .line_height(relative(1.5))
+            .text_color(tone.text_muted)
+            .child(match live.map(|l| &l.status) {
+                Some(LiveStatus::Off) => t("meetings.widget.liveOff"),
+                Some(LiveStatus::Unavailable { reason }) => {
+                    crate::ui::kit::t_args("meetings.widget.liveUnavailable", &[("reason", reason)])
+                }
+                _ if rows.is_empty() => t("meetings.widget.liveListening"),
+                _ => t("meetings.widget.liveHint"),
+            })
+            .into_any_element();
+        let lines = rows.iter().enumerate().map(|(i, r)| {
+            let you = r.track == Track::Mic;
+            v_flex()
+                .id(("live-transcript-row", i))
+                .px(design::SECTION_X)
+                .py(dp(10.))
+                .gap(dp(4.))
+                .child(
+                    design::eyebrow(
+                        if you {
+                            t("meetings.widget.you")
+                        } else {
+                            t("meetings.widget.others")
+                        },
+                        cx,
+                    )
+                    .when(you, |d| d.text_color(tone.accent_text)),
+                )
+                .child(
+                    div()
+                        .text_size(design::TEXT_BODY)
+                        .line_height(relative(1.55))
+                        .child(r.text.clone())
+                        .when(!r.tentative.is_empty(), |d| {
+                            d.child(div().text_color(tone.text_muted).child(r.tentative.clone()))
+                        }),
+                )
+                .into_any_element()
+        });
+        let rows: Vec<AnyElement> = std::iter::once(hint).chain(lines).collect();
+        Some(
+            div()
+                .id("meeting-live-transcript")
+                .child(group(Some(t("meetings.widget.liveTitle")), rows, cx))
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
     fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(live) = self.render_live_transcript(cx) {
+            return live;
+        }
         let theme = cx.theme().clone();
         let rows: Vec<AnyElement> = if self.loading {
             vec![div()

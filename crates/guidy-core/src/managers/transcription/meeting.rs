@@ -295,9 +295,35 @@ impl MeetingTranscriber {
         pcm: Vec<f32>,
         language: Option<String>,
     ) -> std::result::Result<Transcript, EngineError> {
+        let info = self.loaded_info();
+        let language =
+            language.and_then(|lang| model_language(&info?.capabilities.languages, &lang));
+        let mut options = word_run_options(language);
+        if let Some(info) = info {
+            options.timestamps = meeting_timestamps(info.capabilities.max_timestamp_kind);
+        }
+        self.engine.transcribe(pcm, options)
+    }
+
+    /// [`Self::transcribe_words`] without the word timestamps: live
+    /// transcription only shows the text.
+    pub fn transcribe_text(
+        &self,
+        pcm: Vec<f32>,
+        language: Option<String>,
+    ) -> std::result::Result<String, EngineError> {
         let language = language
             .and_then(|lang| model_language(&self.loaded_info()?.capabilities.languages, &lang));
-        self.engine.transcribe(pcm, word_run_options(language))
+        let options = RunOptions {
+            language,
+            ..Default::default()
+        };
+        Ok(self
+            .engine
+            .transcribe(pcm, options)?
+            .text
+            .trim()
+            .to_string())
     }
 
     /// Stop the run in progress (kills the worker; the next run reloads).

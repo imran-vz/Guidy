@@ -416,8 +416,88 @@ pub fn format_elapsed(ms: i64) -> String {
     }
 }
 
+/// One utterance of a recording's live transcript. Live lines are only for
+/// watching the meeting as it happens: the stored transcript (speakers,
+/// words) still comes from processing after the stop.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LiveLine {
+    /// Stable while the utterance is still being spoken: a later update with
+    /// the same id replaces the line.
+    pub id: u64,
+    /// Mic: the user. System: everyone else.
+    pub track: Track,
+    /// Recording time of the utterance.
+    pub t0_ms: i64,
+    pub t1_ms: i64,
+    pub text: String,
+    /// Decoded while the utterance is still going: it may still change.
+    pub tentative: bool,
+}
+
+/// Whether live transcription is running for the recording.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveStatus {
+    /// Not recording, or live transcription is turned off.
+    #[default]
+    Off,
+    /// Loading the transcription model.
+    Starting,
+    Live,
+    /// It couldn't start (e.g. no model downloaded). The recording itself is
+    /// unaffected.
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// The live transcript of the meeting being recorded.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct LiveTranscript {
+    pub meeting_id: MeetingId,
+    pub status: LiveStatus,
+    /// In the order the utterances started.
+    pub lines: Vec<LiveLine>,
+}
+
+impl LiveTranscript {
+    /// Apply an update for this meeting: a new status, and a line added or
+    /// replacing the one with its id. Updates for another meeting start a
+    /// new transcript.
+    pub fn apply(&mut self, update: &LiveUpdate) {
+        if update.meeting_id != self.meeting_id {
+            *self = LiveTranscript {
+                meeting_id: update.meeting_id,
+                ..Default::default()
+            };
+        }
+        if let Some(status) = &update.status {
+            self.status = status.clone();
+        }
+        if let Some(line) = &update.line {
+            match self.lines.iter_mut().rev().find(|l| l.id == line.id) {
+                Some(existing) => *existing = line.clone(),
+                None => {
+                    let at = self.lines.partition_point(|l| l.t0_ms <= line.t0_ms);
+                    self.lines.insert(at, line.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Payload of [`events::LIVE_TRANSCRIPT`]: what changed in a live transcript.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LiveUpdate {
+    pub meeting_id: MeetingId,
+    pub status: Option<LiveStatus>,
+    pub line: Option<LiveLine>,
+}
+
 /// Event names emitted on the app event bus (`AppHandle::emit`).
 pub mod events {
+    /// Payload: [`super::LiveUpdate`].
+    pub const LIVE_TRANSCRIPT: &str = "meetings://live-transcript";
     /// Payload: [`super::RecorderState`].
     pub const RECORDER_STATE: &str = "meetings://recorder-state";
     /// Payload: [`super::ProcessingProgress`].
@@ -494,5 +574,54 @@ mod tests {
     fn attendee_is_current_user_defaults_to_false() {
         let a: Attendee = serde_json::from_str(r#"{"name":"Ann","email":null}"#).unwrap();
         assert!(!a.is_current_user);
+    }
+
+    fn live_line(id: u64, t0_ms: i64, text: &str, tentative: bool) -> LiveLine {
+        LiveLine {
+            id,
+            track: Track::Mic,
+            t0_ms,
+            t1_ms: t0_ms + 500,
+            text: text.into(),
+            tentative,
+        }
+    }
+
+    fn line_update(meeting_id: MeetingId, line: LiveLine) -> LiveUpdate {
+        LiveUpdate {
+            meeting_id,
+            status: None,
+            line: Some(line),
+        }
+    }
+
+    #[test]
+    fn live_lines_are_replaced_by_id_and_kept_in_time_order() {
+        let mut t = LiveTranscript {
+            meeting_id: 1,
+            ..Default::default()
+        };
+        t.apply(&line_update(1, live_line(1, 1_000, "hel", true)));
+        t.apply(&line_update(1, live_line(2, 3_000, "later", false)));
+        // A system-audio line that started earlier lands before it.
+        t.apply(&line_update(1, live_line(3, 2_000, "between", false)));
+        t.apply(&line_update(1, live_line(1, 1_000, "hello", false)));
+        let texts: Vec<_> = t.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["hello", "between", "later"]);
+        assert!(!t.lines[0].tentative);
+
+        t.apply(&LiveUpdate {
+            meeting_id: 1,
+            status: Some(LiveStatus::Live),
+            line: None,
+        });
+        assert_eq!(t.status, LiveStatus::Live);
+        assert_eq!(t.lines.len(), 3);
+
+        // The next recording starts over.
+        t.apply(&line_update(2, live_line(1, 0, "new", true)));
+        assert_eq!(t.meeting_id, 2);
+        assert_eq!(t.status, LiveStatus::Off);
+        assert_eq!(t.lines.len(), 1);
     }
 }

@@ -11,5 +11,6 @@ pub mod models;
 pub mod models_store;
 pub mod notch;
 pub mod overlay;
+pub mod recording_widget;
 pub mod settings_store;
 pub mod usage;

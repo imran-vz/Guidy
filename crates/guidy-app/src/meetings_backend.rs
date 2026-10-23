@@ -178,6 +178,8 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn set_recording_paused(&self, paused: bool) -> bool;
     /// Peak input level (0.0..=1.0) since the last call, for the waveform.
     fn take_recording_level(&self) -> f32;
+    /// The same per source, `[mic, system]`.
+    fn take_recording_levels(&self) -> [f32; 2];
     /// 16 kHz mono f32 samples of one track between `t0_ms` and `t1_ms`.
     fn segment_audio(
         &self,
@@ -453,6 +455,10 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn take_recording_level(&self) -> f32 {
         self.manager().map_or(0.0, |m| m.take_recording_level())
+    }
+    fn take_recording_levels(&self) -> [f32; 2] {
+        self.manager()
+            .map_or([0.0; 2], |m| m.take_recording_levels())
     }
     fn segment_audio(
         &self,
@@ -771,6 +777,9 @@ impl MeetingsBackend for NoMeetings {
     fn take_recording_level(&self) -> f32 {
         0.0
     }
+    fn take_recording_levels(&self) -> [f32; 2] {
+        [0.0; 2]
+    }
     fn segment_audio(&self, _: MeetingId, _: Track, _: i64, _: i64) -> MeetingsResult<Vec<f32>> {
         Err(unavailable())
     }
@@ -1046,6 +1055,9 @@ pub mod fake {
         }
         fn take_recording_level(&self) -> f32 {
             0.5
+        }
+        fn take_recording_levels(&self) -> [f32; 2] {
+            [0.5, 0.0]
         }
         fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
             self.rec("stop_recording");

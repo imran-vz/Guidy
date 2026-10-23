@@ -40,7 +40,7 @@ use guidy_core::meetings::manager::PermissionReport;
 use guidy_core::meetings::processing::{
     SpeakerModelStatus, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE, SPEAKER_MODEL_TRAINED_ON,
 };
-use guidy_core::meetings::settings::{MeetingSettings, RETENTION_CHOICES};
+use guidy_core::meetings::settings::{MeetingSettings, RecordingControls, RETENTION_CHOICES};
 
 const REMINDER_CHOICES: [u32; 5] = [5, 10, 15, 20, 30];
 
@@ -711,7 +711,51 @@ impl Render for MeetingSettingsView {
                 .child(b)
                 .into_any_element()
         }));
+        let controls_options = vec![
+            DropdownOption::new(
+                "floating",
+                t("meetings.settings.recordingControls.floating"),
+            ),
+            DropdownOption::new("notch", t("meetings.settings.recordingControls.notch")),
+        ];
         recording.extend([
+            SettingRow::new(
+                "meetings-recording-controls",
+                t("meetings.settings.recordingControls.title"),
+            )
+            .description(t("meetings.settings.recordingControls.description"))
+            .control(
+                Dropdown::new("meetings-recording-controls-dropdown")
+                    .options(controls_options)
+                    .selected(Some(match m.recording_controls {
+                        RecordingControls::Floating => "floating",
+                        RecordingControls::Notch => "notch",
+                    }))
+                    .min_width(dp(200.))
+                    .on_select(|v, _, cx| {
+                        let controls = if v == "notch" {
+                            RecordingControls::Notch
+                        } else {
+                            RecordingControls::Floating
+                        };
+                        update_meetings(cx, |m| m.recording_controls = controls);
+                        // A recording in progress switches over now.
+                        cx.defer(crate::windows::sync_recording_controls);
+                    }),
+            )
+            .into_any_element(),
+            SettingRow::new(
+                "meetings-live-transcription",
+                t("meetings.settings.liveTranscription.title"),
+            )
+            .description(t("meetings.settings.liveTranscription.description"))
+            .control(toggle(
+                "meetings-live-transcription-toggle",
+                m.live_transcription,
+                updating,
+                |v, _, cx| update_meetings(cx, |m| m.live_transcription = v),
+            ))
+            .into_any_element(),
             SettingRow::new("meetings-retention", t("meetings.settings.retention.title"))
                 .description(t("meetings.settings.retention.description"))
                 .control(

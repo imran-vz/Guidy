@@ -56,6 +56,17 @@ pub trait CaptureBackend: Send + Sync {
     ) -> Result<Box<dyn CaptureSession>>;
 }
 
+/// Gets a copy of the recorded audio as it is captured (live transcription).
+pub trait LiveSink: Send + Sync {
+    /// A recording of `meeting_id` starts; its audio follows.
+    fn start(&self, meeting_id: MeetingId);
+    /// Called from the capture threads, like a [`CaptureSink`] (silence
+    /// while paused, so its clock stays the recording's). Must not block.
+    fn push(&self, track: Track, samples: &[f32]);
+    /// The recording stopped (or failed to start).
+    fn stop(&self);
+}
+
 /// A running capture. Dropping it must also stop it.
 pub trait CaptureSession: Send {
     fn stop(self: Box<Self>) -> Result<()>;

@@ -8,11 +8,13 @@
 //! - [`audio_store`]: encrypted Opus track files + retention.
 //! - [`native`]: macOS bridges (EventKit, VPIO mic, process tap, notifications).
 //! - [`recorder`]: recording sessions, tray state, reminders, calendar prompts.
+//! - [`live`]: live transcription of the recording in progress.
 //! - [`processing`]: VAD -> transcription -> voiceprints -> clustering -> timeline.
 //! - [`summarize`]: chunked LLM summaries and action items.
 //! - [`manager`]: [`manager::MeetingsManager`], the facade the app calls.
 
 pub mod audio_store;
+pub mod live;
 pub mod manager;
 pub mod native;
 pub mod processing;

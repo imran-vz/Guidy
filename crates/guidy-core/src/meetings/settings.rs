@@ -47,6 +47,24 @@ pub struct MeetingSettings {
     pub mcp_enabled: bool,
     /// Loopback port of the MCP server.
     pub mcp_port: u16,
+    /// Transcribe a recording as it happens, shown in the recording
+    /// controls and the meeting page. The stored transcript still comes from
+    /// processing after the stop.
+    pub live_transcription: bool,
+    /// Where the controls of a recording in progress are shown.
+    pub recording_controls: RecordingControls,
+}
+
+/// Where the controls of a recording in progress are shown.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingControls {
+    /// A floating widget at the edge of the screen that expands into the
+    /// live transcript.
+    #[default]
+    Floating,
+    /// Wings around the notch (a small island in the menu bar without one).
+    Notch,
 }
 
 /// One of the user's email addresses, with a free-text label ("Work").
@@ -103,6 +121,8 @@ impl Default for MeetingSettings {
             linear_default_project_id: None,
             mcp_enabled: false,
             mcp_port: crate::mcp::DEFAULT_PORT,
+            live_transcription: true,
+            recording_controls: RecordingControls::Floating,
         }
     }
 }
@@ -131,6 +151,8 @@ impl std::fmt::Debug for MeetingSettings {
             .field("linear_default_project_id", &self.linear_default_project_id)
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_port", &self.mcp_port)
+            .field("live_transcription", &self.live_transcription)
+            .field("recording_controls", &self.recording_controls)
             .finish()
     }
 }

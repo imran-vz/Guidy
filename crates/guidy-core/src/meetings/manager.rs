@@ -106,6 +106,8 @@ pub struct MeetingsManager {
     /// `summarize` refuse them. Locked before `ticket_creations` when both
     /// are.
     deletions: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
+    /// Live transcript of the recording in progress (fed by the recorder).
+    live: Arc<crate::meetings::live::LiveTranscriber>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -133,6 +135,7 @@ impl MeetingsManager {
             ticket_creations: Default::default(),
             summary_commits: Default::default(),
             deletions: Default::default(),
+            live: Arc::new(crate::meetings::live::LiveTranscriber::new(app)),
         }))
     }
 
@@ -209,8 +212,14 @@ impl MeetingsManager {
                 &self.app,
                 self.store.clone(),
                 self.audio_dir(),
+                self.live.clone(),
             ))
         })
+    }
+
+    /// The live transcript of the recording in progress (or the last one).
+    pub fn live_transcript(&self) -> LiveTranscript {
+        self.live.transcript()
     }
 
     /// Start recording. `calendar_event_id: None` (or an event that has
@@ -260,6 +269,14 @@ impl MeetingsManager {
     /// Peak input level (0.0..=1.0) of the recording since the last call.
     pub fn take_recording_level(&self) -> f32 {
         self.capture.recorder.get().map_or(0.0, |r| r.take_level())
+    }
+
+    /// [`Self::take_recording_level`] per track: `[mic, system]`.
+    pub fn take_recording_levels(&self) -> [f32; 2] {
+        self.capture
+            .recorder
+            .get()
+            .map_or([0.0; 2], |r| r.take_track_levels())
     }
 
     /// A stopped recording whose finish failed at stop, finished by a later

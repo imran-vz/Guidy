@@ -806,6 +806,26 @@
       "tomorrow": "Tomorrow",
       "yesterday": "Yesterday"
     },
+    "widget": {
+      "recording": "Recording",
+      "paused": "Paused",
+      "you": "You",
+      "others": "Others",
+      "mic": "Microphone",
+      "system": "System audio",
+      "liveStarting": "Loading the transcription model…",
+      "liveListening": "Listening. Lines appear here as people speak.",
+      "liveOff": "Live transcription is off. Turn it on in Meetings › Settings.",
+      "liveUnavailable": "Live transcription isn't available: {{reason}}",
+      "pause": "Pause",
+      "resume": "Resume",
+      "stop": "Stop",
+      "openNotes": "Open notes",
+      "expand": "Show the live transcript",
+      "collapse": "Collapse",
+      "liveTitle": "Live transcript",
+      "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends."
+    },
     "description": "Record a meeting on this Mac, then read the transcript with named speakers.",
     "init": {
       "starting": "Starting meeting notes...",
@@ -1046,6 +1066,16 @@
       "calendarNotifications": {
         "title": "Calendar notifications",
         "description": "Ask to take notes when a calendar meeting with a call link starts."
+      },
+      "recordingControls": {
+        "title": "Recording controls",
+        "description": "Where pause, stop and the live transcript are while a meeting records.",
+        "floating": "Floating, at the screen edge",
+        "notch": "Around the notch"
+      },
+      "liveTranscription": {
+        "title": "Live transcription",
+        "description": "Transcribe the meeting on this Mac as it happens. Uses the meeting model while recording; the full transcript is still made after the meeting."
       },
       "reminderInterval": {
         "title": "Reminder interval",

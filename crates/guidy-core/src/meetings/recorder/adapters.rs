@@ -200,6 +200,7 @@ pub fn app_recorder(
     app: &AppHandle,
     store: Arc<MeetingsStore>,
     audio_dir: std::path::PathBuf,
+    live: Arc<dyn LiveSink>,
 ) -> MeetingRecorder {
     let settings_app = app.clone();
     let strings_app = app.clone();
@@ -244,5 +245,6 @@ pub fn app_recorder(
                 log::error!("meetings: meeting {id} not queued for processing: {e}");
             }
         }),
+        live: Some(live),
     })
 }

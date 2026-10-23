@@ -173,6 +173,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     );
     let overlay = OverlayState::install(cx);
     crate::ui::notch::NotchState::install(cx);
+    crate::ui::recording_widget::RecordingWidgetState::install(cx);
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
     spawn_event_loop(event_rx, state, overlay, cx);
@@ -180,6 +181,10 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     #[cfg(debug_assertions)]
     if std::env::var_os("GUIDY_DEV_OVERLAY_DEMO").is_some() {
         overlay_demo(&app);
+    }
+    #[cfg(debug_assertions)]
+    if let Ok(mode) = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO") {
+        recording_widget_demo(&app, mode == "expanded", cx);
     }
 
     if decision.show_main_window {
@@ -220,6 +225,98 @@ fn overlay_demo(app: &AppHandle) {
                 "stream-text-event",
                 serde_json::json!({"committed": committed, "tentative": words[i]}),
             );
+        }
+    });
+}
+
+/// Debug builds: replay a meeting recording and its live transcript through
+/// the real event path, without capturing audio. `expanded` opens the
+/// widget's panel.
+#[cfg(debug_assertions)]
+fn recording_widget_demo(app: &AppHandle, expanded: bool, cx: &mut App) {
+    use guidy_core::meetings::types::{
+        events, LiveLine, LiveStatus, LiveUpdate, RecorderState, Track,
+    };
+    if expanded {
+        // After the recording starts (it starts collapsed), as a click would.
+        cx.spawn(async |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(3_000))
+                .await;
+            cx.update(|cx| crate::ui::recording_widget::set_expanded(true, cx));
+        })
+        .detach();
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        use std::time::Duration;
+        const ID: i64 = 9_999;
+        let now = guidy_core::meetings::recorder::now_ms();
+        let live = |status: Option<LiveStatus>, line: Option<LiveLine>| {
+            let _ = app.emit(
+                events::LIVE_TRANSCRIPT,
+                LiveUpdate {
+                    meeting_id: ID,
+                    status,
+                    line,
+                },
+            );
+        };
+        std::thread::sleep(Duration::from_secs(2));
+        live(Some(LiveStatus::Starting), None);
+        let _ = app.emit(
+            events::RECORDER_STATE,
+            RecorderState::Recording {
+                meeting_id: ID,
+                title: "Design review: recording widget".into(),
+                started_at: now - 754_000,
+                scheduled_end_at: None,
+                paused_at: None,
+                paused_ms: 0,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        live(Some(LiveStatus::Live), None);
+        let script = [
+            (
+                Track::System,
+                "Okay, can everyone see my screen? This is the new floating recorder.",
+            ),
+            (
+                Track::Mic,
+                "Yes, looks good. Is the transcript live or does it wait for the end?",
+            ),
+            (
+                Track::System,
+                "It's live. Lines show up about a second after someone speaks,",
+            ),
+            (
+                Track::System,
+                "and the proper transcript with names is still made after the meeting.",
+            ),
+            (
+                Track::Mic,
+                "Nice. And if the local model gets something wrong, I can redo it in the cloud",
+            ),
+        ];
+        let mut t0 = 0;
+        for (i, (track, text)) in script.iter().enumerate() {
+            let words: Vec<&str> = text.split(' ').collect();
+            let line = |n: usize, tentative: bool| LiveLine {
+                id: i as u64,
+                track: *track,
+                t0_ms: t0,
+                t1_ms: t0 + 3_000,
+                text: words[..n].join(" "),
+                tentative,
+            };
+            for n in (3..words.len()).step_by(4) {
+                live(None, Some(line(n, true)));
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            let last = i + 1 == script.len();
+            live(None, Some(line(words.len(), last)));
+            t0 += 3_500;
         }
     });
 }
@@ -284,12 +381,27 @@ pub fn dispatch_event(
         });
     }
     if event.name == guidy_core::meetings::types::events::RECORDER_STATE {
-        if let (Some(notch), Ok(recorder)) = (
-            crate::ui::notch::NotchState::global(cx),
-            serde_json::from_value(event.payload.clone()),
+        if let Ok(recorder) = serde_json::from_value::<guidy_core::meetings::types::RecorderState>(
+            event.payload.clone(),
         ) {
-            notch.update(cx, |n, cx| n.set_recorder(recorder, cx));
-            windows::sync_notch(cx);
+            if let Some(notch) = crate::ui::notch::NotchState::global(cx) {
+                let recorder = recorder.clone();
+                notch.update(cx, |n, cx| n.set_recorder(recorder, cx));
+            }
+            if let Some(widget) = crate::ui::recording_widget::RecordingWidgetState::global(cx) {
+                widget.update(cx, |w, cx| w.set_recorder(recorder, cx));
+            }
+            windows::sync_recording_controls(cx);
+        }
+    }
+    if event.name == guidy_core::meetings::types::events::LIVE_TRANSCRIPT {
+        if let (Some(widget), Ok(update)) = (
+            crate::ui::recording_widget::RecordingWidgetState::global(cx),
+            serde_json::from_value::<guidy_core::meetings::types::LiveUpdate>(
+                event.payload.clone(),
+            ),
+        ) {
+            widget.update(cx, |w, cx| w.apply_live(&update, cx));
         }
     }
     if event.name != "mic-level" {

@@ -11,6 +11,7 @@ pub mod notch;
 pub mod onboarding;
 pub mod overlay;
 pub mod pages;
+pub mod recording_widget;
 pub mod shortcut_input;
 pub mod status_bar;
 pub mod whats_new;
