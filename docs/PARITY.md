@@ -65,7 +65,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | S-08 | Close hides the window; Accessory activation policy when the tray is visible [mac] (a start-hidden launch *launches* as Accessory); Reopen shows it [mac] | manual: HW-13 |
 | S-09 | Settings load: salvage when corrupt, all 8 migrations, new default bindings merged, written back | test: legacy_store_file_loads_and_migrates, test: salvage_preserves_valid_fields_when_one_value_is_invalid, test: frozen_v0_9_store_parses_strictly_then_migrates_device_index |
 | S-10 | History DB: rusqlite_migration (4 steps), legacy `_sqlx_migrations` conversion, retention by count/age | test: fresh_database_runs_all_migrations, test: legacy_sqlx_database_is_adopted_without_rerunning_migrations, test: saving_emits_added_and_preserve_limit_keeps_saved_entries |
-| S-11 | Logs: file 500 KB keep-one, level from settings; console filter from RUST_LOG | test: rotating_file_truncates_when_full, test: rotating_file_appends_to_existing |
+| S-11 | Logs: file 500 KB keep-one, level from settings; console filter from RUST_LOG | test: rotating_file_keeps_the_previous_file_when_full, test: rotating_file_appends_to_existing |
 | S-12 | Env: GGML_METAL_NO_RESIDENCY [mac], VK_LOADER_LAYERS_DISABLE [win], allocator tuning [lin] | manual: HW-10 |
 | S-13 | Background warm-up of the accelerator list | manual: HW-10 |
 | S-14 | Apple Intelligence Swift build + stub fallback [mac aarch64] | manual: HW-14 |
