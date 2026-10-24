@@ -4,6 +4,7 @@
 //! GPUI has no per-window hide/show, so "hiding" closes the window and
 //! "showing" reopens it; all state lives in models outside the views.
 
+use crate::logic::floater::Desk;
 use crate::logic::notch::ScreenInfo;
 use crate::shell::{GpuiShell, ShellMsg};
 use crate::state::AppState;
@@ -32,7 +33,8 @@ pub struct Windows {
     pub main_view: Option<WeakEntity<MainWindow>>,
     pub overlay: Option<(AnyWindowHandle, OverlayPlacement)>,
     pub notch: Option<AnyWindowHandle>,
-    pub recording_widget: Option<AnyWindowHandle>,
+    /// The recording floater's windows, one per display.
+    pub recording_widget: Vec<AnyWindowHandle>,
 }
 
 impl Global for Windows {}
@@ -323,71 +325,74 @@ pub fn sync_recording_controls(cx: &mut App) {
     sync_recording_widget(cx);
 }
 
-/// The floater's window: transparent, over the whole display with the
-/// notch (else the primary one), above the menu bar so it can dock into
-/// the notch. It lets the pointer through except over the floater
-/// ([`set_ignores_mouse`]). macOS only.
+/// The floater's windows: transparent, one over each display, above the
+/// menu bar so it can dock into a notch. Each lets the pointer through
+/// except over the floater ([`set_ignores_mouse`]). Reopened when the
+/// displays change. macOS only.
 fn sync_recording_widget(cx: &mut App) {
     let visible = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.visible());
-    if !visible {
-        if let Some(handle) = windows(cx).recording_widget.take() {
-            let _ = cx.update_window(handle, |_, window, _| window.remove_window());
-        }
-        return;
-    }
-    if let Some(handle) = windows(cx).recording_widget {
-        if cx
-            .update_window(handle, |_, window, _| window.refresh())
-            .is_ok()
-        {
+    let screens = if visible { macos_screens() } else { Vec::new() };
+    let open = windows(cx).recording_widget.clone();
+    let current = open.len() == screens.len()
+        && RecordingWidgetState::global(cx).is_some_and(|s| {
+            s.read(cx).desk == Desk::from_screens(&screens, crate::ui::design::SCALE)
+        });
+    if visible && current {
+        let alive = open.iter().all(|h| {
+            cx.update_window(*h, |_, window, _| window.refresh())
+                .is_ok()
+        });
+        if alive {
             return;
         }
-        windows(cx).recording_widget = None;
     }
-    let Some(screen) = stage_screen() else {
+    for handle in std::mem::take(&mut windows(cx).recording_widget) {
+        let _ = cx.update_window(handle, |_, window, _| window.remove_window());
+    }
+    if !visible || screens.is_empty() {
         return;
-    };
+    }
     if let Some(state) = RecordingWidgetState::global(cx) {
+        let desk = Desk::from_screens(&screens, crate::ui::design::SCALE);
         state.update(cx, |s, cx| {
-            s.screen = Some(screen);
+            s.set_desk(desk);
             cx.notify();
         });
     }
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(0.), px(0.)),
-            size: size(px(screen.width as f32), px(screen.height as f32)),
-        })),
-        titlebar: None,
-        focus: false,
-        show: true,
-        kind: WindowKind::PopUp,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
-        window_background: WindowBackgroundAppearance::Transparent,
-        app_id: Some(format!(
-            "{}.recording-widget",
-            guidy_core::host::APP_IDENTIFIER
-        )),
-        ..Default::default()
-    };
-    match cx.open_window(options, |window, cx| {
-        cx.new(|cx| RecordingWidgetView::new(window, cx))
-    }) {
-        Ok(handle) => {
-            let any: AnyWindowHandle = handle.into();
-            let _ = cx.update_window(any, |_, window, _| {
-                configure_overlay_panel(window);
-                place_panel(
-                    window,
-                    (screen.x, screen.y, screen.width, screen.height),
-                    MENU_BAR_LEVEL,
-                );
-            });
-            windows(cx).recording_widget = Some(any);
+    for (i, screen) in screens.iter().enumerate() {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(screen.width as f32), px(screen.height as f32)),
+            })),
+            titlebar: None,
+            focus: false,
+            show: true,
+            kind: WindowKind::PopUp,
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
+            window_background: WindowBackgroundAppearance::Transparent,
+            app_id: Some(format!(
+                "{}.recording-widget",
+                guidy_core::host::APP_IDENTIFIER
+            )),
+            ..Default::default()
+        };
+        match cx.open_window(options, |window, cx| {
+            cx.new(|cx| RecordingWidgetView::new(i, window, cx))
+        }) {
+            Ok(handle) => {
+                let any: AnyWindowHandle = handle.into();
+                let frame = (screen.x, screen.y, screen.width, screen.height);
+                let _ = cx.update_window(any, |_, window, _| {
+                    configure_overlay_panel(window);
+                    place_panel(window, frame, MENU_BAR_LEVEL);
+                });
+                windows(cx).recording_widget.push(any);
+            }
+            Err(e) => log::error!("Failed to open the recording widget: {e}"),
         }
-        Err(e) => log::error!("Failed to open the recording widget: {e}"),
     }
 }
 
@@ -396,23 +401,6 @@ type Rect = (f64, f64, f64, f64);
 
 /// NSMainMenuWindowLevel (24) + 2: above the menu bar.
 const MENU_BAR_LEVEL: isize = 26;
-
-/// The display the floater lives on: the one with a notch, else the
-/// primary one.
-#[cfg(target_os = "macos")]
-fn stage_screen() -> Option<ScreenInfo> {
-    let screens = macos_screens();
-    screens
-        .iter()
-        .find(|s| s.notch.is_some())
-        .or_else(|| screens.first())
-        .copied()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn stage_screen() -> Option<ScreenInfo> {
-    None
-}
 
 /// The pointer, in Cocoa coordinates (points, origin bottom-left of the
 /// primary display).
@@ -530,6 +518,12 @@ mod cocoa {
             ],
         );
     }
+}
+
+/// No floater windows off macOS.
+#[cfg(not(target_os = "macos"))]
+fn macos_screens() -> Vec<ScreenInfo> {
+    Vec::new()
 }
 
 /// Every display (primary first) with its notch, from `NSScreen`.

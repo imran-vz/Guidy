@@ -3208,17 +3208,21 @@ mod recording_widget {
             widget.update(cx, |s, _| {
                 s.animate = false;
                 s.docked = docked;
-                s.screen = Some(crate::logic::notch::ScreenInfo {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 900.0,
-                    height: 1000.0,
-                    notch: Some((380.0, 520.0)),
-                    top_inset: 38.0,
-                });
+                s.desk =
+                    crate::logic::floater::Desk::single(crate::logic::floater::Stage::from_screen(
+                        &crate::logic::notch::ScreenInfo {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 900.0,
+                            height: 1000.0,
+                            notch: Some((380.0, 520.0)),
+                            top_inset: 38.0,
+                        },
+                        crate::ui::design::SCALE,
+                    ));
             })
         });
-        let (w, _) = open(cx, RecordingWidgetView::new);
+        let (w, _) = open(cx, |window, cx| RecordingWidgetView::new(0, window, cx));
         (meetings, widget, w)
     }
 
@@ -3391,7 +3395,7 @@ mod recording_widget {
         // Pulled well away: free again, where it was let go.
         with_window(cx, w, |window, cx| {
             window.drag(
-                gpui_kit::point(px(305.), px(19.)),
+                gpui_kit::point(px(300.), px(19.)),
                 gpui_kit::point(px(300.), px(600.)),
                 cx,
             )
@@ -3404,6 +3408,62 @@ mod recording_widget {
             (at.x - px(300.)).abs() < px(2.) && (at.y - px(600.)).abs() < px(2.),
             "{at:?}"
         );
+    }
+
+    #[gpui_kit::test]
+    fn dragged_into_a_corner_it_becomes_a_leaf(cx: &mut TestAppContext) {
+        let (meetings, widget, w) = widget_setup(cx, false);
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recording(4), cx)));
+        let from = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("recording-widget-blob").bounds().center()
+            })
+            .unwrap();
+        // The bottom-right corner of this 900x1000 display.
+        with_window(cx, w, |window, cx| {
+            window.drag(from, gpui_kit::point(px(885.), px(985.)), cx)
+        });
+        assert!(exists(cx, w, "recording-widget-leaf"));
+        assert!(!exists(cx, w, "recording-widget-blob"));
+        assert!(
+            !widget.read_with(cx, |s, _| s.docked),
+            "a corner isn't the notch setting"
+        );
+
+        // A click on its waveform pauses; its stop button stops.
+        with_window(cx, w, |window, cx| window.click("leaf-wave", cx));
+        assert!(meetings.called("set_recording_paused true"));
+        assert!(!widget.read_with(cx, |s, _| s.model.expanded));
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-stop-leaf", cx)
+        });
+        assert!(meetings.called("stop_recording"));
+
+        // A click on the leaf opens the panel beside it.
+        let leaf = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("recording-widget-leaf").bounds()
+            })
+            .unwrap();
+        with_window(cx, w, |window, cx| {
+            window.click_at("recording-widget-leaf", gpui_kit::point(px(3.), px(3.)), cx)
+        });
+        assert!(widget.read_with(cx, |s, _| s.model.expanded));
+        assert!(exists(cx, w, "recording-widget-panel"));
+        assert!(exists(cx, w, "recording-widget-leaf"));
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-collapse", cx)
+        });
+
+        // Pulled out toward the middle: free again.
+        let grab = leaf.origin + gpui_kit::point(px(3.), px(3.));
+        with_window(cx, w, |window, cx| {
+            window.drag(grab, gpui_kit::point(px(400.), px(500.)), cx)
+        });
+        assert!(exists(cx, w, "recording-widget-blob"));
+        assert!(!exists(cx, w, "recording-widget-leaf"));
     }
 }
 

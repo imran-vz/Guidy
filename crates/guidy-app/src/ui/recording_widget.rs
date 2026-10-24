@@ -1,24 +1,31 @@
 //! The recording floater (see [`crate::logic::recording_widget`] for what it
 //! shows and [`crate::logic::floater`] for how it moves) while a meeting
 //! records:
-//! - free, a black rounded rectangle with a small waveform and a stop button that
-//!   the user drags anywhere; a click opens the panel with the meeting, its
-//!   sources, the live transcript and the controls;
-//! - docked, wings around the notch (waveform left, stop right); a click
-//!   grows the notch down into the same panel.
+//! - free, a black rounded rectangle with a small waveform and a stop
+//!   button that the user drags anywhere, to any display; a click opens the
+//!   panel with the meeting, its sources, the live transcript and the
+//!   controls;
+//! - docked at a notch, wings around it (waveform left, stop right); a
+//!   click grows the notch down into the same panel;
+//! - tucked into a corner, a leaf with the waveform and stop; a click opens
+//!   the panel beside it.
 //!
-//! Dragged near the notch it is drawn in and snaps on; pulled away from it,
-//! it stretches like jelly and breaks free. Docking is the "Recording
-//! controls" setting, so the next recording starts where this one was left.
+//! Dragged near a notch or a corner it is drawn in and snaps on; pulled
+//! away, it stretches like jelly and breaks free. A click on any waveform
+//! pauses (the pause button shows over it on hover). Docking at the notch
+//! is the "Recording controls" setting, so the next recording starts where
+//! this one was left.
 //!
-//! The view covers the whole display in a transparent window (one canvas
-//! for the blob, the wings and the neck between them), which lets the
-//! pointer through everywhere but the floater itself
-//! ([`crate::windows::set_ignores_mouse`], polled).
+//! Every display has a transparent window over it ([`RecordingWidgetView`]
+//! for display `n`), each drawing what of the floater is on it, so it can
+//! stretch across displays. A window lets the pointer through everywhere
+//! but the floater itself ([`crate::windows::set_ignores_mouse`], polled).
 
-use crate::logic::floater::{Floater, Mode, Neck, Release, Stage, P, R};
-use crate::logic::notch::{bar_height, ScreenInfo};
-use crate::logic::recording_widget::{rows, Row, WidgetModel, BARS};
+use crate::logic::floater::{
+    Corner, Desk, DockChange, Floater, Neck, Release, Stage, Target, P, R,
+};
+use crate::logic::notch::bar_height;
+use crate::logic::recording_widget::{rows, Row, WidgetModel};
 use crate::state::AppState;
 use crate::ui::design::{self, dp, Tone};
 use crate::ui::kit::{icon, t, t_args};
@@ -37,17 +44,29 @@ const TICK: Duration = Duration::from_millis(90);
 const POINTER_POLL: Duration = Duration::from_millis(16);
 const WAVE_MAX: f32 = 16.;
 const RED: u32 = 0xff453a;
-/// Bars in the floater's waveform (the newest).
+/// Bars in the floater's and the leaf's waveform (the newest).
 const BLOB_BARS: usize = 5;
+/// Bars in the wings' waveform: it is a pause button, so the rest of the
+/// wing is left to grab.
+const WING_BARS: usize = 7;
 
 pub struct RecordingWidgetState {
     pub model: WidgetModel,
     /// Docked at the notch (the "Recording controls" setting).
     pub docked: bool,
-    /// The display the floater's window covers.
-    pub screen: Option<ScreenInfo>,
+    /// The displays the floater can be on.
+    pub desk: Desk,
     /// Animate (off in tests; reduced motion turns it off too).
     pub animate: bool,
+    /// How the floater moves; made when a recording shows. Shared by the
+    /// windows of every display.
+    floater: Option<Floater>,
+    /// The recording the floater is for.
+    meeting: Option<i64>,
+    /// The docking the floater was last told (the setting).
+    docked_applied: bool,
+    /// When the floater was last stepped, while it moves.
+    last_step: Option<Instant>,
     ticking: bool,
 }
 
@@ -59,8 +78,12 @@ impl RecordingWidgetState {
         let e = cx.new(|_| RecordingWidgetState {
             model: WidgetModel::default(),
             docked: false,
-            screen: None,
+            desk: Desk::single(Stage::fallback(design::SCALE)),
             animate: true,
+            floater: None,
+            meeting: None,
+            docked_applied: false,
+            last_step: None,
             ticking: false,
         });
         cx.set_global(GlobalRecordingWidget(e.clone()));
@@ -85,10 +108,52 @@ impl RecordingWidgetState {
         cx.notify();
     }
 
-    fn stage(&self) -> Stage {
-        self.screen
-            .map(|s| Stage::from_screen(&s, design::SCALE))
-            .unwrap_or_else(|| Stage::fallback(design::SCALE))
+    /// The displays changed (the windows were reopened over them).
+    pub fn set_desk(&mut self, desk: Desk) {
+        if let Some(f) = &mut self.floater {
+            f.restage(&desk);
+        }
+        self.desk = desk;
+    }
+
+    /// Bring the floater up to `now`: made for a new recording where the
+    /// setting says, told the setting and whether the panel is open, then
+    /// stepped. Each display's window calls this as it draws; the first
+    /// call of a frame does the stepping. Returns whether it still moves.
+    fn frame(&mut self, now: Instant, reduce_motion: bool) -> bool {
+        if !self.model.visible() {
+            self.floater = None;
+            self.meeting = None;
+            self.last_step = None;
+            return false;
+        }
+        if self.floater.is_none() || self.meeting != self.model.meeting_id() {
+            self.floater = Some(Floater::new(&self.desk, self.docked));
+            self.meeting = self.model.meeting_id();
+            self.docked_applied = self.docked;
+            self.last_step = None;
+        }
+        let Some(f) = self.floater.as_mut() else {
+            return false;
+        };
+        f.animate = self.animate && !reduce_motion;
+        if self.docked != self.docked_applied {
+            f.set_docked(&self.desk, self.docked);
+            self.docked_applied = self.docked;
+        }
+        f.set_expanded(self.model.expanded);
+        let dt = self
+            .last_step
+            .map(|t| (now - t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0);
+        f.step(dt);
+        let animating = f.animating();
+        self.last_step = animating.then_some(now);
+        animating
+    }
+
+    pub fn floater(&self) -> Option<&Floater> {
+        self.floater.as_ref()
     }
 
     /// Poll the input levels (and redraw the timer) while visible.
@@ -160,7 +225,8 @@ fn open_notes(meeting_id: i64, cx: &mut App) {
     }
 }
 
-/// Docked or not, from now on (and for the next recording).
+/// Docked at the notch or not, from now on (and for the next recording).
+/// A corner counts as not: the next recording starts free.
 fn remember_docked(docked: bool, cx: &mut App) {
     if let Some(state) = RecordingWidgetState::global(cx) {
         state.update(cx, |s, _| s.docked = docked);
@@ -173,26 +239,23 @@ fn remember_docked(docked: bool, cx: &mut App) {
     crate::ui::pages::meetings::settings::update_meetings(cx, |m| m.recording_controls = controls);
 }
 
+/// A mouse-down listener on the floater.
+type PressHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
+
 pub struct RecordingWidgetView {
+    /// The display this window covers (an index into the desk).
+    screen: usize,
     state: Option<Entity<RecordingWidgetState>>,
     scroll: ScrollHandle,
     /// Follow new lines (the user hasn't scrolled up).
     pinned: bool,
-    /// How the floater moves; made when a recording shows.
-    floater: Option<Floater>,
-    /// The recording the floater is for.
-    meeting: Option<i64>,
-    /// The docking the floater was last told (the setting).
-    docked_applied: bool,
-    /// When the last animation frame was drawn.
-    last_frame: Option<Instant>,
     /// The window takes the pointer now.
     accepting: bool,
     _sub: Option<Subscription>,
 }
 
 impl RecordingWidgetView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(screen: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = RecordingWidgetState::global(cx);
         let sub = state
             .as_ref()
@@ -202,13 +265,10 @@ impl RecordingWidgetView {
             Self::poll_pointer(window, cx);
         }
         Self {
+            screen,
             state,
             scroll: ScrollHandle::new(),
             pinned: true,
-            floater: None,
-            meeting: None,
-            docked_applied: false,
-            last_frame: None,
             // The window opens taking the pointer; the first poll fixes it.
             accepting: true,
             _sub: sub,
@@ -216,7 +276,7 @@ impl RecordingWidgetView {
     }
 
     /// Let the pointer through the window except over the floater: the
-    /// window covers the display, the floater a few small shapes.
+    /// window covers its display, the floater a few small shapes.
     fn poll_pointer(window: &mut Window, cx: &mut Context<Self>) {
         let Some(ns_window) = crate::windows::native_window(window) else {
             return;
@@ -226,14 +286,10 @@ impl RecordingWidgetView {
             let change = this.update(cx, |this, cx| {
                 let state = this.state.clone()?;
                 let s = state.read(cx);
-                let (screen, floater) = (s.screen?, this.floater.as_ref()?);
+                let floater = s.floater.as_ref()?;
                 let (gx, gy) = crate::windows::pointer_location()?;
-                // Cocoa (bottom-left origin) to the stage (top-left).
-                let p = P::new(
-                    (gx - screen.x) as f32,
-                    (screen.y + screen.height - gy) as f32,
-                );
-                let hit = floater.hit(&s.stage(), p);
+                let p = s.desk.from_cocoa(gx, gy);
+                let hit = s.desk.screen_rect(this.screen).contains(p) && floater.hit(&s.desk, p);
                 (hit != this.accepting).then(|| {
                     this.accepting = hit;
                     !hit
@@ -259,41 +315,76 @@ impl RecordingWidgetView {
         }
     }
 
-    fn stage(&self, cx: &App) -> Stage {
-        self.state
+    /// A point in this window to the desktop.
+    fn global(&self, p: Point<Pixels>, cx: &App) -> P {
+        let o = self
+            .state
             .as_ref()
-            .map(|s| s.read(cx).stage())
-            .unwrap_or_else(|| Stage::fallback(design::SCALE))
+            .map(|s| s.read(cx).desk.origin(self.screen))
+            .unwrap_or_default();
+        P::new(f32::from(p.x) + o.x, f32::from(p.y) + o.y)
     }
 
     fn on_press(&mut self, p: P, cx: &mut Context<Self>) {
-        if let Some(f) = &mut self.floater {
-            f.press(p);
-            cx.notify();
-        }
+        let Some(state) = self.state.clone() else {
+            return;
+        };
+        state.update(cx, |s, _| {
+            if let Some(f) = &mut s.floater {
+                f.press(p);
+            }
+        });
+        cx.notify();
     }
 
     fn on_move(&mut self, p: P, cx: &mut Context<Self>) {
-        let stage = self.stage(cx);
-        let Some(f) = &mut self.floater else { return };
-        if !f.pressed() {
+        let Some(state) = self.state.clone() else {
             return;
-        }
-        if let Some(mode) = f.drag_to(&stage, p) {
-            let docked = mode == Mode::Docked;
-            self.docked_applied = docked;
+        };
+        let change = state.update(cx, |s, _| {
+            let desk = s.desk.clone();
+            let f = s.floater.as_mut()?;
+            if !f.pressed() {
+                return None;
+            }
+            let change = f.drag_to(&desk, p);
+            if let Some(change) = change {
+                // Only the notch is the setting.
+                let docked = matches!(change, DockChange::Docked(Target::Notch(_)));
+                s.docked = docked;
+                s.docked_applied = docked;
+            }
+            Some(change)
+        });
+        if let Some(Some(change)) = change {
+            let docked = matches!(change, DockChange::Docked(Target::Notch(_)));
             cx.defer(move |cx| remember_docked(docked, cx));
         }
         cx.notify();
     }
 
     fn on_release(&mut self, cx: &mut Context<Self>) {
-        let stage = self.stage(cx);
-        let Some(f) = &mut self.floater else { return };
-        if f.release(&stage) == Release::Click && !f.expanded() {
+        let Some(state) = self.state.clone() else {
+            return;
+        };
+        let click = state.update(cx, |s, _| {
+            let desk = s.desk.clone();
+            let f = s.floater.as_mut()?;
+            Some(f.release(&desk) == Release::Click && !f.expanded())
+        });
+        if click == Some(true) {
             cx.defer(|cx| set_expanded(true, cx));
         }
         cx.notify();
+    }
+}
+
+/// `r` (desktop) in the window of the display at `o`.
+fn local(r: R, o: P) -> R {
+    R {
+        x: r.x - o.x,
+        y: r.y - o.y,
+        ..r
     }
 }
 
@@ -368,7 +459,7 @@ fn stop_button(id: &'static str, r: R) -> Stateful<Div> {
         .on_click(|_, _, cx| stop(cx))
 }
 
-/// The floater's stop button inside its rectangle `b`.
+/// The stop button inside the floater (or the leaf) `b`.
 fn blob_stop_rect(b: R, stage: &Stage) -> R {
     let (_, stop_x) = blob_columns(b, stage);
     let s = blob_stop_size(b, stage);
@@ -379,30 +470,39 @@ fn blob_stop_size(b: R, stage: &Stage) -> f32 {
     stage.d(26.).min(b.h * 0.64)
 }
 
-/// Width of the floater's waveform: its bars and the gaps between them.
-fn blob_wave_width(stage: &Stage) -> f32 {
-    stage.d(3. * BLOB_BARS as f32 + 2.5 * (BLOB_BARS - 1) as f32)
-}
-
-/// The centers (x) of the waveform and of the stop button in the
-/// floater `b`: the same gap before, between and after them.
+/// The centers (x) of the waveform and of the stop button in the floater
+/// (or the leaf) `b`: the same gap before, between and after them.
 fn blob_columns(b: R, stage: &Stage) -> (f32, f32) {
-    let wave = blob_wave_width(stage);
+    let wave = wave_width(BLOB_BARS, stage);
     let stop = blob_stop_size(b, stage);
     let gap = ((b.w - wave - stop) / 3.).max(0.);
     (b.x + gap + wave / 2., b.x + 2. * gap + wave + stop / 2.)
 }
 
-/// The wings' stop button: in the middle of the right wing.
-fn wings_stop_rect(w: R, stage: &Stage) -> R {
-    let housing = stage.housing();
+/// The wings' stop button: in the middle of the right wing (`housing`:
+/// the camera's part of the wings `w`).
+fn wings_stop_rect(w: R, housing: R, stage: &Stage) -> R {
     let s = stage.d(20.).min(w.h - 6.);
-    R::centered(P::new((housing.right() + w.right()) / 2.0, w.h / 2.0), s, s)
+    R::centered(
+        P::new((housing.right() + w.right()) / 2.0, w.y + w.h / 2.0),
+        s,
+        s,
+    )
 }
 
-/// The liquid bridge from the wings to the blob as a filled path: flared
-/// where it leaves the wings, thinning toward the middle, swelling into
-/// the blob.
+/// Width of a waveform of `bars` bars.
+fn wave_width(bars: usize, stage: &Stage) -> f32 {
+    stage.d(3. * bars as f32 + 2.5 * bars.saturating_sub(1) as f32)
+}
+
+/// The waveform's clickable area (it pauses), centered at `c`.
+fn wave_area(c: P, bars: usize, h: f32, stage: &Stage) -> R {
+    R::centered(c, wave_width(bars, stage) + stage.d(10.), h)
+}
+
+/// The liquid bridge from a docked shape to the blob as a filled path:
+/// flared where it leaves the shape's edge, thinning toward the middle,
+/// swelling into the blob. In window coordinates.
 fn neck_path(n: Neck) -> Option<Path<Pixels>> {
     let d = n.b - n.a;
     let len = d.len();
@@ -412,21 +512,26 @@ fn neck_path(n: Neck) -> Option<Path<Pixels>> {
     let u = d.unit();
     // Left of the direction of the pull, as seen on screen.
     let mut side = u.perp();
-    if side.x > 0.0 {
+    if side.x > 0.0 || (side.x == 0.0 && side.y > 0.0) {
         side = side * -1.0;
+    }
+    // Along the shape's edge where the neck leaves it, on the same side.
+    let mut edge = n.normal.perp();
+    if edge.x * side.x + edge.y * side.y < 0.0 {
+        edge = edge * -1.0;
     }
     let pt = |p: P| point(px(p.x), px(p.y));
     let m = n.a + d * 0.5;
-    // Where it leaves the wings: along their bottom edge, a little inside.
-    let a_l = P::new(n.a.x - n.half_a, n.a.y);
-    let a_r = P::new(n.a.x + n.half_a, n.a.y);
+    let (a_l, a_r) = (n.a + edge * n.half_a, n.a - edge * n.half_a);
     let (m_l, m_r) = (m + side * n.waist, m - side * n.waist);
     let (b_l, b_r) = (n.b + side * n.half_b, n.b - side * n.half_b);
-    let down = P::new(0.0, len * 0.3);
+    // The flare leaves along the edge's normal; it starts a little inside.
+    let out = n.normal * (len * 0.3);
+    let inside = n.normal * -3.0;
     let mut path = PathBuilder::fill();
-    path.move_to(pt(a_l - P::new(0.0, 3.0)));
+    path.move_to(pt(a_l + inside));
     path.line_to(pt(a_l));
-    path.cubic_bezier_to(pt(m_l), pt(a_l + down), pt(m_l - u * (len * 0.22)));
+    path.cubic_bezier_to(pt(m_l), pt(a_l + out), pt(m_l - u * (len * 0.22)));
     path.cubic_bezier_to(
         pt(b_l),
         pt(m_l + u * (len * 0.22)),
@@ -438,8 +543,8 @@ fn neck_path(n: Neck) -> Option<Path<Pixels>> {
         pt(b_r - u * (len * 0.12)),
         pt(m_r + u * (len * 0.22)),
     );
-    path.cubic_bezier_to(pt(a_r), pt(m_r - u * (len * 0.22)), pt(a_r + down));
-    path.line_to(pt(a_r - P::new(0.0, 3.0)));
+    path.cubic_bezier_to(pt(a_r), pt(m_r - u * (len * 0.22)), pt(a_r + out));
+    path.line_to(pt(a_r + inside));
     path.close();
     path.build().ok()
 }
@@ -481,9 +586,9 @@ fn collapse_button(tone: Tone) -> impl IntoElement {
     .test_support()
 }
 
-/// Pause (or resume) over a waveform at `r`: shown while the pointer is
+/// The pause (or resume) sign shown over a waveform: while the pointer is
 /// over `group` (the waveform's area), always while paused.
-fn pause_button(id: &'static str, size: f32, paused: bool, group: &'static str) -> Stateful<Div> {
+fn pause_sign(id: &'static str, size: f32, paused: bool, group: &'static str) -> Stateful<Div> {
     let (name, label) = if paused {
         ("play", t("notch.resume"))
     } else {
@@ -498,38 +603,42 @@ fn pause_button(id: &'static str, size: f32, paused: bool, group: &'static str) 
         .flex()
         .items_center()
         .justify_center()
-        .cursor_pointer()
         .bg(hsla(0., 0., 1., 0.18))
-        .hover(|s| s.bg(hsla(0., 0., 1., 0.3)))
+        .group_hover(group, |s| s.bg(hsla(0., 0., 1., 0.3)))
         .text_color(hsla(0., 0., 1., 0.95))
         .child(icon(name).xsmall())
         .when(!paused, |d| {
             d.opacity(0.).group_hover(group, |s| s.opacity(1.))
         })
-        .on_click(move |_, _, cx| set_paused(!paused, cx))
 }
 
-/// A waveform at `r` that gives way to a centered [`pause_button`]
-/// (`pause`: its id and size) while hovered. The button is inside the
-/// waveform's area: GPUI applies group hover to descendants only.
-fn hover_wave(
+/// A waveform at `r` that is also the pause button: hovered, it gives way
+/// to a centered [`pause_sign`] (`sign`: its id and size); clicked, it
+/// pauses (or resumes). The sign is inside the area: GPUI applies group
+/// hover to descendants only.
+fn wave_button(
     group: &'static str,
     r: R,
     m: &WidgetModel,
     bars: usize,
     max: f32,
-    fg: Hsla,
-    pause: Option<(&'static str, f32)>,
+    sign: Option<(&'static str, f32)>,
 ) -> Stateful<Div> {
     let paused = m.paused();
+    let fg = hsla(0., 0., 1., 0.92);
     place(r)
         .id(group)
         .group(group)
         .flex()
         .items_center()
         .justify_center()
+        .rounded(px(r.h / 2.))
+        .when(sign.is_some(), |d| {
+            d.cursor_pointer()
+                .on_click(move |_, _, cx| set_paused(!paused, cx))
+        })
         .child(wave(m, bars, max, fg).when(!paused, |d| d.group_hover(group, |s| s.opacity(0.15))))
-        .when_some(pause, |d, (id, size)| {
+        .when_some(sign, |d, (id, size)| {
             d.child(
                 div()
                     .absolute()
@@ -537,7 +646,7 @@ fn hover_wave(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(pause_button(id, size, paused, group).test_support()),
+                    .child(pause_sign(id, size, paused, group).test_support()),
             )
         })
 }
@@ -695,77 +804,77 @@ fn transcript_notice(status: &LiveStatus, tone: Tone, cx: &App) -> AnyElement {
 }
 
 impl RecordingWidgetView {
-    /// The free floater: a black rounded rectangle, the waveform and the stop
-    /// button evenly spaced in it.
+    /// Presses on the floater (outside its buttons) start a drag or a click.
+    fn press_handler(
+        &self,
+        avoid: Vec<R>,
+        cx: &mut Context<Self>,
+    ) -> PressHandler {
+        Box::new(cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+            let at = P::new(ev.position.x.into(), ev.position.y.into());
+            if avoid.iter().any(|r| r.inflate(2.).contains(at)) {
+                return;
+            }
+            let p = this.global(ev.position, cx);
+            this.on_press(p, cx);
+        }))
+    }
+
+    /// The free floater: a black rounded rectangle, the waveform and the
+    /// stop button evenly spaced in it.
     fn render_blob(
         &self,
         m: &WidgetModel,
         f: &Floater,
-        stage: &Stage,
+        desk: &Desk,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let b = f.blob(stage)?;
+        let stage = desk.stage(self.screen);
+        let b = local(f.blob(desk)?, desk.origin(self.screen));
         let content = f.blob_content();
-        let fg = hsla(0., 0., 1., 0.92);
         let wave_c = P::new(blob_columns(b, stage).0, b.center().y);
         let stop_rect = blob_stop_rect(b, stage);
-        let wave_rect = R::centered(
-            wave_c,
-            blob_wave_width(stage) + stage.d(8.),
-            b.h - stage.d(8.),
-        );
-        let pause_rect = R::centered(wave_c, stage.d(24.), stage.d(24.));
-        let press_ok =
-            move |p: P| !stop_rect.inflate(2.).contains(p) && !pause_rect.inflate(2.).contains(p);
+        let wave_rect = wave_area(wave_c, BLOB_BARS, b.h - stage.d(8.), stage);
+        let blob = place(b)
+            .id("recording-widget-blob")
+            .aria_label(t("meetings.widget.expand"))
+            .rounded(px(stage.d(12.).min(b.h * 0.3)))
+            .bg(black())
+            .when(content > 0.0, |d| {
+                d.shadow(vec![BoxShadow {
+                    color: hsla(0., 0., 0., 0.35 * content),
+                    offset: point(px(0.), dp(6.)),
+                    blur_radius: dp(18.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+            })
+            .cursor(if f.dragging() {
+                CursorStyle::ClosedHand
+            } else {
+                CursorStyle::OpenHand
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                self.press_handler(vec![stop_rect, wave_rect], cx),
+            )
+            .test_support();
+        if content <= 0.0 {
+            return Some(blob.into_any_element());
+        }
         Some(
-            place(b)
-                .id("recording-widget-blob")
-                .aria_label(t("meetings.widget.expand"))
-                .rounded(px(stage.d(12.).min(b.h * 0.3)))
-                .bg(black())
-                .when(content > 0.0, |d| {
-                    d.shadow(vec![BoxShadow {
-                        color: hsla(0., 0., 0., 0.35 * content),
-                        offset: point(px(0.), dp(6.)),
-                        blur_radius: dp(18.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }])
-                })
-                .cursor(if f.dragging() {
-                    CursorStyle::ClosedHand
-                } else {
-                    CursorStyle::OpenHand
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        let p = P::new(ev.position.x.into(), ev.position.y.into());
-                        if press_ok(p) {
-                            this.on_press(p, cx);
-                        }
-                    }),
-                )
-                .test_support()
-                .into_any_element(),
-        )
-        .map(|blob| {
-            if content <= 0.0 {
-                return blob;
-            }
             div()
                 .absolute()
                 .inset_0()
                 .child(blob)
                 .child(
-                    hover_wave(
+                    wave_button(
                         "blob-wave",
                         wave_rect,
                         m,
                         BLOB_BARS,
                         12.,
-                        fg,
-                        (content >= 1.0).then_some(("recording-widget-pause-blob", pause_rect.w)),
+                        (content >= 1.0).then_some(("recording-widget-pause-blob", stage.d(24.))),
                     )
                     .opacity(content)
                     .test_support(),
@@ -775,39 +884,59 @@ impl RecordingWidgetView {
                         .opacity(content)
                         .test_support(),
                 )
-                .into_any_element()
-        })
+                .into_any_element(),
+        )
     }
 
-    /// The wings around the notch (or the panel growing out of them).
+    /// The docked shape: wings around a notch (or the panel growing out of
+    /// them), or a leaf in a corner.
+    fn render_shape(
+        &mut self,
+        m: &WidgetModel,
+        f: &Floater,
+        desk: &Desk,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let o = desk.origin(self.screen);
+        let w = local(f.shape(desk)?, o);
+        match f.target {
+            Target::Notch(_) => Some(self.render_wings(m, f, desk, w, window, cx)),
+            Target::Corner(_, corner) => Some(self.render_leaf(m, f, desk, w, corner, cx)),
+        }
+    }
+
     fn render_wings(
         &mut self,
         m: &WidgetModel,
         f: &Floater,
-        stage: &Stage,
+        desk: &Desk,
+        w: R,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let w = f.wings(stage)?;
-        let content = f.wings_content();
-        let panel = f.docked_panel_content();
+    ) -> AnyElement {
+        let stage = desk.stage(self.screen);
+        let content = f.shape_content();
+        // The panel shows on the notch's own display.
+        let panel = if f.target.screen() == self.screen {
+            f.docked_panel_content()
+        } else {
+            0.0
+        };
         let expand = f.expand.value.clamp(0.0, 1.0);
         let radius = stage.d(12.) + (stage.d(22.) - stage.d(12.)) * expand;
-        let housing = stage.housing();
-        let stop_rect = wings_stop_rect(w, stage);
-        // The left wing (the waveform), and pause in its middle.
+        let housing = local(desk.housing(f.target), desk.origin(self.screen));
+        let stop_rect = wings_stop_rect(w, housing, stage);
+        // The waveform in the middle of the left wing.
         let left = R {
             x: w.x,
-            y: 0.,
+            y: w.y,
             w: (housing.x - w.x).max(0.),
             h: w.h,
         };
-        let pause_size = stage.d(20.).min(w.h - 6.);
-        let pause_rect = R::centered(left.center(), pause_size, pause_size);
-        let pressable = f.mode == Mode::Docked && !f.expanded();
-        let press_ok =
-            move |p: P| !stop_rect.inflate(2.).contains(p) && !pause_rect.inflate(2.).contains(p);
-        let fg = hsla(0., 0., 1., 0.92);
+        let wave_rect = wave_area(left.center(), WING_BARS, w.h - 6., stage);
+        let pressable = f.is_docked() && !f.expanded();
+        let top_inset = stage.top_inset;
         let shape = place(w)
             .id("recording-widget-wings")
             .aria_label(t("meetings.widget.expand"))
@@ -818,12 +947,7 @@ impl RecordingWidgetView {
             .when(pressable, |d| {
                 d.cursor(CursorStyle::OpenHand).on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        let p = P::new(ev.position.x.into(), ev.position.y.into());
-                        if press_ok(p) {
-                            this.on_press(p, cx);
-                        }
-                    }),
+                    self.press_handler(vec![stop_rect, wave_rect], cx),
                 )
             })
             .when(panel > 0.0, |d| {
@@ -832,7 +956,7 @@ impl RecordingWidgetView {
                 // camera, collapse on the right.
                 let band = h_flex()
                     .w_full()
-                    .h(px(stage.top_inset))
+                    .h(px(top_inset))
                     .flex_none()
                     .items_center()
                     .child(
@@ -862,18 +986,15 @@ impl RecordingWidgetView {
             .test_support();
         let mut layer = div().absolute().inset_0().child(shape);
         if content > 0.0 {
-            // Waveform in the middle of the left wing (pause over it on
-            // hover), stop on the right.
             layer = layer
                 .child(
-                    hover_wave(
+                    wave_button(
                         "wings-wave",
-                        left,
+                        wave_rect,
                         m,
-                        BARS,
+                        WING_BARS,
                         WAVE_MAX,
-                        fg,
-                        (content >= 1.0).then_some(("recording-widget-pause-wings", pause_rect.w)),
+                        (content >= 1.0).then_some(("recording-widget-pause-wings", stop_rect.w)),
                     )
                     .opacity(content)
                     .test_support(),
@@ -884,11 +1005,79 @@ impl RecordingWidgetView {
                         .test_support(),
                 );
         }
-        Some(layer.into_any_element())
+        layer.into_any_element()
     }
 
-    fn render_neck(&self, f: &Floater, stage: &Stage) -> Option<AnyElement> {
-        let n = f.neck(stage)?;
+    /// The leaf in a corner: flush with the display's edges there, its
+    /// opposite corner rounded like a leaf; the waveform and stop inside.
+    fn render_leaf(
+        &self,
+        m: &WidgetModel,
+        f: &Floater,
+        desk: &Desk,
+        r: R,
+        corner: Corner,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let stage = desk.stage(self.screen);
+        let content = f.shape_content();
+        let big = px((r.h * 0.5).min(stage.d(20.)));
+        let small = px(stage.d(8.).min(r.h * 0.3));
+        let (tl, tr, bl, br) = match corner {
+            Corner::TopLeft => (px(0.), small, small, big),
+            Corner::TopRight => (small, px(0.), big, small),
+            Corner::BottomLeft => (small, big, px(0.), small),
+            Corner::BottomRight => (big, small, small, px(0.)),
+        };
+        let wave_c = P::new(blob_columns(r, stage).0, r.center().y);
+        let stop_rect = blob_stop_rect(r, stage);
+        let wave_rect = wave_area(wave_c, BLOB_BARS, r.h - stage.d(8.), stage);
+        let shape = place(r)
+            .id("recording-widget-leaf")
+            .aria_label(t("meetings.widget.expand"))
+            .bg(black())
+            .rounded_tl(tl)
+            .rounded_tr(tr)
+            .rounded_bl(bl)
+            .rounded_br(br)
+            .cursor(CursorStyle::OpenHand)
+            .on_mouse_down(
+                MouseButton::Left,
+                self.press_handler(vec![stop_rect, wave_rect], cx),
+            )
+            .test_support();
+        let mut layer = div().absolute().inset_0().child(shape);
+        if content > 0.0 {
+            layer = layer
+                .child(
+                    wave_button(
+                        "leaf-wave",
+                        wave_rect,
+                        m,
+                        BLOB_BARS,
+                        12.,
+                        (content >= 1.0).then_some(("recording-widget-pause-leaf", stage.d(22.))),
+                    )
+                    .opacity(content)
+                    .test_support(),
+                )
+                .child(
+                    stop_button("recording-widget-stop-leaf", stop_rect)
+                        .opacity(content)
+                        .test_support(),
+                );
+        }
+        layer.into_any_element()
+    }
+
+    fn render_neck(&self, f: &Floater, desk: &Desk) -> Option<AnyElement> {
+        let n = f.neck(desk)?;
+        let o = desk.origin(self.screen);
+        let n = Neck {
+            a: n.a - o,
+            b: n.b - o,
+            ..n
+        };
         Some(
             canvas(
                 |_, _, _| {},
@@ -904,16 +1093,20 @@ impl RecordingWidgetView {
         )
     }
 
-    /// The panel opened from the free floater.
+    /// The panel opened from the free floater or from a leaf, on the
+    /// display the floater is on.
     fn render_free_panel(
         &mut self,
         m: &WidgetModel,
         f: &Floater,
-        stage: &Stage,
+        desk: &Desk,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let r = f.free_panel(stage)?;
+        if f.screen(desk) != self.screen {
+            return None;
+        }
+        let r = local(f.free_panel(desk)?, desk.origin(self.screen));
         let tone = design::tone(cx);
         Some(
             place(r)
@@ -1085,46 +1278,55 @@ impl Render for RecordingWidgetView {
         let Some(state) = self.state.clone() else {
             return div().into_any_element();
         };
-        let (m, docked, stage, animate) = {
+        let reduce_motion = cx.reduce_motion();
+        let animating = state.update(cx, |s, _| s.frame(Instant::now(), reduce_motion));
+        let (m, desk, f) = {
             let s = state.read(cx);
-            (s.model.clone(), s.docked, s.stage(), s.animate)
+            (s.model.clone(), s.desk.clone(), s.floater.clone())
         };
-        if !m.visible() {
-            self.floater = None;
-            self.meeting = None;
+        let Some(f) = f.filter(|_| m.visible()) else {
             return div().size_full().into_any_element();
-        }
-        // A new recording starts where the setting says.
-        if self.floater.is_none() || self.meeting != m.meeting_id() {
-            self.floater = Some(Floater::new(&stage, docked));
-            self.meeting = m.meeting_id();
-            self.docked_applied = docked;
-            self.last_frame = None;
-        }
-        let mut f = self.floater.take().expect("made above");
-        f.animate = animate && !cx.reduce_motion();
-        if docked != self.docked_applied {
-            f.set_docked(&stage, docked);
-            self.docked_applied = docked;
-        }
-        f.set_expanded(m.expanded);
-        let now = Instant::now();
-        let dt = self
-            .last_frame
-            .map(|t| (now - t).as_secs_f32())
-            .unwrap_or(1.0 / 60.0);
-        f.step(dt);
-        let animating = f.animating();
-        self.last_frame = animating.then_some(now);
+        };
         if animating {
             window.request_animation_frame();
         }
 
-        let neck = self.render_neck(&f, &stage);
-        let wings = self.render_wings(&m, &f, &stage, window, cx);
-        let blob = self.render_blob(&m, &f, &stage, cx);
-        let panel = self.render_free_panel(&m, &f, &stage, window, cx);
-        self.floater = Some(f);
+        let neck = self.render_neck(&f, &desk);
+        let shape = self.render_shape(&m, &f, &desk, window, cx);
+        let blob = self.render_blob(&m, &f, &desk, cx);
+        let panel = self.render_free_panel(&m, &f, &desk, window, cx);
+
+        // A drag goes on outside this window (onto another display): the
+        // window that took the press keeps getting the pointer, so these
+        // listen to the window, not to an element under the pointer.
+        let view = cx.entity().downgrade();
+        let pointer = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let moves = view.clone();
+                window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Bubble
+                        || ev.pressed_button != Some(MouseButton::Left)
+                    {
+                        return;
+                    }
+                    moves
+                        .update(cx, |this, cx| {
+                            let p = this.global(ev.position, cx);
+                            this.on_move(p, cx);
+                        })
+                        .ok();
+                });
+                let ups = view.clone();
+                window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                        ups.update(cx, |this, cx| this.on_release(cx)).ok();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full();
 
         div()
             .id("recording-widget")
@@ -1132,21 +1334,9 @@ impl Render for RecordingWidgetView {
             .size_full()
             .font_family(crate::theme::UI_FONT)
             .text_color(design::tone(cx).text)
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    this.on_move(P::new(ev.position.x.into(), ev.position.y.into()), cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.on_release(cx)),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.on_release(cx)),
-            )
+            .child(pointer)
             .children(neck)
-            .children(wings)
+            .children(shape)
             .children(blob)
             .children(panel)
             .test_support()

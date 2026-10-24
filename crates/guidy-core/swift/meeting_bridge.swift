@@ -289,6 +289,121 @@ private final class MonoResampler {
 
 // MARK: - Capture: microphone (AVAudioEngine + Voice Processing I/O)
 
+// Which microphone, and whether echo cancellation is worth it.
+//
+// Opening a Bluetooth headset's microphone switches it from its music
+// profile (A2DP) to the hands-free one: about a second of silence for
+// everything playing, narrowband mono audio until the mic is released (and
+// a second gap then), and extra latency that puts video out of sync.
+// Voice Processing I/O also takes over the output device, which interrupts
+// what plays as it starts and stops. Echo cancellation is only needed when
+// the meeting plays through speakers, so with headphones the plain built-in
+// microphone is recorded and the output is left alone.
+
+private func audioProperty<T>(
+    _ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+    _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, _ initial: T
+) -> T? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    var value = initial
+    var size = UInt32(MemoryLayout<T>.size)
+    let status = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value)
+    return status == noErr ? value : nil
+}
+
+private func defaultDevice(input: Bool) -> AudioObjectID? {
+    let selector = input
+        ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice
+    let id: AudioObjectID? = audioProperty(
+        AudioObjectID(kAudioObjectSystemObject), selector, kAudioObjectPropertyScopeGlobal,
+        AudioObjectID(kAudioObjectUnknown))
+    return id.flatMap { $0 == kAudioObjectUnknown ? nil : $0 }
+}
+
+private func transportType(_ id: AudioObjectID) -> UInt32 {
+    audioProperty(id, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal, UInt32(0))
+        ?? 0
+}
+
+private func isBluetooth(_ id: AudioObjectID) -> Bool {
+    let t = transportType(id)
+    return t == kAudioDeviceTransportTypeBluetooth || t == kAudioDeviceTransportTypeBluetoothLE
+}
+
+private func inputChannelCount(_ id: AudioObjectID) -> Int {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamConfiguration, mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else {
+        return 0
+    }
+    let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
+    defer { raw.deallocate() }
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, raw) == noErr else { return 0 }
+    let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+    return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+}
+
+/// The Mac's own microphone, if it has one (a closed laptop's isn't listed).
+private func builtInMicrophone() -> AudioObjectID? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else {
+        return nil
+    }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else {
+        return nil
+    }
+    return ids.first {
+        transportType($0) == kAudioDeviceTransportTypeBuiltIn && inputChannelCount($0) > 0
+    }
+}
+
+/// Whether the default output is headphones: Bluetooth (AirPods and the
+/// like), or the headphone jack. Speakers (and anything unknown) aren't.
+private func outputIsHeadphones() -> Bool {
+    guard let output = defaultDevice(input: false) else { return false }
+    if isBluetooth(output) { return true }
+    if transportType(output) == kAudioDeviceTransportTypeBuiltIn {
+        // 'hdpn': the built-in output's headphone data source.
+        let source: UInt32? = audioProperty(
+            output, kAudioDevicePropertyDataSource, kAudioObjectPropertyScopeOutput, UInt32(0))
+        return source == 0x6864_706E
+    }
+    return false
+}
+
+/// How to record the microphone right now.
+private struct MicPlan {
+    /// Echo cancellation (Voice Processing I/O, default devices only).
+    let voiceProcessing: Bool
+    /// The device to record, when not the default input.
+    let device: AudioObjectID?
+    let note: String?
+
+    static func current() -> MicPlan {
+        guard outputIsHeadphones() else {
+            return MicPlan(voiceProcessing: true, device: nil, note: nil)
+        }
+        if let input = defaultDevice(input: true), isBluetooth(input),
+           let builtIn = builtInMicrophone()
+        {
+            return MicPlan(
+                voiceProcessing: false, device: builtIn,
+                note: "headphones: recording the built-in microphone, so the Bluetooth headset keeps its high-quality audio")
+        }
+        return MicPlan(
+            voiceProcessing: false, device: nil,
+            note: "headphones: recording the microphone without echo cancellation")
+    }
+}
+
 private final class MicCapture {
     private let engine = AVAudioEngine()
     private let sink: CaptureSink
@@ -304,6 +419,9 @@ private final class MicCapture {
     /// bursts, so each one bumps the generation and stale retries drop out.
     private var restartGeneration = 0
     private var voiceProcessing = false
+    /// The input device recorded instead of the default one (headphones:
+    /// the built-in mic). `nil`: the default input.
+    private var device: AudioObjectID?
     /// Puts the mic on the session timeline (shared origin with the system
     /// stream). Guarded by `alignLock`: the tap block and the silence timer
     /// both use it. The lock is held only while converting/forwarding one
@@ -320,18 +438,27 @@ private final class MicCapture {
     }
 
     func start() throws {
-        do {
-            try startVoiceProcessing()
-            voiceProcessing = true
-        } catch {
-            // Echo cancellation is preferred, not required: record the plain
-            // mic rather than nothing, and say so.
-            stopEngine()
-            disableVoiceProcessing()
+        let plan = MicPlan.current()
+        device = plan.device
+        if let note = plan.note {
+            sink.event(GUIDY_MB_STREAM_MIC, note)
+        }
+        if !plan.voiceProcessing {
             try installTapAndStart()
-            sink.event(
-                GUIDY_MB_STREAM_MIC,
-                "echo cancellation unavailable, recording the plain microphone: \(error)")
+        } else {
+            do {
+                try startVoiceProcessing()
+                voiceProcessing = true
+            } catch {
+                // Echo cancellation is preferred, not required: record the
+                // plain mic rather than nothing, and say so.
+                stopEngine()
+                disableVoiceProcessing()
+                try installTapAndStart()
+                sink.event(
+                    GUIDY_MB_STREAM_MIC,
+                    "echo cancellation unavailable, recording the plain microphone: \(error)")
+            }
         }
 
         observer = NotificationCenter.default.addObserver(
@@ -392,6 +519,24 @@ private final class MicCapture {
 
     private func installTapAndStart() throws {
         let input = engine.inputNode
+        // Without echo cancellation the device is chosen here (an earlier
+        // start may have chosen another one on this unit).
+        if !voiceProcessing, var id = device ?? defaultDevice(input: true) {
+            // Before the format is read: it is the chosen device's.
+            guard let unit = input.audioUnit else {
+                throw BridgeError("the microphone has no audio unit to choose a device on")
+            }
+            let status = AudioUnitSetProperty(
+                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
+                UInt32(MemoryLayout<AudioObjectID>.size))
+            if status != noErr {
+                // Recording the default input is still better than nothing.
+                device = nil
+                sink.event(
+                    GUIDY_MB_STREAM_MIC,
+                    "could not choose the built-in microphone (OSStatus \(status)), recording the default input")
+            }
+        }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw BridgeError("no microphone input is available")
@@ -499,15 +644,26 @@ private final class MicCapture {
     private func restart(generation: Int, attempt: Int) {
         if stopped || generation != restartGeneration { return }
         stopEngine()
-        if voiceProcessing && attempt == 3 {
-            disableVoiceProcessing()
-            voiceProcessing = false
+        // Headphones may have been put on or taken off: plan again.
+        let plan = MicPlan.current()
+        let wantVoiceProcessing = plan.voiceProcessing && attempt < 3
+        if voiceProcessing && plan.voiceProcessing && attempt == 3 {
             sink.event(
                 GUIDY_MB_STREAM_MIC,
                 "echo cancellation unavailable after a device change, recording the plain microphone")
         }
+        if voiceProcessing && !wantVoiceProcessing {
+            disableVoiceProcessing()
+            voiceProcessing = false
+        }
+        device = wantVoiceProcessing ? nil : plan.device
         do {
-            try installTapAndStart()
+            if wantVoiceProcessing && !voiceProcessing {
+                try startVoiceProcessing()
+                voiceProcessing = true
+            } else {
+                try installTapAndStart()
+            }
             sink.event(GUIDY_MB_STREAM_MIC, "microphone restarted after an audio device change")
         } catch {
             if attempt == 0 {

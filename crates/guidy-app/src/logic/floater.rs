@@ -1,14 +1,17 @@
 //! How the recording floater moves. Pure: driven by pointer events and a
 //! clock, so the springs and the docking rules are testable.
 //!
-//! The floater lives on a stage the size of one display (the one with the
-//! notch), in points from its top-left corner. It is either:
-//! - **free**: a rounded rectangle the user drags anywhere. Dragged close to the
-//!   notch, a liquid bridge reaches out to it, and closer still it snaps
-//!   in: the blob is absorbed and wings grow out of the notch;
-//! - **docked**: wings around the notch. Pulling them stretches a neck of
-//!   "jelly" toward the pointer; past [`DETACH`] it breaks, the wings pull
-//!   back into the notch and the blob springs to the pointer, wobbling.
+//! The floater lives on the desktop: every display, in points from the
+//! primary display's top-left corner ([`Desk`]). It is either:
+//! - **free**: a rounded rectangle the user drags anywhere, from one
+//!   display to another. Dragged close to a notch or to a corner of a
+//!   display, a liquid bridge reaches out to it, and closer still it snaps
+//!   in: the blob is absorbed, and wings grow out of the notch or a leaf
+//!   out of the corner;
+//! - **docked** ([`Target`]): wings around a notch, or a leaf in a corner.
+//!   Pulling them stretches a neck of "jelly" toward the pointer; past
+//!   [`DETACH`] it breaks, the wings or the leaf pull back in and the blob
+//!   springs to the pointer, wobbling.
 //!
 //! Every visible quantity is a damped [`Spring`] chasing a target, so the
 //! motion stays continuous whatever the pointer does.
@@ -18,14 +21,21 @@ use crate::logic::recording_widget::{MARGIN, PANEL, TOP_SHARE};
 
 /// The free floater's size (a rounded rectangle), in design units.
 pub const BLOB: (f32, f32) = (96.0, 44.0);
+/// The leaf tucked into a corner, in design units.
+pub const LEAF: (f32, f32) = (84.0, 38.0);
 /// The blob docks when its center comes this close to the wings' bottom
 /// edge (design units).
 pub const ATTACH: f32 = 56.0;
-/// Pulling the docked wings this far (pointer to wings, design units)
-/// breaks them free.
+/// The blob tucks into a corner when its center comes this close to it
+/// (design units).
+pub const CORNER: f32 = 84.0;
+/// Pulling the docked wings or leaf this far (pointer to them, design
+/// units) breaks them free.
 pub const DETACH: f32 = 150.0;
 /// A dragged blob closer than this to the wings grows a bridge toward them.
 pub const REACH: f32 = 190.0;
+/// The same for a corner (measured to the corner itself).
+pub const CORNER_REACH: f32 = 170.0;
 /// Pointer travel before a press counts as a drag, not a click (points).
 pub const DRAG_SLOP: f32 = 4.0;
 /// Longest step integrated at once; a stall doesn't make things jump.
@@ -380,10 +390,316 @@ impl Stage {
     }
 }
 
+/// A corner of a display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    pub const ALL: [Corner; 4] = [
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomLeft,
+        Corner::BottomRight,
+    ];
+
+    pub fn is_left(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::BottomLeft)
+    }
+
+    pub fn is_top(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::TopRight)
+    }
+}
+
+impl Stage {
+    pub fn leaf_size(&self) -> (f32, f32) {
+        (self.d(LEAF.0), self.d(LEAF.1))
+    }
+
+    /// The point of a corner. The top ones are under the menu bar.
+    pub fn corner_point(&self, c: Corner) -> P {
+        P::new(
+            if c.is_left() { 0.0 } else { self.width },
+            if c.is_top() {
+                self.top_inset
+            } else {
+                self.height
+            },
+        )
+    }
+
+    /// The leaf tucked into corner `c`, flush with both edges.
+    pub fn leaf(&self, c: Corner) -> R {
+        let (w, h) = self.leaf_size();
+        let p = self.corner_point(c);
+        R {
+            x: if c.is_left() { p.x } else { p.x - w },
+            y: if c.is_top() { p.y } else { p.y - h },
+            w,
+            h,
+        }
+    }
+}
+
+/// Where the floater docks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// Wings around display `n`'s notch (or mid menu bar without one).
+    Notch(usize),
+    /// A leaf in a corner of display `n`.
+    Corner(usize, Corner),
+}
+
+impl Target {
+    pub fn screen(self) -> usize {
+        match self {
+            Target::Notch(i) | Target::Corner(i, _) => i,
+        }
+    }
+}
+
+/// Every display, placed on the desktop: `origin` is a display's top-left
+/// corner in points from the primary display's (y down).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Desk {
+    pub screens: Vec<(P, Stage)>,
+}
+
+fn shift(r: R, o: P) -> R {
+    R {
+        x: r.x + o.x,
+        y: r.y + o.y,
+        ..r
+    }
+}
+
+impl Desk {
+    /// One display at the origin.
+    pub fn single(stage: Stage) -> Self {
+        Self {
+            screens: vec![(P::default(), stage)],
+        }
+    }
+
+    /// The displays from `NSScreen` (Cocoa coordinates, primary first).
+    pub fn from_screens(screens: &[ScreenInfo], scale: f32) -> Self {
+        let Some(primary) = screens.first() else {
+            return Self::single(Stage::fallback(scale));
+        };
+        let top = primary.y + primary.height;
+        Self {
+            screens: screens
+                .iter()
+                .map(|s| {
+                    let origin = P::new(s.x as f32, (top - (s.y + s.height)) as f32);
+                    (origin, Stage::from_screen(s, scale))
+                })
+                .collect(),
+        }
+    }
+
+    /// Cocoa coordinates (origin bottom-left of the primary display) to
+    /// the desktop's.
+    pub fn from_cocoa(&self, x: f64, y: f64) -> P {
+        let top = self.screens.first().map_or(0.0, |(o, s)| o.y + s.height);
+        P::new(x as f32, top - y as f32)
+    }
+
+    pub fn stage(&self, i: usize) -> &Stage {
+        &self.screens[i.min(self.screens.len() - 1)].1
+    }
+
+    pub fn origin(&self, i: usize) -> P {
+        self.screens[i.min(self.screens.len() - 1)].0
+    }
+
+    pub fn d(&self, design: f32) -> f32 {
+        self.stage(0).d(design)
+    }
+
+    /// The display with a notch, else the primary one.
+    pub fn main(&self) -> usize {
+        self.screens
+            .iter()
+            .position(|(_, s)| s.notch.is_some())
+            .unwrap_or(0)
+    }
+
+    pub fn screen_rect(&self, i: usize) -> R {
+        let s = self.stage(i);
+        let o = self.origin(i);
+        R {
+            x: o.x,
+            y: o.y,
+            w: s.width,
+            h: s.height,
+        }
+    }
+
+    /// The display `p` is on, else the closest one.
+    pub fn screen_at(&self, p: P) -> usize {
+        let dist = |r: R| {
+            let dx = (r.x - p.x).max(0.0).max(p.x - r.right());
+            let dy = (r.y - p.y).max(0.0).max(p.y - r.bottom());
+            dx.hypot(dy)
+        };
+        (0..self.screens.len())
+            .min_by(|a, b| dist(self.screen_rect(*a)).total_cmp(&dist(self.screen_rect(*b))))
+            .unwrap_or(0)
+    }
+
+    pub fn blob_size(&self) -> (f32, f32) {
+        self.stage(0).blob_size()
+    }
+
+    /// Where a free blob rests by default: on the main display.
+    pub fn home(&self) -> P {
+        let m = self.main();
+        self.origin(m) + self.stage(m).home()
+    }
+
+    /// Keep a blob centered at `c` on the display it is (nearest) on.
+    pub fn clamp_blob(&self, c: P) -> P {
+        let i = self.screen_at(c);
+        let o = self.origin(i);
+        self.stage(i).clamp_blob(c - o) + o
+    }
+
+    /// The docked shape at rest.
+    pub fn shape(&self, t: Target) -> R {
+        match t {
+            Target::Notch(i) => shift(self.stage(i).wings(), self.origin(i)),
+            Target::Corner(i, c) => shift(self.stage(i).leaf(c), self.origin(i)),
+        }
+    }
+
+    /// What the shape pulls back into: the camera housing, or the corner.
+    pub fn housing(&self, t: Target) -> R {
+        match t {
+            Target::Notch(i) => shift(self.stage(i).housing(), self.origin(i)),
+            Target::Corner(i, c) => {
+                let p = self.stage(i).corner_point(c) + self.origin(i);
+                R {
+                    x: p.x,
+                    y: p.y,
+                    w: 0.0,
+                    h: 0.0,
+                }
+            }
+        }
+    }
+
+    /// Where a neck pulled toward `toward` leaves the docked shape, and the
+    /// direction out of the shape there.
+    pub fn anchor(&self, t: Target, toward: P) -> (P, P) {
+        match t {
+            Target::Notch(i) => {
+                let o = self.origin(i);
+                (self.stage(i).anchor(toward - o) + o, P::new(0.0, 1.0))
+            }
+            Target::Corner(_, c) => {
+                let leaf = self.shape(t);
+                let inset = self.d(12.0).min(leaf.w / 2.0).min(leaf.h / 2.0);
+                // The leaf's inner edges face away from the corner.
+                let sx = if c.is_left() { 1.0 } else { -1.0 };
+                let sy = if c.is_top() { 1.0 } else { -1.0 };
+                let d = toward - leaf.center();
+                if (d.x * sx) / leaf.w > (d.y * sy) / leaf.h {
+                    let x = if sx > 0.0 {
+                        leaf.right() - 1.0
+                    } else {
+                        leaf.x + 1.0
+                    };
+                    let y = toward.y.clamp(leaf.y + inset, leaf.bottom() - inset);
+                    (P::new(x, y), P::new(sx, 0.0))
+                } else {
+                    let y = if sy > 0.0 {
+                        leaf.bottom() - 1.0
+                    } else {
+                        leaf.y + 1.0
+                    };
+                    let x = toward.x.clamp(leaf.x + inset, leaf.right() - inset);
+                    (P::new(x, y), P::new(0.0, sy))
+                }
+            }
+        }
+    }
+
+    /// The panel a docked floater opens: the notch grown down, or beside
+    /// the leaf.
+    pub fn panel(&self, t: Target) -> R {
+        match t {
+            Target::Notch(i) => shift(self.stage(i).docked_panel(), self.origin(i)),
+            Target::Corner(..) => self.free_panel(self.shape(t).center()),
+        }
+    }
+
+    /// The panel a free floater at `blob` opens, on its display.
+    pub fn free_panel(&self, blob: P) -> R {
+        let i = self.screen_at(blob);
+        let o = self.origin(i);
+        shift(self.stage(i).free_panel(blob - o), o)
+    }
+
+    /// Where a blob dragged to `c` docks, if it is close enough to a notch
+    /// or to a corner of its display.
+    fn snap(&self, c: P) -> Option<Target> {
+        let half_h = self.blob_size().1 / 2.0;
+        for i in 0..self.screens.len() {
+            let t = Target::Notch(i);
+            if c.dist(self.anchor(t, c).0) < self.d(ATTACH) + half_h {
+                return Some(t);
+            }
+        }
+        let i = self.screen_at(c);
+        let o = self.origin(i);
+        Corner::ALL
+            .into_iter()
+            .find(|k| c.dist(self.stage(i).corner_point(*k) + o) < self.d(CORNER))
+            .map(|k| Target::Corner(i, k))
+    }
+
+    /// The docking place a dragged blob at `c` is nearest, and how near
+    /// (1 touching, 0 at the edge of its reach), for the bridge toward it.
+    fn reaching(&self, c: P) -> Option<(Target, f32)> {
+        let mut best: Option<(Target, f32)> = None;
+        let mut consider = |t: Target, near: f32| {
+            if near > 0.0 && best.is_none_or(|(_, b)| near > b) {
+                best = Some((t, near.min(1.0)));
+            }
+        };
+        let half_h = self.blob_size().1 / 2.0;
+        for i in 0..self.screens.len() {
+            let t = Target::Notch(i);
+            let d = c.dist(self.anchor(t, c).0) - half_h;
+            consider(t, 1.0 - d / self.d(REACH));
+        }
+        let i = self.screen_at(c);
+        let o = self.origin(i);
+        for k in Corner::ALL {
+            let d = c.dist(self.stage(i).corner_point(k) + o);
+            consider(Target::Corner(i, k), 1.0 - d / self.d(CORNER_REACH));
+        }
+        best
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Free,
     Docked,
+}
+
+/// The floater docked somewhere, or broke free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockChange {
+    Docked(Target),
+    Free,
 }
 
 /// A press in progress.
@@ -405,12 +721,13 @@ pub enum Release {
     None,
 }
 
-/// A liquid bridge between the wings and the blob, for drawing. `a` is on
-/// the wings' bottom edge, `b` the blob's center; the half-widths are at
-/// `a`, at `b` and at the narrowest point between.
+/// A liquid bridge between a docked shape and the blob, for drawing. `a` is
+/// on the shape's edge (`normal` points out of it there), `b` the blob's
+/// center; the half-widths are at `a`, at `b` and at the narrowest point.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Neck {
     pub a: P,
+    pub normal: P,
     pub b: P,
     pub half_a: f32,
     pub half_b: f32,
@@ -420,18 +737,21 @@ pub struct Neck {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Floater {
     pub mode: Mode,
+    /// Where it is docked; while free, where its shape last was (it
+    /// retracts there).
+    pub target: Target,
     /// Blob center.
     pos: Spring2,
     /// Blob scale per axis (1 at rest): stretch while moving, wobble after.
     squash: Spring2,
-    /// Blob size factor: 1 full; toward 0 while it is absorbed by the wings.
+    /// Blob size factor: 1 full; toward 0 while it is absorbed.
     size: Spring,
-    /// 0: the wings are inside the notch; 1: out.
-    wings: Spring,
-    /// 0 collapsed, 1 expanded (the docked panel grows out of the wings).
+    /// 0: the docked shape is pulled in; 1: out.
+    presence: Spring,
+    /// 0 collapsed, 1 expanded (the notch grows into the panel).
     pub expand: Spring,
     press: Option<Press>,
-    /// The pointer while it pulls at the docked wings.
+    /// The pointer while it pulls at the docked shape.
     tether: Option<P>,
     /// Where the free blob rests.
     home: P,
@@ -445,14 +765,17 @@ const SNAP: (f32, f32) = (320.0, 0.42);
 const SETTLE: (f32, f32) = (260.0, 0.6);
 
 impl Floater {
-    pub fn new(stage: &Stage, docked: bool) -> Self {
-        let home = stage.home();
+    /// Free at its home, or docked at the main display's notch.
+    pub fn new(desk: &Desk, docked: bool) -> Self {
+        let home = desk.home();
+        let target = Target::Notch(desk.main());
         let mut f = Self {
             mode: Mode::Free,
+            target,
             pos: Spring2::new(home, SETTLE.0, SETTLE.1),
             squash: Spring2::new(P::new(1.0, 1.0), 520.0, 0.18),
             size: Spring::new(1.0, 380.0, 0.5),
-            wings: Spring::new(0.0, 360.0, 0.38),
+            presence: Spring::new(0.0, 360.0, 0.38),
             expand: Spring::new(0.0, 300.0, 0.78),
             press: None,
             tether: None,
@@ -461,16 +784,20 @@ impl Floater {
         };
         if docked {
             f.mode = Mode::Docked;
-            let c = stage.wings().center();
-            f.pos = Spring2::new(c, SNAP.0, SNAP.1);
+            f.pos = Spring2::new(desk.shape(target).center(), SNAP.0, SNAP.1);
             f.size = Spring::new(0.0, 380.0, 0.5);
-            f.wings = Spring::new(1.0, 360.0, 0.38);
+            f.presence = Spring::new(1.0, 360.0, 0.38);
         }
         f
     }
 
     pub fn is_docked(&self) -> bool {
         self.mode == Mode::Docked
+    }
+
+    /// Docked at a notch (not in a corner).
+    pub fn at_notch(&self) -> bool {
+        self.is_docked() && matches!(self.target, Target::Notch(_))
     }
 
     pub fn dragging(&self) -> bool {
@@ -498,40 +825,54 @@ impl Floater {
         self.expand.target > 0.5
     }
 
-    /// Dock (or float to its resting place) without a drag: the setting
-    /// changed.
-    pub fn set_docked(&mut self, stage: &Stage, docked: bool) {
-        if self.press.is_some() || self.is_docked() == docked {
+    /// The display the floater is on (where its panel opens).
+    pub fn screen(&self, desk: &Desk) -> usize {
+        match self.mode {
+            Mode::Docked => self.target.screen(),
+            Mode::Free => desk.screen_at(self.pos.value()),
+        }
+    }
+
+    /// Dock at the notch (or float to its resting place) without a drag:
+    /// the setting changed.
+    pub fn set_docked(&mut self, desk: &Desk, docked: bool) {
+        if self.press.is_some() || self.at_notch() == docked {
             return;
         }
         if docked {
-            self.dock(stage);
+            self.dock(desk, Target::Notch(desk.main()));
         } else {
             self.mode = Mode::Free;
             self.tether = None;
-            self.wings.target = 0.0;
+            self.presence.target = 0.0;
             self.size.target = 1.0;
             self.pos.tune(SETTLE.0, SETTLE.1);
             self.pos.set_target(self.home);
         }
     }
 
-    fn dock(&mut self, stage: &Stage) {
+    fn dock(&mut self, desk: &Desk, t: Target) {
         self.mode = Mode::Docked;
-        self.wings.target = 1.0;
+        if self.target != t {
+            // A shape elsewhere: this one starts pulled in.
+            self.presence.value = 0.0;
+            self.presence.velocity = 0.0;
+        }
+        self.target = t;
+        self.presence.target = 1.0;
         self.size.target = 0.0;
         self.pos.tune(SNAP.0, SNAP.1);
-        self.pos.set_target(stage.wings().center());
-        // The blob is swallowed: a squeeze toward the notch.
+        self.pos.set_target(desk.shape(t).center());
+        // The blob is swallowed: a squeeze toward the shape.
         self.squash.x.velocity += 3.0;
         self.squash.y.velocity -= 3.0;
     }
 
-    /// A press on the floater (the blob or the wings) at `p`.
+    /// A press on the floater (the blob or the docked shape) at `p`.
     pub fn press(&mut self, p: P) {
         let grab = match self.mode {
             Mode::Free => self.pos.value() - p,
-            // Pulled out of the wings, the blob comes out under the pointer.
+            // Pulled out of the shape, the blob comes out under the pointer.
             Mode::Docked => P::default(),
         };
         self.press = Some(Press {
@@ -541,9 +882,9 @@ impl Floater {
         });
     }
 
-    /// The pointer moved to `p` with the button down. Returns the new mode
+    /// The pointer moved to `p` with the button down. Returns the change
     /// when it docked or broke free.
-    pub fn drag_to(&mut self, stage: &Stage, p: P) -> Option<Mode> {
+    pub fn drag_to(&mut self, desk: &Desk, p: P) -> Option<DockChange> {
         let mut press = self.press?;
         if !press.moved {
             if p.dist(press.start) < DRAG_SLOP {
@@ -558,26 +899,23 @@ impl Floater {
         }
         match self.mode {
             Mode::Free => {
-                let target = stage.clamp_blob(p + press.grab);
+                let target = desk.clamp_blob(p + press.grab);
                 self.pos.tune(FOLLOW.0, FOLLOW.1);
                 self.pos.set_target(target);
-                let anchor = stage.anchor(target);
-                if target.dist(anchor) < stage.d(ATTACH) + stage.blob_size().1 / 2.0 {
-                    self.dock(stage);
-                    self.tether = Some(p);
-                    self.pull(stage, p);
-                    return Some(Mode::Docked);
-                }
-                None
+                let t = desk.snap(target)?;
+                self.dock(desk, t);
+                self.tether = Some(p);
+                self.pull(desk, p);
+                Some(DockChange::Docked(t))
             }
             Mode::Docked => {
                 self.tether = Some(p);
-                let anchor = stage.anchor(p);
-                if p.dist(anchor) > stage.d(DETACH) {
-                    self.break_free(stage, p);
-                    return Some(Mode::Free);
+                let (anchor, _) = desk.anchor(self.target, p);
+                if p.dist(anchor) > desk.d(DETACH) {
+                    self.break_free(desk, p);
+                    return Some(DockChange::Free);
                 }
-                self.pull(stage, p);
+                self.pull(desk, p);
                 None
             }
         }
@@ -585,23 +923,23 @@ impl Floater {
 
     /// Docked, pulled toward `p`: the blob end of the neck follows the
     /// pointer with resistance and grows as it comes out.
-    fn pull(&mut self, stage: &Stage, p: P) {
-        let anchor = stage.anchor(p);
-        let t = (p.dist(anchor) / stage.d(DETACH)).clamp(0.0, 1.0);
+    fn pull(&mut self, desk: &Desk, p: P) {
+        let (anchor, _) = desk.anchor(self.target, p);
+        let t = (p.dist(anchor) / desk.d(DETACH)).clamp(0.0, 1.0);
         self.pos.tune(FOLLOW.0, FOLLOW.1);
         self.pos
             .set_target(anchor + (p - anchor) * (0.55 + 0.25 * t));
         self.size.target = 0.35 + 0.45 * t;
     }
 
-    /// The neck snaps: the wings pull back into the notch and the blob
-    /// springs to the pointer.
-    fn break_free(&mut self, stage: &Stage, p: P) {
+    /// The neck snaps: the shape pulls back in and the blob springs to the
+    /// pointer.
+    fn break_free(&mut self, desk: &Desk, p: P) {
         self.mode = Mode::Free;
         self.tether = None;
-        self.wings.target = 0.0;
+        self.presence.target = 0.0;
         self.size.target = 1.0;
-        let target = stage.clamp_blob(p);
+        let target = desk.clamp_blob(p);
         let from = self.pos.value();
         self.pos.tune(FOLLOW.0, FOLLOW.1);
         self.pos.set_target(target);
@@ -617,7 +955,7 @@ impl Floater {
     }
 
     /// The button went up.
-    pub fn release(&mut self, stage: &Stage) -> Release {
+    pub fn release(&mut self, desk: &Desk) -> Release {
         let Some(press) = self.press.take() else {
             return Release::None;
         };
@@ -627,13 +965,13 @@ impl Floater {
         }
         match self.mode {
             Mode::Docked => {
-                // Let go of the neck: it springs back into the wings.
+                // Let go of the neck: it springs back in.
                 self.size.target = 0.0;
                 self.pos.tune(SNAP.0, SNAP.1);
-                self.pos.set_target(stage.wings().center());
+                self.pos.set_target(desk.shape(self.target).center());
             }
             Mode::Free => {
-                self.home = stage.clamp_blob(self.pos.target());
+                self.home = desk.clamp_blob(self.pos.target());
                 self.pos.tune(SETTLE.0, SETTLE.1);
                 self.pos.set_target(self.home);
             }
@@ -641,13 +979,18 @@ impl Floater {
         Release::Dropped
     }
 
-    /// The display changed: keep the blob on it.
-    pub fn restage(&mut self, stage: &Stage) {
-        self.home = stage.clamp_blob(self.home);
-        if self.mode == Mode::Free && self.press.is_none() {
-            self.pos.set_target(self.home);
-        } else if self.mode == Mode::Docked && self.press.is_none() {
-            self.pos.set_target(stage.wings().center());
+    /// The displays changed: keep the floater on them.
+    pub fn restage(&mut self, desk: &Desk) {
+        if self.target.screen() >= desk.screens.len() {
+            self.target = Target::Notch(desk.main());
+        }
+        self.home = desk.clamp_blob(self.home);
+        if self.press.is_some() {
+            return;
+        }
+        match self.mode {
+            Mode::Free => self.pos.set_target(self.home),
+            Mode::Docked => self.pos.set_target(desk.shape(self.target).center()),
         }
     }
 
@@ -676,7 +1019,7 @@ impl Floater {
             self.pos.step(h);
             self.squash.step(h);
             self.size.step(h);
-            self.wings.step(h);
+            self.presence.step(h);
             self.expand.step(h);
             left -= h;
         }
@@ -687,7 +1030,7 @@ impl Floater {
         self.squash.set_target(P::new(1.0, 1.0));
         self.squash.settle();
         self.size.settle();
-        self.wings.settle();
+        self.presence.settle();
         self.expand.settle();
     }
 
@@ -698,19 +1041,19 @@ impl Floater {
                 || !self.pos.at_rest()
                 || !self.squash.at_rest()
                 || !self.size.at_rest()
-                || !self.wings.at_rest()
+                || !self.presence.at_rest()
                 || !self.expand.at_rest())
     }
 
     // -- what to draw -------------------------------------------------------
 
     /// The blob's rectangle, if any of it shows.
-    pub fn blob(&self, stage: &Stage) -> Option<R> {
+    pub fn blob(&self, desk: &Desk) -> Option<R> {
         let size = self.size.value.max(0.0);
         if size < 0.04 || (self.mode == Mode::Free && self.expanded()) {
             return None;
         }
-        let (w, h) = stage.blob_size();
+        let (w, h) = desk.blob_size();
         let sq = self.squash.value();
         Some(R::centered(
             self.pos.value(),
@@ -727,27 +1070,28 @@ impl Floater {
         ((self.size.value - 0.75) / 0.25).clamp(0.0, 1.0)
     }
 
-    /// The wings (or the docked panel growing out of them), if out at all.
-    pub fn wings(&self, stage: &Stage) -> Option<R> {
-        let w = self.wings.value.max(0.0);
+    /// The docked shape (wings or leaf; at a notch, the panel growing out
+    /// of the wings), if out at all.
+    pub fn shape(&self, desk: &Desk) -> Option<R> {
+        let w = self.presence.value.max(0.0);
         if w < 0.02 {
             return None;
         }
-        let rect = R::lerp(stage.housing(), stage.wings(), w);
+        let rect = R::lerp(desk.housing(self.target), desk.shape(self.target), w);
         // The panel only grows out of docked wings.
-        let e = if self.mode == Mode::Docked {
+        let e = if self.at_notch() {
             self.expand.value.clamp(0.0, 1.2)
         } else {
             0.0
         };
-        Some(R::lerp(rect, stage.docked_panel(), e))
+        Some(R::lerp(rect, desk.panel(self.target), e))
     }
 
-    /// How much the wings' controls show (out, and not turning into the
-    /// panel).
-    pub fn wings_content(&self) -> f32 {
-        let out = ((self.wings.value - 0.7) / 0.3).clamp(0.0, 1.0);
-        let collapsed = if self.mode == Mode::Docked {
+    /// How much the docked shape's controls show (out, and not turning
+    /// into the panel).
+    pub fn shape_content(&self) -> f32 {
+        let out = ((self.presence.value - 0.7) / 0.3).clamp(0.0, 1.0);
+        let collapsed = if self.at_notch() {
             1.0 - (self.expand.value / 0.3).clamp(0.0, 1.0)
         } else {
             1.0
@@ -755,35 +1099,44 @@ impl Floater {
         out * collapsed
     }
 
-    /// How much the docked panel's content shows.
+    /// How much the panel grown out of the notch shows its content.
     pub fn docked_panel_content(&self) -> f32 {
-        if self.mode != Mode::Docked {
+        if !self.at_notch() {
             return 0.0;
         }
         ((self.expand.value - 0.75) / 0.25).clamp(0.0, 1.0)
     }
 
-    /// The free panel, when expanded while free.
-    pub fn free_panel(&self, stage: &Stage) -> Option<R> {
-        (self.mode == Mode::Free && self.expanded()).then(|| stage.free_panel(self.pos.target()))
+    /// The separate panel: opened from the free blob or from a leaf.
+    pub fn free_panel(&self, desk: &Desk) -> Option<R> {
+        if !self.expanded() {
+            return None;
+        }
+        match (self.mode, self.target) {
+            (Mode::Free, _) => Some(desk.free_panel(self.pos.target())),
+            (Mode::Docked, Target::Corner(..)) => Some(desk.panel(self.target)),
+            (Mode::Docked, Target::Notch(_)) => None,
+        }
     }
 
-    /// The liquid bridge between the wings and the blob, if any.
-    pub fn neck(&self, stage: &Stage) -> Option<Neck> {
-        let blob = self.blob(stage)?;
+    /// The liquid bridge between the docked shape and the blob, if any.
+    pub fn neck(&self, desk: &Desk) -> Option<Neck> {
+        let blob = self.blob(desk)?;
         let b = blob.center();
         let r = blob.w.min(blob.h) / 2.0;
         match self.mode {
             Mode::Docked => {
-                // Out of the wings (pulled, or springing back in).
-                let wings = self.wings(stage)?;
-                let a = stage.anchor(b);
-                if b.y - r <= wings.bottom() - r * 0.5 {
+                // Out of the shape (pulled, or springing back in).
+                self.shape(desk)?;
+                let (a, normal) = desk.anchor(self.target, b);
+                let out = (b.x - a.x) * normal.x + (b.y - a.y) * normal.y;
+                if out <= r * 0.5 {
                     return None;
                 }
-                let t = (b.dist(a) / stage.d(DETACH)).clamp(0.0, 1.0);
+                let t = (b.dist(a) / desk.d(DETACH)).clamp(0.0, 1.0);
                 Some(Neck {
                     a,
+                    normal,
                     b,
                     half_a: r * (1.35 - 0.5 * t),
                     half_b: r * 0.9,
@@ -791,23 +1144,26 @@ impl Floater {
                 })
             }
             Mode::Free => {
-                // Dragged near: the wings reach out for it.
+                // Dragged near: the notch or the corner reaches out for it.
                 if !self.dragging() {
                     return None;
                 }
-                let a = stage.anchor(b);
-                let reach = stage.d(REACH);
-                let t = 1.0 - (b.dist(a) - r) / reach;
-                if t <= 0.0 {
-                    return None;
-                }
-                let t = t.clamp(0.0, 1.0);
+                let (t, near) = desk.reaching(b)?;
+                let (a, normal) = match t {
+                    Target::Notch(_) => desk.anchor(t, b),
+                    // From the corner itself (no leaf yet).
+                    Target::Corner(i, c) => {
+                        let p = desk.stage(i).corner_point(c) + desk.origin(i);
+                        (p, (b - p).unit())
+                    }
+                };
                 Some(Neck {
                     a,
+                    normal,
                     b,
-                    half_a: r * 0.75 * t,
-                    half_b: r * 0.55 * t,
-                    waist: r * 0.16 * t * t,
+                    half_a: r * 0.75 * near,
+                    half_b: r * 0.55 * near,
+                    waist: r * 0.16 * near * near,
                 })
             }
         }
@@ -815,18 +1171,30 @@ impl Floater {
 
     /// Whether the floater takes the pointer at `p` (elsewhere clicks go
     /// through to the apps beneath).
-    pub fn hit(&self, stage: &Stage, p: P) -> bool {
+    pub fn hit(&self, desk: &Desk, p: P) -> bool {
         if self.press.is_some() {
             return true;
         }
-        let pad = stage.d(4.0);
-        if let Some(panel) = self.free_panel(stage) {
-            return panel.inflate(pad).contains(p);
+        let pad = desk.d(4.0);
+        if self
+            .free_panel(desk)
+            .is_some_and(|panel| panel.inflate(pad).contains(p))
+        {
+            return true;
         }
-        if let Some(w) = self.wings(stage).filter(|_| self.mode == Mode::Docked) {
-            return w.inflate(pad).contains(p);
+        if self.mode == Mode::Docked {
+            if self.at_notch() && self.expanded() {
+                return self.shape(desk).is_some_and(|s| s.inflate(pad).contains(p));
+            }
+            if self.shape(desk).is_some_and(|s| s.inflate(pad).contains(p)) {
+                return true;
+            }
+            return false;
         }
-        self.blob(stage).is_some_and(|b| b.inflate(pad).contains(p))
+        if self.free_panel(desk).is_some() {
+            return false;
+        }
+        self.blob(desk).is_some_and(|b| b.inflate(pad).contains(p))
     }
 }
 
@@ -836,6 +1204,32 @@ mod tests {
 
     fn stage() -> Stage {
         Stage::fallback(1.2)
+    }
+
+    fn desk() -> Desk {
+        Desk::single(stage())
+    }
+
+    /// The laptop (with the notch) and a 1920x1080 monitor to its right,
+    /// its top 100 points higher.
+    fn two_displays() -> Desk {
+        let laptop = ScreenInfo {
+            x: 0.0,
+            y: 0.0,
+            width: 1512.0,
+            height: 982.0,
+            notch: Some((662.0, 850.0)),
+            top_inset: 38.0,
+        };
+        let monitor = ScreenInfo {
+            x: 1512.0,
+            y: 982.0 + 100.0 - 1080.0,
+            width: 1920.0,
+            height: 1080.0,
+            notch: None,
+            top_inset: 25.0,
+        };
+        Desk::from_screens(&[laptop, monitor], 1.2)
     }
 
     /// Run the springs for `secs`.
@@ -848,12 +1242,12 @@ mod tests {
     }
 
     /// Drag from `from` to `to` in small steps.
-    fn drag(f: &mut Floater, s: &Stage, from: P, to: P) -> Vec<Mode> {
+    fn drag(f: &mut Floater, d: &Desk, from: P, to: P) -> Vec<DockChange> {
         let mut changes = Vec::new();
         f.press(from);
         for i in 1..=40 {
             let p = from + (to - from) * (i as f32 / 40.0);
-            changes.extend(f.drag_to(s, p));
+            changes.extend(f.drag_to(d, p));
             f.step(1.0 / 60.0);
         }
         changes
@@ -874,121 +1268,217 @@ mod tests {
 
     #[test]
     fn a_free_blob_rests_at_the_right_edge_and_takes_clicks() {
-        let s = stage();
-        let mut f = Floater::new(&s, false);
+        let d = desk();
+        let mut f = Floater::new(&d, false);
         let home = f.blob_center();
-        assert!(home.x > s.width - s.blob_size().0);
-        assert!(f.hit(&s, home));
+        assert!(home.x > d.stage(0).width - d.blob_size().0);
+        assert!(f.hit(&d, home));
         assert!(
-            !f.hit(&s, P::new(100.0, 500.0)),
+            !f.hit(&d, P::new(100.0, 500.0)),
             "clicks elsewhere go through"
         );
         f.press(home);
-        assert_eq!(f.release(&s), Release::Click);
-        assert_eq!(f.release(&s), Release::None);
-        assert!(f.wings(&s).is_none());
+        assert_eq!(f.release(&d), Release::Click);
+        assert_eq!(f.release(&d), Release::None);
+        assert!(f.shape(&d).is_none());
         assert_eq!(f.blob_content(), 1.0);
     }
 
     #[test]
     fn a_drag_moves_it_and_it_stays_where_dropped() {
-        let s = stage();
-        let mut f = Floater::new(&s, false);
+        let d = desk();
+        let mut f = Floater::new(&d, false);
         let from = f.blob_center();
         let to = P::new(400.0, 600.0);
-        assert!(drag(&mut f, &s, from, to).is_empty());
+        assert!(drag(&mut f, &d, from, to).is_empty());
         assert!(f.dragging());
-        assert_eq!(f.release(&s), Release::Dropped);
+        assert_eq!(f.release(&d), Release::Dropped);
         run(&mut f, 2.0);
         assert!(f.blob_center().dist(to) < 1.0, "{:?}", f.blob_center());
         assert!(!f.animating());
-        // Kept on screen, below the menu bar.
-        let mut f = Floater::new(&s, false);
-        let from = f.blob_center();
-        drag(&mut f, &s, from, P::new(-500.0, 5_000.0));
-        f.release(&s);
-        run(&mut f, 2.0);
-        let c = f.blob_center();
-        assert!(c.x > 0.0 && c.y < s.height, "{c:?}");
     }
 
     #[test]
     fn dragged_near_the_notch_it_reaches_out_then_snaps_in() {
-        let s = stage();
-        let mut f = Floater::new(&s, false);
-        let wings = s.wings();
+        let d = desk();
+        let mut f = Floater::new(&d, false);
+        let wings = d.shape(Target::Notch(0));
         let from = f.blob_center();
         // Getting close: a bridge, still free.
         let near = P::new(
             wings.center().x,
-            wings.bottom() + s.d(ATTACH) + s.blob_size().1 + 40.0,
+            wings.bottom() + d.d(ATTACH) + d.blob_size().1 + 40.0,
         );
-        assert!(drag(&mut f, &s, from, near).is_empty());
+        assert!(drag(&mut f, &d, from, near).is_empty());
         assert_eq!(f.mode, Mode::Free);
-        assert!(f.neck(&s).is_some(), "a bridge reaches for it");
+        assert!(f.neck(&d).is_some(), "a bridge reaches for it");
         // Closer: docked while still held.
         let changes = drag(
             &mut f,
-            &s,
+            &d,
             near,
             P::new(wings.center().x, wings.bottom() + 10.0),
         );
-        assert_eq!(changes, vec![Mode::Docked]);
-        f.release(&s);
+        assert_eq!(changes, vec![DockChange::Docked(Target::Notch(0))]);
+        f.release(&d);
         run(&mut f, 2.0);
-        assert_eq!(f.mode, Mode::Docked);
-        assert_eq!(f.wings(&s), Some(wings));
-        assert!(f.blob(&s).is_none(), "absorbed");
-        assert_eq!(f.wings_content(), 1.0);
-        assert!(f.hit(&s, wings.center()));
+        assert!(f.at_notch());
+        assert_eq!(f.shape(&d), Some(wings));
+        assert!(f.blob(&d).is_none(), "absorbed");
+        assert_eq!(f.shape_content(), 1.0);
+        assert!(f.hit(&d, wings.center()));
     }
 
     #[test]
     fn pulling_the_wings_stretches_a_neck_until_it_breaks() {
-        let s = stage();
-        let mut f = Floater::new(&s, true);
-        let wings = s.wings();
+        let d = desk();
+        let mut f = Floater::new(&d, true);
+        let wings = d.shape(Target::Notch(0));
         let grab = wings.center();
-        // A short pull: a neck, still docked; let go and it springs back.
-        let short = P::new(grab.x, wings.bottom() + s.d(DETACH) * 0.6);
-        assert!(drag(&mut f, &s, grab, short).is_empty());
+        let short = P::new(grab.x, wings.bottom() + d.d(DETACH) * 0.6);
+        assert!(drag(&mut f, &d, grab, short).is_empty());
         run(&mut f, 0.3);
-        let neck = f.neck(&s).expect("a neck");
+        let neck = f.neck(&d).expect("a neck");
         assert!(neck.waist < neck.half_a, "it thins as it stretches");
-        assert_eq!(f.release(&s), Release::Dropped);
+        assert_eq!(f.release(&d), Release::Dropped);
         run(&mut f, 2.0);
-        assert_eq!(f.mode, Mode::Docked);
-        assert!(f.blob(&s).is_none());
+        assert!(f.at_notch());
+        assert!(f.blob(&d).is_none());
         // A long pull breaks it: free, under the pointer, wings back in.
-        let far = P::new(grab.x - 100.0, wings.bottom() + s.d(DETACH) + 80.0);
-        let changes = drag(&mut f, &s, grab, far);
-        assert_eq!(changes, vec![Mode::Free]);
-        f.release(&s);
+        let far = P::new(grab.x - 100.0, wings.bottom() + d.d(DETACH) + 80.0);
+        let changes = drag(&mut f, &d, grab, far);
+        assert_eq!(changes, vec![DockChange::Free]);
+        f.release(&d);
         run(&mut f, 2.0);
         assert!(f.blob_center().dist(far) < 1.0, "{:?}", f.blob_center());
-        assert!(f.wings(&s).is_none());
+        assert!(f.shape(&d).is_none());
         assert_eq!(f.blob_content(), 1.0);
     }
 
     #[test]
-    fn a_click_on_the_wings_expands_the_notch_into_a_panel() {
+    fn dragged_into_a_corner_it_tucks_in_as_a_leaf_and_pulls_back_out() {
+        let d = desk();
+        let s = d.stage(0);
+        let mut f = Floater::new(&d, false);
+        let from = f.blob_center();
+        let corner = s.corner_point(Corner::BottomRight);
+        // Near it: a bridge from the corner.
+        let near = corner - P::new(d.d(CORNER) + 30.0, d.d(CORNER) + 30.0) * 0.75;
+        assert!(drag(&mut f, &d, from, near).is_empty());
+        assert!(f.neck(&d).is_some());
+        // In it: a leaf, flush with both edges.
+        let t = Target::Corner(0, Corner::BottomRight);
+        let changes = drag(&mut f, &d, near, corner - P::new(20.0, 20.0));
+        assert_eq!(changes, vec![DockChange::Docked(t)]);
+        f.release(&d);
+        run(&mut f, 2.0);
+        let leaf = f.shape(&d).unwrap();
+        let want = s.leaf(Corner::BottomRight);
+        assert!(
+            (leaf.x - want.x).abs() < 0.01
+                && (leaf.y - want.y).abs() < 0.01
+                && (leaf.w - want.w).abs() < 0.01
+                && (leaf.h - want.h).abs() < 0.01,
+            "{leaf:?}"
+        );
+        assert!((leaf.right() - s.width).abs() < 0.01);
+        assert!((leaf.bottom() - s.height).abs() < 0.01);
+        assert!(f.blob(&d).is_none());
+        assert_eq!(f.shape_content(), 1.0);
+        // A click opens the panel beside it; the leaf stays.
+        f.press(leaf.center());
+        assert_eq!(f.release(&d), Release::Click);
+        f.set_expanded(true);
+        run(&mut f, 1.0);
+        let panel = f.free_panel(&d).unwrap();
+        assert!(panel.right() <= s.width && panel.bottom() <= s.height);
+        assert!(f.shape(&d).is_some());
+        f.set_expanded(false);
+        run(&mut f, 1.0);
+        // Pulled out toward the middle, past the break.
+        let out = leaf.center() - P::new(d.d(DETACH) + 120.0, 100.0);
+        assert_eq!(drag(&mut f, &d, leaf.center(), out), vec![DockChange::Free]);
+        f.release(&d);
+        run(&mut f, 2.0);
+        assert!(f.blob_center().dist(out) < 1.0);
+        assert!(f.shape(&d).is_none());
+    }
+
+    #[test]
+    fn the_top_corners_are_under_the_menu_bar() {
         let s = stage();
-        let mut f = Floater::new(&s, true);
-        f.press(s.wings().center());
-        assert_eq!(f.release(&s), Release::Click);
+        let leaf = s.leaf(Corner::TopLeft);
+        assert_eq!((leaf.x, leaf.y), (0.0, s.top_inset));
+        let d = desk();
+        let (a, n) = d.anchor(
+            Target::Corner(0, Corner::TopLeft),
+            P::new(400.0, s.top_inset + 10.0),
+        );
+        assert_eq!(n, P::new(1.0, 0.0), "pulled sideways: from its inner side");
+        assert!(a.x > leaf.x);
+    }
+
+    #[test]
+    fn it_moves_to_another_display_and_docks_there() {
+        let d = two_displays();
+        assert_eq!(d.main(), 0);
+        // The monitor's top-left is at (1512, -100) on the desktop.
+        assert_eq!(d.origin(1), P::new(1512.0, -100.0));
+        assert_eq!(d.from_cocoa(1512.0, 982.0 + 100.0), P::new(1512.0, -100.0));
+        let mut f = Floater::new(&d, false);
+        let from = f.blob_center();
+        let on_monitor = P::new(2400.0, 500.0);
+        assert!(drag(&mut f, &d, from, on_monitor).is_empty());
+        f.release(&d);
+        run(&mut f, 2.0);
+        assert!(f.blob_center().dist(on_monitor) < 1.0);
+        assert_eq!(f.screen(&d), 1);
+        // Its panel opens on the monitor.
+        f.set_expanded(true);
+        let panel = f.free_panel(&d).unwrap();
+        assert!(d.screen_rect(1).contains(panel.center()));
+        f.set_expanded(false);
+        // The monitor has no notch: its menu bar island takes it.
+        let island = d.shape(Target::Notch(1));
+        assert!((island.center().x - (1512.0 + 960.0)).abs() < 1.0);
+        assert_eq!(island.y, -100.0);
+        let changes = drag(
+            &mut f,
+            &d,
+            on_monitor,
+            P::new(island.center().x, island.bottom() + 8.0),
+        );
+        assert_eq!(changes, vec![DockChange::Docked(Target::Notch(1))]);
+        // Dropped between displays, it stays on the nearer one.
+        let mut f = Floater::new(&d, false);
+        let from = f.blob_center();
+        drag(&mut f, &d, from, P::new(1400.0, 1100.0));
+        f.release(&d);
+        run(&mut f, 2.0);
+        assert!(d.screen_rect(0).contains(f.blob_center()));
+    }
+
+    #[test]
+    fn a_click_on_the_wings_expands_the_notch_into_a_panel() {
+        let d = desk();
+        let mut f = Floater::new(&d, true);
+        let wings = d.shape(Target::Notch(0));
+        f.press(wings.center());
+        assert_eq!(f.release(&d), Release::Click);
         f.set_expanded(true);
         run(&mut f, 2.0);
-        let panel = s.docked_panel();
-        let w = f.wings(&s).unwrap();
+        let panel = d.panel(Target::Notch(0));
+        let w = f.shape(&d).unwrap();
         assert!((w.w - panel.w).abs() < 0.5 && (w.h - panel.h).abs() < 0.5);
         assert_eq!(w.y, 0.0, "attached to the top");
         assert_eq!(f.docked_panel_content(), 1.0);
-        assert_eq!(f.wings_content(), 0.0);
-        assert!(f.hit(&s, P::new(panel.center().x, panel.bottom() - 5.0)));
+        assert_eq!(f.shape_content(), 0.0);
+        assert!(f.free_panel(&d).is_none());
+        assert!(f.hit(&d, P::new(panel.center().x, panel.bottom() - 5.0)));
         // Expanded, it isn't pulled out.
-        f.press(s.wings().center());
-        assert!(f.drag_to(&s, P::new(700.0, 700.0)).is_none());
-        assert_eq!(f.mode, Mode::Docked);
+        f.press(wings.center());
+        assert!(f.drag_to(&d, P::new(700.0, 700.0)).is_none());
+        assert!(f.at_notch());
     }
 
     #[test]
@@ -1003,25 +1493,25 @@ mod tests {
 
     #[test]
     fn the_setting_docks_and_undocks_it() {
-        let s = stage();
-        let mut f = Floater::new(&s, false);
-        f.set_docked(&s, true);
+        let d = desk();
+        let mut f = Floater::new(&d, false);
+        f.set_docked(&d, true);
         run(&mut f, 2.0);
-        assert_eq!(f.wings(&s), Some(s.wings()));
-        f.set_docked(&s, false);
+        assert_eq!(f.shape(&d), Some(d.shape(Target::Notch(0))));
+        f.set_docked(&d, false);
         run(&mut f, 2.0);
-        assert!(f.wings(&s).is_none());
-        assert!(f.blob_center().dist(s.home()) < 1.0);
+        assert!(f.shape(&d).is_none());
+        assert!(f.blob_center().dist(d.home()) < 1.0);
     }
 
     #[test]
     fn without_animation_everything_jumps() {
-        let s = stage();
-        let mut f = Floater::new(&s, false);
+        let d = desk();
+        let mut f = Floater::new(&d, false);
         f.animate = false;
-        f.set_docked(&s, true);
+        f.set_docked(&d, true);
         f.step(0.0);
-        assert_eq!(f.wings(&s), Some(s.wings()));
+        assert_eq!(f.shape(&d), Some(d.shape(Target::Notch(0))));
         assert!(!f.animating());
     }
 
