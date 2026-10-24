@@ -7,7 +7,23 @@
     "model": "Model",
     "quit": "Çıkış",
     "cancel": "İptal",
-    "secureInputWarning": "⚠ Kısayollar Secure Input tarafından engelleniyor"
+    "secureInputWarning": "⚠ Kısayollar Secure Input tarafından engelleniyor",
+    "startMeetingNotes": "Toplantı Notlarını Başlat",
+    "stopMeetingNotes": "Toplantı Notlarını Durdur",
+    "pauseMeetingNotes": "Kaydı Duraklat",
+    "resumeMeetingNotes": "Kayda Devam Et",
+    "meetingPaused": "Duraklatıldı",
+    "meetingStillRecording": "Guidy hâlâ kaydediyor",
+    "meetingStop": "Durdur",
+    "meetingKeepGoing": "Devam et",
+    "meetingTakeNotesFor": "Şu toplantı için not alınsın mı: {{title}}?",
+    "meetingStart": "Başlat",
+    "meetingUntitled": "Toplantı"
+  },
+  "notch": {
+    "pause": "Kaydı duraklat",
+    "resume": "Kayda devam et",
+    "stop": "Toplantı notlarını durdur"
   },
   "sidebar": {
     "general": "Genel",
@@ -16,7 +32,58 @@
     "postProcessing": "Son İşlem",
     "history": "Geçmiş",
     "debug": "Hata Ayıklama",
+    "usage": "Kullanım",
     "about": "Hakkında"
+  },
+  "usage": {
+    "title": "Kullanım",
+    "description": "Bulut yapay zekâ sağlayıcılarının maliyeti ve modellerin bu Mac'te yaptığı işler.",
+    "cloud": "Bulut",
+    "local": "Bu Mac'te",
+    "refresh": "Yenile",
+    "total": "Toplam harcama",
+    "last30Days": "Son 30 gün",
+    "callsTitle": "Çağrılar",
+    "byModel": "Modele göre",
+    "byFeature": "Özelliğe göre",
+    "empty": "Henüz bulut yapay zekâ çağrısı yok.",
+    "calls_one": "{{count}} çağrı",
+    "calls_other": "{{count}} çağrı",
+    "average": "ort. {{cost}}",
+    "highest": "en yüksek {{cost}}",
+    "tokens": "{{input}} giriş / {{output}} çıkış token",
+    "unknownPrice": "fiyat bilinmiyor",
+    "feature": {
+      "dictation": "Dikte",
+      "meetingTranscription": "Toplantı transkripsiyonu",
+      "meetingSummary": "Toplantı özetleri",
+      "other": "Diğer"
+    },
+    "localAudio": "Transkribe edilen ses",
+    "localWords": "Kelime",
+    "localTokens": "LLM token",
+    "localCloudEquivalent": "Bulut karşılığı",
+    "localEmpty": "Henüz yerel bir modelde hiçbir şey çalışmadı.",
+    "localByModel": "Yerel modeller",
+    "localByFeature": "Özelliğe göre yerel iş",
+    "kind": {
+      "transcription": "Transkripsiyon",
+      "llm": "Yerleşik LLM"
+    },
+    "runs_one": "{{count}} çalıştırma",
+    "runs_other": "{{count}} çalıştırma",
+    "audio": "{{duration}} ses",
+    "words": "{{count}} kelime",
+    "realtime": "{{speed}} gerçek zaman",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "üretim {{speed}}",
+    "loadTime": "{{time}} içinde yüklenir",
+    "localNote": "Gerçek zaman hızı, ses uzunluğu ÷ işleme süresidir (yükleme hariç); siz konuşurken canlı çözülen dikte ölçülmez. Bulut karşılığı, sesi dakika başına ${{price}} üzerinden fiyatlandırır (OpenAI Whisper).",
+    "estimateNote": "~ işareti, yayımlanan token başı fiyatlardan tahmin edilen tutarları gösterir; kendi maliyetini bildiren sağlayıcılar (OpenRouter gibi) kesindir. Faturalandırma için sağlayıcınızın panosuna bakın.",
+    "reportedNote": "Tutarlar sağlayıcıların bildirdiği şekildedir. Faturalandırma için sağlayıcınızın panosuna bakın.",
+    "clear": "Geçmişi temizle",
+    "clearTitle": "Kullanım geçmişi temizlensin mi?",
+    "clearConfirm": "Kaydedilen çağrılar, maliyetler ve yerel model çalıştırmaları silinecek. Toplantı özetlerinde gösterilen kullanım kalır."
   },
   "onboarding": {
     "subtitle": "Başlamak için bir transkripsiyon modeli seçin",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "doğruluk",
-      "speed": "hız"
+      "speed": "hız",
+      "size": "boyut"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "Yalnızca {{language}}",
       "streaming": "Konuşurken canlı transkripsiyon gösterir"
     },
+    "download": "İndir",
+    "use": "Kullan",
     "cancel": "İptal",
     "cancelDownload": "İndirmeyi iptal et",
     "legacy": "Eski"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "Genel",
+      "description": "Dikteyi nasıl başlattığınız, dinlediği dil ve duyduklarınız.",
+      "shortcutsGroup": "Kısayollar",
       "shortcut": {
         "title": "Guidy Kısayolları",
         "description": "Sesle yazma kaydını başlatmak için klavye kısayollarını yapılandırın",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Gelişmiş",
+      "description": "Başlangıç, yapıştırma, transkripsiyon ayarları ve geçmiş.",
       "groups": {
         "app": "Uygulama",
         "output": "Çıktı",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Son İşlem",
+      "description": "Transkripsiyonu yapıştırılmadan önce bir yapay zekâ modeliyle düzeltin veya yeniden yazın.",
       "hotkey": {
         "title": "Kısayol Tuşu"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Sağlayıcı",
           "description": "OpenAI veya Anthropic uyumlu bir sağlayıcı seçin."
+        },
+        "builtin": {
+          "label": "Yerleşik model (bu Mac'te)",
+          "description": "Bu Mac'te yerel bir model çalıştırır. Hiçbir şey bilgisayarınızdan çıkmaz.",
+          "manage": "Yerleşik modelleri yönet"
         },
         "apiFormat": {
           "title": "API Biçimi",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API Anahtarı",
           "description": "Seçili sağlayıcı için API anahtarı.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "API anahtarı kaydedilemedi"
         },
         "model": {
           "title": "Model",
@@ -600,6 +682,10 @@
         "title": "Sürüm",
         "description": "Guidy'nin mevcut sürümü"
       },
+      "author": {
+        "title": "Geliştiren",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "Uygulama Veri Dizini",
         "description": "Guidy'nin verilerini sakladığı konum"
@@ -621,6 +707,12 @@
           "description": "Cihaz üzerinde makine öğrenmesi çıkarımı için yüksek performanslı tensör kütüphanesi",
           "details": "Guidy'nin yerel konuşmadan metne dönüştürme özelliği transcribe.cpp ve ggml üzerine kuruludur. Georgi Gerganov'a ve katkıda bulunanlara harika çalışmaları için teşekkür ederiz."
         }
+      },
+      "hero": {
+        "headline": "Bu Mac'te kalan konuşmadan metne dönüştürme",
+        "lede": "Bir kısayola basın, konuşun; Guidy odaktaki uygulamaya yazsın. Transkripsiyon yerelde çalışır.",
+        "engine": "Motor",
+        "model": "Model"
       },
       "whatsNewUpdates": {
         "label": "Yenilikleri Göster",
@@ -706,5 +798,561 @@
     "learnMore": "Bu nasıl düzeltilir",
     "recorderBlocked": "Şu anda kısayol kaydedilemiyor — macOS Secure Input tuş olaylarını engelliyor. Önce Secure Input uyarısını giderin.",
     "dismiss": "Kapat"
+  },
+  "meetings": {
+    "title": "Toplantılar",
+    "selection": {
+      "hint": "Birkaç satırı etiketlemek için sürükleyin veya Shift ile tıklayın",
+      "count_one": "{{count}} satır seçildi",
+      "count_other": "{{count}} satır seçildi",
+      "keys": "Shift-tıklama: aralık · ⌘-tıklama: ekle veya çıkar · Esc: temizle",
+      "setSpeaker": "Konuşmacıyı ayarla",
+      "clear": "Temizle"
+    },
+    "speakersRedo": {
+      "action": "Konuşmacıları yeniden bul",
+      "tooltip": "Konuşmacıları {{model}} ile yeniden ayırt edin. Transkript olduğu gibi kalır. Etiketlediğiniz satırlar ve adlandırdığınız konuşmacılar kişilerini korur; geri kalanı sese göre yeniden eşleştirilir.",
+      "standard": "Standart konuşmacı modeli",
+      "download": "{{size}} indirme, bir kez",
+      "error": "Konuşmacılar yeniden bulunamadı",
+      "confirmTitle": "Konuşmacılar Deepgram ile bulunsun mu?",
+      "confirmDeepgram": "Bu toplantıdaki diğer katılımcıların sesi, onları ayırt etmek için yaklaşık {{cost}} karşılığında Deepgram'e yüklenir. Transkript olduğu gibi kalır.",
+      "confirmDeepgramUnpriced": "Bu toplantıdaki diğer katılımcıların sesi, onları ayırt etmek için Deepgram'e yüklenir. Transkript olduğu gibi kalır."
+    },
+    "day": {
+      "today": "Bugün",
+      "tomorrow": "Yarın",
+      "yesterday": "Dün"
+    },
+    "copy": {
+      "summary": "Kopyala",
+      "transcript": "Transkripti kopyala",
+      "copied": "Kopyalandı"
+    },
+    "redo": {
+      "action": "Transkripti yeniden oluştur",
+      "localTitle": "Bu Mac'te",
+      "cloudTitle": "Bulut",
+      "error": "Yeniden transkripsiyon başlatılamadı",
+      "issueRepetition": "Bu transkriptin bazı bölümleri kendini tekrarlıyor; bu genellikle modelin sesi takip edemediği anlamına gelir.",
+      "issueTooFewWords": "Bu transkriptte konuşma süresine göre beklenenden çok daha az kelime var, bu yüzden toplantının bazı bölümleri muhtemelen kaçırıldı.",
+      "issueHint": "Bulut modeli zor seslerde genellikle daha iyi sonuç verir.",
+      "tooltip": "{{model}} ile yeniden transkribe edin. Transkript ve konuşmacılar değiştirilir; adlandırdığınız kişiler sese göre yeniden eşleştirilir.",
+      "more": "Diğer modeller",
+      "noKeyShort": "API anahtarı gerekir (Toplantılar › Ayarlar › Yapay Zekâ)",
+      "confirmTitle": "{{provider}} ile transkribe edilsin mi?",
+      "confirmCloud": "Bu toplantının sesi {{provider}} hizmetine yüklenir ve yaklaşık {{cost}} karşılığında {{model}} ile transkribe edilir. Transkript ve konuşmacılar değiştirilir.",
+      "confirmCloudUnpriced": "Bu toplantının sesi {{provider}} hizmetine yüklenir ve {{model}} ile transkribe edilir. Transkript ve konuşmacılar değiştirilir."
+    },
+    "widget": {
+      "recording": "Kaydediliyor",
+      "paused": "Duraklatıldı",
+      "you": "Siz",
+      "others": "Diğerleri",
+      "mic": "Mikrofon",
+      "system": "Sistem sesi",
+      "liveStarting": "Transkripsiyon modeli yükleniyor…",
+      "liveListening": "Dinleniyor. İnsanlar konuştukça satırlar burada görünür.",
+      "liveOff": "Canlı transkripsiyon kapalı. Toplantılar › Ayarlar'dan açın.",
+      "liveUnavailable": "Canlı transkripsiyon kullanılamıyor: {{reason}}",
+      "pause": "Duraklat",
+      "resume": "Sürdür",
+      "stop": "Durdur",
+      "openNotes": "Notları aç",
+      "expand": "Canlı transkripti göster",
+      "collapse": "Daralt",
+      "liveTitle": "Canlı transkript",
+      "liveHint": "Şu ana kadar duyulanlar. Konuşmacı adlarıyla tam transkript toplantı bittiğinde oluşturulur."
+    },
+    "description": "Bu Mac'te bir toplantıyı kaydedin, ardından transkripti adlandırılmış konuşmacılarla okuyun.",
+    "init": {
+      "starting": "Toplantı notları başlatılıyor...",
+      "failed": "Toplantı notları başlatılamadı",
+      "retry": "Tekrar dene",
+      "keyMissing": {
+        "title": "Toplantı notlarının şifresi çözülemiyor",
+        "description": "Toplantı notlarının şifreleme anahtarı Anahtar Zinciri'nde yok veya mevcut toplantı notlarınızla eşleşmiyor, bu yüzden notlar açılamıyor. Anahtarı geri yükleyebiliyorsanız (örneğin bir Anahtar Zinciri yedeğinden) bunu yapın ve Tekrar dene'yi seçin. Aksi halde baştan başlamak için sıfırlayın: eski toplantı notlarınız silinmez, kenara taşınır."
+      },
+      "reset": {
+        "action": "Toplantı notları verilerini sıfırla",
+        "title": "Toplantı notları verileri sıfırlansın mı?",
+        "confirm": "Mevcut toplantı notlarınız ve kayıtlarınız Guidy'nin veri klasöründeki \"meetings-unreadable\" klasörüne taşınacak (hiçbir şey silinmez) ve yeni bir şifreleme anahtarı oluşturulacak. Guidy eski notları gösteremeyecek."
+      }
+    },
+    "errors": {
+      "unavailable": "Toplantı notları bu Mac'te kullanılamıyor.",
+      "modelMissing": "Toplantı transkripsiyon modeli ({{name}}) henüz indirilmedi.",
+      "modelUnknown": "Toplantı modeli {{name}} yüklü değil. Ayarlar'dan başka bir toplantı modeli seçin.",
+      "speakerModelMissing": "Toplantılar > Ayarlar'dan konuşmacı tanıma modelini indirin, ardından toplantıyı işleyin.",
+      "noLinearKey": "Önce Ayarlar'dan bir Linear API anahtarı ekleyin.",
+      "linearUnauthorized": "Linear API anahtarını reddetti. Ayarlar'dan kontrol edin."
+    },
+    "model": {
+      "download": "Toplantı modelini indir",
+      "downloadError": "Toplantı modeli indirilemedi"
+    },
+    "tabs": {
+      "meetings": "Toplantılar",
+      "people": "Kişiler",
+      "settings": "Ayarlar"
+    },
+    "recorder": {
+      "start": "Toplantı notlarını başlat",
+      "stop": "Toplantı notlarını durdur",
+      "recording": "Kaydediliyor",
+      "idle": "Kayıt yapılmıyor",
+      "startError": "Kayıt başlatılamadı",
+      "stopError": "Kayıt durdurulamadı",
+      "disabled": "Kayıt yapmak için Ayarlar'dan toplantı notlarını açın."
+    },
+    "upcoming": {
+      "title": "Yaklaşan",
+      "empty": "Görüşme bağlantısı olan yaklaşan takvim toplantısı yok.",
+      "start": "Başlat"
+    },
+    "list": {
+      "title": "Kayıtlar",
+      "empty": "Henüz toplantı yok. Kaydetmek için toplantı notlarını başlatın.",
+      "loading": "Toplantılar yükleniyor...",
+      "loadError": "Toplantılar yüklenemedi",
+      "speakerModelMissing": "Konuşmacı tanıma modeli indirilene kadar kayıtlar işlenmez.",
+      "minutes": "{{count}} dk",
+      "open": "Aç",
+      "rename": "Yeniden adlandır",
+      "delete": "Sil",
+      "process": "İşle",
+      "retry": "Tekrar dene",
+      "cancelProcessing": "İşlemeyi iptal et",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "titlePlaceholder": "Toplantı başlığı",
+      "deleteTitle": "Toplantı silinsin mi?",
+      "deleteConfirm": "\"{{title}}\" transkripti ve sesiyle birlikte silinecek. Ses izleri korunur.",
+      "deleteError": "Toplantı silinemedi",
+      "renameError": "Toplantı yeniden adlandırılamadı",
+      "processError": "İşleme başlatılamadı",
+      "cancelError": "İşleme iptal edilemedi"
+    },
+    "status": {
+      "recording": "Kaydediliyor",
+      "recorded": "İşlenmedi",
+      "processing": "İşleniyor",
+      "processed": "Hazır",
+      "failed": "Başarısız"
+    },
+    "stage": {
+      "decode": "Ses çözülüyor",
+      "vad": "Konuşma bulunuyor",
+      "transcribe": "Transkribe ediliyor",
+      "voiceprints": "Ses izleri hesaplanıyor",
+      "cluster": "Konuşmacılar gruplanıyor",
+      "merge": "Kanallar birleştiriliyor",
+      "done": "Tamamlandı"
+    },
+    "detail": {
+      "back": "Tüm toplantılar",
+      "transcript": "Transkript",
+      "empty": "Henüz transkript yok. Oluşturmak için toplantıyı işleyin.",
+      "loading": "Transkript yükleniyor...",
+      "loadError": "Toplantı yüklenemedi",
+      "playError": "Bu bölüm oynatılamadı",
+      "play": "Buradan oynat",
+      "you": "Siz",
+      "speakers": "Konuşmacılar",
+      "attendees": "Katılımcılar",
+      "duration": "Süre",
+      "words": "Kelime",
+      "talkTime": "Konuşma süresi",
+      "share": "Pay",
+      "youSpoke": "Konuştuğunuz",
+      "minutes": "Dk"
+    },
+    "speaker": {
+      "rename": "Bu konuşmacıyı adlandır",
+      "confirm": "Onaylansın mı?",
+      "confirmAction": "Onayla",
+      "change": "Değiştir",
+      "suggestions": "Öneriler",
+      "attendee": "Katılımcı",
+      "knownPerson": "Bilinen kişi",
+      "noSuggestions": "Öneri yok",
+      "newPerson": "Yeni kişi",
+      "namePlaceholder": "Ad",
+      "emailPlaceholder": "E-posta (isteğe bağlı)",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "assignError": "Konuşmacı adlandırılamadı",
+      "confirmError": "Konuşmacı onaylanamadı",
+      "unnamed": "Konuşmacı {{n}}",
+      "unknown": "Bilinmiyor",
+      "whoIsThis": "Bu kim?",
+      "whoSaidThis": "Bunu kim söyledi?"
+    },
+    "people": {
+      "title": "Kişiler",
+      "description": "Toplantılarda adlandırdığınız kişiler. Guidy sonraki toplantılarda seslerini tanır.",
+      "empty": "Henüz kişi yok. Eklemek için bir toplantıda bir konuşmacıyı adlandırın.",
+      "loadError": "Kişiler yüklenemedi",
+      "voiceprints_one": "{{count}} ses izi",
+      "voiceprints_other": "{{count}} ses izi",
+      "edit": "Düzenle",
+      "merge": "Birleştir",
+      "mergeInto": "Şununla birleştir...",
+      "mergeHint": "Tutulacak kişiyi seçin. Ses izleri ve konuşmacı adları bu kişiye taşınır.",
+      "mergeIntoName": "{{name}} ile birleştir",
+      "samples": {
+        "hint": "Önce ses izlerini dinleyin: her biri bir toplantının tek bir satırından alındı.",
+        "none": "Ses izi yok.",
+        "play": "Oynat",
+        "pause": "Duraklat",
+        "noText": "(kelime yok)",
+        "noLine": "Alındığı satır artık yok",
+        "audioDeleted": "ses silindi",
+        "loadError": "Ses izleri yüklenemedi"
+      },
+      "mergeTitle": "Kişiler birleştirilsin mi?",
+      "mergeConfirm": "{{from}}, {{into}} ile birleştirilecek ve ardından kaldırılacak.",
+      "mergeError": "Kişiler birleştirilemedi",
+      "delete": "Sil",
+      "deleteTitle": "Kişi silinsin mi?",
+      "deleteConfirm": "{{name}} ve kayıtlı {{count}} ses izi silinecek. Guidy gelecekteki toplantılarda bu kişinin sesini tanımayacak.",
+      "deleteError": "Kişi silinemedi",
+      "renameError": "Kişi güncellenemedi",
+      "namePlaceholder": "Ad",
+      "emailPlaceholder": "E-posta (isteğe bağlı)",
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "voice": {
+        "title": "Sesiniz",
+        "notRecorded": "Kaydedilmedi",
+        "recordedTitle": "Kaydedildi",
+        "description": "Yüz yüze toplantılarda Guidy'nin sizi odadaki diğer kişilerden ayırt edebilmesi için sesinizden kısa bir örnek kaydedin.",
+        "recorded": "Bundan sonra işlenen toplantılarda yalnızca size benzeyen konuşmalar siz olarak etiketlenir. Uygulamak için eski toplantıları yeniden işleyin.",
+        "record": "Sesimi kaydet",
+        "recordAgain": "Yeniden kaydet",
+        "starting": "Mikrofon açılıyor...",
+        "recording": "Kaydediliyor",
+        "readAloud": "Bunu normal sesinizle yüksek sesle okuyun, ardından Bitti'ye basın.",
+        "passage": "Bir toplantıya katıldığımda genellikle gündeme ve geçen seferki notlara bakarak başlarım. Sonra son konuşmamızdan bu yana nelerin değiştiğini, nelerin tıkandığını ve sonraki adımları kimin üstleneceğini konuşuruz. Bir konuda karar gerekiyorsa, kimse başka bir toplantıyı beklemek zorunda kalmasın diye kararı görüşme bitmeden vermeye çalışırız. Ardından orada bulunan herkesle kısa bir özet paylaşırım.",
+        "done": "Bitti",
+        "saving": "Sesiniz kaydediliyor...",
+        "loadError": "Sesiniz yüklenemedi",
+        "recordError": "Kayıt başlatılamadı",
+        "saveError": "Sesiniz kaydedilemedi",
+        "deleteTitle": "Sesiniz silinsin mi?",
+        "deleteConfirm": "Kaydedilen sesiniz silinecek. Guidy tüm mikrofon konuşmalarını yeniden siz olarak etiketleyecek.",
+        "deleteError": "Sesiniz silinemedi"
+      }
+    },
+    "settings": {
+      "general": "Toplantı notları",
+      "enabled": {
+        "title": "Toplantı notları",
+        "description": "Toplantıları mikrofonunuz ve bilgisayarınızın sesiyle kaydedin. Bunu açmak takvim, sistem sesi ve bildirim erişimi ister."
+      },
+      "permissions": {
+        "title": "İzinler",
+        "calendar": "Takvim",
+        "systemAudio": "Sistem sesi",
+        "microphone": "Mikrofon",
+        "notifications": "Bildirimler",
+        "granted": "Verildi",
+        "denied": "Verilmedi",
+        "error": "İzinler istenemedi",
+        "requestAgain": "Yeniden iste",
+        "openSettings": "Sistem Ayarları'nı Aç"
+      },
+      "you": "Siz",
+      "userName": {
+        "title": "Adınız",
+        "description": "Mikrofon kanalınız her zaman bu adla etiketlenir.",
+        "placeholder": "Adınız"
+      },
+      "userEmails": {
+        "title": "E-posta adresleri",
+        "description": "Toplantılara katıldığınız tüm adresler (kişisel ve iş gibi). Bunlardan biri bir toplantı davetinde varsa, o katılımcı sizsiniz.",
+        "labelPlaceholder": "Etiket, ör. İş",
+        "emailPlaceholder": "ad@example.com",
+        "noLabel": "Etiket yok",
+        "add": "Ekle",
+        "remove": "Bu adresi kaldır",
+        "invalid": "Bu geçerli bir e-posta adresi değil.",
+        "duplicate": "Bu adres zaten listede."
+      },
+      "recording": "Kayıt",
+      "meetingModel": {
+        "title": "Transkripsiyon modeli",
+        "usesDictation": "Toplantılar dikte modelinizi kullanır: {{name}}.",
+        "noDictation": "Henüz bir dikte modeli indirilmedi. Modeller sayfasından bir tane indirin veya toplantılar için bir model seçin.",
+        "separate": "Farklı bir model kullan",
+        "choice": "Toplantı modeli",
+        "choiceDescription": "Parakeet kelime düzeyinde zamanlama verir; bu, insanlar birbirinin sözünü kestiğinde işe yarar.",
+        "notDownloaded": "{{name}} (indirilmedi)",
+        "chosenMissing": "{{name}} henüz indirilmedi. İndirilene kadar toplantılar dikte modelinizi kullanır.",
+        "chosenUnknown": "{{name}} yüklü değil. Başka bir model seçin veya \"Farklı bir model kullan\" seçeneğini kapatın."
+      },
+      "separation": {
+        "title": "Sesleri ayırt etme",
+        "description": "Her satırı kimin söylediğine karar veren konuşmacı modeli. Büyük modeller benzer sesleri daha iyi ayırt eder, ancak daha fazla yer kaplar ve işlemeyi yavaşlatır. Adlandırdığınız kişiler her zaman standart modelle tanınır, bu yüzden model değiştirmek ses izlerini korur.",
+        "downloaded": "İndirildi.",
+        "notDownloaded": "Seçildiğinde indirilir.",
+        "downloading": "İndiriliyor...",
+        "delete": "Bu modeli sil ({{size}})",
+        "downloadError": "Konuşmacı modeli indirilemedi",
+        "deleteError": "Konuşmacı modeli silinemedi",
+        "about": {
+          "resnet34": "Standart. Küçük ve hızlı; adlandırdığınız kişileri de tanır.",
+          "cam_plus_plus": "Neredeyse aynı boyutta ve en hızlısı.",
+          "resnet152": "Benzer seslerde daha iyi; işleme yaklaşık 3 kat uzun sürer.",
+          "titanet_large": "NVIDIA'dan; telefon görüşmeleriyle de eğitildiği için görüşme sesine uygun olabilir. Standart model kadar hızlı.",
+          "resnet293": "Buradaki en doğru model; işleme yaklaşık 6 kat uzun sürer."
+        }
+      },
+      "speakerModel": {
+        "title": "Konuşmacı tanıma",
+        "description": "Sesleri ayırt eder ve daha önce adlandırdığınız kişileri tanır. {{name}} ({{trainedOn}}), {{size}} kullanır. Yalnızca İndir'e tıkladığınızda indirilir.",
+        "ready": "İndirildi",
+        "download": "İndir ({{size}})",
+        "retry": "İndirmeyi tekrar dene",
+        "failed": "İndirme başarısız: {{error}}"
+      },
+      "retention": {
+        "title": "Toplantı sesini sakla",
+        "description": "Ham ses bu süreden sonra silinir. Transkriptler ve ses izleri korunur.",
+        "days3": "3 gün",
+        "days7": "7 gün",
+        "days30": "30 gün",
+        "forever": "Süresiz"
+      },
+      "mcp": {
+        "group": "Diğer uygulamalar",
+        "title": "MCP sunucusu",
+        "description": "Bu Mac'teki Claude veya Cursor gibi yapay zekâ uygulamalarının toplantı listenizi, özetlerinizi ve transkriptlerinizi okumasına izin verin. Yalnızca yerel ve salt okunur.",
+        "url": "Sunucu URL'si (Streamable HTTP)",
+        "stdio": "Komut (yalnızca stdio sunucuları çalıştıran uygulamalar için)",
+        "failed": "MCP sunucusu {{port}} portunda başlatılamadı. Başka bir uygulama kullanıyor olabilir."
+      },
+      "calendarNotifications": {
+        "title": "Takvim bildirimleri",
+        "description": "Görüşme bağlantısı olan bir takvim toplantısı başladığında not almayı önerir."
+      },
+      "recordingControls": {
+        "title": "Kayıt denetimleri",
+        "description": "Toplantı kaydedilirken duraklatma, durdurma ve canlı transkriptin nerede duracağı.",
+        "floating": "Kayan, ekran kenarında",
+        "notch": "Çentiğin çevresinde"
+      },
+      "deepgram": {
+        "title": "Deepgram API anahtarı",
+        "description": "Bir toplantının konuşmacılarını, görüşmelerde sesleri iyi ayırt eden Deepgram ile bulutta yeniden bulmanızı sağlar. Anahtar Zinciri'nde saklanır.",
+        "placeholder": "Bir anahtar yapıştırıp Enter'a basın",
+        "saved": "Kaydedildi",
+        "remove": "Kaldır",
+        "error": "Deepgram anahtarı kaydedilemedi"
+      },
+      "liveTranscription": {
+        "title": "Canlı transkripsiyon",
+        "description": "Toplantıyı gerçekleşirken bu Mac'te transkribe edin. Tam transkript yine toplantıdan sonra oluşturulur.",
+        "model": "Canlı transkripsiyon modeli",
+        "modelDescription": "Görüşmedeyken en iyi küçük ve hızlı bir model yetişir. Toplantıdan sonra oluşturulan transkript toplantı modelini kullanır.",
+        "sameModel": "Toplantılarla aynı"
+      },
+      "reminderInterval": {
+        "title": "Hatırlatma aralığı",
+        "description": "Toplantının bitmesi gereken zamandan sonra \"hâlâ kaydediyor\" hatırlatmaları arasındaki dakika.",
+        "minutes": "{{count}} dk"
+      },
+      "advanced": {
+        "title": "Gelişmiş",
+        "show": "Gelişmiş ayarları göster",
+        "hide": "Gelişmiş ayarları gizle",
+        "matchThreshold": {
+          "title": "Otomatik eşleşme eşiği",
+          "description": "Bir konuşmacının otomatik olarak adlandırılması için gereken en düşük ses benzerliği. Bunun altında eşleşme \"Onaylansın mı?\" diye sorar."
+        },
+        "suggestThreshold": {
+          "title": "Öneri eşiği",
+          "description": "Bunun altındaki ses benzerliğinde bilinen bir kişi hiç önerilmez."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Kaydet",
+      "cancel": "İptal",
+      "delete": "Sil",
+      "loading": "Yükleniyor..."
+    },
+    "summary": {
+      "heading": "Özet",
+      "actionItems": "Yapılacaklar",
+      "generate": "Özet oluştur",
+      "regenerate": "Yeniden oluştur",
+      "regenerateWith": "Şununla yeniden oluştur...",
+      "generateWith": "{{model}} ile oluştur",
+      "otherModels": "Diğer modeller",
+      "otherModel": "Başka model…",
+      "generating": "Toplantı özetleniyor...",
+      "generatingLocal": "Toplantı özetleniyor. Yerel bir modelle bu birkaç dakika sürebilir.",
+      "progress": "Özetleniyor ({{done}}/{{total}} adım)",
+      "empty": "Henüz özet yok. Transkriptten bir tane oluşturun.",
+      "untitled": "Başlıksız toplantı",
+      "edit": "Düzenle",
+      "title": "Başlık",
+      "shortSummary": "Kısa özet",
+      "shortSummaryPlaceholder": "Toplantının konusu, birkaç cümleyle",
+      "decisions": "Kararlar",
+      "topics": "Konular",
+      "linesPlaceholder": "Her satıra bir tane",
+      "onePerLine": "Kararlar ve konular: her satıra bir tane.",
+      "none": "Yok",
+      "generatedBy": "{{model}} ile oluşturuldu",
+      "generatedByCost": "{{model}} ile oluşturuldu · {{cost}} · {{input}} giriş / {{output}} çıkış token",
+      "generatedByTokens": "{{model}} ile oluşturuldu · {{input}} giriş / {{output}} çıkış token",
+      "pickerTitle": "Bu özetin modeli",
+      "pickerDescription": "Farklı bir sağlayıcı ve modelle yeniden oluşturun. Ayarlardaki toplantı modeliniz değişmez. Zaten bir Linear görevi olan yapılacaklar korunur.",
+      "run": "Oluştur",
+      "noItems": "Yapılacak yok.",
+      "newItemPlaceholder": "Yapılacak ekle",
+      "addItem": "Ekle",
+      "deleteItem": "Yapılacağı sil",
+      "due": "Bitiş",
+      "duePlaceholder": "ör. 2026-10-31",
+      "jumpToMoment": "Bu anı transkriptte oynat",
+      "owner": {
+        "title": "Sorumlu",
+        "none": "Sorumlu yok",
+        "me": "Ben",
+        "meNamed": "Ben ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear görevleri",
+      "draft": "Görev taslağı oluştur",
+      "approveSelected": "Seçilenleri onayla ({{count}})",
+      "createApproved": "Onaylananları oluştur ({{count}})",
+      "noKey": "Yapılacakları göreve dönüştürmek için Linear'ı bağlayın.",
+      "openSettings": "Ayarları aç",
+      "noItems": "Göreve dönüştürülecek yapılacak yok.",
+      "notDrafted": "Burada incelemek için yapılacaklardan görev taslakları oluşturun.",
+      "approve": "Onayla",
+      "approveTip": "Bu görevi oluşturulmak üzere işaretleyin. Onaylananları oluştur'a tıklayana kadar hiçbir şey oluşturulmaz.",
+      "needsTeam": "Onaylamadan önce bir ekip seçin",
+      "unapprove": "Onayı kaldır",
+      "discard": "At",
+      "restore": "Geri yükle",
+      "edit": "Başlığı ve açıklamayı düzenle",
+      "approved": "Onaylandı",
+      "draftState": "Taslak",
+      "created": "Linear'da oluşturuldu",
+      "alreadyExisted": "Zaten Linear'da: yeni bir şey oluşturulmadı",
+      "createFailed": "Oluşturulmadı: {{error}}",
+      "issue": "Görev",
+      "team": "Ekip",
+      "pickTeam": "Ekip seçin",
+      "project": "Proje",
+      "noProject": "Proje yok",
+      "assignee": "Atanan",
+      "unassigned": "Atanmamış",
+      "labels": "Etiketler",
+      "addLabel": "Etiket ekle",
+      "labelCount": "{{count}} etiket",
+      "priority": {
+        "title": "Öncelik",
+        "none": "Öncelik yok",
+        "urgent": "Acil",
+        "high": "Yüksek",
+        "medium": "Orta",
+        "low": "Düşük"
+      }
+    },
+    "llm": {
+      "heading": "Özetler",
+      "provider": "Sağlayıcı",
+      "providerDescription": "Toplantı özetleri ve yapılacaklar için kullanılan model. Dikte son işlemi kendi sağlayıcısını korur.",
+      "builtin": "Yerleşik (bu Mac'te)",
+      "builtinDescription": "llama.cpp ile yerel bir model çalıştırır. Hiçbir şey Mac'inizden çıkmaz.",
+      "model": "Model",
+      "modelDescription": "Modellerinize eklemek için bir modeli işaretleyin. Yalnızca metin üreten modeller listelenir. \"Özetler için iyi\", modelin özetlerin dayandığı yapılandırılmış çıktıyı desteklediği anlamına gelir.",
+      "modelPlaceholder": "Model kimliği",
+      "pickModel": "Model seçin",
+      "noLocalModels": "Aşağıdan bir model indirin",
+      "usingPostProcessModel": "Son işlem modeli kullanılıyor ({{model}})",
+      "refreshModels": "Yenile",
+      "testConnection": "Bağlantıyı test et",
+      "testDescription": "Sağlayıcının, anahtarın ve modelin çalıştığını kontrol edin.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Apple Intelligence'ın açık olduğu Apple silicon Mac'lerde cihaz üzerinde çalışan model.",
+      "appleAvailable": "Kullanılabilir",
+      "appleUnavailable": "Apple Intelligence bu Mac'te kullanılamıyor",
+      "activeHeading": "Özetleri oluşturan",
+      "place": "Özetlerin çalıştığı yer",
+      "placeDescription": "Yalnızca seçili seçenek kullanılır.",
+      "tabCloud": "Bulut sağlayıcısı",
+      "tabLocal": "Bu Mac'te",
+      "onThisMac": "Bu Mac · çevrimdışı",
+      "apiKey": "API anahtarı",
+      "apiKeyDescription": "Anahtar Zinciri'nizde saklanır ve Son İşlem ile paylaşılır.",
+      "getKey": "{{provider}} anahtarı alın",
+      "modelDescriptionCustom": "Uç noktanızın beklediği model kimliğini yazıp eklemek için Enter'a basın veya listelediklerinden birini işaretleyin.",
+      "searchModels": "Model ara",
+      "goodOnly": "Özetler için iyi",
+      "goodForSummaries": "özetler",
+      "reasoning": "akıl yürütme",
+      "unknownModel": "kayıtta yok",
+      "noModels": "Eşleşen model yok.",
+      "context": "{{n}} bağlam",
+      "free": "ücretsiz",
+      "modelCount": "{{shown}}/{{total}} model",
+      "registryBundled": "Model ayrıntıları models.dev'den (uygulamayla birlikte gelir)",
+      "registryUpdated": "Model ayrıntıları models.dev'den, güncellenme: {{when}}",
+      "justNow": "az önce",
+      "minutesAgo": "{{n}} dk önce",
+      "hoursAgo": "{{n}} sa önce",
+      "daysAgo": "{{n}} gün önce",
+      "needsKey": "{{provider}} API anahtarınızı ekleyin",
+      "needsModel": "Bir {{provider}} modeli seçin",
+      "needsLocalModel": "Bu Mac'te özetlemek için bir model indirin",
+      "localDescription": "Bu Mac'te çevrimdışı çalışır. İndirilmiş bir model seçin.",
+      "appleUnavailableHint": "Bu Mac'te kullanılamıyor. Sistem Ayarları > Apple Intelligence ve Siri'den açın.",
+      "unavailable": "kullanılamıyor",
+      "yourModels": "Modelleriniz",
+      "yourModelsDescription": "Özet oluştur buradaki tüm modelleri sunar, böylece her toplantı için birini seçebilirsiniz. Seçili olan varsayılandır.",
+      "yourModelsEmpty": "Henüz bulut modeli yok. Aşağıdan bir sağlayıcı seçin, API anahtarını ekleyin ve istediğiniz modelleri işaretleyin.",
+      "default": "varsayılan",
+      "removeModel": "Modellerinizden kaldır",
+      "addFrom": "Şuradan model ekle",
+      "addFromDescription": "Anahtarını girmek ve eklenecek modelleri işaretlemek için bir sağlayıcı seçin. Bu, varsayılanı değiştirmez."
+    },
+    "local": {
+      "heading": "Yerel modeller",
+      "empty": "Kullanılabilir yerleşik model yok.",
+      "default": "Varsayılan",
+      "recommendedRam": "{{gb}} GB+ RAM için önerilir",
+      "notEnoughRam": "Bu Mac'in belleği bu model için önerilenden az.",
+      "downloaded": "İndirildi",
+      "download": "İndir",
+      "downloading": "%{{percentage}} indiriliyor"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Kişisel API anahtarı",
+      "keyDescription": "macOS Anahtar Zinciri'nizde saklanır. Yapılacaklardan görev taslağı ve görev oluşturmak için kullanılır.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Anahtar Zinciri'nizde bir anahtar kayıtlı.",
+      "noKey": "Kayıtlı anahtar yok.",
+      "getKey": "linear.app/settings/api adresinde bir anahtar oluşturun",
+      "removeKey": "Anahtarı kaldır",
+      "test": "Bağlantıyı test et",
+      "testDescription": "Anahtarı Linear ile kontrol edin.",
+      "connectedAs": "{{name}} olarak bağlandı"
+    },
+    "byok": {
+      "testConnection": "Bağlantıyı test et",
+      "testDescription": "Temel URL'yi, API anahtarını ve modeli küçük bir istekle kontrol edin.",
+      "baseUrlEditable": "Bu sağlayıcının API temel URL'si. Tüm {placeholder} alanlarını değiştirin (ör. Cloudflare hesap kimliğiniz).",
+      "cloudflareHint": "Cloudflare: hesap kimliğinizi (AI Gateway için ağ geçidi kimliğini de) temel URL'ye girin."
+    }
   }
 }

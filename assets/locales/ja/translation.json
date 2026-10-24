@@ -7,7 +7,23 @@
     "model": "モデル",
     "quit": "終了",
     "cancel": "キャンセル",
-    "secureInputWarning": "⚠ Secure Input でショートカットがブロック中"
+    "secureInputWarning": "⚠ Secure Input でショートカットがブロック中",
+    "startMeetingNotes": "会議メモを開始",
+    "stopMeetingNotes": "会議メモを停止",
+    "pauseMeetingNotes": "録音を一時停止",
+    "resumeMeetingNotes": "録音を再開",
+    "meetingPaused": "一時停止中",
+    "meetingStillRecording": "Guidy はまだ録音中です",
+    "meetingStop": "停止",
+    "meetingKeepGoing": "続ける",
+    "meetingTakeNotesFor": "{{title}} のメモを取りますか？",
+    "meetingStart": "開始",
+    "meetingUntitled": "会議"
+  },
+  "notch": {
+    "pause": "録音を一時停止",
+    "resume": "録音を再開",
+    "stop": "会議メモを停止"
   },
   "sidebar": {
     "general": "一般",
@@ -16,7 +32,58 @@
     "postProcessing": "後処理",
     "history": "履歴",
     "debug": "デバッグ",
+    "usage": "使用状況",
     "about": "概要"
+  },
+  "usage": {
+    "title": "使用状況",
+    "description": "クラウド AI プロバイダーにかかった費用と、この Mac 上でモデルが処理した作業量。",
+    "cloud": "クラウド",
+    "local": "この Mac",
+    "refresh": "更新",
+    "total": "合計費用",
+    "last30Days": "過去30日間",
+    "callsTitle": "呼び出し",
+    "byModel": "モデル別",
+    "byFeature": "機能別",
+    "empty": "クラウド AI の呼び出しはまだありません。",
+    "calls_one": "{{count}}回の呼び出し",
+    "calls_other": "{{count}}回の呼び出し",
+    "average": "平均 {{cost}}",
+    "highest": "最高 {{cost}}",
+    "tokens": "入力 {{input}} / 出力 {{output}} トークン",
+    "unknownPrice": "価格不明",
+    "feature": {
+      "dictation": "音声入力",
+      "meetingTranscription": "会議の文字起こし",
+      "meetingSummary": "会議の要約",
+      "other": "その他"
+    },
+    "localAudio": "文字起こしした音声",
+    "localWords": "単語数",
+    "localTokens": "LLM トークン",
+    "localCloudEquivalent": "クラウド換算",
+    "localEmpty": "ローカルモデルはまだ実行されていません。",
+    "localByModel": "ローカルモデル",
+    "localByFeature": "機能別のローカル処理",
+    "kind": {
+      "transcription": "文字起こし",
+      "llm": "内蔵 LLM"
+    },
+    "runs_one": "{{count}}回実行",
+    "runs_other": "{{count}}回実行",
+    "audio": "音声 {{duration}}",
+    "words": "{{count}}語",
+    "realtime": "実時間の {{speed}}",
+    "promptSpeed": "プロンプト {{speed}}",
+    "generationSpeed": "生成 {{speed}}",
+    "loadTime": "読み込み {{time}}",
+    "localNote": "実時間比は「音声の長さ ÷ 処理時間」で、読み込み時間は含みません。話しながらリアルタイムでデコードされる音声入力は計測されません。クラウド換算は音声1分あたり ${{price}} (OpenAI Whisper) で計算しています。",
+    "estimateNote": "~ は公開されているトークン単価から推定した金額です。独自に費用を報告するプロバイダー (OpenRouter など) の金額は正確です。請求額はプロバイダーのダッシュボードで確認してください。",
+    "reportedNote": "金額はプロバイダーが報告した値です。請求額はプロバイダーのダッシュボードで確認してください。",
+    "clear": "履歴を消去",
+    "clearTitle": "使用履歴を消去しますか？",
+    "clearConfirm": "記録された呼び出し、費用、ローカルモデルの実行履歴が削除されます。会議の要約に表示されている使用量は残ります。"
   },
   "onboarding": {
     "subtitle": "開始するには、文字起こしのモデルを選択してください",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "精度",
-      "speed": "速度"
+      "speed": "速度",
+      "size": "サイズ"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "{{language}}のみ",
       "streaming": "話しながらリアルタイムで文字起こしを表示"
     },
+    "download": "ダウンロード",
+    "use": "使用",
     "cancel": "キャンセル",
     "cancelDownload": "ダウンロードをキャンセル",
     "legacy": "旧式"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "一般",
+      "description": "音声入力の開始方法、認識する言語、再生されるサウンド。",
+      "shortcutsGroup": "ショートカット",
       "shortcut": {
         "title": "Guidy ショートカット",
         "description": "音声録音を開始するキーボードショートカットを設定",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "詳細設定",
+      "description": "起動、貼り付け、文字起こしの調整、履歴。",
       "groups": {
         "app": "アプリ",
         "output": "出力",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "後処理",
+      "description": "貼り付ける前に、AI モデルで文字起こしを整えたり書き直したりします。",
       "hotkey": {
         "title": "ショートカット"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "プロバイダー",
           "description": "OpenAI 互換または Anthropic 互換のプロバイダーを選択。"
+        },
+        "builtin": {
+          "label": "内蔵モデル (この Mac 上)",
+          "description": "この Mac 上でローカルモデルを実行します。データがコンピューターの外に出ることはありません。",
+          "manage": "内蔵モデルを管理"
         },
         "apiFormat": {
           "title": "API 形式",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API キー",
           "description": "選択したプロバイダーの API キー。",
-          "placeholder": "sk-…"
+          "placeholder": "sk-…",
+          "saveFailed": "API キーを保存できませんでした"
         },
         "model": {
           "title": "モデル",
@@ -600,6 +682,10 @@
         "title": "バージョン",
         "description": "Guidy の現在のバージョン"
       },
+      "author": {
+        "title": "制作",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "アプリデータディレクトリ",
         "description": "Guidy がデータを保存する場所"
@@ -621,6 +707,12 @@
           "description": "オンデバイス機械学習推論のための高性能テンソルライブラリ",
           "details": "Guidy のローカルの音声からテキストへの文字起こしは transcribe.cpp と ggml を基盤としています。Georgi Gerganov 氏と貢献者の皆様の素晴らしい仕事に感謝します。"
         }
+      },
+      "hero": {
+        "headline": "この Mac の中で完結する音声入力",
+        "lede": "ショートカットを押して話すだけで、Guidy がフォーカス中のアプリに入力します。文字起こしはローカルで実行されます。",
+        "engine": "エンジン",
+        "model": "モデル"
       },
       "whatsNewUpdates": {
         "label": "新機能を表示",
@@ -706,5 +798,561 @@
     "learnMore": "解決方法",
     "recorderBlocked": "現在ショートカットを記録できません。macOS の Secure Input がキーイベントをブロックしています。先に Secure Input の警告を解消してください。",
     "dismiss": "閉じる"
+  },
+  "meetings": {
+    "title": "会議",
+    "selection": {
+      "hint": "ドラッグまたは Shift-クリックで複数の行にタグ付け",
+      "count_one": "{{count}}行を選択中",
+      "count_other": "{{count}}行を選択中",
+      "keys": "Shift-クリック: 範囲選択 · ⌘-クリック: 追加/解除 · Esc: クリア",
+      "setSpeaker": "話者を設定",
+      "clear": "クリア"
+    },
+    "speakersRedo": {
+      "action": "話者をやり直す",
+      "tooltip": "{{model}} で話者を改めて識別します。文字起こしはそのまま残ります。タグ付けした行と名前を付けた話者は人物が維持され、それ以外は声で再照合されます。",
+      "standard": "標準の話者モデル",
+      "download": "{{size}} のダウンロード (初回のみ)",
+      "error": "話者をやり直せませんでした",
+      "confirmTitle": "Deepgram で話者を識別しますか？",
+      "confirmDeepgram": "話者を区別するため、この会議の他の参加者の音声が Deepgram にアップロードされます。費用は約 {{cost}} です。文字起こしはそのまま残ります。",
+      "confirmDeepgramUnpriced": "話者を区別するため、この会議の他の参加者の音声が Deepgram にアップロードされます。文字起こしはそのまま残ります。"
+    },
+    "day": {
+      "today": "今日",
+      "tomorrow": "明日",
+      "yesterday": "昨日"
+    },
+    "copy": {
+      "summary": "コピー",
+      "transcript": "文字起こしをコピー",
+      "copied": "コピーしました"
+    },
+    "redo": {
+      "action": "文字起こしをやり直す",
+      "localTitle": "この Mac",
+      "cloudTitle": "クラウド",
+      "error": "文字起こしを再開できませんでした",
+      "issueRepetition": "この文字起こしには同じ内容の繰り返しがあります。通常、モデルが音声を追えなくなったことを意味します。",
+      "issueTooFewWords": "この文字起こしは発話時間に比べて単語数がかなり少ないため、会議の一部が抜けている可能性があります。",
+      "issueHint": "聞き取りにくい音声では、クラウドモデルの方が良い結果になることがよくあります。",
+      "tooltip": "{{model}} で文字起こしをやり直します。文字起こしと話者は置き換えられ、名前を付けた人物は声で再照合されます。",
+      "more": "その他のモデル",
+      "noKeyShort": "API キーが必要 (会議 › 設定 › AI)",
+      "confirmTitle": "{{provider}} で文字起こししますか？",
+      "confirmCloud": "この会議の音声が {{provider}} にアップロードされ、{{model}} で文字起こしされます。費用は約 {{cost}} です。文字起こしと話者は置き換えられます。",
+      "confirmCloudUnpriced": "この会議の音声が {{provider}} にアップロードされ、{{model}} で文字起こしされます。文字起こしと話者は置き換えられます。"
+    },
+    "widget": {
+      "recording": "録音中",
+      "paused": "一時停止中",
+      "you": "あなた",
+      "others": "他の参加者",
+      "mic": "マイク",
+      "system": "システムオーディオ",
+      "liveStarting": "文字起こしモデルを読み込み中…",
+      "liveListening": "聞き取り中。発言するとここに表示されます。",
+      "liveOff": "ライブ文字起こしはオフです。会議 › 設定 でオンにしてください。",
+      "liveUnavailable": "ライブ文字起こしを利用できません: {{reason}}",
+      "pause": "一時停止",
+      "resume": "再開",
+      "stop": "停止",
+      "openNotes": "メモを開く",
+      "expand": "ライブ文字起こしを表示",
+      "collapse": "折りたたむ",
+      "liveTitle": "ライブ文字起こし",
+      "liveHint": "ここまでに聞き取った内容です。話者名付きの完全な文字起こしは会議の終了後に作成されます。"
+    },
+    "description": "この Mac で会議を録音し、話者名付きの文字起こしを読めます。",
+    "init": {
+      "starting": "会議メモを開始中…",
+      "failed": "会議メモを開始できませんでした",
+      "retry": "再試行",
+      "keyMissing": {
+        "title": "会議メモを復号できません",
+        "description": "会議メモの暗号化キーがキーチェーンにないか、既存の会議メモと一致しないため、開くことができません。キーを復元できる場合 (キーチェーンのバックアップからなど) は、復元してから「再試行」を選んでください。復元できない場合はリセットして最初からやり直してください。古い会議メモは削除されず、別の場所に移動されます。"
+      },
+      "reset": {
+        "action": "会議メモのデータをリセット",
+        "title": "会議メモのデータをリセットしますか？",
+        "confirm": "現在の会議メモと録音は、Guidy のデータフォルダー内の「meetings-unreadable」フォルダーに移動され (何も削除されません)、新しい暗号化キーが作成されます。Guidy では古いメモを表示できなくなります。"
+      }
+    },
+    "errors": {
+      "unavailable": "この Mac では会議メモを利用できません。",
+      "modelMissing": "会議の文字起こしモデル ({{name}}) がまだダウンロードされていません。",
+      "modelUnknown": "会議モデル {{name}} はインストールされていません。設定で別の会議モデルを選択してください。",
+      "speakerModelMissing": "会議 > 設定 で話者認識モデルをダウンロードしてから、会議を処理してください。",
+      "noLinearKey": "先に設定で Linear の API キーを追加してください。",
+      "linearUnauthorized": "Linear に API キーが拒否されました。設定で確認してください。"
+    },
+    "model": {
+      "download": "会議モデルをダウンロード",
+      "downloadError": "会議モデルをダウンロードできませんでした"
+    },
+    "tabs": {
+      "meetings": "会議",
+      "people": "人物",
+      "settings": "設定"
+    },
+    "recorder": {
+      "start": "会議メモを開始",
+      "stop": "会議メモを停止",
+      "recording": "録音中",
+      "idle": "録音していません",
+      "startError": "録音を開始できませんでした",
+      "stopError": "録音を停止できませんでした",
+      "disabled": "録音するには、設定で会議メモをオンにしてください。"
+    },
+    "upcoming": {
+      "title": "今後の予定",
+      "empty": "通話リンク付きの今後のカレンダー会議はありません。",
+      "start": "開始"
+    },
+    "list": {
+      "title": "録音",
+      "empty": "まだ会議がありません。会議メモを開始して録音しましょう。",
+      "loading": "会議を読み込み中…",
+      "loadError": "会議を読み込めませんでした",
+      "speakerModelMissing": "話者認識モデルをダウンロードするまで、録音は処理されません。",
+      "minutes": "{{count}}分",
+      "open": "開く",
+      "rename": "名前を変更",
+      "delete": "削除",
+      "process": "処理",
+      "retry": "再試行",
+      "cancelProcessing": "処理をキャンセル",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "titlePlaceholder": "会議のタイトル",
+      "deleteTitle": "会議を削除しますか？",
+      "deleteConfirm": "「{{title}}」は文字起こしと音声とともに削除されます。声紋は保持されます。",
+      "deleteError": "会議を削除できませんでした",
+      "renameError": "会議の名前を変更できませんでした",
+      "processError": "処理を開始できませんでした",
+      "cancelError": "処理をキャンセルできませんでした"
+    },
+    "status": {
+      "recording": "録音中",
+      "recorded": "未処理",
+      "processing": "処理中",
+      "processed": "完了",
+      "failed": "失敗"
+    },
+    "stage": {
+      "decode": "音声をデコード中",
+      "vad": "発話を検出中",
+      "transcribe": "文字起こし中",
+      "voiceprints": "声紋を計算中",
+      "cluster": "話者をグループ化中",
+      "merge": "トラックを統合中",
+      "done": "完了"
+    },
+    "detail": {
+      "back": "すべての会議",
+      "transcript": "文字起こし",
+      "empty": "まだ文字起こしがありません。会議を処理して作成してください。",
+      "loading": "文字起こしを読み込み中…",
+      "loadError": "会議を読み込めませんでした",
+      "playError": "このセグメントを再生できませんでした",
+      "play": "ここから再生",
+      "you": "あなた",
+      "speakers": "話者",
+      "attendees": "参加者",
+      "duration": "時間",
+      "words": "単語数",
+      "talkTime": "発話時間",
+      "share": "割合",
+      "youSpoke": "あなたの発話",
+      "minutes": "分"
+    },
+    "speaker": {
+      "rename": "この話者に名前を付ける",
+      "confirm": "確認しますか？",
+      "confirmAction": "確認",
+      "change": "変更",
+      "suggestions": "候補",
+      "attendee": "参加者",
+      "knownPerson": "登録済みの人物",
+      "noSuggestions": "候補なし",
+      "newPerson": "新しい人物",
+      "namePlaceholder": "名前",
+      "emailPlaceholder": "メールアドレス (任意)",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "assignError": "話者に名前を付けられませんでした",
+      "confirmError": "話者を確認できませんでした",
+      "unnamed": "話者 {{n}}",
+      "unknown": "不明",
+      "whoIsThis": "この人は誰ですか？",
+      "whoSaidThis": "誰の発言ですか？"
+    },
+    "people": {
+      "title": "人物",
+      "description": "会議で名前を付けた人物です。Guidy は以降の会議でその人の声を認識します。",
+      "empty": "まだ人物がいません。会議で話者に名前を付けると追加されます。",
+      "loadError": "人物を読み込めませんでした",
+      "voiceprints_one": "声紋 {{count}}件",
+      "voiceprints_other": "声紋 {{count}}件",
+      "edit": "編集",
+      "merge": "統合",
+      "mergeInto": "統合先…",
+      "mergeHint": "残す人物を選んでください。声紋と話者名はその人物に移動されます。",
+      "mergeIntoName": "{{name}} に統合",
+      "samples": {
+        "hint": "まず声紋を聞いてください。それぞれ会議の1行から取得されています。",
+        "none": "声紋がありません。",
+        "play": "再生",
+        "pause": "一時停止",
+        "noText": "(発言なし)",
+        "noLine": "取得元の行はもう存在しません",
+        "audioDeleted": "音声は削除済み",
+        "loadError": "声紋を読み込めませんでした"
+      },
+      "mergeTitle": "人物を統合しますか？",
+      "mergeConfirm": "{{from}} は {{into}} に統合され、その後削除されます。",
+      "mergeError": "人物を統合できませんでした",
+      "delete": "削除",
+      "deleteTitle": "人物を削除しますか？",
+      "deleteConfirm": "{{name}} と保存されている声紋 {{count}}件が削除されます。今後の会議で Guidy はこの人の声を認識しなくなります。",
+      "deleteError": "人物を削除できませんでした",
+      "renameError": "人物を更新できませんでした",
+      "namePlaceholder": "名前",
+      "emailPlaceholder": "メールアドレス (任意)",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "voice": {
+        "title": "あなたの声",
+        "notRecorded": "未録音",
+        "recordedTitle": "録音済み",
+        "description": "対面の会議で Guidy があなたと同じ部屋にいる他の人を区別できるよう、あなたの声の短いサンプルを録音してください。",
+        "recorded": "今後処理する会議では、あなたに似た声の発言だけがあなたとしてラベル付けされます。過去の会議に適用するには再処理してください。",
+        "record": "自分の声を録音",
+        "recordAgain": "録音し直す",
+        "starting": "マイクを起動中…",
+        "recording": "録音中",
+        "readAloud": "普段の声でこれを読み上げてから、「完了」を押してください。",
+        "passage": "会議に参加するときは、たいていまず議題と前回のメモを確認します。それから、前回話してから何が変わったか、何が止まっているか、次の作業を誰が引き受けるかを順に確認します。決めるべきことがあれば、別の会議を待たなくて済むように、通話が終わる前に決めるようにしています。会議の後は、参加した全員に短い要約を共有します。",
+        "done": "完了",
+        "saving": "声を保存中…",
+        "loadError": "あなたの声を読み込めませんでした",
+        "recordError": "録音を開始できませんでした",
+        "saveError": "あなたの声を保存できませんでした",
+        "deleteTitle": "あなたの声を削除しますか？",
+        "deleteConfirm": "録音したあなたの声が削除されます。Guidy は再びマイクの音声をすべてあなたとしてラベル付けします。",
+        "deleteError": "あなたの声を削除できませんでした"
+      }
+    },
+    "settings": {
+      "general": "会議メモ",
+      "enabled": {
+        "title": "会議メモ",
+        "description": "マイクとコンピューターの音声で会議を録音します。オンにすると、カレンダー、システムオーディオ、通知へのアクセスを求められます。"
+      },
+      "permissions": {
+        "title": "権限",
+        "calendar": "カレンダー",
+        "systemAudio": "システムオーディオ",
+        "microphone": "マイク",
+        "notifications": "通知",
+        "granted": "許可済み",
+        "denied": "未許可",
+        "error": "権限をリクエストできませんでした",
+        "requestAgain": "再リクエスト",
+        "openSettings": "システム設定を開く"
+      },
+      "you": "あなた",
+      "userName": {
+        "title": "あなたの名前",
+        "description": "マイクのトラックには常にこの名前が付きます。",
+        "placeholder": "あなたの名前"
+      },
+      "userEmails": {
+        "title": "メールアドレス",
+        "description": "会議に参加するときに使うすべてのアドレス (個人用、仕事用など)。会議の招待にそのいずれかが含まれていれば、その参加者はあなたです。",
+        "labelPlaceholder": "ラベル (例: 仕事)",
+        "emailPlaceholder": "name@example.com",
+        "noLabel": "ラベルなし",
+        "add": "追加",
+        "remove": "このアドレスを削除",
+        "invalid": "有効なメールアドレスではありません。",
+        "duplicate": "このアドレスは既にリストにあります。"
+      },
+      "recording": "録音",
+      "meetingModel": {
+        "title": "文字起こしのモデル",
+        "usesDictation": "会議では音声入力のモデルを使用します: {{name}}。",
+        "noDictation": "音声入力のモデルがまだダウンロードされていません。モデルページでダウンロードするか、会議用のモデルを選択してください。",
+        "separate": "別のモデルを使用",
+        "choice": "会議用のモデル",
+        "choiceDescription": "Parakeet は単語単位のタイミングを出力するため、発言が重なる場面で役立ちます。",
+        "notDownloaded": "{{name}} (未ダウンロード)",
+        "chosenMissing": "{{name}} はまだダウンロードされていません。ダウンロードされるまで、会議では音声入力のモデルを使用します。",
+        "chosenUnknown": "{{name}} はインストールされていません。別のモデルを選択するか、「別のモデルを使用」をオフにしてください。"
+      },
+      "separation": {
+        "title": "声の識別",
+        "description": "各行の話者を判定する話者モデルです。大きいモデルほど似た声をよく区別できますが、容量が増え処理も遅くなります。名前を付けた人物は常に標準モデルで認識されるため、切り替えても声紋は保持されます。",
+        "downloaded": "ダウンロード済み。",
+        "notDownloaded": "選択するとダウンロードされます。",
+        "downloading": "ダウンロード中…",
+        "delete": "このモデルを削除 ({{size}})",
+        "downloadError": "話者モデルをダウンロードできませんでした",
+        "deleteError": "話者モデルを削除できませんでした",
+        "about": {
+          "resnet34": "標準。小さく高速で、名前を付けた人物の認識にも使われます。",
+          "cam_plus_plus": "同程度に小さく、最も高速です。",
+          "resnet152": "似た声に強く、処理時間は約3倍です。",
+          "titanet_large": "NVIDIA 製で、電話の音声でも学習されているため通話音声に向く場合があります。速度は標準モデルと同程度です。",
+          "resnet293": "この中で最も高精度で、処理時間は約6倍です。"
+        }
+      },
+      "speakerModel": {
+        "title": "話者認識",
+        "description": "声を区別し、以前名前を付けた人物を認識します。{{name}} ({{trainedOn}})、{{size}} を使用します。「ダウンロード」をクリックしたときだけダウンロードされます。",
+        "ready": "ダウンロード済み",
+        "download": "ダウンロード ({{size}})",
+        "retry": "ダウンロードを再試行",
+        "failed": "ダウンロードに失敗しました: {{error}}"
+      },
+      "retention": {
+        "title": "会議の音声を保持",
+        "description": "元の音声はこの期間が過ぎると削除されます。文字起こしと声紋は保持されます。",
+        "days3": "3日間",
+        "days7": "7日間",
+        "days30": "30日間",
+        "forever": "無期限"
+      },
+      "mcp": {
+        "group": "他のアプリ",
+        "title": "MCP サーバー",
+        "description": "Claude や Cursor など、この Mac 上の AI アプリが会議の一覧、要約、文字起こしを読めるようにします。ローカル限定かつ読み取り専用です。",
+        "url": "サーバー URL (Streamable HTTP)",
+        "stdio": "コマンド (stdio サーバーのみ対応のアプリ向け)",
+        "failed": "ポート {{port}} で MCP サーバーを起動できませんでした。別のアプリが使用している可能性があります。"
+      },
+      "calendarNotifications": {
+        "title": "カレンダー通知",
+        "description": "通話リンク付きのカレンダー会議が始まったときに、メモを取るか確認します。"
+      },
+      "recordingControls": {
+        "title": "録音コントロール",
+        "description": "会議の録音中に、一時停止、停止、ライブ文字起こしを表示する場所。",
+        "floating": "画面端にフローティング表示",
+        "notch": "ノッチの周囲"
+      },
+      "deepgram": {
+        "title": "Deepgram API キー",
+        "description": "通話での声の区別に優れた Deepgram を使い、クラウドで会議の話者をやり直せるようにします。キーチェーンに保存されます。",
+        "placeholder": "キーを貼り付けて Enter を押す",
+        "saved": "保存済み",
+        "remove": "削除",
+        "error": "Deepgram のキーを保存できませんでした"
+      },
+      "liveTranscription": {
+        "title": "ライブ文字起こし",
+        "description": "会議の進行中に、この Mac 上で文字起こしします。完全な文字起こしは会議の後にも作成されます。",
+        "model": "ライブ文字起こしのモデル",
+        "modelDescription": "通話中は、小さく高速なモデルが最も遅れずに追従できます。会議後の文字起こしには会議用のモデルが使われます。",
+        "sameModel": "会議と同じ"
+      },
+      "reminderInterval": {
+        "title": "リマインダーの間隔",
+        "description": "会議の終了予定時刻を過ぎた後の「まだ録音中」リマインダーの間隔 (分)。",
+        "minutes": "{{count}}分"
+      },
+      "advanced": {
+        "title": "詳細設定",
+        "show": "詳細設定を表示",
+        "hide": "詳細設定を隠す",
+        "matchThreshold": {
+          "title": "自動照合のしきい値",
+          "description": "声の類似度がこの値以上の場合、話者に自動で名前が付きます。これを下回ると「確認しますか？」と表示されます。"
+        },
+        "suggestThreshold": {
+          "title": "候補表示のしきい値",
+          "description": "声の類似度がこの値を下回る場合、登録済みの人物は候補に表示されません。"
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "保存",
+      "cancel": "キャンセル",
+      "delete": "削除",
+      "loading": "読み込み中…"
+    },
+    "summary": {
+      "heading": "要約",
+      "actionItems": "アクションアイテム",
+      "generate": "要約を生成",
+      "regenerate": "再生成",
+      "regenerateWith": "モデルを選んで再生成…",
+      "generateWith": "{{model}} で生成",
+      "otherModels": "その他のモデル",
+      "otherModel": "その他のモデル…",
+      "generating": "会議を要約中…",
+      "generatingLocal": "会議を要約中です。ローカルモデルでは数分かかることがあります。",
+      "progress": "要約中 ({{done}}/{{total}} ステップ)",
+      "empty": "まだ要約がありません。文字起こしから生成してください。",
+      "untitled": "無題の会議",
+      "edit": "編集",
+      "title": "タイトル",
+      "shortSummary": "短い要約",
+      "shortSummaryPlaceholder": "会議の内容を数文で",
+      "decisions": "決定事項",
+      "topics": "トピック",
+      "linesPlaceholder": "1行に1つ",
+      "onePerLine": "決定事項とトピック: 1行に1つ。",
+      "none": "なし",
+      "generatedBy": "{{model}} で生成",
+      "generatedByCost": "{{model}} で生成 · {{cost}} · 入力 {{input}} / 出力 {{output}} トークン",
+      "generatedByTokens": "{{model}} で生成 · 入力 {{input}} / 出力 {{output}} トークン",
+      "pickerTitle": "この要約に使うモデル",
+      "pickerDescription": "別のプロバイダーとモデルで再生成します。設定の会議用モデルは変更されません。Linear の課題が作成済みのアクションアイテムは保持されます。",
+      "run": "生成",
+      "noItems": "アクションアイテムはありません。",
+      "newItemPlaceholder": "アクションアイテムを追加",
+      "addItem": "追加",
+      "deleteItem": "アクションアイテムを削除",
+      "due": "期限",
+      "duePlaceholder": "例: 2026-10-31",
+      "jumpToMoment": "文字起こしのこの場面を再生",
+      "owner": {
+        "title": "担当者",
+        "none": "担当者なし",
+        "me": "自分",
+        "meNamed": "自分 ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear チケット",
+      "draft": "チケットを下書き",
+      "approveSelected": "選択項目を承認 ({{count}})",
+      "createApproved": "承認済みを作成 ({{count}})",
+      "noKey": "アクションアイテムをチケットにするには Linear を接続してください。",
+      "openSettings": "設定を開く",
+      "noItems": "チケットにするアクションアイテムがありません。",
+      "notDrafted": "アクションアイテムからチケットを下書きすると、ここで確認できます。",
+      "approve": "承認",
+      "approveTip": "このチケットを作成対象にします。「承認済みを作成」をクリックするまで何も作成されません。",
+      "needsTeam": "承認する前にチームを選択してください",
+      "unapprove": "承認を取り消す",
+      "discard": "破棄",
+      "restore": "元に戻す",
+      "edit": "タイトルと説明を編集",
+      "approved": "承認済み",
+      "draftState": "下書き",
+      "created": "Linear に作成済み",
+      "alreadyExisted": "Linear に既に存在: 新たには作成されていません",
+      "createFailed": "未作成: {{error}}",
+      "issue": "課題",
+      "team": "チーム",
+      "pickTeam": "チームを選択",
+      "project": "プロジェクト",
+      "noProject": "プロジェクトなし",
+      "assignee": "担当者",
+      "unassigned": "未割り当て",
+      "labels": "ラベル",
+      "addLabel": "ラベルを追加",
+      "labelCount": "ラベル {{count}}件",
+      "priority": {
+        "title": "優先度",
+        "none": "優先度なし",
+        "urgent": "緊急",
+        "high": "高",
+        "medium": "中",
+        "low": "低"
+      }
+    },
+    "llm": {
+      "heading": "要約",
+      "provider": "プロバイダー",
+      "providerDescription": "会議の要約とアクションアイテムに使うモデル。音声入力の後処理は独自のプロバイダーを使い続けます。",
+      "builtin": "内蔵 (この Mac 上)",
+      "builtinDescription": "llama.cpp でローカルモデルを実行します。データが Mac の外に出ることはありません。",
+      "model": "モデル",
+      "modelDescription": "モデルにチェックを入れるとマイモデルに追加されます。テキストを出力するモデルのみ表示されます。「要約向け」は、要約に必要な構造化出力に対応したモデルです。",
+      "modelPlaceholder": "モデル ID",
+      "pickModel": "モデルを選択",
+      "noLocalModels": "下からモデルをダウンロード",
+      "usingPostProcessModel": "後処理のモデル ({{model}}) を使用中",
+      "refreshModels": "更新",
+      "testConnection": "接続をテスト",
+      "testDescription": "プロバイダー、キー、モデルが機能するか確認します。",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Apple Intelligence がオンになっている Apple Silicon Mac で動作するオンデバイスモデル。",
+      "appleAvailable": "利用可能",
+      "appleUnavailable": "この Mac では Apple Intelligence を利用できません",
+      "activeHeading": "要約の生成元",
+      "place": "要約の実行場所",
+      "placeDescription": "選択したオプションのみが使用されます。",
+      "tabCloud": "クラウドプロバイダー",
+      "tabLocal": "この Mac",
+      "onThisMac": "この Mac · オフライン",
+      "apiKey": "API キー",
+      "apiKeyDescription": "キーチェーンに保存され、後処理と共有されます。",
+      "getKey": "{{provider}} のキーを取得",
+      "modelDescriptionCustom": "エンドポイントが期待するモデル ID を入力して Enter で追加するか、一覧からチェックを入れてください。",
+      "searchModels": "モデルを検索",
+      "goodOnly": "要約向け",
+      "goodForSummaries": "要約",
+      "reasoning": "推論",
+      "unknownModel": "レジストリ未登録",
+      "noModels": "一致するモデルがありません。",
+      "context": "{{n}} ctx",
+      "free": "無料",
+      "modelCount": "{{shown}}/{{total}} モデル",
+      "registryBundled": "models.dev のモデル情報 (アプリに同梱)",
+      "registryUpdated": "models.dev のモデル情報 ({{when}}に更新)",
+      "justNow": "たった今",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前",
+      "needsKey": "{{provider}} の API キーを追加してください",
+      "needsModel": "{{provider}} のモデルを選択してください",
+      "needsLocalModel": "この Mac で要約するにはモデルをダウンロードしてください",
+      "localDescription": "この Mac 上でオフラインで実行します。ダウンロード済みのモデルを選択してください。",
+      "appleUnavailableHint": "この Mac では利用できません。システム設定 > Apple Intelligence と Siri でオンにしてください。",
+      "unavailable": "利用不可",
+      "yourModels": "マイモデル",
+      "yourModelsDescription": "「要約を生成」ではここにあるすべてのモデルが表示され、会議ごとに選べます。選択したモデルがデフォルトです。",
+      "yourModelsEmpty": "クラウドモデルはまだありません。下でプロバイダーを選び、API キーを追加して、使いたいモデルにチェックを入れてください。",
+      "default": "デフォルト",
+      "removeModel": "マイモデルから削除",
+      "addFrom": "モデルの追加元",
+      "addFromDescription": "プロバイダーを選んでキーを入力し、追加するモデルにチェックを入れてください。デフォルトは変更されません。"
+    },
+    "local": {
+      "heading": "ローカルモデル",
+      "empty": "利用可能な内蔵モデルがありません。",
+      "default": "デフォルト",
+      "recommendedRam": "{{gb}} GB 以上の RAM を推奨",
+      "notEnoughRam": "この Mac のメモリは、このモデルの推奨量より少なくなっています。",
+      "downloaded": "ダウンロード済み",
+      "download": "ダウンロード",
+      "downloading": "ダウンロード中 {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "個人用 API キー",
+      "keyDescription": "macOS のキーチェーンに保存されます。アクションアイテムからチケットを下書き・作成するのに使います。",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "キーはキーチェーンに保存されています。",
+      "noKey": "キーは保存されていません。",
+      "getKey": "linear.app/settings/api でキーを作成",
+      "removeKey": "キーを削除",
+      "test": "接続をテスト",
+      "testDescription": "Linear でキーを確認します。",
+      "connectedAs": "{{name}} として接続中"
+    },
+    "byok": {
+      "testConnection": "接続をテスト",
+      "testDescription": "小さなリクエストでベース URL、API キー、モデルを確認します。",
+      "baseUrlEditable": "このプロバイダーの API ベース URL。{placeholder} はすべて置き換えてください (例: Cloudflare のアカウント ID)。",
+      "cloudflareHint": "Cloudflare: ベース URL にアカウント ID (AI Gateway の場合はゲートウェイ ID も) を入力してください。"
+    }
   }
 }

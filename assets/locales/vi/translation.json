@@ -7,7 +7,23 @@
     "model": "Mô hình",
     "quit": "Thoát",
     "cancel": "Hủy",
-    "secureInputWarning": "⚠ Phím tắt bị Secure Input chặn"
+    "secureInputWarning": "⚠ Phím tắt bị Secure Input chặn",
+    "startMeetingNotes": "Bắt đầu ghi chú cuộc họp",
+    "stopMeetingNotes": "Dừng ghi chú cuộc họp",
+    "pauseMeetingNotes": "Tạm dừng ghi âm",
+    "resumeMeetingNotes": "Tiếp tục ghi âm",
+    "meetingPaused": "Đã tạm dừng",
+    "meetingStillRecording": "Guidy vẫn đang ghi âm",
+    "meetingStop": "Dừng",
+    "meetingKeepGoing": "Tiếp tục",
+    "meetingTakeNotesFor": "Ghi chú cho {{title}}?",
+    "meetingStart": "Bắt đầu",
+    "meetingUntitled": "Cuộc họp"
+  },
+  "notch": {
+    "pause": "Tạm dừng ghi âm",
+    "resume": "Tiếp tục ghi âm",
+    "stop": "Dừng ghi chú cuộc họp"
   },
   "sidebar": {
     "general": "Chung",
@@ -16,7 +32,58 @@
     "postProcessing": "Xử lý sau",
     "history": "Lịch sử",
     "debug": "Gỡ lỗi",
+    "usage": "Mức sử dụng",
     "about": "Giới thiệu"
+  },
+  "usage": {
+    "title": "Mức sử dụng",
+    "description": "Chi phí của các nhà cung cấp AI đám mây và khối lượng công việc các mô hình đã làm trên máy Mac này.",
+    "cloud": "Đám mây",
+    "local": "Trên máy Mac này",
+    "refresh": "Làm mới",
+    "total": "Tổng chi phí",
+    "last30Days": "30 ngày qua",
+    "callsTitle": "Lượt gọi",
+    "byModel": "Theo mô hình",
+    "byFeature": "Theo tính năng",
+    "empty": "Chưa có lượt gọi AI đám mây nào.",
+    "calls_one": "{{count}} lượt gọi",
+    "calls_other": "{{count}} lượt gọi",
+    "average": "TB {{cost}}",
+    "highest": "cao nhất {{cost}}",
+    "tokens": "{{input}} token vào / {{output}} token ra",
+    "unknownPrice": "chưa rõ giá",
+    "feature": {
+      "dictation": "Đọc chính tả",
+      "meetingTranscription": "Phiên âm cuộc họp",
+      "meetingSummary": "Tóm tắt cuộc họp",
+      "other": "Khác"
+    },
+    "localAudio": "Âm thanh đã phiên âm",
+    "localWords": "Số từ",
+    "localTokens": "Token LLM",
+    "localCloudEquivalent": "Tương đương đám mây",
+    "localEmpty": "Chưa có gì chạy trên mô hình cục bộ.",
+    "localByModel": "Mô hình cục bộ",
+    "localByFeature": "Công việc cục bộ theo tính năng",
+    "kind": {
+      "transcription": "Phiên âm",
+      "llm": "LLM tích hợp"
+    },
+    "runs_one": "{{count}} lần chạy",
+    "runs_other": "{{count}} lần chạy",
+    "audio": "{{duration}} âm thanh",
+    "words": "{{count}} từ",
+    "realtime": "{{speed}} thời gian thực",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "sinh {{speed}}",
+    "loadTime": "tải trong {{time}}",
+    "localNote": "Tốc độ thời gian thực là độ dài âm thanh ÷ thời gian xử lý, không tính thời gian tải; đọc chính tả được giải mã trực tiếp khi bạn nói thì không được đo. Giá tương đương đám mây tính âm thanh ở mức ${{price}} mỗi phút (OpenAI Whisper).",
+    "estimateNote": "~ đánh dấu số tiền ước tính theo giá mỗi token được công bố; các nhà cung cấp tự báo cáo chi phí (như OpenRouter) là chính xác. Hãy xem bảng điều khiển của nhà cung cấp để biết hóa đơn.",
+    "reportedNote": "Số tiền theo báo cáo của các nhà cung cấp. Hãy xem bảng điều khiển của nhà cung cấp để biết hóa đơn.",
+    "clear": "Xóa lịch sử",
+    "clearTitle": "Xóa lịch sử sử dụng?",
+    "clearConfirm": "Các lượt gọi, chi phí và lần chạy mô hình cục bộ đã ghi sẽ bị xóa. Mức sử dụng hiển thị trên bản tóm tắt cuộc họp vẫn được giữ."
   },
   "onboarding": {
     "subtitle": "Để bắt đầu, hãy chọn một mô hình chuyển đổi giọng nói",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "độ chính xác",
-      "speed": "tốc độ"
+      "speed": "tốc độ",
+      "size": "kích thước"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "Chỉ {{language}}",
       "streaming": "Hiển thị phiên âm trực tiếp khi bạn nói"
     },
+    "download": "Tải xuống",
+    "use": "Dùng",
     "cancel": "Hủy",
     "cancelDownload": "Hủy tải xuống",
     "legacy": "Cũ"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "Chung",
+      "description": "Cách bạn bắt đầu đọc chính tả, ngôn ngữ được nhận dạng và những gì bạn nghe thấy.",
+      "shortcutsGroup": "Phím tắt",
       "shortcut": {
         "title": "Phím tắt Guidy",
         "description": "Cấu hình phím tắt để kích hoạt ghi âm chuyển đổi giọng nói thành văn bản",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Nâng cao",
+      "description": "Khởi động, dán, tinh chỉnh chuyển đổi và lịch sử.",
       "groups": {
         "app": "Ứng dụng",
         "output": "Đầu ra",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Xử lý sau",
+      "description": "Làm sạch hoặc viết lại bản chép lời bằng mô hình AI trước khi dán.",
       "hotkey": {
         "title": "Phím tắt"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Nhà cung cấp",
           "description": "Chọn một nhà cung cấp tương thích OpenAI hoặc Anthropic."
+        },
+        "builtin": {
+          "label": "Mô hình tích hợp (trên máy Mac này)",
+          "description": "Chạy mô hình cục bộ trên máy Mac này. Không có gì rời khỏi máy tính của bạn.",
+          "manage": "Quản lý mô hình tích hợp"
         },
         "apiFormat": {
           "title": "Định dạng API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "Khóa API",
           "description": "Khóa API cho nhà cung cấp đã chọn.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Không thể lưu khóa API"
         },
         "model": {
           "title": "Mô hình",
@@ -600,6 +682,10 @@
         "title": "Phiên bản",
         "description": "Phiên bản hiện tại của Guidy"
       },
+      "author": {
+        "title": "Tác giả",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "Thư mục dữ liệu ứng dụng",
         "description": "Vị trí Guidy lưu trữ dữ liệu"
@@ -621,6 +707,12 @@
           "description": "Suy luận hiệu suất cao của mô hình nhận dạng giọng nói tự động Whisper của OpenAI",
           "details": "Guidy sử dụng ggml để xử lý chuyển đổi giọng nói thành văn bản nhanh, cục bộ. Cảm ơn công việc tuyệt vời của Georgi Gerganov và các cộng tác viên."
         }
+      },
+      "hero": {
+        "headline": "Giọng nói thành văn bản, ngay trên máy Mac này",
+        "lede": "Nhấn phím tắt, nói, và Guidy sẽ gõ vào ứng dụng đang mở. Việc phiên âm chạy cục bộ.",
+        "engine": "Công cụ",
+        "model": "Mô hình"
       },
       "whatsNewUpdates": {
         "label": "Hiển thị điểm mới",
@@ -706,5 +798,561 @@
     "learnMore": "Cách khắc phục",
     "recorderBlocked": "Hiện không thể ghi phím tắt — Secure Input của macOS đang chặn các sự kiện phím. Hãy xử lý cảnh báo Secure Input trước.",
     "dismiss": "Bỏ qua"
+  },
+  "meetings": {
+    "title": "Cuộc họp",
+    "selection": {
+      "hint": "Kéo hoặc Shift-nhấp để gắn thẻ nhiều dòng",
+      "count_one": "Đã chọn {{count}} dòng",
+      "count_other": "Đã chọn {{count}} dòng",
+      "keys": "Shift-nhấp: chọn dải · ⌘-nhấp: thêm hoặc bỏ · Esc: bỏ chọn",
+      "setSpeaker": "Đặt người nói",
+      "clear": "Bỏ chọn"
+    },
+    "speakersRedo": {
+      "action": "Phân biệt lại người nói",
+      "tooltip": "Phân biệt lại người nói bằng {{model}}. Bản chép lời được giữ nguyên. Các dòng bạn đã gắn thẻ và người nói bạn đã đặt tên vẫn giữ người của họ; phần còn lại được khớp lại theo giọng nói.",
+      "standard": "Mô hình người nói tiêu chuẩn",
+      "download": "Tải xuống {{size}}, một lần",
+      "error": "Không thể phân biệt lại người nói",
+      "confirmTitle": "Tìm người nói bằng Deepgram?",
+      "confirmDeepgram": "Âm thanh của những người tham gia khác trong cuộc họp này sẽ được tải lên Deepgram để phân biệt họ, với chi phí khoảng {{cost}}. Bản chép lời được giữ nguyên.",
+      "confirmDeepgramUnpriced": "Âm thanh của những người tham gia khác trong cuộc họp này sẽ được tải lên Deepgram để phân biệt họ. Bản chép lời được giữ nguyên."
+    },
+    "day": {
+      "today": "Hôm nay",
+      "tomorrow": "Ngày mai",
+      "yesterday": "Hôm qua"
+    },
+    "copy": {
+      "summary": "Sao chép",
+      "transcript": "Sao chép bản chép lời",
+      "copied": "Đã sao chép"
+    },
+    "redo": {
+      "action": "Phiên âm lại",
+      "localTitle": "Trên máy Mac này",
+      "cloudTitle": "Đám mây",
+      "error": "Không thể bắt đầu phiên âm lại",
+      "issueRepetition": "Một số phần của bản chép lời bị lặp lại, thường là do mô hình đã mất dấu âm thanh.",
+      "issueTooFewWords": "Bản chép lời này có ít từ hơn nhiều so với thời gian nói, nên có lẽ một số phần của cuộc họp đã bị bỏ sót.",
+      "issueHint": "Mô hình đám mây thường xử lý âm thanh khó tốt hơn.",
+      "tooltip": "Phiên âm lại bằng {{model}}. Thay thế bản chép lời và người nói; những người bạn đã đặt tên sẽ được khớp lại theo giọng nói.",
+      "more": "Mô hình khác",
+      "noKeyShort": "cần khóa API (Cuộc họp › Cài đặt › AI)",
+      "confirmTitle": "Phiên âm bằng {{provider}}?",
+      "confirmCloud": "Âm thanh của cuộc họp này sẽ được tải lên {{provider}} và phiên âm bằng {{model}}, với chi phí khoảng {{cost}}. Bản chép lời và người nói sẽ bị thay thế.",
+      "confirmCloudUnpriced": "Âm thanh của cuộc họp này sẽ được tải lên {{provider}} và phiên âm bằng {{model}}. Bản chép lời và người nói sẽ bị thay thế."
+    },
+    "widget": {
+      "recording": "Đang ghi âm",
+      "paused": "Đã tạm dừng",
+      "you": "Bạn",
+      "others": "Người khác",
+      "mic": "Micrô",
+      "system": "Âm thanh hệ thống",
+      "liveStarting": "Đang tải mô hình phiên âm…",
+      "liveListening": "Đang nghe. Các dòng sẽ xuất hiện ở đây khi mọi người nói.",
+      "liveOff": "Phiên âm trực tiếp đang tắt. Bật trong Cuộc họp › Cài đặt.",
+      "liveUnavailable": "Phiên âm trực tiếp không khả dụng: {{reason}}",
+      "pause": "Tạm dừng",
+      "resume": "Tiếp tục",
+      "stop": "Dừng",
+      "openNotes": "Mở ghi chú",
+      "expand": "Hiện bản chép lời trực tiếp",
+      "collapse": "Thu gọn",
+      "liveTitle": "Bản chép lời trực tiếp",
+      "liveHint": "Những gì nghe được đến giờ. Bản chép lời đầy đủ kèm tên người nói sẽ được tạo khi cuộc họp kết thúc."
+    },
+    "description": "Ghi âm cuộc họp trên máy Mac này, rồi đọc bản chép lời với tên người nói.",
+    "init": {
+      "starting": "Đang khởi động ghi chú cuộc họp...",
+      "failed": "Không thể khởi động ghi chú cuộc họp",
+      "retry": "Thử lại",
+      "keyMissing": {
+        "title": "Không thể giải mã ghi chú cuộc họp",
+        "description": "Khóa mã hóa ghi chú cuộc họp bị thiếu trong Chuỗi khóa hoặc không khớp với ghi chú cuộc họp hiện có, nên không thể mở chúng. Nếu bạn có thể khôi phục khóa (ví dụ từ bản sao lưu Chuỗi khóa), hãy làm vậy rồi chọn Thử lại. Nếu không, hãy đặt lại để bắt đầu mới: ghi chú cuộc họp cũ sẽ được chuyển sang chỗ khác, không bị xóa."
+      },
+      "reset": {
+        "action": "Đặt lại dữ liệu ghi chú cuộc họp",
+        "title": "Đặt lại dữ liệu ghi chú cuộc họp?",
+        "confirm": "Ghi chú cuộc họp và bản ghi âm hiện tại sẽ được chuyển vào thư mục \"meetings-unreadable\" trong thư mục dữ liệu của Guidy (không có gì bị xóa) và một khóa mã hóa mới sẽ được tạo. Guidy sẽ không thể hiển thị các ghi chú cũ."
+      }
+    },
+    "errors": {
+      "unavailable": "Ghi chú cuộc họp không khả dụng trên máy Mac này.",
+      "modelMissing": "Mô hình phiên âm cuộc họp ({{name}}) chưa được tải xuống.",
+      "modelUnknown": "Mô hình cuộc họp {{name}} chưa được cài đặt. Hãy chọn mô hình cuộc họp khác trong Cài đặt.",
+      "speakerModelMissing": "Hãy tải mô hình nhận dạng người nói trong Cuộc họp > Cài đặt, rồi xử lý cuộc họp.",
+      "noLinearKey": "Hãy thêm khóa API Linear trong Cài đặt trước.",
+      "linearUnauthorized": "Linear đã từ chối khóa API. Hãy kiểm tra lại trong Cài đặt."
+    },
+    "model": {
+      "download": "Tải mô hình cuộc họp",
+      "downloadError": "Không thể tải mô hình cuộc họp"
+    },
+    "tabs": {
+      "meetings": "Cuộc họp",
+      "people": "Mọi người",
+      "settings": "Cài đặt"
+    },
+    "recorder": {
+      "start": "Bắt đầu ghi chú cuộc họp",
+      "stop": "Dừng ghi chú cuộc họp",
+      "recording": "Đang ghi âm",
+      "idle": "Không ghi âm",
+      "startError": "Không thể bắt đầu ghi âm",
+      "stopError": "Không thể dừng ghi âm",
+      "disabled": "Bật ghi chú cuộc họp trong Cài đặt để ghi âm."
+    },
+    "upcoming": {
+      "title": "Sắp diễn ra",
+      "empty": "Không có cuộc họp sắp tới nào trong lịch có liên kết cuộc gọi.",
+      "start": "Bắt đầu"
+    },
+    "list": {
+      "title": "Bản ghi âm",
+      "empty": "Chưa có cuộc họp nào. Hãy bắt đầu ghi chú cuộc họp để ghi âm.",
+      "loading": "Đang tải cuộc họp...",
+      "loadError": "Không thể tải cuộc họp",
+      "speakerModelMissing": "Bản ghi âm sẽ chưa được xử lý cho đến khi mô hình nhận dạng người nói được tải xuống.",
+      "minutes": "{{count}} phút",
+      "open": "Mở",
+      "rename": "Đổi tên",
+      "delete": "Xóa",
+      "process": "Xử lý",
+      "retry": "Thử lại",
+      "cancelProcessing": "Hủy xử lý",
+      "save": "Lưu",
+      "cancel": "Hủy",
+      "titlePlaceholder": "Tiêu đề cuộc họp",
+      "deleteTitle": "Xóa cuộc họp?",
+      "deleteConfirm": "\"{{title}}\" sẽ bị xóa cùng bản chép lời và âm thanh. Vân giọng được giữ lại.",
+      "deleteError": "Không thể xóa cuộc họp",
+      "renameError": "Không thể đổi tên cuộc họp",
+      "processError": "Không thể bắt đầu xử lý",
+      "cancelError": "Không thể hủy xử lý"
+    },
+    "status": {
+      "recording": "Đang ghi âm",
+      "recorded": "Chưa xử lý",
+      "processing": "Đang xử lý",
+      "processed": "Sẵn sàng",
+      "failed": "Thất bại"
+    },
+    "stage": {
+      "decode": "Đang giải mã âm thanh",
+      "vad": "Đang tìm giọng nói",
+      "transcribe": "Đang phiên âm",
+      "voiceprints": "Đang tính vân giọng",
+      "cluster": "Đang nhóm người nói",
+      "merge": "Đang ghép các rãnh",
+      "done": "Xong"
+    },
+    "detail": {
+      "back": "Tất cả cuộc họp",
+      "transcript": "Bản chép lời",
+      "empty": "Chưa có bản chép lời. Hãy xử lý cuộc họp để tạo.",
+      "loading": "Đang tải bản chép lời...",
+      "loadError": "Không thể tải cuộc họp",
+      "playError": "Không thể phát đoạn này",
+      "play": "Phát từ đây",
+      "you": "Bạn",
+      "speakers": "Người nói",
+      "attendees": "Người tham dự",
+      "duration": "Thời lượng",
+      "words": "Số từ",
+      "talkTime": "Thời gian nói",
+      "share": "Tỷ lệ",
+      "youSpoke": "Bạn đã nói",
+      "minutes": "Phút"
+    },
+    "speaker": {
+      "rename": "Đặt tên người nói này",
+      "confirm": "Xác nhận?",
+      "confirmAction": "Xác nhận",
+      "change": "Thay đổi",
+      "suggestions": "Gợi ý",
+      "attendee": "Người tham dự",
+      "knownPerson": "Người đã biết",
+      "noSuggestions": "Không có gợi ý",
+      "newPerson": "Người mới",
+      "namePlaceholder": "Tên",
+      "emailPlaceholder": "Email (không bắt buộc)",
+      "save": "Lưu",
+      "cancel": "Hủy",
+      "assignError": "Không thể đặt tên người nói",
+      "confirmError": "Không thể xác nhận người nói",
+      "unnamed": "Người nói {{n}}",
+      "unknown": "Không rõ",
+      "whoIsThis": "Đây là ai?",
+      "whoSaidThis": "Ai đã nói câu này?"
+    },
+    "people": {
+      "title": "Mọi người",
+      "description": "Những người bạn đã đặt tên trong các cuộc họp. Guidy nhận ra giọng của họ trong các cuộc họp sau.",
+      "empty": "Chưa có ai. Hãy đặt tên một người nói trong cuộc họp để thêm.",
+      "loadError": "Không thể tải danh sách người",
+      "voiceprints_one": "{{count}} vân giọng",
+      "voiceprints_other": "{{count}} vân giọng",
+      "edit": "Sửa",
+      "merge": "Gộp",
+      "mergeInto": "Gộp vào...",
+      "mergeHint": "Chọn người cần giữ lại. Vân giọng và tên người nói sẽ được chuyển sang người đó.",
+      "mergeIntoName": "Gộp vào {{name}}",
+      "samples": {
+        "hint": "Hãy nghe các vân giọng trước: mỗi vân giọng được lấy từ một dòng trong cuộc họp.",
+        "none": "Không có vân giọng.",
+        "play": "Phát",
+        "pause": "Tạm dừng",
+        "noText": "(không có lời)",
+        "noLine": "Dòng gốc không còn nữa",
+        "audioDeleted": "đã xóa âm thanh",
+        "loadError": "Không thể tải vân giọng"
+      },
+      "mergeTitle": "Gộp người?",
+      "mergeConfirm": "{{from}} sẽ được gộp vào {{into}}, rồi bị xóa.",
+      "mergeError": "Không thể gộp người",
+      "delete": "Xóa",
+      "deleteTitle": "Xóa người này?",
+      "deleteConfirm": "{{name}} và {{count}} vân giọng đã lưu của họ sẽ bị xóa. Guidy sẽ không nhận ra giọng của họ trong các cuộc họp sau.",
+      "deleteError": "Không thể xóa người này",
+      "renameError": "Không thể cập nhật người này",
+      "namePlaceholder": "Tên",
+      "emailPlaceholder": "Email (không bắt buộc)",
+      "save": "Lưu",
+      "cancel": "Hủy",
+      "voice": {
+        "title": "Giọng của bạn",
+        "notRecorded": "Chưa ghi âm",
+        "recordedTitle": "Đã ghi âm",
+        "description": "Ghi âm một đoạn ngắn giọng của bạn để Guidy phân biệt bạn với những người khác trong phòng khi họp trực tiếp.",
+        "recorded": "Trong các cuộc họp được xử lý từ giờ, chỉ lời nói giống giọng bạn mới được gắn nhãn là bạn. Xử lý lại các cuộc họp cũ để áp dụng.",
+        "record": "Ghi âm giọng của tôi",
+        "recordAgain": "Ghi âm lại",
+        "starting": "Đang mở micrô...",
+        "recording": "Đang ghi âm",
+        "readAloud": "Hãy đọc to đoạn này bằng giọng bình thường, rồi nhấn Xong.",
+        "passage": "Khi tham gia một cuộc họp, tôi thường bắt đầu bằng việc xem chương trình họp và ghi chú từ lần trước. Sau đó chúng tôi điểm qua những gì đã thay đổi kể từ lần trao đổi trước, việc gì đang bị vướng và ai sẽ đảm nhận các bước tiếp theo. Nếu có việc cần quyết định, chúng tôi cố gắng quyết trước khi kết thúc cuộc gọi, để không ai phải chờ thêm một cuộc họp nữa. Sau đó tôi gửi một bản tóm tắt ngắn cho tất cả những người đã tham dự.",
+        "done": "Xong",
+        "saving": "Đang lưu giọng của bạn...",
+        "loadError": "Không thể tải giọng của bạn",
+        "recordError": "Không thể bắt đầu ghi âm",
+        "saveError": "Không thể lưu giọng của bạn",
+        "deleteTitle": "Xóa giọng của bạn?",
+        "deleteConfirm": "Giọng đã ghi âm của bạn sẽ bị xóa. Guidy sẽ lại gắn nhãn mọi lời nói từ micrô là bạn.",
+        "deleteError": "Không thể xóa giọng của bạn"
+      }
+    },
+    "settings": {
+      "general": "Ghi chú cuộc họp",
+      "enabled": {
+        "title": "Ghi chú cuộc họp",
+        "description": "Ghi âm cuộc họp bằng micrô và âm thanh máy tính của bạn. Khi bật, ứng dụng sẽ xin quyền truy cập lịch, âm thanh hệ thống và thông báo."
+      },
+      "permissions": {
+        "title": "Quyền",
+        "calendar": "Lịch",
+        "systemAudio": "Âm thanh hệ thống",
+        "microphone": "Micrô",
+        "notifications": "Thông báo",
+        "granted": "Đã cấp",
+        "denied": "Chưa cấp",
+        "error": "Không thể yêu cầu quyền",
+        "requestAgain": "Yêu cầu lại",
+        "openSettings": "Mở Cài đặt Hệ thống"
+      },
+      "you": "Bạn",
+      "userName": {
+        "title": "Tên của bạn",
+        "description": "Rãnh micrô của bạn luôn được gắn nhãn bằng tên này.",
+        "placeholder": "Tên của bạn"
+      },
+      "userEmails": {
+        "title": "Địa chỉ email",
+        "description": "Mọi địa chỉ bạn dùng để tham gia cuộc họp, như cá nhân và công việc. Nếu một trong số đó có trong lời mời họp, người tham dự đó là bạn.",
+        "labelPlaceholder": "Nhãn, ví dụ Công việc",
+        "emailPlaceholder": "name@example.com",
+        "noLabel": "Không có nhãn",
+        "add": "Thêm",
+        "remove": "Xóa địa chỉ này",
+        "invalid": "Đó không phải là địa chỉ email hợp lệ.",
+        "duplicate": "Địa chỉ đó đã có trong danh sách."
+      },
+      "recording": "Ghi âm",
+      "meetingModel": {
+        "title": "Mô hình phiên âm",
+        "usesDictation": "Cuộc họp dùng mô hình đọc chính tả của bạn: {{name}}.",
+        "noDictation": "Chưa tải mô hình đọc chính tả nào. Hãy tải một mô hình trên trang Mô hình, hoặc chọn mô hình cho cuộc họp.",
+        "separate": "Dùng mô hình khác",
+        "choice": "Mô hình cho cuộc họp",
+        "choiceDescription": "Parakeet cho mốc thời gian theo từng từ, hữu ích khi mọi người nói chồng lên nhau.",
+        "notDownloaded": "{{name}} (chưa tải xuống)",
+        "chosenMissing": "{{name}} chưa được tải xuống. Cuộc họp dùng mô hình đọc chính tả của bạn cho đến khi tải xong.",
+        "chosenUnknown": "{{name}} chưa được cài đặt. Hãy chọn mô hình khác, hoặc tắt \"Dùng mô hình khác\"."
+      },
+      "separation": {
+        "title": "Phân biệt giọng nói",
+        "description": "Mô hình người nói quyết định ai đã nói mỗi dòng. Mô hình lớn hơn phân biệt các giọng giống nhau tốt hơn, nhưng tốn nhiều dung lượng hơn và xử lý chậm hơn. Những người bạn đã đặt tên luôn được nhận dạng bằng mô hình tiêu chuẩn, nên khi chuyển đổi vân giọng của họ vẫn được giữ.",
+        "downloaded": "Đã tải xuống.",
+        "notDownloaded": "Tải xuống khi được chọn.",
+        "downloading": "Đang tải xuống...",
+        "delete": "Xóa mô hình này ({{size}})",
+        "downloadError": "Không thể tải mô hình người nói",
+        "deleteError": "Không thể xóa mô hình người nói",
+        "about": {
+          "resnet34": "Tiêu chuẩn. Nhỏ và nhanh, đồng thời nhận ra những người bạn đã đặt tên.",
+          "cam_plus_plus": "Nhỏ tương tự, và nhanh nhất.",
+          "resnet152": "Tốt hơn với các giọng giống nhau; xử lý lâu hơn khoảng 3 lần.",
+          "titanet_large": "Của NVIDIA, cũng được huấn luyện trên cuộc gọi điện thoại, có thể hợp với âm thanh cuộc gọi. Nhanh gần bằng mô hình tiêu chuẩn.",
+          "resnet293": "Chính xác nhất ở đây; xử lý lâu hơn khoảng 6 lần."
+        }
+      },
+      "speakerModel": {
+        "title": "Nhận dạng người nói",
+        "description": "Phân biệt giọng nói và nhận ra những người bạn đã đặt tên trước đó. Dùng {{name}} ({{trainedOn}}), {{size}}. Chỉ tải xuống khi bạn nhấn Tải xuống.",
+        "ready": "Đã tải xuống",
+        "download": "Tải xuống ({{size}})",
+        "retry": "Thử tải lại",
+        "failed": "Tải xuống thất bại: {{error}}"
+      },
+      "retention": {
+        "title": "Giữ âm thanh cuộc họp",
+        "description": "Âm thanh gốc sẽ bị xóa sau thời gian này. Bản chép lời và vân giọng được giữ lại.",
+        "days3": "3 ngày",
+        "days7": "7 ngày",
+        "days30": "30 ngày",
+        "forever": "Mãi mãi"
+      },
+      "mcp": {
+        "group": "Ứng dụng khác",
+        "title": "Máy chủ MCP",
+        "description": "Cho phép các ứng dụng AI trên máy Mac này, như Claude hoặc Cursor, đọc danh sách cuộc họp, bản tóm tắt và bản chép lời của bạn. Chỉ cục bộ và chỉ đọc.",
+        "url": "URL máy chủ (Streamable HTTP)",
+        "stdio": "Lệnh (cho ứng dụng chỉ chạy máy chủ stdio)",
+        "failed": "Không thể khởi động máy chủ MCP trên cổng {{port}}. Có thể ứng dụng khác đang dùng cổng này."
+      },
+      "calendarNotifications": {
+        "title": "Thông báo lịch",
+        "description": "Hỏi có ghi chú không khi một cuộc họp trong lịch có liên kết cuộc gọi bắt đầu."
+      },
+      "recordingControls": {
+        "title": "Điều khiển ghi âm",
+        "description": "Vị trí của nút tạm dừng, dừng và bản chép lời trực tiếp khi đang ghi âm cuộc họp.",
+        "floating": "Nổi, ở cạnh màn hình",
+        "notch": "Quanh tai thỏ"
+      },
+      "deepgram": {
+        "title": "Khóa API Deepgram",
+        "description": "Cho phép phân biệt lại người nói của cuộc họp trên đám mây bằng Deepgram, vốn phân biệt giọng nói tốt trong cuộc gọi. Được lưu trong Chuỗi khóa.",
+        "placeholder": "Dán khóa và nhấn Enter",
+        "saved": "Đã lưu",
+        "remove": "Xóa",
+        "error": "Không thể lưu khóa Deepgram"
+      },
+      "liveTranscription": {
+        "title": "Phiên âm trực tiếp",
+        "description": "Phiên âm cuộc họp trên máy Mac này ngay khi diễn ra. Bản chép lời đầy đủ vẫn được tạo sau cuộc họp.",
+        "model": "Mô hình phiên âm trực tiếp",
+        "modelDescription": "Mô hình nhỏ, nhanh theo kịp tốt nhất khi bạn đang trong cuộc gọi. Bản chép lời tạo sau cuộc họp dùng mô hình cuộc họp.",
+        "sameModel": "Giống cuộc họp"
+      },
+      "reminderInterval": {
+        "title": "Khoảng thời gian nhắc",
+        "description": "Số phút giữa các lời nhắc \"vẫn đang ghi âm\" sau khi cuộc họp lẽ ra đã kết thúc.",
+        "minutes": "{{count}} phút"
+      },
+      "advanced": {
+        "title": "Nâng cao",
+        "show": "Hiện cài đặt nâng cao",
+        "hide": "Ẩn cài đặt nâng cao",
+        "matchThreshold": {
+          "title": "Ngưỡng khớp tự động",
+          "description": "Độ tương đồng giọng nói từ mức này trở lên thì người nói được đặt tên tự động. Dưới mức này, kết quả khớp sẽ hỏi \"Xác nhận?\"."
+        },
+        "suggestThreshold": {
+          "title": "Ngưỡng gợi ý",
+          "description": "Độ tương đồng giọng nói dưới mức này thì người đã biết sẽ không được gợi ý."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Lưu",
+      "cancel": "Hủy",
+      "delete": "Xóa",
+      "loading": "Đang tải..."
+    },
+    "summary": {
+      "heading": "Tóm tắt",
+      "actionItems": "Việc cần làm",
+      "generate": "Tạo tóm tắt",
+      "regenerate": "Tạo lại",
+      "regenerateWith": "Tạo lại bằng...",
+      "generateWith": "Tạo bằng {{model}}",
+      "otherModels": "Mô hình khác",
+      "otherModel": "Mô hình khác…",
+      "generating": "Đang tóm tắt cuộc họp...",
+      "generatingLocal": "Đang tóm tắt cuộc họp. Với mô hình cục bộ, việc này có thể mất vài phút.",
+      "progress": "Đang tóm tắt ({{done}}/{{total}} bước)",
+      "empty": "Chưa có bản tóm tắt. Hãy tạo từ bản chép lời.",
+      "untitled": "Cuộc họp chưa đặt tên",
+      "edit": "Sửa",
+      "title": "Tiêu đề",
+      "shortSummary": "Tóm tắt ngắn",
+      "shortSummaryPlaceholder": "Nội dung cuộc họp, trong vài câu",
+      "decisions": "Quyết định",
+      "topics": "Chủ đề",
+      "linesPlaceholder": "Mỗi dòng một mục",
+      "onePerLine": "Quyết định và chủ đề: mỗi dòng một mục.",
+      "none": "Không có",
+      "generatedBy": "Tạo bằng {{model}}",
+      "generatedByCost": "Tạo bằng {{model}} · {{cost}} · {{input}} token vào / {{output}} token ra",
+      "generatedByTokens": "Tạo bằng {{model}} · {{input}} token vào / {{output}} token ra",
+      "pickerTitle": "Mô hình cho bản tóm tắt này",
+      "pickerDescription": "Tạo lại bằng nhà cung cấp và mô hình khác. Mô hình cuộc họp trong cài đặt vẫn giữ nguyên. Các việc cần làm đã có issue Linear sẽ được giữ lại.",
+      "run": "Tạo",
+      "noItems": "Không có việc cần làm.",
+      "newItemPlaceholder": "Thêm việc cần làm",
+      "addItem": "Thêm",
+      "deleteItem": "Xóa việc cần làm",
+      "due": "Hạn",
+      "duePlaceholder": "ví dụ 2026-10-31",
+      "jumpToMoment": "Phát thời điểm này trong bản chép lời",
+      "owner": {
+        "title": "Người phụ trách",
+        "none": "Chưa có người phụ trách",
+        "me": "Tôi",
+        "meNamed": "Tôi ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Ticket Linear",
+      "draft": "Soạn ticket",
+      "approveSelected": "Duyệt mục đã chọn ({{count}})",
+      "createApproved": "Tạo mục đã duyệt ({{count}})",
+      "noKey": "Kết nối Linear để biến việc cần làm thành ticket.",
+      "openSettings": "Mở cài đặt",
+      "noItems": "Không có việc cần làm nào để tạo ticket.",
+      "notDrafted": "Soạn ticket từ các việc cần làm để xem lại ở đây.",
+      "approve": "Duyệt",
+      "approveTip": "Đánh dấu ticket này để tạo. Chưa có gì được tạo cho đến khi bạn nhấn Tạo mục đã duyệt.",
+      "needsTeam": "Hãy chọn nhóm trước khi duyệt",
+      "unapprove": "Bỏ duyệt",
+      "discard": "Loại bỏ",
+      "restore": "Khôi phục",
+      "edit": "Sửa tiêu đề và mô tả",
+      "approved": "Đã duyệt",
+      "draftState": "Bản nháp",
+      "created": "Đã tạo trong Linear",
+      "alreadyExisted": "Đã có trong Linear: không tạo gì mới",
+      "createFailed": "Chưa tạo: {{error}}",
+      "issue": "Issue",
+      "team": "Nhóm",
+      "pickTeam": "Chọn nhóm",
+      "project": "Dự án",
+      "noProject": "Không có dự án",
+      "assignee": "Người được giao",
+      "unassigned": "Chưa giao",
+      "labels": "Nhãn",
+      "addLabel": "Thêm nhãn",
+      "labelCount": "{{count}} nhãn",
+      "priority": {
+        "title": "Mức ưu tiên",
+        "none": "Không ưu tiên",
+        "urgent": "Khẩn cấp",
+        "high": "Cao",
+        "medium": "Trung bình",
+        "low": "Thấp"
+      }
+    },
+    "llm": {
+      "heading": "Tóm tắt",
+      "provider": "Nhà cung cấp",
+      "providerDescription": "Mô hình dùng cho tóm tắt cuộc họp và việc cần làm. Xử lý sau cho đọc chính tả vẫn dùng nhà cung cấp riêng.",
+      "builtin": "Tích hợp (trên máy Mac này)",
+      "builtinDescription": "Chạy mô hình cục bộ bằng llama.cpp. Không có gì rời khỏi máy Mac của bạn.",
+      "model": "Mô hình",
+      "modelDescription": "Đánh dấu một mô hình để thêm vào danh sách mô hình của bạn. Chỉ liệt kê các mô hình xuất văn bản. \"Phù hợp để tóm tắt\" nghĩa là mô hình hỗ trợ đầu ra có cấu trúc, điều mà bản tóm tắt cần.",
+      "modelPlaceholder": "ID mô hình",
+      "pickModel": "Chọn mô hình",
+      "noLocalModels": "Tải một mô hình bên dưới",
+      "usingPostProcessModel": "Đang dùng mô hình xử lý sau ({{model}})",
+      "refreshModels": "Làm mới",
+      "testConnection": "Kiểm tra kết nối",
+      "testDescription": "Kiểm tra nhà cung cấp, khóa và mô hình có hoạt động không.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Mô hình trên thiết bị, dành cho Mac Apple silicon đã bật Apple Intelligence.",
+      "appleAvailable": "Khả dụng",
+      "appleUnavailable": "Apple Intelligence không khả dụng trên máy Mac này",
+      "activeHeading": "Bản tóm tắt được tạo bởi",
+      "place": "Nơi chạy tóm tắt",
+      "placeDescription": "Chỉ tùy chọn được chọn mới được dùng.",
+      "tabCloud": "Nhà cung cấp đám mây",
+      "tabLocal": "Trên máy Mac này",
+      "onThisMac": "Máy Mac này · ngoại tuyến",
+      "apiKey": "Khóa API",
+      "apiKeyDescription": "Được lưu trong Chuỗi khóa và dùng chung với Xử lý sau.",
+      "getKey": "Lấy khóa {{provider}}",
+      "modelDescriptionCustom": "Nhập ID mô hình mà điểm cuối của bạn yêu cầu rồi nhấn Enter để thêm, hoặc đánh dấu một mô hình trong danh sách.",
+      "searchModels": "Tìm mô hình",
+      "goodOnly": "Phù hợp để tóm tắt",
+      "goodForSummaries": "tóm tắt",
+      "reasoning": "suy luận",
+      "unknownModel": "không có trong danh mục",
+      "noModels": "Không có mô hình nào khớp.",
+      "context": "{{n}} ngữ cảnh",
+      "free": "miễn phí",
+      "modelCount": "{{shown}}/{{total}} mô hình",
+      "registryBundled": "Thông tin mô hình từ models.dev (đi kèm ứng dụng)",
+      "registryUpdated": "Thông tin mô hình từ models.dev, cập nhật {{when}}",
+      "justNow": "vừa xong",
+      "minutesAgo": "{{n}} phút trước",
+      "hoursAgo": "{{n}} giờ trước",
+      "daysAgo": "{{n}} ngày trước",
+      "needsKey": "Thêm khóa API {{provider}} của bạn",
+      "needsModel": "Chọn một mô hình {{provider}}",
+      "needsLocalModel": "Tải một mô hình để tóm tắt trên máy Mac này",
+      "localDescription": "Chạy ngoại tuyến trên máy Mac này. Hãy chọn một mô hình đã tải xuống.",
+      "appleUnavailableHint": "Không khả dụng trên máy Mac này. Hãy bật trong Cài đặt Hệ thống > Apple Intelligence & Siri.",
+      "unavailable": "không khả dụng",
+      "yourModels": "Mô hình của bạn",
+      "yourModelsDescription": "Tạo tóm tắt sẽ đưa ra mọi mô hình ở đây, để bạn chọn cho từng cuộc họp. Mô hình được chọn là mặc định.",
+      "yourModelsEmpty": "Chưa có mô hình đám mây nào. Hãy chọn nhà cung cấp bên dưới, thêm khóa API và đánh dấu các mô hình bạn muốn.",
+      "default": "mặc định",
+      "removeModel": "Xóa khỏi mô hình của bạn",
+      "addFrom": "Thêm mô hình từ",
+      "addFromDescription": "Chọn nhà cung cấp để nhập khóa và đánh dấu mô hình cần thêm. Việc này không thay đổi mặc định."
+    },
+    "local": {
+      "heading": "Mô hình cục bộ",
+      "empty": "Không có mô hình tích hợp nào.",
+      "default": "Mặc định",
+      "recommendedRam": "Khuyến nghị cho RAM từ {{gb}} GB",
+      "notEnoughRam": "Máy Mac này có ít bộ nhớ hơn mức khuyến nghị cho mô hình này.",
+      "downloaded": "Đã tải xuống",
+      "download": "Tải xuống",
+      "downloading": "Đang tải xuống {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Khóa API cá nhân",
+      "keyDescription": "Được lưu trong Chuỗi khóa của macOS. Dùng để soạn và tạo ticket từ việc cần làm.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Đã lưu một khóa trong Chuỗi khóa.",
+      "noKey": "Chưa lưu khóa nào.",
+      "getKey": "Tạo khóa tại linear.app/settings/api",
+      "removeKey": "Xóa khóa",
+      "test": "Kiểm tra kết nối",
+      "testDescription": "Kiểm tra khóa với Linear.",
+      "connectedAs": "Đã kết nối với tên {{name}}"
+    },
+    "byok": {
+      "testConnection": "Kiểm tra kết nối",
+      "testDescription": "Kiểm tra URL cơ sở, khóa API và mô hình bằng một yêu cầu nhỏ.",
+      "baseUrlEditable": "URL cơ sở API cho nhà cung cấp này. Thay mọi {placeholder} (ví dụ ID tài khoản Cloudflare của bạn).",
+      "cloudflareHint": "Cloudflare: điền ID tài khoản (và ID gateway cho AI Gateway) vào URL cơ sở."
+    }
   }
 }

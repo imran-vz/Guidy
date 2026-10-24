@@ -7,7 +7,23 @@
     "model": "Modell",
     "quit": "Avsluta",
     "cancel": "Avbryt",
-    "secureInputWarning": "⚠ Kortkommandon blockeras av Secure Input"
+    "secureInputWarning": "⚠ Kortkommandon blockeras av Secure Input",
+    "startMeetingNotes": "Starta mötesanteckningar",
+    "stopMeetingNotes": "Stoppa mötesanteckningar",
+    "pauseMeetingNotes": "Pausa inspelning",
+    "resumeMeetingNotes": "Återuppta inspelning",
+    "meetingPaused": "Pausad",
+    "meetingStillRecording": "Guidy spelar fortfarande in",
+    "meetingStop": "Stoppa",
+    "meetingKeepGoing": "Fortsätt",
+    "meetingTakeNotesFor": "Föra anteckningar för {{title}}?",
+    "meetingStart": "Starta",
+    "meetingUntitled": "Möte"
+  },
+  "notch": {
+    "pause": "Pausa inspelning",
+    "resume": "Återuppta inspelning",
+    "stop": "Stoppa mötesanteckningar"
   },
   "sidebar": {
     "general": "Allmänt",
@@ -16,7 +32,58 @@
     "postProcessing": "Efterbearbetning",
     "history": "Historik",
     "debug": "Felsökning",
+    "usage": "Användning",
     "about": "Om"
+  },
+  "usage": {
+    "title": "Användning",
+    "description": "Vad AI-leverantörer i molnet har kostat och vilket arbete modeller har gjort på den här Macen.",
+    "cloud": "Moln",
+    "local": "På den här Macen",
+    "refresh": "Uppdatera",
+    "total": "Totalt spenderat",
+    "last30Days": "Senaste 30 dagarna",
+    "callsTitle": "Anrop",
+    "byModel": "Per modell",
+    "byFeature": "Per funktion",
+    "empty": "Inga AI-anrop till molnet ännu.",
+    "calls_one": "{{count}} anrop",
+    "calls_other": "{{count}} anrop",
+    "average": "snitt {{cost}}",
+    "highest": "högst {{cost}}",
+    "tokens": "{{input}} in / {{output}} ut tokens",
+    "unknownPrice": "okänt pris",
+    "feature": {
+      "dictation": "Diktering",
+      "meetingTranscription": "Mötestranskription",
+      "meetingSummary": "Mötessammanfattningar",
+      "other": "Övrigt"
+    },
+    "localAudio": "Transkriberat ljud",
+    "localWords": "Ord",
+    "localTokens": "LLM-tokens",
+    "localCloudEquivalent": "Motsvarande i molnet",
+    "localEmpty": "Inget har körts på en lokal modell ännu.",
+    "localByModel": "Lokala modeller",
+    "localByFeature": "Lokalt arbete per funktion",
+    "kind": {
+      "transcription": "Transkription",
+      "llm": "Inbyggd LLM"
+    },
+    "runs_one": "{{count}} körning",
+    "runs_other": "{{count}} körningar",
+    "audio": "{{duration}} ljud",
+    "words": "{{count}} ord",
+    "realtime": "{{speed}} realtid",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "generering {{speed}}",
+    "loadTime": "laddas på {{time}}",
+    "localNote": "Realtidshastighet är ljudlängd ÷ bearbetningstid, utan laddning; diktering som avkodas live medan du talar tidsmäts inte. Motsvarande i molnet prissätter ljudet till ${{price}} per minut (OpenAI Whisper).",
+    "estimateNote": "~ markerar belopp som uppskattats utifrån publicerade priser per token; leverantörer som rapporterar sin egen kostnad (som OpenRouter) är exakta. Se leverantörens kontrollpanel för fakturering.",
+    "reportedNote": "Beloppen är så som leverantörerna rapporterar dem. Se leverantörens kontrollpanel för fakturering.",
+    "clear": "Rensa historik",
+    "clearTitle": "Rensa användningshistorik?",
+    "clearConfirm": "De registrerade anropen, kostnaderna och körningarna av lokala modeller tas bort. Användning som visas i mötessammanfattningar finns kvar."
   },
   "onboarding": {
     "subtitle": "För att komma igång, välj en transkriptionsmodell",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "noggrannhet",
-      "speed": "hastighet"
+      "speed": "hastighet",
+      "size": "storlek"
     },
     "models": {
       "small": {
@@ -117,6 +185,8 @@
       "translate": "Översätt till engelska",
       "streaming": "Visar transkription i realtid medan du talar"
     },
+    "download": "Ladda ner",
+    "use": "Använd",
     "legacy": "Äldre"
   },
   "settings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "Allmänt",
+      "description": "Hur du startar diktering, vilket språk den lyssnar efter och vad du hör.",
+      "shortcutsGroup": "Kortkommandon",
       "shortcut": {
         "title": "Guidy-kortkommandon",
         "description": "Konfigurera kortkommandon för att starta tal-till-text-inspelning",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Avancerat",
+      "description": "Uppstart, inklistring, finjustering av transkription och historik.",
       "groups": {
         "app": "App",
         "output": "Utmatning",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Efterbearbetning",
+      "description": "Rensa upp eller skriv om en transkription med en AI-modell innan den klistras in.",
       "hotkey": {
         "title": "Snabbkommando"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Leverantör",
           "description": "Välj en OpenAI- eller Anthropic-kompatibel leverantör."
+        },
+        "builtin": {
+          "label": "Inbyggd modell (på den här Macen)",
+          "description": "Kör en lokal modell på den här Macen. Inget lämnar din dator.",
+          "manage": "Hantera inbyggda modeller"
         },
         "apiFormat": {
           "title": "API-format",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API-nyckel",
           "description": "API-nyckel för den valda leverantören.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Det gick inte att spara API-nyckeln"
         },
         "model": {
           "title": "Modell",
@@ -600,6 +682,10 @@
         "title": "Version",
         "description": "Nuvarande version av Guidy"
       },
+      "author": {
+        "title": "Skapad av",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "Mapp för appdata",
         "description": "Plats där Guidy lagrar sina data"
@@ -621,6 +707,12 @@
           "description": "Högpresterande inferens av OpenAI:s Whisper-modell för automatisk taligenkänning",
           "details": "Guidy använder ggml för snabb, lokal tal-till-text-behandling. Tack till det fantastiska arbete som utförts av Georgi Gerganov med medarbetare."
         }
+      },
+      "hero": {
+        "headline": "Tal till text som stannar på den här Macen",
+        "lede": "Tryck på ett kortkommando, tala, och Guidy skriver i appen som har fokus. Transkriptionen körs lokalt.",
+        "engine": "Motor",
+        "model": "Modell"
       },
       "whatsNewUpdates": {
         "label": "Visa nyheter",
@@ -706,5 +798,561 @@
     "learnMore": "Så här löser du det",
     "recorderBlocked": "Det går inte att spela in kortkommandon just nu — macOS Secure Input blockerar tangenthändelser. Lös varningen om Secure Input först.",
     "dismiss": "Avfärda"
+  },
+  "meetings": {
+    "title": "Möten",
+    "selection": {
+      "hint": "Dra, eller skiftklicka, för att tagga flera rader",
+      "count_one": "{{count}} rad markerad",
+      "count_other": "{{count}} rader markerade",
+      "keys": "Skiftklick: intervall · ⌘-klick: lägg till eller ta bort · Esc: rensa",
+      "setSpeaker": "Ange talare",
+      "clear": "Rensa"
+    },
+    "speakersRedo": {
+      "action": "Gör om talare",
+      "tooltip": "Skilj talarna åt igen med {{model}}. Transkriptionen behålls. Rader du har taggat och talare du har namngett behåller sin person; resten matchas igen efter röst.",
+      "standard": "Standardmodell för talare",
+      "download": "{{size}} nedladdning, en gång",
+      "error": "Det gick inte att göra om talarna",
+      "confirmTitle": "Hitta talarna med Deepgram?",
+      "confirmDeepgram": "De andra deltagarnas ljud från det här mötet laddas upp till Deepgram för att skilja dem åt, för cirka {{cost}}. Transkriptionen lämnas som den är.",
+      "confirmDeepgramUnpriced": "De andra deltagarnas ljud från det här mötet laddas upp till Deepgram för att skilja dem åt. Transkriptionen lämnas som den är."
+    },
+    "day": {
+      "today": "Idag",
+      "tomorrow": "Imorgon",
+      "yesterday": "Igår"
+    },
+    "copy": {
+      "summary": "Kopiera",
+      "transcript": "Kopiera transkription",
+      "copied": "Kopierat"
+    },
+    "redo": {
+      "action": "Gör om transkription",
+      "localTitle": "På den här Macen",
+      "cloudTitle": "Moln",
+      "error": "Det gick inte att starta en ny transkribering",
+      "issueRepetition": "Delar av den här transkriptionen upprepar sig, vilket oftast betyder att modellen tappade bort sig i ljudet.",
+      "issueTooFewWords": "Den här transkriptionen har betydligt färre ord än taltiden antyder, så delar av mötet har troligen missats.",
+      "issueHint": "En molnmodell klarar ofta svårt ljud bättre.",
+      "tooltip": "Transkribera igen med {{model}}. Ersätter transkriptionen och talarna; personer du har namngett matchas igen efter röst.",
+      "more": "Andra modeller",
+      "noKeyShort": "kräver en API-nyckel (Möten › Inställningar › AI)",
+      "confirmTitle": "Transkribera med {{provider}}?",
+      "confirmCloud": "Ljudet från det här mötet laddas upp till {{provider}} och transkriberas med {{model}}, för cirka {{cost}}. Transkriptionen och talarna ersätts.",
+      "confirmCloudUnpriced": "Ljudet från det här mötet laddas upp till {{provider}} och transkriberas med {{model}}. Transkriptionen och talarna ersätts."
+    },
+    "widget": {
+      "recording": "Spelar in",
+      "paused": "Pausad",
+      "you": "Du",
+      "others": "Andra",
+      "mic": "Mikrofon",
+      "system": "Systemljud",
+      "liveStarting": "Laddar transkriptionsmodellen…",
+      "liveListening": "Lyssnar. Rader visas här när folk pratar.",
+      "liveOff": "Livetranskription är av. Slå på den i Möten › Inställningar.",
+      "liveUnavailable": "Livetranskription är inte tillgänglig: {{reason}}",
+      "pause": "Pausa",
+      "resume": "Återuppta",
+      "stop": "Stoppa",
+      "openNotes": "Öppna anteckningar",
+      "expand": "Visa livetranskriptionen",
+      "collapse": "Fäll ihop",
+      "liveTitle": "Livetranskription",
+      "liveHint": "Så som det hörts hittills. Den fullständiga transkriptionen med talarnamn skapas när mötet slutar."
+    },
+    "description": "Spela in ett möte på den här Macen och läs sedan transkriptionen med namngivna talare.",
+    "init": {
+      "starting": "Startar mötesanteckningar...",
+      "failed": "Mötesanteckningar kunde inte starta",
+      "retry": "Försök igen",
+      "keyMissing": {
+        "title": "Mötesanteckningarna kan inte dekrypteras",
+        "description": "Krypteringsnyckeln för mötesanteckningarna saknas i Nyckelringen eller matchar inte dina befintliga mötesanteckningar, så de kan inte öppnas. Om du kan återställa nyckeln (till exempel från en säkerhetskopia av Nyckelringen) gör du det och väljer Försök igen. Annars kan du återställa för att börja om: dina gamla mötesanteckningar flyttas undan, de tas inte bort."
+      },
+      "reset": {
+        "action": "Återställ data för mötesanteckningar",
+        "title": "Återställa data för mötesanteckningar?",
+        "confirm": "Dina nuvarande mötesanteckningar och inspelningar flyttas till mappen ”meetings-unreadable” i Guidys datamapp (inget tas bort) och en ny krypteringsnyckel skapas. Guidy kommer inte att kunna visa de gamla anteckningarna."
+      }
+    },
+    "errors": {
+      "unavailable": "Mötesanteckningar är inte tillgängliga på den här Macen.",
+      "modelMissing": "Transkriptionsmodellen för möten ({{name}}) har inte laddats ner ännu.",
+      "modelUnknown": "Mötesmodellen {{name}} är inte installerad. Välj en annan mötesmodell i Inställningar.",
+      "speakerModelMissing": "Ladda ner modellen för talarigenkänning i Möten > Inställningar och bearbeta sedan mötet.",
+      "noLinearKey": "Lägg till en Linear-API-nyckel i Inställningar först.",
+      "linearUnauthorized": "Linear avvisade API-nyckeln. Kontrollera den i Inställningar."
+    },
+    "model": {
+      "download": "Ladda ner mötesmodell",
+      "downloadError": "Det gick inte att ladda ner mötesmodellen"
+    },
+    "tabs": {
+      "meetings": "Möten",
+      "people": "Personer",
+      "settings": "Inställningar"
+    },
+    "recorder": {
+      "start": "Starta mötesanteckningar",
+      "stop": "Stoppa mötesanteckningar",
+      "recording": "Spelar in",
+      "idle": "Spelar inte in",
+      "startError": "Det gick inte att starta inspelningen",
+      "stopError": "Det gick inte att stoppa inspelningen",
+      "disabled": "Slå på mötesanteckningar i Inställningar för att spela in."
+    },
+    "upcoming": {
+      "title": "Kommande",
+      "empty": "Inga kommande kalendermöten med en samtalslänk.",
+      "start": "Starta"
+    },
+    "list": {
+      "title": "Inspelningar",
+      "empty": "Inga möten ännu. Starta mötesanteckningar för att spela in ett.",
+      "loading": "Laddar möten...",
+      "loadError": "Det gick inte att ladda möten",
+      "speakerModelMissing": "Inspelningar bearbetas inte förrän modellen för talarigenkänning har laddats ner.",
+      "minutes": "{{count}} min",
+      "open": "Öppna",
+      "rename": "Byt namn",
+      "delete": "Ta bort",
+      "process": "Bearbeta",
+      "retry": "Försök igen",
+      "cancelProcessing": "Avbryt bearbetning",
+      "save": "Spara",
+      "cancel": "Avbryt",
+      "titlePlaceholder": "Mötesrubrik",
+      "deleteTitle": "Ta bort möte?",
+      "deleteConfirm": "”{{title}}” tas bort tillsammans med transkription och ljud. Röstavtryck behålls.",
+      "deleteError": "Det gick inte att ta bort mötet",
+      "renameError": "Det gick inte att byta namn på mötet",
+      "processError": "Det gick inte att starta bearbetningen",
+      "cancelError": "Det gick inte att avbryta bearbetningen"
+    },
+    "status": {
+      "recording": "Spelar in",
+      "recorded": "Ej bearbetat",
+      "processing": "Bearbetar",
+      "processed": "Klart",
+      "failed": "Misslyckades"
+    },
+    "stage": {
+      "decode": "Avkodar ljud",
+      "vad": "Hittar tal",
+      "transcribe": "Transkriberar",
+      "voiceprints": "Beräknar röstavtryck",
+      "cluster": "Grupperar talare",
+      "merge": "Sammanfogar spår",
+      "done": "Klart"
+    },
+    "detail": {
+      "back": "Alla möten",
+      "transcript": "Transkription",
+      "empty": "Ingen transkription ännu. Bearbeta mötet för att skapa en.",
+      "loading": "Laddar transkription...",
+      "loadError": "Det gick inte att ladda mötet",
+      "playError": "Det gick inte att spela upp det här avsnittet",
+      "play": "Spela upp härifrån",
+      "you": "Du",
+      "speakers": "Talare",
+      "attendees": "Deltagare",
+      "duration": "Längd",
+      "words": "Ord",
+      "talkTime": "Taltid",
+      "share": "Andel",
+      "youSpoke": "Du pratade",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Namnge talaren",
+      "confirm": "Bekräfta?",
+      "confirmAction": "Bekräfta",
+      "change": "Ändra",
+      "suggestions": "Förslag",
+      "attendee": "Deltagare",
+      "knownPerson": "Känd person",
+      "noSuggestions": "Inga förslag",
+      "newPerson": "Ny person",
+      "namePlaceholder": "Namn",
+      "emailPlaceholder": "E-post (valfritt)",
+      "save": "Spara",
+      "cancel": "Avbryt",
+      "assignError": "Det gick inte att namnge talaren",
+      "confirmError": "Det gick inte att bekräfta talaren",
+      "unnamed": "Talare {{n}}",
+      "unknown": "Okänd",
+      "whoIsThis": "Vem är det här?",
+      "whoSaidThis": "Vem sa det här?"
+    },
+    "people": {
+      "title": "Personer",
+      "description": "Personer du har namngett i möten. Guidy känner igen deras röster i senare möten.",
+      "empty": "Inga personer ännu. Namnge en talare i ett möte för att lägga till en.",
+      "loadError": "Det gick inte att ladda personer",
+      "voiceprints_one": "{{count}} röstavtryck",
+      "voiceprints_other": "{{count}} röstavtryck",
+      "edit": "Redigera",
+      "merge": "Slå ihop",
+      "mergeInto": "Slå ihop med...",
+      "mergeHint": "Välj personen som ska behållas. Röstavtryck och talarnamn flyttas till den personen.",
+      "mergeIntoName": "Slå ihop med {{name}}",
+      "samples": {
+        "hint": "Lyssna på röstavtrycken först: vart och ett togs från en rad i ett möte.",
+        "none": "Inga röstavtryck.",
+        "play": "Spela upp",
+        "pause": "Pausa",
+        "noText": "(inga ord)",
+        "noLine": "Raden det kom från finns inte längre",
+        "audioDeleted": "ljudet borttaget",
+        "loadError": "Det gick inte att ladda röstavtrycken"
+      },
+      "mergeTitle": "Slå ihop personer?",
+      "mergeConfirm": "{{from}} slås ihop med {{into}} och tas sedan bort.",
+      "mergeError": "Det gick inte att slå ihop personerna",
+      "delete": "Ta bort",
+      "deleteTitle": "Ta bort person?",
+      "deleteConfirm": "{{name}} och personens {{count}} sparade röstavtryck tas bort. Guidy kommer inte att känna igen rösten i framtida möten.",
+      "deleteError": "Det gick inte att ta bort personen",
+      "renameError": "Det gick inte att uppdatera personen",
+      "namePlaceholder": "Namn",
+      "emailPlaceholder": "E-post (valfritt)",
+      "save": "Spara",
+      "cancel": "Avbryt",
+      "voice": {
+        "title": "Din röst",
+        "notRecorded": "Inte inspelad",
+        "recordedTitle": "Inspelad",
+        "description": "Spela in ett kort prov av din röst så att Guidy kan skilja dig från andra personer i rummet vid fysiska möten.",
+        "recorded": "I möten som bearbetas från och med nu märks bara tal som liknar din röst som ditt. Bearbeta äldre möten igen för att tillämpa det.",
+        "record": "Spela in min röst",
+        "recordAgain": "Spela in igen",
+        "starting": "Öppnar mikrofonen...",
+        "recording": "Spelar in",
+        "readAloud": "Läs det här högt med din vanliga röst och tryck sedan på Klar.",
+        "passage": "När jag ansluter till ett möte brukar jag börja med att titta på dagordningen och anteckningarna från förra gången. Sedan går vi igenom vad som har ändrats sedan vi senast pratade, vad som är blockerat och vem som tar nästa steg. Om något kräver ett beslut försöker vi fatta det innan samtalet är slut, så att ingen behöver vänta på ännu ett möte. Efteråt delar jag en kort sammanfattning med alla som var med.",
+        "done": "Klar",
+        "saving": "Sparar din röst...",
+        "loadError": "Det gick inte att ladda din röst",
+        "recordError": "Det gick inte att starta inspelningen",
+        "saveError": "Det gick inte att spara din röst",
+        "deleteTitle": "Ta bort din röst?",
+        "deleteConfirm": "Din inspelade röst tas bort. Guidy kommer återigen att märka allt tal i mikrofonen som du.",
+        "deleteError": "Det gick inte att ta bort din röst"
+      }
+    },
+    "settings": {
+      "general": "Mötesanteckningar",
+      "enabled": {
+        "title": "Mötesanteckningar",
+        "description": "Spela in möten med din mikrofon och datorns ljud. När du slår på det här efterfrågas åtkomst till kalender, systemljud och notiser."
+      },
+      "permissions": {
+        "title": "Behörigheter",
+        "calendar": "Kalender",
+        "systemAudio": "Systemljud",
+        "microphone": "Mikrofon",
+        "notifications": "Notiser",
+        "granted": "Beviljad",
+        "denied": "Ej beviljad",
+        "error": "Det gick inte att begära behörigheter",
+        "requestAgain": "Begär igen",
+        "openSettings": "Öppna Systeminställningar"
+      },
+      "you": "Du",
+      "userName": {
+        "title": "Ditt namn",
+        "description": "Ditt mikrofonspår märks alltid med det här namnet.",
+        "placeholder": "Ditt namn"
+      },
+      "userEmails": {
+        "title": "E-postadresser",
+        "description": "Alla adresser du ansluter till möten med, till exempel privat och jobb. Om någon av dem finns på en mötesinbjudan är den deltagaren du.",
+        "labelPlaceholder": "Etikett, t.ex. Jobb",
+        "emailPlaceholder": "namn@example.com",
+        "noLabel": "Ingen etikett",
+        "add": "Lägg till",
+        "remove": "Ta bort den här adressen",
+        "invalid": "Det är inte en giltig e-postadress.",
+        "duplicate": "Adressen finns redan i listan."
+      },
+      "recording": "Inspelning",
+      "meetingModel": {
+        "title": "Transkriptionsmodell",
+        "usesDictation": "Möten använder din dikteringsmodell: {{name}}.",
+        "noDictation": "Ingen dikteringsmodell har laddats ner ännu. Ladda ner en på sidan Modeller, eller välj en modell för möten.",
+        "separate": "Använd en annan modell",
+        "choice": "Modell för möten",
+        "choiceDescription": "Parakeet ger tidsangivelser per ord, vilket hjälper när folk pratar i munnen på varandra.",
+        "notDownloaded": "{{name}} (inte nedladdad)",
+        "chosenMissing": "{{name}} har inte laddats ner ännu. Möten använder din dikteringsmodell tills den har det.",
+        "chosenUnknown": "{{name}} är inte installerad. Välj en annan modell, eller stäng av ”Använd en annan modell”."
+      },
+      "separation": {
+        "title": "Skilja röster åt",
+        "description": "Talarmodellen som avgör vem som sa varje rad. Större modeller skiljer liknande röster åt bättre, men tar mer plats och gör bearbetningen långsammare. Personer du har namngett känns alltid igen med standardmodellen, så deras röstavtryck behålls när du byter.",
+        "downloaded": "Nedladdad.",
+        "notDownloaded": "Laddas ner när den väljs.",
+        "downloading": "Laddar ner...",
+        "delete": "Ta bort den här modellen ({{size}})",
+        "downloadError": "Det gick inte att ladda ner talarmodellen",
+        "deleteError": "Det gick inte att ta bort talarmodellen",
+        "about": {
+          "resnet34": "Standard. Liten och snabb, och känner även igen personer du har namngett.",
+          "cam_plus_plus": "Ungefär lika liten, och snabbast.",
+          "resnet152": "Bättre på liknande röster; bearbetningen tar ungefär 3 gånger så lång tid.",
+          "titanet_large": "Från NVIDIA, även tränad på telefonsamtal, vilket kan passa samtalsljud. Ungefär lika snabb som standardmodellen.",
+          "resnet293": "Den mest noggranna här; bearbetningen tar ungefär 6 gånger så lång tid."
+        }
+      },
+      "speakerModel": {
+        "title": "Talarigenkänning",
+        "description": "Skiljer röster åt och känner igen personer du har namngett tidigare. Använder {{name}} ({{trainedOn}}), {{size}}. Laddas bara ner när du klickar på Ladda ner.",
+        "ready": "Nedladdad",
+        "download": "Ladda ner ({{size}})",
+        "retry": "Försök ladda ner igen",
+        "failed": "Nedladdningen misslyckades: {{error}}"
+      },
+      "retention": {
+        "title": "Behåll mötesljud",
+        "description": "Råljud tas bort efter den här tiden. Transkriptioner och röstavtryck behålls.",
+        "days3": "3 dagar",
+        "days7": "7 dagar",
+        "days30": "30 dagar",
+        "forever": "För alltid"
+      },
+      "mcp": {
+        "group": "Andra appar",
+        "title": "MCP-server",
+        "description": "Låt AI-appar på den här Macen, som Claude eller Cursor, läsa din möteslista, sammanfattningar och transkriptioner. Endast lokalt och skrivskyddat.",
+        "url": "Server-URL (Streamable HTTP)",
+        "stdio": "Kommando (för appar som bara kör stdio-servrar)",
+        "failed": "Det gick inte att starta MCP-servern på port {{port}}. En annan app kanske använder den."
+      },
+      "calendarNotifications": {
+        "title": "Kalendernotiser",
+        "description": "Fråga om anteckningar ska föras när ett kalendermöte med en samtalslänk börjar."
+      },
+      "recordingControls": {
+        "title": "Inspelningskontroller",
+        "description": "Var paus, stopp och livetranskriptionen visas medan ett möte spelas in.",
+        "floating": "Flytande, vid skärmkanten",
+        "notch": "Runt kamerahuset"
+      },
+      "deepgram": {
+        "title": "Deepgram-API-nyckel",
+        "description": "Låter dig göra om ett mötes talare i molnet med Deepgram, som är bra på att skilja röster åt i samtal. Sparas i Nyckelringen.",
+        "placeholder": "Klistra in en nyckel och tryck på Enter",
+        "saved": "Sparad",
+        "remove": "Ta bort",
+        "error": "Det gick inte att spara Deepgram-nyckeln"
+      },
+      "liveTranscription": {
+        "title": "Livetranskription",
+        "description": "Transkribera mötet på den här Macen medan det pågår. Den fullständiga transkriptionen skapas ändå efter mötet.",
+        "model": "Modell för livetranskription",
+        "modelDescription": "En liten, snabb modell hänger med bäst medan du är i ett samtal. Transkriptionen som skapas efter mötet använder mötesmodellen.",
+        "sameModel": "Samma som för möten"
+      },
+      "reminderInterval": {
+        "title": "Påminnelseintervall",
+        "description": "Minuter mellan påminnelser om att inspelningen pågår efter att ett möte borde ha slutat.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Avancerat",
+        "show": "Visa avancerade inställningar",
+        "hide": "Dölj avancerade inställningar",
+        "matchThreshold": {
+          "title": "Tröskel för automatisk matchning",
+          "description": "Röstlikhet vid eller över vilken en talare namnges automatiskt. Under den frågar matchningen ”Bekräfta?”."
+        },
+        "suggestThreshold": {
+          "title": "Tröskel för förslag",
+          "description": "Röstlikhet under vilken en känd person inte föreslås alls."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Spara",
+      "cancel": "Avbryt",
+      "delete": "Ta bort",
+      "loading": "Laddar..."
+    },
+    "summary": {
+      "heading": "Sammanfattning",
+      "actionItems": "Åtgärdspunkter",
+      "generate": "Skapa sammanfattning",
+      "regenerate": "Skapa igen",
+      "regenerateWith": "Skapa igen med...",
+      "generateWith": "Skapa med {{model}}",
+      "otherModels": "Andra modeller",
+      "otherModel": "Annan modell…",
+      "generating": "Sammanfattar mötet...",
+      "generatingLocal": "Sammanfattar mötet. Det kan ta några minuter med en lokal modell.",
+      "progress": "Sammanfattar ({{done}} av {{total}} steg)",
+      "empty": "Ingen sammanfattning ännu. Skapa en från transkriptionen.",
+      "untitled": "Namnlöst möte",
+      "edit": "Redigera",
+      "title": "Rubrik",
+      "shortSummary": "Kort sammanfattning",
+      "shortSummaryPlaceholder": "Vad mötet handlade om, med några meningar",
+      "decisions": "Beslut",
+      "topics": "Ämnen",
+      "linesPlaceholder": "En per rad",
+      "onePerLine": "Beslut och ämnen: en per rad.",
+      "none": "Inga",
+      "generatedBy": "Skapad med {{model}}",
+      "generatedByCost": "Skapad med {{model}} · {{cost}} · {{input}} in / {{output}} ut tokens",
+      "generatedByTokens": "Skapad med {{model}} · {{input}} in / {{output}} ut tokens",
+      "pickerTitle": "Modell för den här sammanfattningen",
+      "pickerDescription": "Skapa igen med en annan leverantör och modell. Din mötesmodell i inställningarna ändras inte. Åtgärdspunkter som redan har ett Linear-ärende behålls.",
+      "run": "Skapa",
+      "noItems": "Inga åtgärdspunkter.",
+      "newItemPlaceholder": "Lägg till en åtgärdspunkt",
+      "addItem": "Lägg till",
+      "deleteItem": "Ta bort åtgärdspunkt",
+      "due": "Förfaller",
+      "duePlaceholder": "t.ex. 2026-10-31",
+      "jumpToMoment": "Spela upp det här ögonblicket i transkriptionen",
+      "owner": {
+        "title": "Ansvarig",
+        "none": "Ingen ansvarig",
+        "me": "Jag",
+        "meNamed": "Jag ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear-ärenden",
+      "draft": "Skapa utkast till ärenden",
+      "approveSelected": "Godkänn markerade ({{count}})",
+      "createApproved": "Skapa godkända ({{count}})",
+      "noKey": "Anslut Linear för att göra åtgärdspunkter till ärenden.",
+      "openSettings": "Öppna inställningar",
+      "noItems": "Inga åtgärdspunkter att göra till ärenden.",
+      "notDrafted": "Skapa utkast till ärenden från åtgärdspunkterna för att granska dem här.",
+      "approve": "Godkänn",
+      "approveTip": "Markera ärendet för att skapas. Inget skapas förrän du klickar på Skapa godkända.",
+      "needsTeam": "Välj ett team innan du godkänner",
+      "unapprove": "Ångra godkännande",
+      "discard": "Släng",
+      "restore": "Återställ",
+      "edit": "Redigera rubrik och beskrivning",
+      "approved": "Godkänt",
+      "draftState": "Utkast",
+      "created": "Skapat i Linear",
+      "alreadyExisted": "Finns redan i Linear: inget nytt skapades",
+      "createFailed": "Inte skapat: {{error}}",
+      "issue": "Ärende",
+      "team": "Team",
+      "pickTeam": "Välj ett team",
+      "project": "Projekt",
+      "noProject": "Inget projekt",
+      "assignee": "Tilldelad",
+      "unassigned": "Ej tilldelad",
+      "labels": "Etiketter",
+      "addLabel": "Lägg till etiketter",
+      "labelCount": "{{count}} etiketter",
+      "priority": {
+        "title": "Prioritet",
+        "none": "Ingen prioritet",
+        "urgent": "Brådskande",
+        "high": "Hög",
+        "medium": "Medel",
+        "low": "Låg"
+      }
+    },
+    "llm": {
+      "heading": "Sammanfattningar",
+      "provider": "Leverantör",
+      "providerDescription": "Modell som används för mötessammanfattningar och åtgärdspunkter. Efterbearbetning av diktering behåller sin egen leverantör.",
+      "builtin": "Inbyggd (på den här Macen)",
+      "builtinDescription": "Kör en lokal modell med llama.cpp. Inget lämnar din Mac.",
+      "model": "Modell",
+      "modelDescription": "Bocka för en modell för att lägga till den i dina modeller. Endast modeller som ger text visas. ”Bra för sammanfattningar” betyder att modellen stöder strukturerad utdata, som sammanfattningar är beroende av.",
+      "modelPlaceholder": "Modell-id",
+      "pickModel": "Välj en modell",
+      "noLocalModels": "Ladda ner en modell nedan",
+      "usingPostProcessModel": "Använder efterbearbetningsmodellen ({{model}})",
+      "refreshModels": "Uppdatera",
+      "testConnection": "Testa anslutning",
+      "testDescription": "Kontrollera att leverantören, nyckeln och modellen fungerar.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Modell på enheten för Mac-datorer med Apple Silicon och Apple Intelligence aktiverat.",
+      "appleAvailable": "Tillgänglig",
+      "appleUnavailable": "Apple Intelligence är inte tillgängligt på den här Macen",
+      "activeHeading": "Sammanfattningar skapas av",
+      "place": "Var sammanfattningar körs",
+      "placeDescription": "Endast det valda alternativet används.",
+      "tabCloud": "Molnleverantör",
+      "tabLocal": "På den här Macen",
+      "onThisMac": "Den här Macen · offline",
+      "apiKey": "API-nyckel",
+      "apiKeyDescription": "Sparas i din Nyckelring och delas med Efterbearbetning.",
+      "getKey": "Skaffa en {{provider}}-nyckel",
+      "modelDescriptionCustom": "Skriv det modell-id som din slutpunkt förväntar sig och tryck på Enter för att lägga till det, eller bocka för ett som den listar.",
+      "searchModels": "Sök modeller",
+      "goodOnly": "Bra för sammanfattningar",
+      "goodForSummaries": "sammanfattningar",
+      "reasoning": "resonemang",
+      "unknownModel": "inte i registret",
+      "noModels": "Inga modeller matchar.",
+      "context": "{{n}} ctx",
+      "free": "gratis",
+      "modelCount": "{{shown}}/{{total}} modeller",
+      "registryBundled": "Modelluppgifter från models.dev (medföljer appen)",
+      "registryUpdated": "Modelluppgifter från models.dev, uppdaterade {{when}}",
+      "justNow": "nyss",
+      "minutesAgo": "för {{n}} min sedan",
+      "hoursAgo": "för {{n}} h sedan",
+      "daysAgo": "för {{n}} d sedan",
+      "needsKey": "Lägg till din API-nyckel för {{provider}}",
+      "needsModel": "Välj en modell från {{provider}}",
+      "needsLocalModel": "Ladda ner en modell för att sammanfatta på den här Macen",
+      "localDescription": "Körs offline på den här Macen. Välj en nedladdad modell.",
+      "appleUnavailableHint": "Inte tillgängligt på den här Macen. Slå på det i Systeminställningar > Apple Intelligence och Siri.",
+      "unavailable": "inte tillgänglig",
+      "yourModels": "Dina modeller",
+      "yourModelsDescription": "Skapa sammanfattning erbjuder alla modeller här, så att du kan välja en per möte. Den valda är standard.",
+      "yourModelsEmpty": "Inga molnmodeller ännu. Välj en leverantör nedan, lägg till dess API-nyckel och bocka för de modeller du vill ha.",
+      "default": "standard",
+      "removeModel": "Ta bort från dina modeller",
+      "addFrom": "Lägg till modeller från",
+      "addFromDescription": "Välj en leverantör för att ange dess nyckel och bocka för modeller att lägga till. Det ändrar inte standardvalet."
+    },
+    "local": {
+      "heading": "Lokala modeller",
+      "empty": "Inga inbyggda modeller är tillgängliga.",
+      "default": "Standard",
+      "recommendedRam": "Rekommenderas för {{gb}} GB+ RAM",
+      "notEnoughRam": "Den här Macen har mindre minne än vad som rekommenderas för modellen.",
+      "downloaded": "Nedladdad",
+      "download": "Ladda ner",
+      "downloading": "Laddar ner {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Personlig API-nyckel",
+      "keyDescription": "Sparas i din macOS-nyckelring. Används för att skapa utkast och ärenden från åtgärdspunkter.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "En nyckel är sparad i din Nyckelring.",
+      "noKey": "Ingen nyckel sparad.",
+      "getKey": "Skapa en nyckel på linear.app/settings/api",
+      "removeKey": "Ta bort nyckel",
+      "test": "Testa anslutning",
+      "testDescription": "Kontrollera nyckeln mot Linear.",
+      "connectedAs": "Ansluten som {{name}}"
+    },
+    "byok": {
+      "testConnection": "Testa anslutning",
+      "testDescription": "Kontrollera bas-URL, API-nyckel och modell med en liten förfrågan.",
+      "baseUrlEditable": "API-bas-URL för den här leverantören. Ersätt eventuella {placeholder} (t.ex. ditt Cloudflare-konto-id).",
+      "cloudflareHint": "Cloudflare: lägg in ditt konto-id (och gateway-id för AI Gateway) i bas-URL:en."
+    }
   }
 }

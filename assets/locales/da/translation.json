@@ -7,7 +7,23 @@
     "model": "Model",
     "quit": "Afslut",
     "cancel": "Annuller",
-    "secureInputWarning": "⚠ Genveje blokeret af Secure Input"
+    "secureInputWarning": "⚠ Genveje blokeret af Secure Input",
+    "startMeetingNotes": "Start mødenoter",
+    "stopMeetingNotes": "Stop mødenoter",
+    "pauseMeetingNotes": "Sæt optagelse på pause",
+    "resumeMeetingNotes": "Genoptag optagelse",
+    "meetingPaused": "På pause",
+    "meetingStillRecording": "Guidy optager stadig",
+    "meetingStop": "Stop",
+    "meetingKeepGoing": "Fortsæt",
+    "meetingTakeNotesFor": "Tag noter til {{title}}?",
+    "meetingStart": "Start",
+    "meetingUntitled": "Møde"
+  },
+  "notch": {
+    "pause": "Sæt optagelse på pause",
+    "resume": "Genoptag optagelse",
+    "stop": "Stop mødenoter"
   },
   "sidebar": {
     "general": "Generelt",
@@ -16,7 +32,58 @@
     "postProcessing": "Efterbehandling",
     "history": "Historik",
     "debug": "Fejlfinding",
+    "usage": "Forbrug",
     "about": "Om"
+  },
+  "usage": {
+    "title": "Forbrug",
+    "description": "Hvad AI-udbydere i skyen har kostet, og det arbejde, modeller har udført på denne Mac.",
+    "cloud": "Sky",
+    "local": "På denne Mac",
+    "refresh": "Opdater",
+    "total": "Brugt i alt",
+    "last30Days": "Seneste 30 dage",
+    "callsTitle": "Kald",
+    "byModel": "Efter model",
+    "byFeature": "Efter funktion",
+    "empty": "Ingen AI-kald i skyen endnu.",
+    "calls_one": "{{count}} kald",
+    "calls_other": "{{count}} kald",
+    "average": "gns. {{cost}}",
+    "highest": "højest {{cost}}",
+    "tokens": "{{input}} ind / {{output}} ud tokens",
+    "unknownPrice": "pris ukendt",
+    "feature": {
+      "dictation": "Diktering",
+      "meetingTranscription": "Mødetransskription",
+      "meetingSummary": "Mødereferater",
+      "other": "Andet"
+    },
+    "localAudio": "Transskriberet lyd",
+    "localWords": "Ord",
+    "localTokens": "LLM-tokens",
+    "localCloudEquivalent": "Tilsvarende i skyen",
+    "localEmpty": "Intet er kørt på en lokal model endnu.",
+    "localByModel": "Lokale modeller",
+    "localByFeature": "Lokalt arbejde efter funktion",
+    "kind": {
+      "transcription": "Transskription",
+      "llm": "Indbygget LLM"
+    },
+    "runs_one": "{{count}} kørsel",
+    "runs_other": "{{count}} kørsler",
+    "audio": "{{duration}} lyd",
+    "words": "{{count}} ord",
+    "realtime": "{{speed}} realtid",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "generering {{speed}}",
+    "loadTime": "indlæses på {{time}}",
+    "localNote": "Realtidshastighed er lydens længde ÷ behandlingstid, uden indlæsning; diktering, der afkodes live, mens du taler, bliver ikke tidsmålt. Tilsvarende i skyen prissætter lyden til ${{price}} pr. minut (OpenAI Whisper).",
+    "estimateNote": "~ markerer beløb, der er anslået ud fra offentliggjorte priser pr. token; udbydere, der selv rapporterer deres pris (som OpenRouter), er præcise. Se din udbyders dashboard for fakturering.",
+    "reportedNote": "Beløbene er som rapporteret af udbyderne. Se din udbyders dashboard for fakturering.",
+    "clear": "Ryd historik",
+    "clearTitle": "Ryd forbrugshistorik?",
+    "clearConfirm": "De registrerede kald, omkostninger og kørsler af lokale modeller slettes. Forbrug vist på mødereferater bliver."
   },
   "onboarding": {
     "subtitle": "For at komme i gang skal du vælge en transskriptionsmodel",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "nøjagtighed",
-      "speed": "hastighed"
+      "speed": "hastighed",
+      "size": "størrelse"
     },
     "models": {
       "small": {
@@ -117,7 +185,9 @@
       "translation": "Kan oversætte til engelsk",
       "translate": "Oversæt",
       "streaming": "Viser live transskription, mens du taler"
-    }
+    },
+    "download": "Download",
+    "use": "Brug"
   },
   "settings": {
     "modelSettings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "Generelt",
+      "description": "Hvordan du starter diktering, hvilket sprog der lyttes efter, og hvad du hører.",
+      "shortcutsGroup": "Genveje",
       "shortcut": {
         "title": "Guidy-genveje",
         "description": "Konfigurer tastaturgenveje til at udløse tale-til-tekst-optagelse",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Avanceret",
+      "description": "Opstart, indsætning, finjustering af transskription og historik.",
       "groups": {
         "app": "App",
         "output": "Output",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Efterbehandling",
+      "description": "Ryd op i eller omskriv en transskription med en AI-model, før den indsættes.",
       "hotkey": {
         "title": "Genvejstast"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Udbyder",
           "description": "Vælg en OpenAI- eller Anthropic-kompatibel udbyder."
+        },
+        "builtin": {
+          "label": "Indbygget model (på denne Mac)",
+          "description": "Kører en lokal model på denne Mac. Intet forlader din computer.",
+          "manage": "Administrer indbyggede modeller"
         },
         "apiFormat": {
           "title": "API-format",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API-nøgle",
           "description": "API-nøgle til den valgte udbyder.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Kunne ikke gemme API-nøglen"
         },
         "model": {
           "title": "Model",
@@ -600,6 +682,10 @@
         "title": "Version",
         "description": "Nuværende version af Guidy"
       },
+      "author": {
+        "title": "Lavet af",
+        "description": "Imran"
+      },
       "whatsNewUpdates": {
         "label": "Vis nyheder",
         "description": "Vis udgivelsesnoter, efter Guidy opdateres"
@@ -625,6 +711,12 @@
           "description": "Højtydende tensor-bibliotek til maskinlæringsinferens på enheden",
           "details": "Guidys lokale tale-til-tekst funktionalitet er bygget på transcribe.cpp og ggml. Tak for det fantastiske arbejde af Georgi Gerganov og bidragyderne."
         }
+      },
+      "hero": {
+        "headline": "Tale til tekst, der bliver på denne Mac",
+        "lede": "Tryk på en genvej, tal, og Guidy skriver i den aktive app. Transskription kører lokalt.",
+        "engine": "Motor",
+        "model": "Model"
       }
     }
   },
@@ -706,5 +798,561 @@
     "learnMore": "Sådan løser du det",
     "recorderBlocked": "Genveje kan ikke optages lige nu — macOS Secure Input blokerer tastehændelser. Løs advarslen om Secure Input først.",
     "dismiss": "Afvis"
+  },
+  "meetings": {
+    "title": "Møder",
+    "selection": {
+      "hint": "Træk, eller Shift-klik, for at tagge flere linjer",
+      "count_one": "{{count}} linje valgt",
+      "count_other": "{{count}} linjer valgt",
+      "keys": "Shift-klik: område · ⌘-klik: tilføj eller fjern · Esc: ryd",
+      "setSpeaker": "Angiv taler",
+      "clear": "Ryd"
+    },
+    "speakersRedo": {
+      "action": "Find talere igen",
+      "tooltip": "Skeln talerne fra hinanden igen med {{model}}. Transskriptionen bevares. Linjer, du har tagget, og talere, du har navngivet, beholder deres person; resten matches igen efter stemme.",
+      "standard": "Standard talermodel",
+      "download": "{{size}} download, én gang",
+      "error": "Kunne ikke finde talerne igen",
+      "confirmTitle": "Find talerne med Deepgram?",
+      "confirmDeepgram": "De andre deltageres lyd fra dette møde uploades til Deepgram for at skelne dem fra hinanden, for ca. {{cost}}. Transskriptionen forbliver uændret.",
+      "confirmDeepgramUnpriced": "De andre deltageres lyd fra dette møde uploades til Deepgram for at skelne dem fra hinanden. Transskriptionen forbliver uændret."
+    },
+    "day": {
+      "today": "I dag",
+      "tomorrow": "I morgen",
+      "yesterday": "I går"
+    },
+    "copy": {
+      "summary": "Kopiér",
+      "transcript": "Kopiér transskription",
+      "copied": "Kopieret"
+    },
+    "redo": {
+      "action": "Transskribér igen",
+      "localTitle": "På denne Mac",
+      "cloudTitle": "Sky",
+      "error": "Kunne ikke starte ny transskribering",
+      "issueRepetition": "Dele af denne transskription gentager sig selv, hvilket normalt betyder, at modellen mistede tråden i lyden.",
+      "issueTooFewWords": "Denne transskription har langt færre ord, end taletiden antyder, så dele af mødet er sandsynligvis gået tabt.",
+      "issueHint": "En model i skyen klarer ofte svær lyd bedre.",
+      "tooltip": "Transskribér igen med {{model}}. Erstatter transskriptionen og talerne; personer, du har navngivet, matches igen efter stemme.",
+      "more": "Andre modeller",
+      "noKeyShort": "kræver en API-nøgle (Møder › Indstillinger › AI)",
+      "confirmTitle": "Transskribér med {{provider}}?",
+      "confirmCloud": "Lyden fra dette møde uploades til {{provider}} og transskriberes med {{model}}, for ca. {{cost}}. Transskriptionen og talerne erstattes.",
+      "confirmCloudUnpriced": "Lyden fra dette møde uploades til {{provider}} og transskriberes med {{model}}. Transskriptionen og talerne erstattes."
+    },
+    "widget": {
+      "recording": "Optager",
+      "paused": "På pause",
+      "you": "Dig",
+      "others": "Andre",
+      "mic": "Mikrofon",
+      "system": "Systemlyd",
+      "liveStarting": "Indlæser transskriptionsmodellen…",
+      "liveListening": "Lytter. Linjer vises her, efterhånden som folk taler.",
+      "liveOff": "Live transskription er slået fra. Slå den til under Møder › Indstillinger.",
+      "liveUnavailable": "Live transskription er ikke tilgængelig: {{reason}}",
+      "pause": "Pause",
+      "resume": "Genoptag",
+      "stop": "Stop",
+      "openNotes": "Åbn noter",
+      "expand": "Vis live transskriptionen",
+      "collapse": "Skjul",
+      "liveTitle": "Live transskription",
+      "liveHint": "Som hørt indtil nu. Den fulde transskription med talernavne laves, når mødet slutter."
+    },
+    "description": "Optag et møde på denne Mac, og læs derefter transskriptionen med navngivne talere.",
+    "init": {
+      "starting": "Starter mødenoter...",
+      "failed": "Mødenoter kunne ikke starte",
+      "retry": "Prøv igen",
+      "keyMissing": {
+        "title": "Mødenoter kan ikke dekrypteres",
+        "description": "Krypteringsnøglen til mødenoter mangler i Nøglering eller passer ikke til dine eksisterende mødenoter, så de kan ikke åbnes. Hvis du kan gendanne nøglen (for eksempel fra en sikkerhedskopi af Nøglering), så gør det, og vælg Prøv igen. Ellers kan du nulstille for at starte forfra: dine gamle mødenoter flyttes til side, ikke slettet."
+      },
+      "reset": {
+        "action": "Nulstil data for mødenoter",
+        "title": "Nulstil data for mødenoter?",
+        "confirm": "Dine nuværende mødenoter og optagelser flyttes til en \"meetings-unreadable\"-mappe i Guidys datamappe (intet slettes), og en ny krypteringsnøgle oprettes. Guidy vil ikke kunne vise de gamle noter."
+      }
+    },
+    "errors": {
+      "unavailable": "Mødenoter er ikke tilgængelige på denne Mac.",
+      "modelMissing": "Transskriptionsmodellen til møder ({{name}}) er ikke downloadet endnu.",
+      "modelUnknown": "Mødemodellen {{name}} er ikke installeret. Vælg en anden mødemodel i Indstillinger.",
+      "speakerModelMissing": "Download modellen til talergenkendelse under Møder > Indstillinger, og behandl derefter mødet.",
+      "noLinearKey": "Tilføj først en Linear API-nøgle i Indstillinger.",
+      "linearUnauthorized": "Linear afviste API-nøglen. Tjek den i Indstillinger."
+    },
+    "model": {
+      "download": "Download mødemodel",
+      "downloadError": "Kunne ikke downloade mødemodellen"
+    },
+    "tabs": {
+      "meetings": "Møder",
+      "people": "Personer",
+      "settings": "Indstillinger"
+    },
+    "recorder": {
+      "start": "Start mødenoter",
+      "stop": "Stop mødenoter",
+      "recording": "Optager",
+      "idle": "Optager ikke",
+      "startError": "Kunne ikke starte optagelse",
+      "stopError": "Kunne ikke stoppe optagelse",
+      "disabled": "Slå mødenoter til i Indstillinger for at optage."
+    },
+    "upcoming": {
+      "title": "Kommende",
+      "empty": "Ingen kommende kalendermøder med et opkaldslink.",
+      "start": "Start"
+    },
+    "list": {
+      "title": "Optagelser",
+      "empty": "Ingen møder endnu. Start mødenoter for at optage et.",
+      "loading": "Indlæser møder...",
+      "loadError": "Kunne ikke indlæse møder",
+      "speakerModelMissing": "Optagelser behandles ikke, før modellen til talergenkendelse er downloadet.",
+      "minutes": "{{count}} min",
+      "open": "Åbn",
+      "rename": "Omdøb",
+      "delete": "Slet",
+      "process": "Behandl",
+      "retry": "Prøv igen",
+      "cancelProcessing": "Annuller behandling",
+      "save": "Gem",
+      "cancel": "Annuller",
+      "titlePlaceholder": "Mødetitel",
+      "deleteTitle": "Slet møde?",
+      "deleteConfirm": "\"{{title}}\" slettes sammen med transskription og lyd. Stemmeaftryk beholdes.",
+      "deleteError": "Kunne ikke slette mødet",
+      "renameError": "Kunne ikke omdøbe mødet",
+      "processError": "Kunne ikke starte behandling",
+      "cancelError": "Kunne ikke annullere behandling"
+    },
+    "status": {
+      "recording": "Optager",
+      "recorded": "Ikke behandlet",
+      "processing": "Behandler",
+      "processed": "Klar",
+      "failed": "Mislykkedes"
+    },
+    "stage": {
+      "decode": "Afkoder lyd",
+      "vad": "Finder tale",
+      "transcribe": "Transskriberer",
+      "voiceprints": "Beregner stemmeaftryk",
+      "cluster": "Grupperer talere",
+      "merge": "Fletter spor",
+      "done": "Færdig"
+    },
+    "detail": {
+      "back": "Alle møder",
+      "transcript": "Transskription",
+      "empty": "Ingen transskription endnu. Behandl mødet for at oprette en.",
+      "loading": "Indlæser transskription...",
+      "loadError": "Kunne ikke indlæse mødet",
+      "playError": "Kunne ikke afspille dette afsnit",
+      "play": "Afspil herfra",
+      "you": "Dig",
+      "speakers": "Talere",
+      "attendees": "Deltagere",
+      "duration": "Varighed",
+      "words": "Ord",
+      "talkTime": "Taletid",
+      "share": "Andel",
+      "youSpoke": "Du talte",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Navngiv denne taler",
+      "confirm": "Bekræft?",
+      "confirmAction": "Bekræft",
+      "change": "Skift",
+      "suggestions": "Forslag",
+      "attendee": "Deltager",
+      "knownPerson": "Kendt person",
+      "noSuggestions": "Ingen forslag",
+      "newPerson": "Ny person",
+      "namePlaceholder": "Navn",
+      "emailPlaceholder": "E-mail (valgfri)",
+      "save": "Gem",
+      "cancel": "Annuller",
+      "assignError": "Kunne ikke navngive taleren",
+      "confirmError": "Kunne ikke bekræfte taleren",
+      "unnamed": "Taler {{n}}",
+      "unknown": "Ukendt",
+      "whoIsThis": "Hvem er dette?",
+      "whoSaidThis": "Hvem sagde dette?"
+    },
+    "people": {
+      "title": "Personer",
+      "description": "Personer, du har navngivet i møder. Guidy genkender deres stemmer i senere møder.",
+      "empty": "Ingen personer endnu. Navngiv en taler i et møde for at tilføje en.",
+      "loadError": "Kunne ikke indlæse personer",
+      "voiceprints_one": "{{count}} stemmeaftryk",
+      "voiceprints_other": "{{count}} stemmeaftryk",
+      "edit": "Rediger",
+      "merge": "Flet",
+      "mergeInto": "Flet ind i...",
+      "mergeHint": "Vælg den person, der skal beholdes. Stemmeaftryk og talernavne flyttes til vedkommende.",
+      "mergeIntoName": "Flet ind i {{name}}",
+      "samples": {
+        "hint": "Lyt først til stemmeaftrykkene: hvert enkelt er taget fra én linje i et møde.",
+        "none": "Ingen stemmeaftryk.",
+        "play": "Afspil",
+        "pause": "Pause",
+        "noText": "(ingen ord)",
+        "noLine": "Linjen, det kom fra, findes ikke længere",
+        "audioDeleted": "lyd slettet",
+        "loadError": "Kunne ikke indlæse stemmeaftrykkene"
+      },
+      "mergeTitle": "Flet personer?",
+      "mergeConfirm": "{{from}} flettes ind i {{into}} og fjernes derefter.",
+      "mergeError": "Kunne ikke flette personer",
+      "delete": "Slet",
+      "deleteTitle": "Slet person?",
+      "deleteConfirm": "{{name}} og vedkommendes {{count}} gemte stemmeaftryk slettes. Guidy vil ikke genkende stemmen i fremtidige møder.",
+      "deleteError": "Kunne ikke slette personen",
+      "renameError": "Kunne ikke opdatere personen",
+      "namePlaceholder": "Navn",
+      "emailPlaceholder": "E-mail (valgfri)",
+      "save": "Gem",
+      "cancel": "Annuller",
+      "voice": {
+        "title": "Din stemme",
+        "notRecorded": "Ikke optaget",
+        "recordedTitle": "Optaget",
+        "description": "Optag en kort prøve af din stemme, så Guidy kan skelne dig fra andre personer i rummet under fysiske møder.",
+        "recorded": "I møder, der behandles fra nu af, markeres kun tale, der lyder som dig, som dig. Behandl ældre møder igen for at anvende det.",
+        "record": "Optag min stemme",
+        "recordAgain": "Optag igen",
+        "starting": "Åbner mikrofonen...",
+        "recording": "Optager",
+        "readAloud": "Læs dette højt med din normale stemme, og tryk derefter på Færdig.",
+        "passage": "Når jeg deltager i et møde, starter jeg som regel med at kigge på dagsordenen og noterne fra sidste gang. Derefter gennemgår vi, hvad der har ændret sig, siden vi sidst talte sammen, hvad der er blokeret, og hvem der tager de næste skridt. Hvis noget kræver en beslutning, prøver vi at træffe den inden opkaldets afslutning, så ingen behøver at vente på et nyt møde. Bagefter deler jeg et kort referat med alle, der var med.",
+        "done": "Færdig",
+        "saving": "Gemmer din stemme...",
+        "loadError": "Kunne ikke indlæse din stemme",
+        "recordError": "Kunne ikke starte optagelse",
+        "saveError": "Kunne ikke gemme din stemme",
+        "deleteTitle": "Slet din stemme?",
+        "deleteConfirm": "Din optagede stemme slettes. Guidy markerer igen al tale fra mikrofonen som dig.",
+        "deleteError": "Kunne ikke slette din stemme"
+      }
+    },
+    "settings": {
+      "general": "Mødenoter",
+      "enabled": {
+        "title": "Mødenoter",
+        "description": "Optag møder med din mikrofon og din computers lyd. Når du slår dette til, bliver du bedt om adgang til kalender, systemlyd og notifikationer."
+      },
+      "permissions": {
+        "title": "Tilladelser",
+        "calendar": "Kalender",
+        "systemAudio": "Systemlyd",
+        "microphone": "Mikrofon",
+        "notifications": "Notifikationer",
+        "granted": "Givet",
+        "denied": "Ikke givet",
+        "error": "Kunne ikke anmode om tilladelser",
+        "requestAgain": "Anmod igen",
+        "openSettings": "Åbn Systemindstillinger"
+      },
+      "you": "Dig",
+      "userName": {
+        "title": "Dit navn",
+        "description": "Dit mikrofonspor markeres altid med dette navn.",
+        "placeholder": "Dit navn"
+      },
+      "userEmails": {
+        "title": "E-mailadresser",
+        "description": "Alle adresser, du deltager i møder med, f.eks. privat og arbejde. Hvis en af dem står på en mødeinvitation, er den deltager dig.",
+        "labelPlaceholder": "Etiket, f.eks. Arbejde",
+        "emailPlaceholder": "navn@example.com",
+        "noLabel": "Ingen etiket",
+        "add": "Tilføj",
+        "remove": "Fjern denne adresse",
+        "invalid": "Det er ikke en gyldig e-mailadresse.",
+        "duplicate": "Den adresse er allerede på listen."
+      },
+      "recording": "Optagelse",
+      "meetingModel": {
+        "title": "Transskriptionsmodel",
+        "usesDictation": "Møder bruger din dikteringsmodel: {{name}}.",
+        "noDictation": "Ingen dikteringsmodel er downloadet endnu. Download en på siden Modeller, eller vælg en model til møder.",
+        "separate": "Brug en anden model",
+        "choice": "Model til møder",
+        "choiceDescription": "Parakeet giver tidsangivelser for hvert ord, hvilket hjælper, når folk taler i munden på hinanden.",
+        "notDownloaded": "{{name}} (ikke downloadet)",
+        "chosenMissing": "{{name}} er ikke downloadet endnu. Møder bruger din dikteringsmodel, indtil den er.",
+        "chosenUnknown": "{{name}} er ikke installeret. Vælg en anden model, eller slå \"Brug en anden model\" fra."
+      },
+      "separation": {
+        "title": "Skelne stemmer fra hinanden",
+        "description": "Talermodellen, der afgør, hvem der sagde hver linje. Større modeller skelner bedre mellem ens stemmer, men fylder mere og gør behandlingen langsommere. Personer, du har navngivet, genkendes altid med standardmodellen, så et skift bevarer deres stemmeaftryk.",
+        "downloaded": "Downloadet.",
+        "notDownloaded": "Downloades, når den vælges.",
+        "downloading": "Downloader...",
+        "delete": "Slet denne model ({{size}})",
+        "downloadError": "Kunne ikke downloade talermodellen",
+        "deleteError": "Kunne ikke slette talermodellen",
+        "about": {
+          "resnet34": "Standard. Lille og hurtig, og den genkender også personer, du har navngivet.",
+          "cam_plus_plus": "Omtrent lige så lille, og den hurtigste.",
+          "resnet152": "Bedre til ens stemmer; behandlingen tager ca. 3 gange så lang tid.",
+          "titanet_large": "Fra NVIDIA, også trænet på telefonopkald, hvilket kan passe til lyd fra opkald. Omtrent lige så hurtig som standardmodellen.",
+          "resnet293": "Den mest nøjagtige her; behandlingen tager ca. 6 gange så lang tid."
+        }
+      },
+      "speakerModel": {
+        "title": "Talergenkendelse",
+        "description": "Skelner stemmer fra hinanden og genkender personer, du har navngivet før. Bruger {{name}} ({{trainedOn}}), {{size}}. Downloades kun, når du klikker på Download.",
+        "ready": "Downloadet",
+        "download": "Download ({{size}})",
+        "retry": "Prøv download igen",
+        "failed": "Download mislykkedes: {{error}}"
+      },
+      "retention": {
+        "title": "Behold mødelyd",
+        "description": "Rå lyd slettes efter dette tidsrum. Transskriptioner og stemmeaftryk beholdes.",
+        "days3": "3 dage",
+        "days7": "7 dage",
+        "days30": "30 dage",
+        "forever": "Altid"
+      },
+      "mcp": {
+        "group": "Andre apps",
+        "title": "MCP-server",
+        "description": "Lad AI-apps på denne Mac, som Claude eller Cursor, læse din mødeliste, dine referater og transskriptioner. Kun lokalt og skrivebeskyttet.",
+        "url": "Server-URL (Streamable HTTP)",
+        "stdio": "Kommando (til apps, der kun kører stdio-servere)",
+        "failed": "Kunne ikke starte MCP-serveren på port {{port}}. En anden app bruger den muligvis."
+      },
+      "calendarNotifications": {
+        "title": "Kalendernotifikationer",
+        "description": "Spørg, om der skal tages noter, når et kalendermøde med et opkaldslink starter."
+      },
+      "recordingControls": {
+        "title": "Optagelseskontroller",
+        "description": "Hvor pause, stop og live transskriptionen vises, mens et møde optages.",
+        "floating": "Svævende, ved skærmkanten",
+        "notch": "Omkring notchen"
+      },
+      "deepgram": {
+        "title": "Deepgram API-nøgle",
+        "description": "Lader dig finde et mødes talere igen i skyen med Deepgram, som er god til at skelne stemmer i opkald. Gemmes i Nøglering.",
+        "placeholder": "Indsæt en nøgle, og tryk på Enter",
+        "saved": "Gemt",
+        "remove": "Fjern",
+        "error": "Kunne ikke gemme Deepgram-nøglen"
+      },
+      "liveTranscription": {
+        "title": "Live transskription",
+        "description": "Transskribér mødet på denne Mac, mens det foregår. Den fulde transskription laves stadig efter mødet.",
+        "model": "Model til live transskription",
+        "modelDescription": "En lille, hurtig model følger bedst med, mens du er i et opkald. Transskriptionen efter mødet bruger mødemodellen.",
+        "sameModel": "Samme som møder"
+      },
+      "reminderInterval": {
+        "title": "Påmindelsesinterval",
+        "description": "Minutter mellem \"optager stadig\"-påmindelser, efter et møde burde være slut.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Avanceret",
+        "show": "Vis avancerede indstillinger",
+        "hide": "Skjul avancerede indstillinger",
+        "matchThreshold": {
+          "title": "Tærskel for automatisk match",
+          "description": "Stemmelighed, ved eller over hvilken en taler navngives automatisk. Under den spørger matchet \"Bekræft?\"."
+        },
+        "suggestThreshold": {
+          "title": "Tærskel for forslag",
+          "description": "Stemmelighed, under hvilken en kendt person slet ikke foreslås."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Gem",
+      "cancel": "Annuller",
+      "delete": "Slet",
+      "loading": "Indlæser..."
+    },
+    "summary": {
+      "heading": "Referat",
+      "actionItems": "Opgaver",
+      "generate": "Generér referat",
+      "regenerate": "Generér igen",
+      "regenerateWith": "Generér igen med...",
+      "generateWith": "Generér med {{model}}",
+      "otherModels": "Andre modeller",
+      "otherModel": "Anden model…",
+      "generating": "Laver referat af mødet...",
+      "generatingLocal": "Laver referat af mødet. Det kan tage et par minutter med en lokal model.",
+      "progress": "Laver referat ({{done}} af {{total}} trin)",
+      "empty": "Intet referat endnu. Generér et ud fra transskriptionen.",
+      "untitled": "Unavngivet møde",
+      "edit": "Rediger",
+      "title": "Titel",
+      "shortSummary": "Kort referat",
+      "shortSummaryPlaceholder": "Hvad mødet handlede om, i få sætninger",
+      "decisions": "Beslutninger",
+      "topics": "Emner",
+      "linesPlaceholder": "Én pr. linje",
+      "onePerLine": "Beslutninger og emner: én pr. linje.",
+      "none": "Ingen",
+      "generatedBy": "Genereret med {{model}}",
+      "generatedByCost": "Genereret med {{model}} · {{cost}} · {{input}} ind / {{output}} ud tokens",
+      "generatedByTokens": "Genereret med {{model}} · {{input}} ind / {{output}} ud tokens",
+      "pickerTitle": "Model til dette referat",
+      "pickerDescription": "Generér igen med en anden udbyder og model. Din mødemodel i indstillingerne forbliver uændret. Opgaver, der allerede har en Linear-sag, beholdes.",
+      "run": "Generér",
+      "noItems": "Ingen opgaver.",
+      "newItemPlaceholder": "Tilføj en opgave",
+      "addItem": "Tilføj",
+      "deleteItem": "Slet opgave",
+      "due": "Frist",
+      "duePlaceholder": "f.eks. 2026-10-31",
+      "jumpToMoment": "Afspil dette øjeblik i transskriptionen",
+      "owner": {
+        "title": "Ansvarlig",
+        "none": "Ingen ansvarlig",
+        "me": "Mig",
+        "meNamed": "Mig ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear-sager",
+      "draft": "Lav udkast til sager",
+      "approveSelected": "Godkend valgte ({{count}})",
+      "createApproved": "Opret godkendte ({{count}})",
+      "noKey": "Forbind Linear for at gøre opgaver til sager.",
+      "openSettings": "Åbn indstillinger",
+      "noItems": "Ingen opgaver at gøre til sager.",
+      "notDrafted": "Lav udkast til sager ud fra opgaverne for at gennemgå dem her.",
+      "approve": "Godkend",
+      "approveTip": "Markér denne sag til oprettelse. Intet oprettes, før du klikker på Opret godkendte.",
+      "needsTeam": "Vælg et team før godkendelse",
+      "unapprove": "Fortryd godkendelse",
+      "discard": "Kassér",
+      "restore": "Gendan",
+      "edit": "Rediger titel og beskrivelse",
+      "approved": "Godkendt",
+      "draftState": "Udkast",
+      "created": "Oprettet i Linear",
+      "alreadyExisted": "Allerede i Linear: intet nyt blev oprettet",
+      "createFailed": "Ikke oprettet: {{error}}",
+      "issue": "Sag",
+      "team": "Team",
+      "pickTeam": "Vælg et team",
+      "project": "Projekt",
+      "noProject": "Intet projekt",
+      "assignee": "Tildelt",
+      "unassigned": "Ikke tildelt",
+      "labels": "Etiketter",
+      "addLabel": "Tilføj etiketter",
+      "labelCount": "{{count}} etiketter",
+      "priority": {
+        "title": "Prioritet",
+        "none": "Ingen prioritet",
+        "urgent": "Akut",
+        "high": "Høj",
+        "medium": "Mellem",
+        "low": "Lav"
+      }
+    },
+    "llm": {
+      "heading": "Referater",
+      "provider": "Udbyder",
+      "providerDescription": "Model, der bruges til mødereferater og opgaver. Efterbehandling af diktering beholder sin egen udbyder.",
+      "builtin": "Indbygget (på denne Mac)",
+      "builtinDescription": "Kører en lokal model med llama.cpp. Intet forlader din Mac.",
+      "model": "Model",
+      "modelDescription": "Markér en model for at føje den til dine modeller. Kun modeller, der giver tekst som output, vises. \"God til referater\" betyder, at modellen understøtter struktureret output, som referater er afhængige af.",
+      "modelPlaceholder": "Model-id",
+      "pickModel": "Vælg en model",
+      "noLocalModels": "Download en model nedenfor",
+      "usingPostProcessModel": "Bruger efterbehandlingsmodellen ({{model}})",
+      "refreshModels": "Opdater",
+      "testConnection": "Test forbindelse",
+      "testDescription": "Tjek, at udbyder, nøgle og model virker.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Model på enheden på Mac-computere med Apple silicon og Apple Intelligence slået til.",
+      "appleAvailable": "Tilgængelig",
+      "appleUnavailable": "Apple Intelligence er ikke tilgængelig på denne Mac",
+      "activeHeading": "Referater laves af",
+      "place": "Hvor referater kører",
+      "placeDescription": "Kun den valgte mulighed bruges.",
+      "tabCloud": "Udbyder i skyen",
+      "tabLocal": "På denne Mac",
+      "onThisMac": "Denne Mac · offline",
+      "apiKey": "API-nøgle",
+      "apiKeyDescription": "Gemt i din Nøglering og delt med Efterbehandling.",
+      "getKey": "Få en {{provider}}-nøgle",
+      "modelDescriptionCustom": "Skriv det model-id, dit endpoint forventer, og tryk på Enter for at tilføje det, eller markér et, det viser.",
+      "searchModels": "Søg efter modeller",
+      "goodOnly": "God til referater",
+      "goodForSummaries": "referater",
+      "reasoning": "ræsonnering",
+      "unknownModel": "ikke i registret",
+      "noModels": "Ingen modeller matcher.",
+      "context": "{{n}} ctx",
+      "free": "gratis",
+      "modelCount": "{{shown}}/{{total}} modeller",
+      "registryBundled": "Modeldetaljer fra models.dev (følger med appen)",
+      "registryUpdated": "Modeldetaljer fra models.dev, opdateret {{when}}",
+      "justNow": "lige nu",
+      "minutesAgo": "for {{n}} min siden",
+      "hoursAgo": "for {{n}} t siden",
+      "daysAgo": "for {{n}} d siden",
+      "needsKey": "Tilføj din {{provider}} API-nøgle",
+      "needsModel": "Vælg en {{provider}}-model",
+      "needsLocalModel": "Download en model for at lave referater på denne Mac",
+      "localDescription": "Kører offline på denne Mac. Vælg en downloadet model.",
+      "appleUnavailableHint": "Ikke tilgængelig på denne Mac. Slå det til under Systemindstillinger > Apple Intelligence og Siri.",
+      "unavailable": "ikke tilgængelig",
+      "yourModels": "Dine modeller",
+      "yourModelsDescription": "Generér referat tilbyder alle modeller her, så du kan vælge én pr. møde. Den valgte er standard.",
+      "yourModelsEmpty": "Ingen modeller i skyen endnu. Vælg en udbyder nedenfor, tilføj dens API-nøgle, og markér de modeller, du vil have.",
+      "default": "standard",
+      "removeModel": "Fjern fra dine modeller",
+      "addFrom": "Tilføj modeller fra",
+      "addFromDescription": "Vælg en udbyder for at indtaste dens nøgle, og markér modeller, der skal tilføjes. Dette ændrer ikke standarden."
+    },
+    "local": {
+      "heading": "Lokale modeller",
+      "empty": "Ingen indbyggede modeller er tilgængelige.",
+      "default": "Standard",
+      "recommendedRam": "Anbefalet til {{gb}} GB+ RAM",
+      "notEnoughRam": "Denne Mac har mindre hukommelse end anbefalet til denne model.",
+      "downloaded": "Downloadet",
+      "download": "Download",
+      "downloading": "Downloader {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Personlig API-nøgle",
+      "keyDescription": "Gemt i din macOS-nøglering. Bruges til at lave udkast til og oprette sager ud fra opgaver.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "En nøgle er gemt i din Nøglering.",
+      "noKey": "Ingen nøgle gemt.",
+      "getKey": "Opret en nøgle på linear.app/settings/api",
+      "removeKey": "Fjern nøgle",
+      "test": "Test forbindelse",
+      "testDescription": "Tjek nøglen hos Linear.",
+      "connectedAs": "Forbundet som {{name}}"
+    },
+    "byok": {
+      "testConnection": "Test forbindelse",
+      "testDescription": "Tjek basis-URL, API-nøgle og model med en lille anmodning.",
+      "baseUrlEditable": "API-basis-URL for denne udbyder. Erstat eventuelle {placeholder} (f.eks. dit Cloudflare-konto-id).",
+      "cloudflareHint": "Cloudflare: indsæt dit konto-id (og gateway-id til AI Gateway) i basis-URL'en."
+    }
   }
 }

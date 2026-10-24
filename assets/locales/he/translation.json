@@ -7,7 +7,23 @@
     "model": "מודל",
     "quit": "יציאה",
     "cancel": "ביטול",
-    "secureInputWarning": "⚠ קיצורי המקשים חסומים על ידי Secure Input"
+    "secureInputWarning": "⚠ קיצורי המקשים חסומים על ידי Secure Input",
+    "startMeetingNotes": "התחל סיכום פגישה",
+    "stopMeetingNotes": "עצור סיכום פגישה",
+    "pauseMeetingNotes": "השהה הקלטה",
+    "resumeMeetingNotes": "המשך הקלטה",
+    "meetingPaused": "מושהה",
+    "meetingStillRecording": "Guidy עדיין מקליט",
+    "meetingStop": "עצור",
+    "meetingKeepGoing": "המשך",
+    "meetingTakeNotesFor": "לרשום הערות עבור {{title}}?",
+    "meetingStart": "התחל",
+    "meetingUntitled": "פגישה"
+  },
+  "notch": {
+    "pause": "השהה הקלטה",
+    "resume": "המשך הקלטה",
+    "stop": "עצור סיכום פגישה"
   },
   "sidebar": {
     "general": "כללי",
@@ -16,7 +32,58 @@
     "postProcessing": "עיבוד משלים",
     "history": "היסטוריה",
     "debug": "ניפוי שגיאות",
+    "usage": "שימוש",
     "about": "אודות"
+  },
+  "usage": {
+    "title": "שימוש",
+    "description": "כמה עלו ספקי ה-AI בענן, והעבודה שעשו המודלים ב-Mac הזה.",
+    "cloud": "ענן",
+    "local": "ב-Mac הזה",
+    "refresh": "רענן",
+    "total": "סך ההוצאה",
+    "last30Days": "30 הימים האחרונים",
+    "callsTitle": "קריאות",
+    "byModel": "לפי מודל",
+    "byFeature": "לפי תכונה",
+    "empty": "עדיין אין קריאות ל-AI בענן.",
+    "calls_one": "{{count}} קריאה",
+    "calls_other": "{{count}} קריאות",
+    "average": "ממוצע {{cost}}",
+    "highest": "הגבוה ביותר {{cost}}",
+    "tokens": "{{input}} טוקנים נכנסים / {{output}} יוצאים",
+    "unknownPrice": "מחיר לא ידוע",
+    "feature": {
+      "dictation": "הכתבה",
+      "meetingTranscription": "תמלול פגישות",
+      "meetingSummary": "סיכומי פגישות",
+      "other": "אחר"
+    },
+    "localAudio": "שמע שתומלל",
+    "localWords": "מילים",
+    "localTokens": "טוקנים של LLM",
+    "localCloudEquivalent": "שווה ערך בענן",
+    "localEmpty": "עדיין לא רץ דבר על מודל מקומי.",
+    "localByModel": "מודלים מקומיים",
+    "localByFeature": "עבודה מקומית לפי תכונה",
+    "kind": {
+      "transcription": "תמלול",
+      "llm": "LLM מובנה"
+    },
+    "runs_one": "{{count}} הרצה",
+    "runs_other": "{{count}} הרצות",
+    "audio": "{{duration}} שמע",
+    "words": "{{count}} מילים",
+    "realtime": "{{speed}} מזמן אמת",
+    "promptSpeed": "פרומפט {{speed}}",
+    "generationSpeed": "יצירה {{speed}}",
+    "loadTime": "נטען תוך {{time}}",
+    "localNote": "מהירות ביחס לזמן אמת היא אורך השמע ÷ זמן העיבוד, ללא זמן הטעינה; הכתבה שמפוענחת בזמן הדיבור אינה נמדדת. השווי בענן מתמחר את השמע ב-${{price}} לדקה (OpenAI Whisper).",
+    "estimateNote": "~ מסמן סכומים שהוערכו לפי מחירים מפורסמים לטוקן; ספקים שמדווחים על העלות בעצמם (כמו OpenRouter) מדויקים. לחיוב, בדוק בלוח הבקרה של הספק.",
+    "reportedNote": "הסכומים הם כפי שדווחו על ידי הספקים. לחיוב, בדוק בלוח הבקרה של הספק.",
+    "clear": "נקה היסטוריה",
+    "clearTitle": "לנקות את היסטוריית השימוש?",
+    "clearConfirm": "הקריאות, העלויות וההרצות של מודלים מקומיים שנרשמו יימחקו. השימוש שמוצג בסיכומי הפגישות יישאר."
   },
   "onboarding": {
     "subtitle": "כדי להתחיל, בחר מודל תמלול",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "דיוק",
-      "speed": "מהירות"
+      "speed": "מהירות",
+      "size": "גודל"
     },
     "models": {
       "small": {
@@ -117,6 +185,8 @@
       "translate": "תרגם לאנגלית",
       "streaming": "מציג תמלול חי תוך כדי דיבור"
     },
+    "download": "הורד",
+    "use": "השתמש",
     "legacy": "מדור קודם"
   },
   "settings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "כללי",
+      "description": "איך מתחילים הכתבה, לאיזו שפה היא מאזינה ומה שומעים.",
+      "shortcutsGroup": "קיצורי מקשים",
       "shortcut": {
         "title": "קיצורי מקשים של Guidy",
         "description": "הגדר קיצורי מקשים כדי להפעיל הקלטה ותמלול דיבור",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "מתקדם",
+      "description": "הפעלה, הדבקה, כוונון תמלול והיסטוריה.",
       "groups": {
         "app": "אפליקציה",
         "output": "פלט",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "עיבוד משלים",
+      "description": "נקה או נסח מחדש תמלול בעזרת מודל AI לפני שהוא מודבק.",
       "hotkey": {
         "title": "קיצור מקשים"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "ספק",
           "description": "בחר ספק שתואם ל-OpenAI או ל-Anthropic."
+        },
+        "builtin": {
+          "label": "מודל מובנה (ב-Mac הזה)",
+          "description": "מריץ מודל מקומי ב-Mac הזה. שום דבר לא יוצא מהמחשב שלך.",
+          "manage": "נהל מודלים מובנים"
         },
         "apiFormat": {
           "title": "פורמט API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "מפתח API",
           "description": "מפתח API עבור הספק הנבחר.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "לא ניתן היה לשמור את מפתח ה-API"
         },
         "model": {
           "title": "מודל",
@@ -600,6 +682,10 @@
         "title": "גרסה",
         "description": "הגרסה הנוכחית של Guidy"
       },
+      "author": {
+        "title": "נוצר על ידי",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "תיקיית נתוני אפליקציה",
         "description": "המיקום שבו Guidy שומר את הנתונים שלו"
@@ -621,6 +707,12 @@
           "description": "הסקה מהירה לביצועים גבוהים עבור מודל זיהוי הדיבור Whisper של OpenAI",
           "details": "Guidy משתמש ב-ggml לתמלול מהיר ומקומי. תודה לעבודה המדהימה של Georgi Gerganov וכל התורמים."
         }
+      },
+      "hero": {
+        "headline": "דיבור לטקסט שנשאר ב-Mac הזה",
+        "lede": "לחץ על קיצור מקשים, דבר, ו-Guidy מקליד לתוך האפליקציה הפעילה. התמלול רץ באופן מקומי.",
+        "engine": "מנוע",
+        "model": "מודל"
       },
       "whatsNewUpdates": {
         "label": "הצג מה חדש",
@@ -706,5 +798,561 @@
     "learnMore": "איך לתקן את זה",
     "recorderBlocked": "לא ניתן להקליט קיצורים כרגע — Secure Input של macOS חוסם אירועי מקשים. פתור תחילה את אזהרת Secure Input.",
     "dismiss": "התעלם"
+  },
+  "meetings": {
+    "title": "פגישות",
+    "selection": {
+      "hint": "גרור, או לחץ עם Shift, כדי לתייג כמה שורות",
+      "count_one": "{{count}} שורה נבחרה",
+      "count_other": "{{count}} שורות נבחרו",
+      "keys": "Shift-לחיצה: טווח · ⌘-לחיצה: הוספה או הסרה · Esc: ניקוי",
+      "setSpeaker": "קבע דובר",
+      "clear": "נקה"
+    },
+    "speakersRedo": {
+      "action": "זהה דוברים מחדש",
+      "tooltip": "הפרד שוב בין הדוברים בעזרת {{model}}. התמלול נשאר. שורות שתייגת ודוברים שנתת להם שם שומרים על האדם שלהם; השאר מותאמים שוב לפי הקול.",
+      "standard": "מודל דוברים רגיל",
+      "download": "הורדה של {{size}}, פעם אחת",
+      "error": "לא ניתן היה לזהות מחדש את הדוברים",
+      "confirmTitle": "לזהות את הדוברים עם Deepgram?",
+      "confirmDeepgram": "השמע של שאר המשתתפים בפגישה הזו יועלה ל-Deepgram כדי להפריד ביניהם, בעלות של כ-{{cost}}. התמלול יישאר כמו שהוא.",
+      "confirmDeepgramUnpriced": "השמע של שאר המשתתפים בפגישה הזו יועלה ל-Deepgram כדי להפריד ביניהם. התמלול יישאר כמו שהוא."
+    },
+    "day": {
+      "today": "היום",
+      "tomorrow": "מחר",
+      "yesterday": "אתמול"
+    },
+    "copy": {
+      "summary": "העתק",
+      "transcript": "העתק תמלול",
+      "copied": "הועתק"
+    },
+    "redo": {
+      "action": "תמלל מחדש",
+      "localTitle": "ב-Mac הזה",
+      "cloudTitle": "ענן",
+      "error": "לא ניתן היה להתחיל לתמלל מחדש",
+      "issueRepetition": "חלקים מהתמלול הזה חוזרים על עצמם, מה שבדרך כלל אומר שהמודל איבד את המעקב אחרי השמע.",
+      "issueTooFewWords": "בתמלול הזה יש הרבה פחות מילים ממה שזמן הדיבור מרמז, כך שכנראה חלקים מהפגישה הוחמצו.",
+      "issueHint": "מודל בענן מצליח לרוב יותר עם שמע קשה.",
+      "tooltip": "תמלל שוב בעזרת {{model}}. מחליף את התמלול ואת הדוברים; אנשים שנתת להם שם מותאמים שוב לפי הקול.",
+      "more": "מודלים אחרים",
+      "noKeyShort": "נדרש מפתח API (פגישות › הגדרות › AI)",
+      "confirmTitle": "לתמלל עם {{provider}}?",
+      "confirmCloud": "השמע של הפגישה הזו יועלה ל-{{provider}} ויתומלל עם {{model}}, בעלות של כ-{{cost}}. התמלול והדוברים יוחלפו.",
+      "confirmCloudUnpriced": "השמע של הפגישה הזו יועלה ל-{{provider}} ויתומלל עם {{model}}. התמלול והדוברים יוחלפו."
+    },
+    "widget": {
+      "recording": "מקליט",
+      "paused": "מושהה",
+      "you": "אתה",
+      "others": "אחרים",
+      "mic": "מיקרופון",
+      "system": "שמע המערכת",
+      "liveStarting": "טוען את מודל התמלול…",
+      "liveListening": "מאזין. שורות יופיעו כאן כשאנשים מדברים.",
+      "liveOff": "התמלול החי כבוי. הפעל אותו בפגישות › הגדרות.",
+      "liveUnavailable": "תמלול חי אינו זמין: {{reason}}",
+      "pause": "השהה",
+      "resume": "המשך",
+      "stop": "עצור",
+      "openNotes": "פתח סיכום",
+      "expand": "הצג את התמלול החי",
+      "collapse": "כווץ",
+      "liveTitle": "תמלול חי",
+      "liveHint": "כפי שנשמע עד כה. התמלול המלא עם שמות הדוברים נוצר כשהפגישה מסתיימת."
+    },
+    "description": "הקלט פגישה ב-Mac הזה, ואז קרא את התמלול עם שמות הדוברים.",
+    "init": {
+      "starting": "מפעיל את סיכומי הפגישות...",
+      "failed": "לא ניתן היה להפעיל את סיכומי הפגישות",
+      "retry": "ניסיון חוזר",
+      "keyMissing": {
+        "title": "לא ניתן לפענח את סיכומי הפגישות",
+        "description": "מפתח ההצפנה של סיכומי הפגישות חסר בצרור המפתחות או שאינו תואם לסיכומים הקיימים שלך, ולכן לא ניתן לפתוח אותם. אם אפשר לשחזר את המפתח (למשל מגיבוי של צרור המפתחות), עשה זאת ובחר ״ניסיון חוזר״. אחרת, אפס כדי להתחיל מחדש: הסיכומים הישנים שלך יועברו הצידה, לא יימחקו."
+      },
+      "reset": {
+        "action": "אפס את נתוני סיכומי הפגישות",
+        "title": "לאפס את נתוני סיכומי הפגישות?",
+        "confirm": "סיכומי הפגישות וההקלטות הנוכחיים שלך יועברו לתיקייה \"meetings-unreadable\" בתיקיית הנתונים של Guidy (שום דבר לא נמחק) וייווצר מפתח הצפנה חדש. Guidy לא יוכל להציג את הסיכומים הישנים."
+      }
+    },
+    "errors": {
+      "unavailable": "סיכומי פגישות אינם זמינים ב-Mac הזה.",
+      "modelMissing": "מודל התמלול לפגישות ({{name}}) עדיין לא הורד.",
+      "modelUnknown": "מודל הפגישות {{name}} אינו מותקן. בחר מודל פגישות אחר בהגדרות.",
+      "speakerModelMissing": "הורד את מודל זיהוי הדוברים בפגישות > הגדרות, ואז עבד את הפגישה.",
+      "noLinearKey": "הוסף קודם מפתח API של Linear בהגדרות.",
+      "linearUnauthorized": "Linear דחה את מפתח ה-API. בדוק אותו בהגדרות."
+    },
+    "model": {
+      "download": "הורד מודל פגישות",
+      "downloadError": "לא ניתן היה להוריד את מודל הפגישות"
+    },
+    "tabs": {
+      "meetings": "פגישות",
+      "people": "אנשים",
+      "settings": "הגדרות"
+    },
+    "recorder": {
+      "start": "התחל סיכום פגישה",
+      "stop": "עצור סיכום פגישה",
+      "recording": "מקליט",
+      "idle": "לא מקליט",
+      "startError": "לא ניתן היה להתחיל להקליט",
+      "stopError": "לא ניתן היה לעצור את ההקלטה",
+      "disabled": "הפעל סיכומי פגישות בהגדרות כדי להקליט."
+    },
+    "upcoming": {
+      "title": "בקרוב",
+      "empty": "אין פגישות קרובות ביומן עם קישור לשיחה.",
+      "start": "התחל"
+    },
+    "list": {
+      "title": "הקלטות",
+      "empty": "עדיין אין פגישות. התחל סיכום פגישה כדי להקליט אחת.",
+      "loading": "טוען פגישות...",
+      "loadError": "לא ניתן היה לטעון את הפגישות",
+      "speakerModelMissing": "הקלטות לא יעובדו עד שמודל זיהוי הדוברים יורד.",
+      "minutes": "{{count}} דק׳",
+      "open": "פתח",
+      "rename": "שנה שם",
+      "delete": "מחק",
+      "process": "עבד",
+      "retry": "ניסיון חוזר",
+      "cancelProcessing": "בטל עיבוד",
+      "save": "שמור",
+      "cancel": "ביטול",
+      "titlePlaceholder": "כותרת הפגישה",
+      "deleteTitle": "למחוק את הפגישה?",
+      "deleteConfirm": "\"{{title}}\" תימחק יחד עם התמלול והשמע שלה. טביעות הקול יישמרו.",
+      "deleteError": "לא ניתן היה למחוק את הפגישה",
+      "renameError": "לא ניתן היה לשנות את שם הפגישה",
+      "processError": "לא ניתן היה להתחיל את העיבוד",
+      "cancelError": "לא ניתן היה לבטל את העיבוד"
+    },
+    "status": {
+      "recording": "מקליט",
+      "recorded": "לא עובד",
+      "processing": "בעיבוד",
+      "processed": "מוכן",
+      "failed": "נכשל"
+    },
+    "stage": {
+      "decode": "מפענח שמע",
+      "vad": "מאתר דיבור",
+      "transcribe": "מתמלל",
+      "voiceprints": "מחשב טביעות קול",
+      "cluster": "מקבץ דוברים",
+      "merge": "ממזג ערוצים",
+      "done": "הסתיים"
+    },
+    "detail": {
+      "back": "כל הפגישות",
+      "transcript": "תמלול",
+      "empty": "עדיין אין תמלול. עבד את הפגישה כדי ליצור אחד.",
+      "loading": "טוען תמלול...",
+      "loadError": "לא ניתן היה לטעון את הפגישה",
+      "playError": "לא ניתן היה לנגן את הקטע הזה",
+      "play": "נגן מכאן",
+      "you": "אתה",
+      "speakers": "דוברים",
+      "attendees": "משתתפים",
+      "duration": "משך",
+      "words": "מילים",
+      "talkTime": "זמן דיבור",
+      "share": "חלק יחסי",
+      "youSpoke": "דיברת",
+      "minutes": "דק׳"
+    },
+    "speaker": {
+      "rename": "תן שם לדובר הזה",
+      "confirm": "לאשר?",
+      "confirmAction": "אשר",
+      "change": "שנה",
+      "suggestions": "הצעות",
+      "attendee": "משתתף",
+      "knownPerson": "אדם מוכר",
+      "noSuggestions": "אין הצעות",
+      "newPerson": "אדם חדש",
+      "namePlaceholder": "שם",
+      "emailPlaceholder": "אימייל (אופציונלי)",
+      "save": "שמור",
+      "cancel": "ביטול",
+      "assignError": "לא ניתן היה לתת שם לדובר",
+      "confirmError": "לא ניתן היה לאשר את הדובר",
+      "unnamed": "דובר {{n}}",
+      "unknown": "לא ידוע",
+      "whoIsThis": "מי זה?",
+      "whoSaidThis": "מי אמר את זה?"
+    },
+    "people": {
+      "title": "אנשים",
+      "description": "אנשים שנתת להם שם בפגישות. Guidy מזהה את הקולות שלהם בפגישות הבאות.",
+      "empty": "עדיין אין אנשים. תן שם לדובר בפגישה כדי להוסיף אחד.",
+      "loadError": "לא ניתן היה לטעון את האנשים",
+      "voiceprints_one": "{{count}} טביעת קול",
+      "voiceprints_other": "{{count}} טביעות קול",
+      "edit": "ערוך",
+      "merge": "מזג",
+      "mergeInto": "מזג לתוך...",
+      "mergeHint": "בחר את האדם שיישאר. טביעות הקול ושמות הדוברים יעברו אליו.",
+      "mergeIntoName": "מזג לתוך {{name}}",
+      "samples": {
+        "hint": "האזן קודם לטביעות הקול: כל אחת נלקחה משורה אחת בפגישה.",
+        "none": "אין טביעות קול.",
+        "play": "נגן",
+        "pause": "השהה",
+        "noText": "(אין מילים)",
+        "noLine": "השורה שממנה היא נלקחה כבר לא קיימת",
+        "audioDeleted": "השמע נמחק",
+        "loadError": "לא ניתן היה לטעון את טביעות הקול"
+      },
+      "mergeTitle": "למזג אנשים?",
+      "mergeConfirm": "{{from}} ימוזג לתוך {{into}} ואז יוסר.",
+      "mergeError": "לא ניתן היה למזג את האנשים",
+      "delete": "מחק",
+      "deleteTitle": "למחוק את האדם?",
+      "deleteConfirm": "{{name}} ו-{{count}} טביעות הקול השמורות שלו יימחקו. Guidy לא יזהה את הקול שלו בפגישות עתידיות.",
+      "deleteError": "לא ניתן היה למחוק את האדם",
+      "renameError": "לא ניתן היה לעדכן את האדם",
+      "namePlaceholder": "שם",
+      "emailPlaceholder": "אימייל (אופציונלי)",
+      "save": "שמור",
+      "cancel": "ביטול",
+      "voice": {
+        "title": "הקול שלך",
+        "notRecorded": "לא הוקלט",
+        "recordedTitle": "הוקלט",
+        "description": "הקלט דגימה קצרה של הקול שלך כדי ש-Guidy יוכל להבחין בינך לבין אנשים אחרים בחדר בפגישות פנים אל פנים.",
+        "recorded": "בפגישות שיעובדו מעכשיו, רק דיבור שנשמע כמו הקול שלך יסומן כשלך. עבד מחדש פגישות ישנות כדי להחיל זאת עליהן.",
+        "record": "הקלט את הקול שלי",
+        "recordAgain": "הקלט שוב",
+        "starting": "פותח את המיקרופון...",
+        "recording": "מקליט",
+        "readAloud": "קרא את זה בקול רם בקולך הרגיל, ואז לחץ על ״סיום״.",
+        "passage": "כשאני מצטרף לפגישה, אני בדרך כלל מתחיל בבדיקת סדר היום והסיכום מהפעם הקודמת. אחר כך אנחנו עוברים על מה שהשתנה מאז שדיברנו לאחרונה, מה תקוע, ומי לוקח את הצעדים הבאים. אם משהו דורש החלטה, אנחנו מנסים לקבל אותה לפני סוף השיחה, כדי שאף אחד לא יצטרך לחכות לפגישה נוספת. לאחר מכן אני משתף סיכום קצר עם כל מי שהשתתף.",
+        "done": "סיום",
+        "saving": "שומר את הקול שלך...",
+        "loadError": "לא ניתן היה לטעון את הקול שלך",
+        "recordError": "לא ניתן היה להתחיל להקליט",
+        "saveError": "לא ניתן היה לשמור את הקול שלך",
+        "deleteTitle": "למחוק את הקול שלך?",
+        "deleteConfirm": "הקול שהקלטת יימחק. Guidy יסמן שוב את כל הדיבור מהמיקרופון כשלך.",
+        "deleteError": "לא ניתן היה למחוק את הקול שלך"
+      }
+    },
+    "settings": {
+      "general": "סיכומי פגישות",
+      "enabled": {
+        "title": "סיכומי פגישות",
+        "description": "הקלט פגישות עם המיקרופון שלך ועם השמע של המחשב. ההפעלה תבקש גישה ליומן, לשמע המערכת ולהתראות."
+      },
+      "permissions": {
+        "title": "הרשאות",
+        "calendar": "יומן",
+        "systemAudio": "שמע המערכת",
+        "microphone": "מיקרופון",
+        "notifications": "התראות",
+        "granted": "ניתנה",
+        "denied": "לא ניתנה",
+        "error": "לא ניתן היה לבקש הרשאות",
+        "requestAgain": "בקש שוב",
+        "openSettings": "פתח את הגדרות המערכת"
+      },
+      "you": "אתה",
+      "userName": {
+        "title": "השם שלך",
+        "description": "ערוץ המיקרופון שלך תמיד מסומן בשם הזה.",
+        "placeholder": "השם שלך"
+      },
+      "userEmails": {
+        "title": "כתובות אימייל",
+        "description": "כל כתובת שאיתה אתה מצטרף לפגישות, כמו אישית ועבודה. אם אחת מהן מופיעה בהזמנה לפגישה, המשתתף הזה הוא אתה.",
+        "labelPlaceholder": "תווית, למשל עבודה",
+        "emailPlaceholder": "name@example.com",
+        "noLabel": "ללא תווית",
+        "add": "הוסף",
+        "remove": "הסר כתובת זו",
+        "invalid": "זו אינה כתובת אימייל תקינה.",
+        "duplicate": "הכתובת הזו כבר ברשימה."
+      },
+      "recording": "הקלטה",
+      "meetingModel": {
+        "title": "מודל תמלול",
+        "usesDictation": "פגישות משתמשות במודל ההכתבה שלך: {{name}}.",
+        "noDictation": "עדיין לא הורד מודל הכתבה. הורד אחד בעמוד המודלים, או בחר מודל לפגישות.",
+        "separate": "השתמש במודל אחר",
+        "choice": "מודל לפגישות",
+        "choiceDescription": "Parakeet מספק תזמונים ברמת המילה, מה שעוזר כשאנשים מדברים זה על זה.",
+        "notDownloaded": "{{name}} (לא הורד)",
+        "chosenMissing": "{{name}} עדיין לא הורד. עד אז פגישות משתמשות במודל ההכתבה שלך.",
+        "chosenUnknown": "{{name}} אינו מותקן. בחר מודל אחר, או כבה את \"השתמש במודל אחר\"."
+      },
+      "separation": {
+        "title": "הבחנה בין קולות",
+        "description": "מודל הדוברים שקובע מי אמר כל שורה. מודלים גדולים יותר מבחינים טוב יותר בין קולות דומים, אבל תופסים יותר מקום ומאטים את העיבוד. אנשים שנתת להם שם תמיד מזוהים עם המודל הרגיל, כך שהחלפה שומרת על טביעות הקול שלהם.",
+        "downloaded": "הורד.",
+        "notDownloaded": "יורד כשייבחר.",
+        "downloading": "מוריד...",
+        "delete": "מחק את המודל הזה ({{size}})",
+        "downloadError": "לא ניתן היה להוריד את מודל הדוברים",
+        "deleteError": "לא ניתן היה למחוק את מודל הדוברים",
+        "about": {
+          "resnet34": "רגיל. קטן ומהיר, ומזהה גם אנשים שנתת להם שם.",
+          "cam_plus_plus": "קטן בערך באותה מידה, והמהיר ביותר.",
+          "resnet152": "טוב יותר עם קולות דומים; העיבוד אורך בערך פי 3.",
+          "titanet_large": "של NVIDIA, אומן גם על שיחות טלפון, מה שיכול להתאים לשמע של שיחות. מהיר בערך כמו הרגיל.",
+          "resnet293": "המדויק ביותר כאן; העיבוד אורך בערך פי 6."
+        }
+      },
+      "speakerModel": {
+        "title": "זיהוי דוברים",
+        "description": "מבחין בין קולות ומזהה אנשים שנתת להם שם בעבר. משתמש ב-{{name}} ({{trainedOn}}), {{size}}. יורד רק כשאתה לוחץ על ״הורד״.",
+        "ready": "הורד",
+        "download": "הורד ({{size}})",
+        "retry": "נסה להוריד שוב",
+        "failed": "ההורדה נכשלה: {{error}}"
+      },
+      "retention": {
+        "title": "שמירת שמע הפגישות",
+        "description": "השמע הגולמי נמחק אחרי הזמן הזה. התמלולים וטביעות הקול נשמרים.",
+        "days3": "3 ימים",
+        "days7": "7 ימים",
+        "days30": "30 ימים",
+        "forever": "לתמיד"
+      },
+      "mcp": {
+        "group": "אפליקציות אחרות",
+        "title": "שרת MCP",
+        "description": "אפשר לאפליקציות AI ב-Mac הזה, כמו Claude או Cursor, לקרוא את רשימת הפגישות, הסיכומים והתמלולים שלך. מקומי בלבד ולקריאה בלבד.",
+        "url": "כתובת השרת (Streamable HTTP)",
+        "stdio": "פקודה (לאפליקציות שמריצות רק שרתי stdio)",
+        "failed": "לא ניתן היה להפעיל את שרת ה-MCP בפורט {{port}}. ייתכן שאפליקציה אחרת משתמשת בו."
+      },
+      "calendarNotifications": {
+        "title": "התראות יומן",
+        "description": "הצע לרשום הערות כשמתחילה פגישה מהיומן עם קישור לשיחה."
+      },
+      "recordingControls": {
+        "title": "פקדי הקלטה",
+        "description": "היכן מוצגים ההשהיה, העצירה והתמלול החי בזמן שפגישה מוקלטת.",
+        "floating": "צף, בקצה המסך",
+        "notch": "סביב המגרעת"
+      },
+      "deepgram": {
+        "title": "מפתח API של Deepgram",
+        "description": "מאפשר לזהות מחדש את הדוברים בפגישה בענן עם Deepgram, שמבחין היטב בין קולות בשיחות. נשמר בצרור המפתחות.",
+        "placeholder": "הדבק מפתח ולחץ Enter",
+        "saved": "נשמר",
+        "remove": "הסר",
+        "error": "לא ניתן היה לשמור את מפתח Deepgram"
+      },
+      "liveTranscription": {
+        "title": "תמלול חי",
+        "description": "תמלל את הפגישה ב-Mac הזה בזמן שהיא מתקיימת. התמלול המלא עדיין נוצר אחרי הפגישה.",
+        "model": "מודל לתמלול חי",
+        "modelDescription": "מודל קטן ומהיר עומד בקצב הכי טוב בזמן שיחה. התמלול שנוצר אחרי הפגישה משתמש במודל הפגישות.",
+        "sameModel": "כמו בפגישות"
+      },
+      "reminderInterval": {
+        "title": "מרווח תזכורות",
+        "description": "דקות בין תזכורות \"עדיין מקליט\" אחרי שפגישה הייתה אמורה להסתיים.",
+        "minutes": "{{count}} דק׳"
+      },
+      "advanced": {
+        "title": "מתקדם",
+        "show": "הצג הגדרות מתקדמות",
+        "hide": "הסתר הגדרות מתקדמות",
+        "matchThreshold": {
+          "title": "סף התאמה אוטומטית",
+          "description": "דמיון קולי שממנו ומעלה דובר מקבל שם אוטומטית. מתחתיו, ההתאמה שואלת \"לאשר?\"."
+        },
+        "suggestThreshold": {
+          "title": "סף הצעות",
+          "description": "דמיון קולי שמתחתיו אדם מוכר לא מוצע כלל."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "שמור",
+      "cancel": "ביטול",
+      "delete": "מחק",
+      "loading": "טוען..."
+    },
+    "summary": {
+      "heading": "סיכום",
+      "actionItems": "משימות לביצוע",
+      "generate": "צור סיכום",
+      "regenerate": "צור מחדש",
+      "regenerateWith": "צור מחדש עם...",
+      "generateWith": "צור עם {{model}}",
+      "otherModels": "מודלים אחרים",
+      "otherModel": "מודל אחר…",
+      "generating": "מסכם את הפגישה...",
+      "generatingLocal": "מסכם את הפגישה. עם מודל מקומי זה יכול לקחת כמה דקות.",
+      "progress": "מסכם ({{done}} מתוך {{total}} שלבים)",
+      "empty": "עדיין אין סיכום. צור אחד מהתמלול.",
+      "untitled": "פגישה ללא כותרת",
+      "edit": "ערוך",
+      "title": "כותרת",
+      "shortSummary": "סיכום קצר",
+      "shortSummaryPlaceholder": "על מה הייתה הפגישה, בכמה משפטים",
+      "decisions": "החלטות",
+      "topics": "נושאים",
+      "linesPlaceholder": "אחד בכל שורה",
+      "onePerLine": "החלטות ונושאים: אחד בכל שורה.",
+      "none": "אין",
+      "generatedBy": "נוצר עם {{model}}",
+      "generatedByCost": "נוצר עם {{model}} · {{cost}} · {{input}} טוקנים נכנסים / {{output}} יוצאים",
+      "generatedByTokens": "נוצר עם {{model}} · {{input}} טוקנים נכנסים / {{output}} יוצאים",
+      "pickerTitle": "מודל לסיכום הזה",
+      "pickerDescription": "צור מחדש עם ספק ומודל אחרים. מודל הפגישות שלך בהגדרות לא ישתנה. משימות שכבר יש להן issue ב-Linear יישמרו.",
+      "run": "צור",
+      "noItems": "אין משימות לביצוע.",
+      "newItemPlaceholder": "הוסף משימה לביצוע",
+      "addItem": "הוסף",
+      "deleteItem": "מחק משימה",
+      "due": "תאריך יעד",
+      "duePlaceholder": "למשל 2026-10-31",
+      "jumpToMoment": "נגן את הרגע הזה בתמלול",
+      "owner": {
+        "title": "אחראי",
+        "none": "ללא אחראי",
+        "me": "אני",
+        "meNamed": "אני ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "כרטיסי Linear",
+      "draft": "נסח כרטיסים",
+      "approveSelected": "אשר נבחרים ({{count}})",
+      "createApproved": "צור מאושרים ({{count}})",
+      "noKey": "חבר את Linear כדי להפוך משימות לכרטיסים.",
+      "openSettings": "פתח הגדרות",
+      "noItems": "אין משימות להפוך לכרטיסים.",
+      "notDrafted": "נסח כרטיסים מהמשימות כדי לסקור אותם כאן.",
+      "approve": "אשר",
+      "approveTip": "סמן את הכרטיס הזה ליצירה. שום דבר לא נוצר עד שתלחץ על ״צור מאושרים״.",
+      "needsTeam": "בחר צוות לפני האישור",
+      "unapprove": "בטל אישור",
+      "discard": "השמט",
+      "restore": "שחזר",
+      "edit": "ערוך כותרת ותיאור",
+      "approved": "מאושר",
+      "draftState": "טיוטה",
+      "created": "נוצר ב-Linear",
+      "alreadyExisted": "כבר קיים ב-Linear: לא נוצר דבר חדש",
+      "createFailed": "לא נוצר: {{error}}",
+      "issue": "Issue",
+      "team": "צוות",
+      "pickTeam": "בחר צוות",
+      "project": "פרויקט",
+      "noProject": "ללא פרויקט",
+      "assignee": "משויך ל",
+      "unassigned": "לא משויך",
+      "labels": "תוויות",
+      "addLabel": "הוסף תוויות",
+      "labelCount": "{{count}} תוויות",
+      "priority": {
+        "title": "עדיפות",
+        "none": "ללא עדיפות",
+        "urgent": "דחוף",
+        "high": "גבוהה",
+        "medium": "בינונית",
+        "low": "נמוכה"
+      }
+    },
+    "llm": {
+      "heading": "סיכומים",
+      "provider": "ספק",
+      "providerDescription": "המודל שמשמש לסיכומי פגישות ולמשימות. העיבוד המשלים של ההכתבה שומר על הספק שלו.",
+      "builtin": "מובנה (ב-Mac הזה)",
+      "builtinDescription": "מריץ מודל מקומי עם llama.cpp. שום דבר לא יוצא מה-Mac שלך.",
+      "model": "מודל",
+      "modelDescription": "סמן מודל כדי להוסיף אותו למודלים שלך. מוצגים רק מודלים שמפיקים טקסט. \"טוב לסיכומים\" אומר שהמודל תומך בפלט מובנה, שעליו הסיכומים מתבססים.",
+      "modelPlaceholder": "מזהה מודל",
+      "pickModel": "בחר מודל",
+      "noLocalModels": "הורד מודל למטה",
+      "usingPostProcessModel": "משתמש במודל העיבוד המשלים ({{model}})",
+      "refreshModels": "רענן",
+      "testConnection": "בדוק חיבור",
+      "testDescription": "בדוק שהספק, המפתח והמודל עובדים.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "מודל על המכשיר ב-Mac עם Apple silicon שבו Apple Intelligence מופעל.",
+      "appleAvailable": "זמין",
+      "appleUnavailable": "Apple Intelligence אינו זמין ב-Mac הזה",
+      "activeHeading": "הסיכומים נוצרים על ידי",
+      "place": "היכן הסיכומים רצים",
+      "placeDescription": "רק האפשרות שנבחרה משמשת.",
+      "tabCloud": "ספק ענן",
+      "tabLocal": "ב-Mac הזה",
+      "onThisMac": "ה-Mac הזה · לא מקוון",
+      "apiKey": "מפתח API",
+      "apiKeyDescription": "נשמר בצרור המפתחות שלך ומשותף עם העיבוד המשלים.",
+      "getKey": "קבל מפתח {{provider}}",
+      "modelDescriptionCustom": "הקלד את מזהה המודל שה-endpoint שלך מצפה לו ולחץ Enter כדי להוסיף אותו, או סמן אחד מהרשימה שלו.",
+      "searchModels": "חפש מודלים",
+      "goodOnly": "טוב לסיכומים",
+      "goodForSummaries": "סיכומים",
+      "reasoning": "חשיבה",
+      "unknownModel": "לא במאגר",
+      "noModels": "אין מודלים תואמים.",
+      "context": "{{n}} הקשר",
+      "free": "חינם",
+      "modelCount": "{{shown}}/{{total}} מודלים",
+      "registryBundled": "פרטי המודלים מ-models.dev (מצורפים לאפליקציה)",
+      "registryUpdated": "פרטי המודלים מ-models.dev, עודכנו {{when}}",
+      "justNow": "זה עתה",
+      "minutesAgo": "לפני {{n}} דק׳",
+      "hoursAgo": "לפני {{n}} שע׳",
+      "daysAgo": "לפני {{n}} ימים",
+      "needsKey": "הוסף את מפתח ה-API של {{provider}}",
+      "needsModel": "בחר מודל של {{provider}}",
+      "needsLocalModel": "הורד מודל כדי לסכם ב-Mac הזה",
+      "localDescription": "רץ במצב לא מקוון ב-Mac הזה. בחר מודל שהורד.",
+      "appleUnavailableHint": "לא זמין ב-Mac הזה. הפעל אותו בהגדרות המערכת > Apple Intelligence ו-Siri.",
+      "unavailable": "לא זמין",
+      "yourModels": "המודלים שלך",
+      "yourModelsDescription": "״צור סיכום״ מציע כל מודל שכאן, כך שאפשר לבחור אחד לכל פגישה. המודל שנבחר הוא ברירת המחדל.",
+      "yourModelsEmpty": "עדיין אין מודלים בענן. בחר ספק למטה, הוסף את מפתח ה-API שלו וסמן את המודלים הרצויים.",
+      "default": "ברירת מחדל",
+      "removeModel": "הסר מהמודלים שלך",
+      "addFrom": "הוסף מודלים מ",
+      "addFromDescription": "בחר ספק כדי להזין את המפתח שלו ולסמן מודלים להוספה. זה לא משנה את ברירת המחדל."
+    },
+    "local": {
+      "heading": "מודלים מקומיים",
+      "empty": "אין מודלים מובנים זמינים.",
+      "default": "ברירת מחדל",
+      "recommendedRam": "מומלץ ל-{{gb}} GB+ RAM",
+      "notEnoughRam": "ל-Mac הזה יש פחות זיכרון מהמומלץ למודל הזה.",
+      "downloaded": "הורד",
+      "download": "הורד",
+      "downloading": "מוריד {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "מפתח API אישי",
+      "keyDescription": "נשמר בצרור המפתחות של macOS. משמש לניסוח וליצירה של כרטיסים מתוך משימות.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "מפתח שמור בצרור המפתחות שלך.",
+      "noKey": "לא נשמר מפתח.",
+      "getKey": "צור מפתח ב-linear.app/settings/api",
+      "removeKey": "הסר מפתח",
+      "test": "בדוק חיבור",
+      "testDescription": "בדוק את המפתח מול Linear.",
+      "connectedAs": "מחובר בתור {{name}}"
+    },
+    "byok": {
+      "testConnection": "בדוק חיבור",
+      "testDescription": "בדוק את כתובת ה-URL הבסיסית, מפתח ה-API והמודל בעזרת בקשה קטנה.",
+      "baseUrlEditable": "כתובת ה-API הבסיסית עבור הספק הזה. החלף כל {placeholder} (למשל מזהה החשבון שלך ב-Cloudflare).",
+      "cloudflareHint": "Cloudflare: הכנס את מזהה החשבון שלך (ואת מזהה ה-gateway עבור AI Gateway) לכתובת ה-URL הבסיסית."
+    }
   }
 }

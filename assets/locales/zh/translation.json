@@ -7,7 +7,23 @@
     "model": "模型",
     "quit": "退出",
     "cancel": "取消",
-    "secureInputWarning": "⚠ 快捷键被 Secure Input 阻止"
+    "secureInputWarning": "⚠ 快捷键被 Secure Input 阻止",
+    "startMeetingNotes": "开始会议记录",
+    "stopMeetingNotes": "停止会议记录",
+    "pauseMeetingNotes": "暂停录制",
+    "resumeMeetingNotes": "继续录制",
+    "meetingPaused": "已暂停",
+    "meetingStillRecording": "Guidy 仍在录制",
+    "meetingStop": "停止",
+    "meetingKeepGoing": "继续",
+    "meetingTakeNotesFor": "要为“{{title}}”做会议记录吗？",
+    "meetingStart": "开始",
+    "meetingUntitled": "会议"
+  },
+  "notch": {
+    "pause": "暂停录制",
+    "resume": "继续录制",
+    "stop": "停止会议记录"
   },
   "sidebar": {
     "general": "通用",
@@ -16,7 +32,58 @@
     "postProcessing": "后处理",
     "history": "历史记录",
     "debug": "调试",
+    "usage": "用量",
     "about": "关于"
+  },
+  "usage": {
+    "title": "用量",
+    "description": "云端 AI 提供商的费用，以及模型在这台 Mac 上完成的工作。",
+    "cloud": "云端",
+    "local": "这台 Mac",
+    "refresh": "刷新",
+    "total": "总花费",
+    "last30Days": "最近 30 天",
+    "callsTitle": "调用",
+    "byModel": "按模型",
+    "byFeature": "按功能",
+    "empty": "还没有云端 AI 调用。",
+    "calls_one": "{{count}} 次调用",
+    "calls_other": "{{count}} 次调用",
+    "average": "平均 {{cost}}",
+    "highest": "最高 {{cost}}",
+    "tokens": "输入 {{input}} / 输出 {{output}} tokens",
+    "unknownPrice": "价格未知",
+    "feature": {
+      "dictation": "听写",
+      "meetingTranscription": "会议转录",
+      "meetingSummary": "会议摘要",
+      "other": "其他"
+    },
+    "localAudio": "已转录音频",
+    "localWords": "字词",
+    "localTokens": "LLM tokens",
+    "localCloudEquivalent": "云端等价费用",
+    "localEmpty": "还没有在本地模型上运行过任何内容。",
+    "localByModel": "本地模型",
+    "localByFeature": "本地工作（按功能）",
+    "kind": {
+      "transcription": "转录",
+      "llm": "内置 LLM"
+    },
+    "runs_one": "{{count}} 次运行",
+    "runs_other": "{{count}} 次运行",
+    "audio": "{{duration}} 音频",
+    "words": "{{count}} 个字词",
+    "realtime": "{{speed}} 实时速度",
+    "promptSpeed": "提示 {{speed}}",
+    "generationSpeed": "生成 {{speed}}",
+    "loadTime": "加载用时 {{time}}",
+    "localNote": "实时倍速 = 音频时长 ÷ 处理时间，不含加载时间；说话时实时解码的听写不计时。云端等价费用按每分钟 ${{price}}（OpenAI Whisper）计算音频。",
+    "estimateNote": "~ 表示根据公开的每 token 价格估算的金额；自行报告费用的提供商（如 OpenRouter）为准确金额。账单请以提供商控制台为准。",
+    "reportedNote": "金额以提供商报告为准。账单请以提供商控制台为准。",
+    "clear": "清除历史记录",
+    "clearTitle": "清除用量历史记录？",
+    "clearConfirm": "已记录的调用、费用和本地模型运行记录将被删除。会议摘要上显示的用量会保留。"
   },
   "onboarding": {
     "subtitle": "请选择一个转录模型以开始使用",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "准确度",
-      "speed": "速度"
+      "speed": "速度",
+      "size": "大小"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "仅 {{language}}",
       "streaming": "在您说话时实时显示转录"
     },
+    "download": "下载",
+    "use": "使用",
     "cancel": "取消",
     "cancelDownload": "取消下载",
     "legacy": "旧版"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "通用",
+      "description": "如何开始听写、识别的语言，以及您听到的声音。",
+      "shortcutsGroup": "快捷键",
       "shortcut": {
         "title": "Guidy 快捷键",
         "description": "配置启动语音转文字录制的键盘快捷键",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "高级",
+      "description": "启动、粘贴、转录调优和历史记录。",
       "groups": {
         "app": "应用",
         "output": "输出",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "后处理",
+      "description": "在粘贴之前，用 AI 模型清理或改写转录内容。",
       "hotkey": {
         "title": "快捷键"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "提供商",
           "description": "选择一个兼容 OpenAI 或 Anthropic 的提供商。"
+        },
+        "builtin": {
+          "label": "内置模型（在这台 Mac 上）",
+          "description": "在这台 Mac 上运行本地模型。任何内容都不会离开您的电脑。",
+          "manage": "管理内置模型"
         },
         "apiFormat": {
           "title": "API 格式",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API 密钥",
           "description": "所选提供商的 API 密钥。",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "无法保存 API 密钥"
         },
         "model": {
           "title": "模型",
@@ -600,6 +682,10 @@
         "title": "版本",
         "description": "Guidy 的当前版本"
       },
+      "author": {
+        "title": "作者",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "应用数据目录",
         "description": "Guidy 存储数据的位置"
@@ -621,6 +707,12 @@
           "description": "OpenAI Whisper 自动语音识别模型的高性能推理",
           "details": "Guidy 使用 ggml 进行快速的本地语音转文字处理。感谢 Georgi Gerganov 和贡献者们的出色工作。"
         }
+      },
+      "hero": {
+        "headline": "留在这台 Mac 上的语音转文字",
+        "lede": "按下快捷键并说话，Guidy 就会在当前应用中输入文字。转录在本地运行。",
+        "engine": "引擎",
+        "model": "模型"
       },
       "whatsNewUpdates": {
         "label": "显示新功能",
@@ -706,5 +798,561 @@
     "learnMore": "如何解决",
     "recorderBlocked": "当前无法录制快捷键——macOS 的 Secure Input 正在阻止按键事件。请先解决 Secure Input 警告。",
     "dismiss": "关闭"
+  },
+  "meetings": {
+    "title": "会议",
+    "selection": {
+      "hint": "拖动或按住 Shift 点按，可标记多行",
+      "count_one": "已选择 {{count}} 行",
+      "count_other": "已选择 {{count}} 行",
+      "keys": "Shift-点按：范围 · ⌘-点按：添加或移除 · Esc：清除",
+      "setSpeaker": "设置说话人",
+      "clear": "清除"
+    },
+    "speakersRedo": {
+      "action": "重新识别说话人",
+      "tooltip": "使用 {{model}} 重新区分说话人。转录文本保持不变。您标记过的行和命名过的说话人会保留对应的人；其余的将再次按声音匹配。",
+      "standard": "标准说话人模型",
+      "download": "需下载 {{size}}（仅一次）",
+      "error": "无法重新识别说话人",
+      "confirmTitle": "使用 Deepgram 识别说话人？",
+      "confirmDeepgram": "此会议中其他参与者的音频将上传到 Deepgram 以区分说话人，费用约为 {{cost}}。转录文本保持不变。",
+      "confirmDeepgramUnpriced": "此会议中其他参与者的音频将上传到 Deepgram 以区分说话人。转录文本保持不变。"
+    },
+    "day": {
+      "today": "今天",
+      "tomorrow": "明天",
+      "yesterday": "昨天"
+    },
+    "copy": {
+      "summary": "复制",
+      "transcript": "复制转录文本",
+      "copied": "已复制"
+    },
+    "redo": {
+      "action": "重新转录",
+      "localTitle": "这台 Mac",
+      "cloudTitle": "云端",
+      "error": "无法重新开始转录",
+      "issueRepetition": "此转录文本有部分内容重复，这通常表示模型跟丢了音频。",
+      "issueTooFewWords": "此转录文本的字数远少于说话时长应有的数量，会议的部分内容可能被遗漏了。",
+      "issueHint": "云端模型在处理难度较高的音频时通常表现更好。",
+      "tooltip": "使用 {{model}} 重新转录。将替换转录文本和说话人；您命名过的人会再次按声音匹配。",
+      "more": "其他模型",
+      "noKeyShort": "需要 API 密钥（会议 › 设置 › AI）",
+      "confirmTitle": "使用 {{provider}} 转录？",
+      "confirmCloud": "此会议的音频将上传到 {{provider}}，并使用 {{model}} 转录，费用约为 {{cost}}。转录文本和说话人将被替换。",
+      "confirmCloudUnpriced": "此会议的音频将上传到 {{provider}}，并使用 {{model}} 转录。转录文本和说话人将被替换。"
+    },
+    "widget": {
+      "recording": "录制中",
+      "paused": "已暂停",
+      "you": "您",
+      "others": "其他人",
+      "mic": "麦克风",
+      "system": "系统音频",
+      "liveStarting": "正在加载转录模型…",
+      "liveListening": "正在聆听。有人说话时，文字会显示在这里。",
+      "liveOff": "实时转录已关闭。请在 会议 › 设置 中开启。",
+      "liveUnavailable": "实时转录不可用：{{reason}}",
+      "pause": "暂停",
+      "resume": "继续",
+      "stop": "停止",
+      "openNotes": "打开记录",
+      "expand": "显示实时转录",
+      "collapse": "收起",
+      "liveTitle": "实时转录",
+      "liveHint": "目前听到的内容。会议结束后会生成带说话人姓名的完整转录文本。"
+    },
+    "description": "在这台 Mac 上录制会议，然后阅读标有说话人姓名的转录文本。",
+    "init": {
+      "starting": "正在启动会议记录...",
+      "failed": "会议记录无法启动",
+      "retry": "重试",
+      "keyMissing": {
+        "title": "会议记录无法解密",
+        "description": "钥匙串中缺少会议记录的加密密钥，或该密钥与您现有的会议记录不匹配，因此无法打开。如果您能恢复该密钥（例如从钥匙串备份中），请恢复后选择“重试”。否则，请重置以重新开始：旧的会议记录会被移到别处，而不会被删除。"
+      },
+      "reset": {
+        "action": "重置会议记录数据",
+        "title": "重置会议记录数据？",
+        "confirm": "您当前的会议记录和录音将被移到 Guidy 数据文件夹中的“meetings-unreadable”文件夹（不会删除任何内容），并会创建新的加密密钥。Guidy 将无法显示旧的记录。"
+      }
+    },
+    "errors": {
+      "unavailable": "会议记录在这台 Mac 上不可用。",
+      "modelMissing": "会议转录模型（{{name}}）尚未下载。",
+      "modelUnknown": "会议模型 {{name}} 未安装。请在设置中选择其他会议模型。",
+      "speakerModelMissing": "请在 会议 > 设置 中下载说话人识别模型，然后处理该会议。",
+      "noLinearKey": "请先在设置中添加 Linear API 密钥。",
+      "linearUnauthorized": "Linear 拒绝了该 API 密钥。请在设置中检查。"
+    },
+    "model": {
+      "download": "下载会议模型",
+      "downloadError": "无法下载会议模型"
+    },
+    "tabs": {
+      "meetings": "会议",
+      "people": "人员",
+      "settings": "设置"
+    },
+    "recorder": {
+      "start": "开始会议记录",
+      "stop": "停止会议记录",
+      "recording": "录制中",
+      "idle": "未在录制",
+      "startError": "无法开始录制",
+      "stopError": "无法停止录制",
+      "disabled": "请在设置中开启会议记录以进行录制。"
+    },
+    "upcoming": {
+      "title": "即将开始",
+      "empty": "没有带通话链接的即将开始的日历会议。",
+      "start": "开始"
+    },
+    "list": {
+      "title": "录音",
+      "empty": "还没有会议。开始会议记录即可录制。",
+      "loading": "正在加载会议...",
+      "loadError": "无法加载会议",
+      "speakerModelMissing": "下载说话人识别模型后才会处理录音。",
+      "minutes": "{{count}} 分钟",
+      "open": "打开",
+      "rename": "重命名",
+      "delete": "删除",
+      "process": "处理",
+      "retry": "重试",
+      "cancelProcessing": "取消处理",
+      "save": "保存",
+      "cancel": "取消",
+      "titlePlaceholder": "会议标题",
+      "deleteTitle": "删除会议？",
+      "deleteConfirm": "“{{title}}”及其转录文本和音频将被删除。声纹会保留。",
+      "deleteError": "无法删除会议",
+      "renameError": "无法重命名会议",
+      "processError": "无法开始处理",
+      "cancelError": "无法取消处理"
+    },
+    "status": {
+      "recording": "录制中",
+      "recorded": "未处理",
+      "processing": "处理中",
+      "processed": "就绪",
+      "failed": "失败"
+    },
+    "stage": {
+      "decode": "正在解码音频",
+      "vad": "正在查找语音",
+      "transcribe": "正在转录",
+      "voiceprints": "正在计算声纹",
+      "cluster": "正在归类说话人",
+      "merge": "正在合并音轨",
+      "done": "完成"
+    },
+    "detail": {
+      "back": "所有会议",
+      "transcript": "转录文本",
+      "empty": "还没有转录文本。处理会议即可生成。",
+      "loading": "正在加载转录文本...",
+      "loadError": "无法加载会议",
+      "playError": "无法播放此片段",
+      "play": "从这里播放",
+      "you": "您",
+      "speakers": "说话人",
+      "attendees": "参会者",
+      "duration": "时长",
+      "words": "字数",
+      "talkTime": "发言时长",
+      "share": "占比",
+      "youSpoke": "您的发言",
+      "minutes": "分钟"
+    },
+    "speaker": {
+      "rename": "为此说话人命名",
+      "confirm": "确认？",
+      "confirmAction": "确认",
+      "change": "更改",
+      "suggestions": "建议",
+      "attendee": "参会者",
+      "knownPerson": "已知人员",
+      "noSuggestions": "没有建议",
+      "newPerson": "新人员",
+      "namePlaceholder": "姓名",
+      "emailPlaceholder": "电子邮件（可选）",
+      "save": "保存",
+      "cancel": "取消",
+      "assignError": "无法为说话人命名",
+      "confirmError": "无法确认说话人",
+      "unnamed": "说话人 {{n}}",
+      "unknown": "未知",
+      "whoIsThis": "这是谁？",
+      "whoSaidThis": "这是谁说的？"
+    },
+    "people": {
+      "title": "人员",
+      "description": "您在会议中命名过的人。Guidy 会在之后的会议中识别他们的声音。",
+      "empty": "还没有人员。在会议中为说话人命名即可添加。",
+      "loadError": "无法加载人员",
+      "voiceprints_one": "{{count}} 个声纹",
+      "voiceprints_other": "{{count}} 个声纹",
+      "edit": "编辑",
+      "merge": "合并",
+      "mergeInto": "合并到...",
+      "mergeHint": "选择要保留的人。声纹和说话人名称会转移给此人。",
+      "mergeIntoName": "合并到 {{name}}",
+      "samples": {
+        "hint": "请先听一听这些声纹：每个声纹都取自会议中的一行。",
+        "none": "没有声纹。",
+        "play": "播放",
+        "pause": "暂停",
+        "noText": "（无文字）",
+        "noLine": "它所来自的那一行已不存在",
+        "audioDeleted": "音频已删除",
+        "loadError": "无法加载声纹"
+      },
+      "mergeTitle": "合并人员？",
+      "mergeConfirm": "{{from}} 将被合并到 {{into}}，然后移除。",
+      "mergeError": "无法合并人员",
+      "delete": "删除",
+      "deleteTitle": "删除人员？",
+      "deleteConfirm": "{{name}} 及其已存储的 {{count}} 个声纹将被删除。Guidy 在以后的会议中将不再识别其声音。",
+      "deleteError": "无法删除此人员",
+      "renameError": "无法更新此人员",
+      "namePlaceholder": "姓名",
+      "emailPlaceholder": "电子邮件（可选）",
+      "save": "保存",
+      "cancel": "取消",
+      "voice": {
+        "title": "您的声音",
+        "notRecorded": "未录制",
+        "recordedTitle": "已录制",
+        "description": "录制一段简短的声音样本，以便在面对面会议中 Guidy 能将您与房间里的其他人区分开。",
+        "recorded": "从现在起处理的会议中，只有听起来像您的语音才会被标记为您。重新处理较早的会议即可应用。",
+        "record": "录制我的声音",
+        "recordAgain": "重新录制",
+        "starting": "正在打开麦克风...",
+        "recording": "录制中",
+        "readAloud": "请用平常的声音朗读以下内容，然后按“完成”。",
+        "passage": "参加会议时，我通常会先查看议程和上次的会议记录。然后我们会过一遍自上次沟通以来有哪些变化、哪些事情受阻，以及由谁负责接下来的步骤。如果有事情需要做决定，我们会尽量在通话结束前定下来，这样就没有人需要等下一次会议。会后，我会把一份简短的总结发给所有参会的人。",
+        "done": "完成",
+        "saving": "正在保存您的声音...",
+        "loadError": "无法加载您的声音",
+        "recordError": "无法开始录制",
+        "saveError": "无法保存您的声音",
+        "deleteTitle": "删除您的声音？",
+        "deleteConfirm": "您录制的声音将被删除。Guidy 将再次把所有麦克风语音都标记为您。",
+        "deleteError": "无法删除您的声音"
+      }
+    },
+    "settings": {
+      "general": "会议记录",
+      "enabled": {
+        "title": "会议记录",
+        "description": "使用麦克风和电脑音频录制会议。开启后将请求日历、系统音频和通知权限。"
+      },
+      "permissions": {
+        "title": "权限",
+        "calendar": "日历",
+        "systemAudio": "系统音频",
+        "microphone": "麦克风",
+        "notifications": "通知",
+        "granted": "已授予",
+        "denied": "未授予",
+        "error": "无法请求权限",
+        "requestAgain": "重新请求",
+        "openSettings": "打开系统设置"
+      },
+      "you": "您",
+      "userName": {
+        "title": "您的姓名",
+        "description": "您的麦克风音轨始终以此姓名标记。",
+        "placeholder": "您的姓名"
+      },
+      "userEmails": {
+        "title": "电子邮件地址",
+        "description": "您参加会议时使用的所有地址，例如个人和工作邮箱。如果会议邀请中有其中任何一个地址，该参会者就是您。",
+        "labelPlaceholder": "标签，例如“工作”",
+        "emailPlaceholder": "name@example.com",
+        "noLabel": "无标签",
+        "add": "添加",
+        "remove": "移除此地址",
+        "invalid": "这不是有效的电子邮件地址。",
+        "duplicate": "该地址已在列表中。"
+      },
+      "recording": "录制",
+      "meetingModel": {
+        "title": "转录模型",
+        "usesDictation": "会议使用您的听写模型：{{name}}。",
+        "noDictation": "尚未下载听写模型。请在“模型”页面下载一个，或为会议选择一个模型。",
+        "separate": "使用其他模型",
+        "choice": "会议模型",
+        "choiceDescription": "Parakeet 提供逐词时间戳，在多人同时说话时很有帮助。",
+        "notDownloaded": "{{name}}（未下载）",
+        "chosenMissing": "{{name}} 尚未下载。下载完成前，会议将使用您的听写模型。",
+        "chosenUnknown": "{{name}} 未安装。请选择其他模型，或关闭“使用其他模型”。"
+      },
+      "separation": {
+        "title": "区分声音",
+        "description": "决定每一行由谁说出的说话人模型。较大的模型更能区分相似的声音，但占用更多空间，处理也更慢。您命名过的人始终使用标准模型识别，因此切换模型会保留他们的声纹。",
+        "downloaded": "已下载。",
+        "notDownloaded": "选择后下载。",
+        "downloading": "正在下载...",
+        "delete": "删除此模型（{{size}}）",
+        "downloadError": "无法下载说话人模型",
+        "deleteError": "无法删除说话人模型",
+        "about": {
+          "resnet34": "标准。小巧快速，还能识别您命名过的人。",
+          "cam_plus_plus": "大小相近，速度最快。",
+          "resnet152": "更擅长区分相似的声音；处理时间约为 3 倍。",
+          "titanet_large": "来自 NVIDIA，也使用电话通话训练，可能更适合通话音频。速度与标准模型相近。",
+          "resnet293": "此处最准确；处理时间约为 6 倍。"
+        }
+      },
+      "speakerModel": {
+        "title": "说话人识别",
+        "description": "区分不同声音，并识别您之前命名过的人。使用 {{name}}（{{trainedOn}}），{{size}}。仅在您点击“下载”时才会下载。",
+        "ready": "已下载",
+        "download": "下载（{{size}}）",
+        "retry": "重试下载",
+        "failed": "下载失败：{{error}}"
+      },
+      "retention": {
+        "title": "保留会议音频",
+        "description": "原始音频将在此时间后删除。转录文本和声纹会保留。",
+        "days3": "3 天",
+        "days7": "7 天",
+        "days30": "30 天",
+        "forever": "永久"
+      },
+      "mcp": {
+        "group": "其他应用",
+        "title": "MCP 服务器",
+        "description": "让这台 Mac 上的 AI 应用（如 Claude 或 Cursor）读取您的会议列表、摘要和转录文本。仅限本地，且为只读。",
+        "url": "服务器 URL（Streamable HTTP）",
+        "stdio": "命令（适用于仅运行 stdio 服务器的应用）",
+        "failed": "无法在端口 {{port}} 上启动 MCP 服务器。可能有其他应用正在使用该端口。"
+      },
+      "calendarNotifications": {
+        "title": "日历通知",
+        "description": "带通话链接的日历会议开始时，询问是否做会议记录。"
+      },
+      "recordingControls": {
+        "title": "录制控制",
+        "description": "会议录制期间，暂停、停止按钮和实时转录显示的位置。",
+        "floating": "悬浮在屏幕边缘",
+        "notch": "环绕刘海"
+      },
+      "deepgram": {
+        "title": "Deepgram API 密钥",
+        "description": "可在云端使用 Deepgram 重新识别会议的说话人，它在通话中区分声音的效果很好。存储在钥匙串中。",
+        "placeholder": "粘贴密钥并按回车",
+        "saved": "已保存",
+        "remove": "移除",
+        "error": "无法保存 Deepgram 密钥"
+      },
+      "liveTranscription": {
+        "title": "实时转录",
+        "description": "在这台 Mac 上随会议进行实时转录。会后仍会生成完整的转录文本。",
+        "model": "实时转录模型",
+        "modelDescription": "通话时，小巧快速的模型最能跟上进度。会后生成的转录文本使用会议模型。",
+        "sameModel": "与会议相同"
+      },
+      "reminderInterval": {
+        "title": "提醒间隔",
+        "description": "会议本应结束后，“仍在录制”提醒之间间隔的分钟数。",
+        "minutes": "{{count}} 分钟"
+      },
+      "advanced": {
+        "title": "高级",
+        "show": "显示高级设置",
+        "hide": "隐藏高级设置",
+        "matchThreshold": {
+          "title": "自动匹配阈值",
+          "description": "声音相似度达到或超过此值时，会自动为说话人命名。低于此值时，匹配结果会询问“确认？”。"
+        },
+        "suggestThreshold": {
+          "title": "建议阈值",
+          "description": "声音相似度低于此值时，完全不会建议已知人员。"
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "保存",
+      "cancel": "取消",
+      "delete": "删除",
+      "loading": "加载中..."
+    },
+    "summary": {
+      "heading": "摘要",
+      "actionItems": "待办事项",
+      "generate": "生成摘要",
+      "regenerate": "重新生成",
+      "regenerateWith": "重新生成，使用...",
+      "generateWith": "使用 {{model}} 生成",
+      "otherModels": "其他模型",
+      "otherModel": "其他模型…",
+      "generating": "正在总结会议...",
+      "generatingLocal": "正在总结会议。使用本地模型可能需要几分钟。",
+      "progress": "正在总结（第 {{done}} 步，共 {{total}} 步）",
+      "empty": "还没有摘要。可根据转录文本生成。",
+      "untitled": "未命名会议",
+      "edit": "编辑",
+      "title": "标题",
+      "shortSummary": "简要摘要",
+      "shortSummaryPlaceholder": "用几句话说明会议的内容",
+      "decisions": "决定",
+      "topics": "话题",
+      "linesPlaceholder": "每行一项",
+      "onePerLine": "决定和话题：每行一项。",
+      "none": "无",
+      "generatedBy": "由 {{model}} 生成",
+      "generatedByCost": "由 {{model}} 生成 · {{cost}} · 输入 {{input}} / 输出 {{output}} tokens",
+      "generatedByTokens": "由 {{model}} 生成 · 输入 {{input}} / 输出 {{output}} tokens",
+      "pickerTitle": "此摘要使用的模型",
+      "pickerDescription": "使用其他提供商和模型重新生成。设置中的会议模型保持不变。已有 Linear 问题的待办事项会保留。",
+      "run": "生成",
+      "noItems": "没有待办事项。",
+      "newItemPlaceholder": "添加待办事项",
+      "addItem": "添加",
+      "deleteItem": "删除待办事项",
+      "due": "截止日期",
+      "duePlaceholder": "例如 2026-10-31",
+      "jumpToMoment": "在转录文本中播放此时刻",
+      "owner": {
+        "title": "负责人",
+        "none": "无负责人",
+        "me": "我",
+        "meNamed": "我（{{name}}）"
+      }
+    },
+    "tickets": {
+      "heading": "Linear 工单",
+      "draft": "起草工单",
+      "approveSelected": "批准所选（{{count}}）",
+      "createApproved": "创建已批准（{{count}}）",
+      "noKey": "连接 Linear 即可将待办事项转为工单。",
+      "openSettings": "打开设置",
+      "noItems": "没有可转为工单的待办事项。",
+      "notDrafted": "根据待办事项起草工单，即可在此审阅。",
+      "approve": "批准",
+      "approveTip": "将此工单标记为待创建。在您点击“创建已批准”之前不会创建任何内容。",
+      "needsTeam": "批准前请选择团队",
+      "unapprove": "取消批准",
+      "discard": "舍弃",
+      "restore": "恢复",
+      "edit": "编辑标题和描述",
+      "approved": "已批准",
+      "draftState": "草稿",
+      "created": "已在 Linear 中创建",
+      "alreadyExisted": "已在 Linear 中：未创建新内容",
+      "createFailed": "未创建：{{error}}",
+      "issue": "问题",
+      "team": "团队",
+      "pickTeam": "选择团队",
+      "project": "项目",
+      "noProject": "无项目",
+      "assignee": "经办人",
+      "unassigned": "未分配",
+      "labels": "标签",
+      "addLabel": "添加标签",
+      "labelCount": "{{count}} 个标签",
+      "priority": {
+        "title": "优先级",
+        "none": "无优先级",
+        "urgent": "紧急",
+        "high": "高",
+        "medium": "中",
+        "low": "低"
+      }
+    },
+    "llm": {
+      "heading": "摘要",
+      "provider": "提供商",
+      "providerDescription": "用于会议摘要和待办事项的模型。听写后处理保留其自己的提供商。",
+      "builtin": "内置（在这台 Mac 上）",
+      "builtinDescription": "使用 llama.cpp 运行本地模型。任何内容都不会离开您的 Mac。",
+      "model": "模型",
+      "modelDescription": "勾选模型即可将其添加到您的模型中。仅列出输出文本的模型。“适合摘要”表示该模型支持结构化输出，摘要依赖于此功能。",
+      "modelPlaceholder": "模型 ID",
+      "pickModel": "选择模型",
+      "noLocalModels": "请在下方下载模型",
+      "usingPostProcessModel": "正在使用后处理模型（{{model}}）",
+      "refreshModels": "刷新",
+      "testConnection": "测试连接",
+      "testDescription": "检查提供商、密钥和模型是否可用。",
+      "apple": "Apple Intelligence",
+      "appleDescription": "在已开启 Apple Intelligence 的 Apple 芯片 Mac 上运行的设备端模型。",
+      "appleAvailable": "可用",
+      "appleUnavailable": "Apple Intelligence 在这台 Mac 上不可用",
+      "activeHeading": "摘要生成方式",
+      "place": "摘要运行位置",
+      "placeDescription": "仅使用所选选项。",
+      "tabCloud": "云端提供商",
+      "tabLocal": "这台 Mac",
+      "onThisMac": "这台 Mac · 离线",
+      "apiKey": "API 密钥",
+      "apiKeyDescription": "保存在您的钥匙串中，并与后处理共用。",
+      "getKey": "获取 {{provider}} 密钥",
+      "modelDescriptionCustom": "输入您的端点所需的模型 ID 并按回车添加，或勾选其列出的模型。",
+      "searchModels": "搜索模型",
+      "goodOnly": "适合摘要",
+      "goodForSummaries": "摘要",
+      "reasoning": "推理",
+      "unknownModel": "不在注册表中",
+      "noModels": "没有匹配的模型。",
+      "context": "{{n}} 上下文",
+      "free": "免费",
+      "modelCount": "{{shown}}/{{total}} 个模型",
+      "registryBundled": "模型详情来自 models.dev（随应用附带）",
+      "registryUpdated": "模型详情来自 models.dev，更新于 {{when}}",
+      "justNow": "刚刚",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前",
+      "needsKey": "添加您的 {{provider}} API 密钥",
+      "needsModel": "选择一个 {{provider}} 模型",
+      "needsLocalModel": "下载模型即可在这台 Mac 上生成摘要",
+      "localDescription": "在这台 Mac 上离线运行。请选择已下载的模型。",
+      "appleUnavailableHint": "在这台 Mac 上不可用。请在 系统设置 > Apple 智能与 Siri 中开启。",
+      "unavailable": "不可用",
+      "yourModels": "您的模型",
+      "yourModelsDescription": "“生成摘要”会提供这里的所有模型，您可以为每个会议单独选择。所选模型为默认模型。",
+      "yourModelsEmpty": "还没有云端模型。请在下方选择提供商，添加其 API 密钥并勾选所需的模型。",
+      "default": "默认",
+      "removeModel": "从您的模型中移除",
+      "addFrom": "从以下来源添加模型",
+      "addFromDescription": "选择提供商以输入其密钥，并勾选要添加的模型。这不会更改默认模型。"
+    },
+    "local": {
+      "heading": "本地模型",
+      "empty": "没有可用的内置模型。",
+      "default": "默认",
+      "recommendedRam": "推荐 {{gb}} GB 以上内存",
+      "notEnoughRam": "这台 Mac 的内存低于此模型的推荐配置。",
+      "downloaded": "已下载",
+      "download": "下载",
+      "downloading": "正在下载 {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "个人 API 密钥",
+      "keyDescription": "存储在您的 macOS 钥匙串中。用于根据待办事项起草和创建工单。",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "已在您的钥匙串中保存密钥。",
+      "noKey": "未保存密钥。",
+      "getKey": "在 linear.app/settings/api 创建密钥",
+      "removeKey": "移除密钥",
+      "test": "测试连接",
+      "testDescription": "通过 Linear 检查密钥。",
+      "connectedAs": "已连接为 {{name}}"
+    },
+    "byok": {
+      "testConnection": "测试连接",
+      "testDescription": "通过一个小请求检查基础 URL、API 密钥和模型。",
+      "baseUrlEditable": "此提供商的 API 基础 URL。请替换其中的 {placeholder}（例如您的 Cloudflare 账户 ID）。",
+      "cloudflareHint": "Cloudflare：将您的账户 ID（使用 AI Gateway 时还需网关 ID）填入基础 URL。"
+    }
   }
 }

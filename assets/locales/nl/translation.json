@@ -7,7 +7,23 @@
     "model": "Model",
     "quit": "Afsluiten",
     "cancel": "Annuleren",
-    "secureInputWarning": "⚠ Sneltoetsen geblokkeerd door Secure Input"
+    "secureInputWarning": "⚠ Sneltoetsen geblokkeerd door Secure Input",
+    "startMeetingNotes": "Vergadernotities starten",
+    "stopMeetingNotes": "Vergadernotities stoppen",
+    "pauseMeetingNotes": "Opname pauzeren",
+    "resumeMeetingNotes": "Opname hervatten",
+    "meetingPaused": "Gepauzeerd",
+    "meetingStillRecording": "Guidy neemt nog steeds op",
+    "meetingStop": "Stoppen",
+    "meetingKeepGoing": "Doorgaan",
+    "meetingTakeNotesFor": "Notities maken voor {{title}}?",
+    "meetingStart": "Starten",
+    "meetingUntitled": "Vergadering"
+  },
+  "notch": {
+    "pause": "Opname pauzeren",
+    "resume": "Opname hervatten",
+    "stop": "Vergadernotities stoppen"
   },
   "sidebar": {
     "general": "Algemeen",
@@ -16,7 +32,58 @@
     "postProcessing": "Naverwerking",
     "history": "Geschiedenis",
     "debug": "Probleemoplossing",
+    "usage": "Gebruik",
     "about": "Over Guidy"
+  },
+  "usage": {
+    "title": "Gebruik",
+    "description": "Wat cloud-AI-providers hebben gekost en het werk dat modellen op deze Mac hebben gedaan.",
+    "cloud": "Cloud",
+    "local": "Op deze Mac",
+    "refresh": "Verversen",
+    "total": "Totaal uitgegeven",
+    "last30Days": "Afgelopen 30 dagen",
+    "callsTitle": "Aanroepen",
+    "byModel": "Per model",
+    "byFeature": "Per functie",
+    "empty": "Nog geen cloud-AI-aanroepen.",
+    "calls_one": "{{count}} aanroep",
+    "calls_other": "{{count}} aanroepen",
+    "average": "gem. {{cost}}",
+    "highest": "hoogste {{cost}}",
+    "tokens": "{{input}} in / {{output}} uit tokens",
+    "unknownPrice": "prijs onbekend",
+    "feature": {
+      "dictation": "Dicteren",
+      "meetingTranscription": "Vergadertranscriptie",
+      "meetingSummary": "Vergadersamenvattingen",
+      "other": "Overig"
+    },
+    "localAudio": "Getranscribeerde audio",
+    "localWords": "Woorden",
+    "localTokens": "LLM-tokens",
+    "localCloudEquivalent": "Cloud-equivalent",
+    "localEmpty": "Er is nog niets op een lokaal model uitgevoerd.",
+    "localByModel": "Lokale modellen",
+    "localByFeature": "Lokaal werk per functie",
+    "kind": {
+      "transcription": "Transcriptie",
+      "llm": "Ingebouwd LLM"
+    },
+    "runs_one": "{{count}} uitvoering",
+    "runs_other": "{{count}} uitvoeringen",
+    "audio": "{{duration}} audio",
+    "words": "{{count}} woorden",
+    "realtime": "{{speed}} realtime",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "generatie {{speed}}",
+    "loadTime": "laadt in {{time}}",
+    "localNote": "Realtimesnelheid is audioduur ÷ verwerkingstijd, zonder laden; dicteren dat live tijdens het spreken wordt gedecodeerd, wordt niet getimed. Het cloud-equivalent prijst de audio tegen ${{price}} per minuut (OpenAI Whisper).",
+    "estimateNote": "~ markeert bedragen die zijn geschat op basis van gepubliceerde prijzen per token; providers die hun eigen kosten rapporteren (zoals OpenRouter) zijn exact. Bekijk het dashboard van je provider voor facturering.",
+    "reportedNote": "Bedragen zijn zoals gerapporteerd door de providers. Bekijk het dashboard van je provider voor facturering.",
+    "clear": "Geschiedenis wissen",
+    "clearTitle": "Gebruiksgeschiedenis wissen?",
+    "clearConfirm": "De vastgelegde aanroepen, kosten en lokale modeluitvoeringen worden verwijderd. Het gebruik bij vergadersamenvattingen blijft staan."
   },
   "onboarding": {
     "subtitle": "Kies een transcriptiemodel om aan de slag te gaan",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "nauwkeurigheid",
-      "speed": "snelheid"
+      "speed": "snelheid",
+      "size": "grootte"
     },
     "models": {
       "small": {
@@ -117,7 +185,9 @@
       "translation": "Kan vertalen naar het Engels",
       "translate": "Vertalen",
       "streaming": "Toont live transcriptie tijdens het spreken"
-    }
+    },
+    "download": "Downloaden",
+    "use": "Gebruiken"
   },
   "settings": {
     "modelSettings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "Algemeen",
+      "description": "Hoe je dicteren start, naar welke taal het luistert en wat je hoort.",
+      "shortcutsGroup": "Sneltoetsen",
       "shortcut": {
         "title": "Sneltoetsen",
         "description": "Configureer sneltoetsen om spraak-naar-tekst-opnames te starten",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Geavanceerd",
+      "description": "Opstarten, plakken, transcriptie afstemmen en geschiedenis.",
       "groups": {
         "app": "App",
         "output": "Uitvoer",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Naverwerking",
+      "description": "Laat een AI-model een transcriptie opschonen of herschrijven voordat deze wordt geplakt.",
       "hotkey": {
         "title": "Sneltoets"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Provider",
           "description": "Selecteer een OpenAI- of Anthropic-compatibele provider."
+        },
+        "builtin": {
+          "label": "Ingebouwd model (op deze Mac)",
+          "description": "Voert een lokaal model uit op deze Mac. Er verlaat niets je computer.",
+          "manage": "Ingebouwde modellen beheren"
         },
         "apiFormat": {
           "title": "API-indeling",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API-sleutel",
           "description": "API-sleutel voor de geselecteerde provider.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "API-sleutel opslaan mislukt"
         },
         "model": {
           "title": "Model",
@@ -600,6 +682,10 @@
         "title": "Versie",
         "description": "Huidige versie van Guidy"
       },
+      "author": {
+        "title": "Gemaakt door",
+        "description": "Imran"
+      },
       "whatsNewUpdates": {
         "label": "Toon 'Wat is er nieuw'",
         "description": "Release-notes tonen nadat Guidy is bijgewerkt"
@@ -625,6 +711,12 @@
           "description": "Krachtige tensorbibliotheek voor lokale AI-verwerking",
           "details": "Guidy's lokale spraak-naar-tekst is gebouwd op transcribe.cpp en ggml. Met dank aan het geweldige werk van Georgi Gerganov en alle bijdragers."
         }
+      },
+      "hero": {
+        "headline": "Spraak-naar-tekst die op deze Mac blijft",
+        "lede": "Druk op een sneltoets, spreek, en Guidy typt in de actieve app. Transcriptie gebeurt lokaal.",
+        "engine": "Engine",
+        "model": "Model"
       }
     }
   },
@@ -706,5 +798,561 @@
     "learnMore": "Hoe je dit oplost",
     "recorderBlocked": "Sneltoetsen kunnen nu niet worden opgenomen — Secure Input van macOS blokkeert toetsgebeurtenissen. Los eerst de Secure Input-waarschuwing op.",
     "dismiss": "Sluiten"
+  },
+  "meetings": {
+    "title": "Vergaderingen",
+    "selection": {
+      "hint": "Sleep of Shift-klik om meerdere regels te taggen",
+      "count_one": "{{count}} regel geselecteerd",
+      "count_other": "{{count}} regels geselecteerd",
+      "keys": "Shift-klik: bereik · ⌘-klik: toevoegen of verwijderen · Esc: wissen",
+      "setSpeaker": "Spreker instellen",
+      "clear": "Wissen"
+    },
+    "speakersRedo": {
+      "action": "Sprekers opnieuw bepalen",
+      "tooltip": "Onderscheid de sprekers opnieuw met {{model}}. Het transcript blijft staan. Regels die je hebt getagd en sprekers die je een naam hebt gegeven, houden hun persoon; de rest wordt opnieuw op stem gekoppeld.",
+      "standard": "Standaard sprekermodel",
+      "download": "{{size}} downloaden, eenmalig",
+      "error": "Sprekers opnieuw bepalen mislukt",
+      "confirmTitle": "Sprekers bepalen met Deepgram?",
+      "confirmDeepgram": "De audio van de andere deelnemers aan deze vergadering wordt naar Deepgram geüpload om hen te onderscheiden, voor ongeveer {{cost}}. Het transcript blijft zoals het is.",
+      "confirmDeepgramUnpriced": "De audio van de andere deelnemers aan deze vergadering wordt naar Deepgram geüpload om hen te onderscheiden. Het transcript blijft zoals het is."
+    },
+    "day": {
+      "today": "Vandaag",
+      "tomorrow": "Morgen",
+      "yesterday": "Gisteren"
+    },
+    "copy": {
+      "summary": "Kopiëren",
+      "transcript": "Transcript kopiëren",
+      "copied": "Gekopieerd"
+    },
+    "redo": {
+      "action": "Opnieuw transcriberen",
+      "localTitle": "Op deze Mac",
+      "cloudTitle": "Cloud",
+      "error": "Opnieuw transcriberen starten mislukt",
+      "issueRepetition": "Delen van dit transcript herhalen zichzelf, wat meestal betekent dat het model de audio kwijt was.",
+      "issueTooFewWords": "Dit transcript heeft veel minder woorden dan de spreektijd doet vermoeden, dus delen van de vergadering zijn waarschijnlijk gemist.",
+      "issueHint": "Een cloudmodel doet het vaak beter bij lastige audio.",
+      "tooltip": "Opnieuw transcriberen met {{model}}. Vervangt het transcript en de sprekers; mensen die je een naam hebt gegeven, worden opnieuw op stem gekoppeld.",
+      "more": "Andere modellen",
+      "noKeyShort": "vereist een API-sleutel (Vergaderingen › Instellingen › AI)",
+      "confirmTitle": "Transcriberen met {{provider}}?",
+      "confirmCloud": "De audio van deze vergadering wordt naar {{provider}} geüpload en getranscribeerd met {{model}}, voor ongeveer {{cost}}. Het transcript en de sprekers worden vervangen.",
+      "confirmCloudUnpriced": "De audio van deze vergadering wordt naar {{provider}} geüpload en getranscribeerd met {{model}}. Het transcript en de sprekers worden vervangen."
+    },
+    "widget": {
+      "recording": "Opnemen",
+      "paused": "Gepauzeerd",
+      "you": "Jij",
+      "others": "Anderen",
+      "mic": "Microfoon",
+      "system": "Systeemaudio",
+      "liveStarting": "Transcriptiemodel laden…",
+      "liveListening": "Aan het luisteren. Regels verschijnen hier terwijl mensen spreken.",
+      "liveOff": "Live transcriptie staat uit. Zet het aan in Vergaderingen › Instellingen.",
+      "liveUnavailable": "Live transcriptie is niet beschikbaar: {{reason}}",
+      "pause": "Pauzeren",
+      "resume": "Hervatten",
+      "stop": "Stoppen",
+      "openNotes": "Notities openen",
+      "expand": "Live transcript tonen",
+      "collapse": "Invouwen",
+      "liveTitle": "Live transcript",
+      "liveHint": "Zoals tot nu toe gehoord. Het volledige transcript met sprekersnamen wordt gemaakt als de vergadering is afgelopen."
+    },
+    "description": "Neem een vergadering op deze Mac op en lees daarna het transcript met benoemde sprekers.",
+    "init": {
+      "starting": "Vergadernotities starten...",
+      "failed": "Vergadernotities konden niet starten",
+      "retry": "Opnieuw proberen",
+      "keyMissing": {
+        "title": "Vergadernotities kunnen niet worden ontsleuteld",
+        "description": "De versleutelingssleutel voor vergadernotities ontbreekt in de Sleutelhanger of past niet bij je bestaande vergadernotities, waardoor ze niet kunnen worden geopend. Als je de sleutel kunt herstellen (bijvoorbeeld uit een reservekopie van de Sleutelhanger), doe dat dan en kies Opnieuw proberen. Zet anders alles terug om opnieuw te beginnen: je oude vergadernotities worden opzijgezet, niet verwijderd."
+      },
+      "reset": {
+        "action": "Gegevens van vergadernotities terugzetten",
+        "title": "Gegevens van vergadernotities terugzetten?",
+        "confirm": "Je huidige vergadernotities en opnames worden verplaatst naar een map \"meetings-unreadable\" in de datamap van Guidy (er wordt niets verwijderd) en er wordt een nieuwe versleutelingssleutel aangemaakt. Guidy kan de oude notities dan niet meer tonen."
+      }
+    },
+    "errors": {
+      "unavailable": "Vergadernotities zijn niet beschikbaar op deze Mac.",
+      "modelMissing": "Het transcriptiemodel voor vergaderingen ({{name}}) is nog niet gedownload.",
+      "modelUnknown": "Het vergadermodel {{name}} is niet geïnstalleerd. Kies een ander vergadermodel in Instellingen.",
+      "speakerModelMissing": "Download het sprekerherkenningsmodel in Vergaderingen > Instellingen en verwerk daarna de vergadering.",
+      "noLinearKey": "Voeg eerst een Linear-API-sleutel toe in Instellingen.",
+      "linearUnauthorized": "Linear heeft de API-sleutel geweigerd. Controleer deze in Instellingen."
+    },
+    "model": {
+      "download": "Vergadermodel downloaden",
+      "downloadError": "Vergadermodel downloaden mislukt"
+    },
+    "tabs": {
+      "meetings": "Vergaderingen",
+      "people": "Personen",
+      "settings": "Instellingen"
+    },
+    "recorder": {
+      "start": "Vergadernotities starten",
+      "stop": "Vergadernotities stoppen",
+      "recording": "Opnemen",
+      "idle": "Niet aan het opnemen",
+      "startError": "Opname starten mislukt",
+      "stopError": "Opname stoppen mislukt",
+      "disabled": "Zet vergadernotities aan in Instellingen om op te nemen."
+    },
+    "upcoming": {
+      "title": "Binnenkort",
+      "empty": "Geen komende agendavergaderingen met een gesprekslink.",
+      "start": "Starten"
+    },
+    "list": {
+      "title": "Opnames",
+      "empty": "Nog geen vergaderingen. Start vergadernotities om er een op te nemen.",
+      "loading": "Vergaderingen laden...",
+      "loadError": "Vergaderingen laden mislukt",
+      "speakerModelMissing": "Opnames worden pas verwerkt als het sprekerherkenningsmodel is gedownload.",
+      "minutes": "{{count}} min",
+      "open": "Openen",
+      "rename": "Naam wijzigen",
+      "delete": "Verwijderen",
+      "process": "Verwerken",
+      "retry": "Opnieuw proberen",
+      "cancelProcessing": "Verwerking annuleren",
+      "save": "Opslaan",
+      "cancel": "Annuleren",
+      "titlePlaceholder": "Titel van vergadering",
+      "deleteTitle": "Vergadering verwijderen?",
+      "deleteConfirm": "\"{{title}}\" wordt verwijderd, samen met het transcript en de audio. Stemafdrukken blijven bewaard.",
+      "deleteError": "Vergadering verwijderen mislukt",
+      "renameError": "Naam van vergadering wijzigen mislukt",
+      "processError": "Verwerking starten mislukt",
+      "cancelError": "Verwerking annuleren mislukt"
+    },
+    "status": {
+      "recording": "Opnemen",
+      "recorded": "Niet verwerkt",
+      "processing": "Verwerken",
+      "processed": "Gereed",
+      "failed": "Mislukt"
+    },
+    "stage": {
+      "decode": "Audio decoderen",
+      "vad": "Spraak zoeken",
+      "transcribe": "Transcriberen",
+      "voiceprints": "Stemafdrukken berekenen",
+      "cluster": "Sprekers groeperen",
+      "merge": "Sporen samenvoegen",
+      "done": "Klaar"
+    },
+    "detail": {
+      "back": "Alle vergaderingen",
+      "transcript": "Transcript",
+      "empty": "Nog geen transcript. Verwerk de vergadering om er een te maken.",
+      "loading": "Transcript laden...",
+      "loadError": "Vergadering laden mislukt",
+      "playError": "Dit fragment afspelen mislukt",
+      "play": "Vanaf hier afspelen",
+      "you": "Jij",
+      "speakers": "Sprekers",
+      "attendees": "Deelnemers",
+      "duration": "Duur",
+      "words": "Woorden",
+      "talkTime": "Spreektijd",
+      "share": "Aandeel",
+      "youSpoke": "Jij sprak",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Deze spreker een naam geven",
+      "confirm": "Bevestigen?",
+      "confirmAction": "Bevestigen",
+      "change": "Wijzigen",
+      "suggestions": "Suggesties",
+      "attendee": "Deelnemer",
+      "knownPerson": "Bekende persoon",
+      "noSuggestions": "Geen suggesties",
+      "newPerson": "Nieuwe persoon",
+      "namePlaceholder": "Naam",
+      "emailPlaceholder": "E-mail (optioneel)",
+      "save": "Opslaan",
+      "cancel": "Annuleren",
+      "assignError": "Spreker een naam geven mislukt",
+      "confirmError": "Spreker bevestigen mislukt",
+      "unnamed": "Spreker {{n}}",
+      "unknown": "Onbekend",
+      "whoIsThis": "Wie is dit?",
+      "whoSaidThis": "Wie zei dit?"
+    },
+    "people": {
+      "title": "Personen",
+      "description": "Personen die je in vergaderingen een naam hebt gegeven. Guidy herkent hun stem in latere vergaderingen.",
+      "empty": "Nog geen personen. Geef een spreker in een vergadering een naam om iemand toe te voegen.",
+      "loadError": "Personen laden mislukt",
+      "voiceprints_one": "{{count}} stemafdruk",
+      "voiceprints_other": "{{count}} stemafdrukken",
+      "edit": "Bewerken",
+      "merge": "Samenvoegen",
+      "mergeInto": "Samenvoegen met...",
+      "mergeHint": "Kies de persoon die je wilt behouden. Stemafdrukken en sprekersnamen gaan naar die persoon.",
+      "mergeIntoName": "Samenvoegen met {{name}}",
+      "samples": {
+        "hint": "Luister eerst naar de stemafdrukken: elke afdruk komt uit één regel van een vergadering.",
+        "none": "Geen stemafdrukken.",
+        "play": "Afspelen",
+        "pause": "Pauzeren",
+        "noText": "(geen woorden)",
+        "noLine": "De regel waar deze vandaan kwam bestaat niet meer",
+        "audioDeleted": "audio verwijderd",
+        "loadError": "Stemafdrukken laden mislukt"
+      },
+      "mergeTitle": "Personen samenvoegen?",
+      "mergeConfirm": "{{from}} wordt samengevoegd met {{into}} en daarna verwijderd.",
+      "mergeError": "Personen samenvoegen mislukt",
+      "delete": "Verwijderen",
+      "deleteTitle": "Persoon verwijderen?",
+      "deleteConfirm": "{{name}} en de {{count}} opgeslagen stemafdrukken worden verwijderd. Guidy herkent deze stem niet meer in toekomstige vergaderingen.",
+      "deleteError": "Persoon verwijderen mislukt",
+      "renameError": "Persoon bijwerken mislukt",
+      "namePlaceholder": "Naam",
+      "emailPlaceholder": "E-mail (optioneel)",
+      "save": "Opslaan",
+      "cancel": "Annuleren",
+      "voice": {
+        "title": "Je stem",
+        "notRecorded": "Niet opgenomen",
+        "recordedTitle": "Opgenomen",
+        "description": "Neem een kort fragment van je stem op, zodat Guidy jou kan onderscheiden van andere mensen in de ruimte tijdens fysieke vergaderingen.",
+        "recorded": "In vergaderingen die vanaf nu worden verwerkt, wordt alleen spraak die als jou klinkt als jou gelabeld. Verwerk oudere vergaderingen opnieuw om dit toe te passen.",
+        "record": "Mijn stem opnemen",
+        "recordAgain": "Opnieuw opnemen",
+        "starting": "Microfoon openen...",
+        "recording": "Opnemen",
+        "readAloud": "Lees dit hardop voor met je normale stem en druk daarna op Klaar.",
+        "passage": "Als ik aan een vergadering deelneem, begin ik meestal met het bekijken van de agenda en de notities van de vorige keer. Daarna bespreken we wat er is veranderd sinds we elkaar het laatst spraken, wat er vastzit en wie de volgende stappen oppakt. Als er een beslissing nodig is, proberen we die voor het einde van het gesprek te nemen, zodat niemand op een volgende vergadering hoeft te wachten. Achteraf deel ik een korte samenvatting met iedereen die erbij was.",
+        "done": "Klaar",
+        "saving": "Je stem opslaan...",
+        "loadError": "Je stem laden mislukt",
+        "recordError": "Opname starten mislukt",
+        "saveError": "Je stem opslaan mislukt",
+        "deleteTitle": "Je stem verwijderen?",
+        "deleteConfirm": "Je opgenomen stem wordt verwijderd. Guidy labelt dan weer alle microfoonspraak als jou.",
+        "deleteError": "Je stem verwijderen mislukt"
+      }
+    },
+    "settings": {
+      "general": "Vergadernotities",
+      "enabled": {
+        "title": "Vergadernotities",
+        "description": "Neem vergaderingen op met je microfoon en de audio van je computer. Als je dit aanzet, wordt om toegang tot agenda, systeemaudio en meldingen gevraagd."
+      },
+      "permissions": {
+        "title": "Machtigingen",
+        "calendar": "Agenda",
+        "systemAudio": "Systeemaudio",
+        "microphone": "Microfoon",
+        "notifications": "Meldingen",
+        "granted": "Verleend",
+        "denied": "Niet verleend",
+        "error": "Machtigingen aanvragen mislukt",
+        "requestAgain": "Opnieuw aanvragen",
+        "openSettings": "Systeeminstellingen openen"
+      },
+      "you": "Jij",
+      "userName": {
+        "title": "Je naam",
+        "description": "Je microfoonspoor krijgt altijd deze naam.",
+        "placeholder": "Je naam"
+      },
+      "userEmails": {
+        "title": "E-mailadressen",
+        "description": "Elk adres waarmee je aan vergaderingen deelneemt, zoals privé en werk. Staat een ervan op een vergaderuitnodiging, dan ben jij die deelnemer.",
+        "labelPlaceholder": "Label, bijv. Werk",
+        "emailPlaceholder": "naam@voorbeeld.nl",
+        "noLabel": "Geen label",
+        "add": "Toevoegen",
+        "remove": "Dit adres verwijderen",
+        "invalid": "Dat is geen geldig e-mailadres.",
+        "duplicate": "Dat adres staat al in de lijst."
+      },
+      "recording": "Opnemen",
+      "meetingModel": {
+        "title": "Transcriptiemodel",
+        "usesDictation": "Vergaderingen gebruiken je dicteermodel: {{name}}.",
+        "noDictation": "Er is nog geen dicteermodel gedownload. Download er een op de pagina Modellen, of kies een model voor vergaderingen.",
+        "separate": "Een ander model gebruiken",
+        "choice": "Model voor vergaderingen",
+        "choiceDescription": "Parakeet geeft tijdstempels per woord, wat helpt als mensen door elkaar praten.",
+        "notDownloaded": "{{name}} (niet gedownload)",
+        "chosenMissing": "{{name}} is nog niet gedownload. Tot die tijd gebruiken vergaderingen je dicteermodel.",
+        "chosenUnknown": "{{name}} is niet geïnstalleerd. Kies een ander model of zet \"Een ander model gebruiken\" uit."
+      },
+      "separation": {
+        "title": "Stemmen onderscheiden",
+        "description": "Het sprekermodel dat bepaalt wie elke regel sprak. Grotere modellen onderscheiden vergelijkbare stemmen beter, maar nemen meer ruimte in en maken de verwerking trager. Personen die je een naam hebt gegeven, worden altijd met het standaardmodel herkend, dus bij wisselen blijven hun stemafdrukken behouden.",
+        "downloaded": "Gedownload.",
+        "notDownloaded": "Wordt gedownload als je het kiest.",
+        "downloading": "Downloaden...",
+        "delete": "Dit model verwijderen ({{size}})",
+        "downloadError": "Sprekermodel downloaden mislukt",
+        "deleteError": "Sprekermodel verwijderen mislukt",
+        "about": {
+          "resnet34": "Standaard. Klein en snel, en herkent ook personen die je een naam hebt gegeven.",
+          "cam_plus_plus": "Ongeveer even klein, en het snelst.",
+          "resnet152": "Beter bij vergelijkbare stemmen; verwerken duurt ongeveer 3 keer zo lang.",
+          "titanet_large": "Van NVIDIA, ook getraind op telefoongesprekken, wat goed kan passen bij gespreksaudio. Ongeveer even snel als het standaardmodel.",
+          "resnet293": "De nauwkeurigste hier; verwerken duurt ongeveer 6 keer zo lang."
+        }
+      },
+      "speakerModel": {
+        "title": "Sprekerherkenning",
+        "description": "Onderscheidt stemmen en herkent personen die je eerder een naam hebt gegeven. Gebruikt {{name}} ({{trainedOn}}), {{size}}. Wordt alleen gedownload als je op Downloaden klikt.",
+        "ready": "Gedownload",
+        "download": "Downloaden ({{size}})",
+        "retry": "Download opnieuw proberen",
+        "failed": "Downloaden mislukt: {{error}}"
+      },
+      "retention": {
+        "title": "Vergaderaudio bewaren",
+        "description": "Ruwe audio wordt na deze tijd verwijderd. Transcripten en stemafdrukken blijven bewaard.",
+        "days3": "3 dagen",
+        "days7": "7 dagen",
+        "days30": "30 dagen",
+        "forever": "Voor altijd"
+      },
+      "mcp": {
+        "group": "Andere apps",
+        "title": "MCP-server",
+        "description": "Laat AI-apps op deze Mac, zoals Claude of Cursor, je vergaderlijst, samenvattingen en transcripten lezen. Alleen lokaal en alleen-lezen.",
+        "url": "Server-URL (Streamable HTTP)",
+        "stdio": "Opdracht (voor apps die alleen stdio-servers uitvoeren)",
+        "failed": "Kan de MCP-server niet starten op poort {{port}}. Mogelijk gebruikt een andere app deze."
+      },
+      "calendarNotifications": {
+        "title": "Agendameldingen",
+        "description": "Vraag om notities te maken wanneer een agendavergadering met een gesprekslink begint."
+      },
+      "recordingControls": {
+        "title": "Opnamebediening",
+        "description": "Waar pauzeren, stoppen en het live transcript staan terwijl een vergadering wordt opgenomen.",
+        "floating": "Zwevend, aan de schermrand",
+        "notch": "Rond de notch"
+      },
+      "deepgram": {
+        "title": "Deepgram-API-sleutel",
+        "description": "Hiermee kun je de sprekers van een vergadering opnieuw bepalen in de cloud met Deepgram, dat stemmen in gesprekken goed onderscheidt. Opgeslagen in de Sleutelhanger.",
+        "placeholder": "Plak een sleutel en druk op Enter",
+        "saved": "Opgeslagen",
+        "remove": "Verwijderen",
+        "error": "Deepgram-sleutel opslaan mislukt"
+      },
+      "liveTranscription": {
+        "title": "Live transcriptie",
+        "description": "Transcribeer de vergadering op deze Mac terwijl die plaatsvindt. Het volledige transcript wordt nog steeds na de vergadering gemaakt.",
+        "model": "Model voor live transcriptie",
+        "modelDescription": "Een klein, snel model houdt het best bij terwijl je in een gesprek zit. Het transcript na de vergadering gebruikt het vergadermodel.",
+        "sameModel": "Zelfde als vergaderingen"
+      },
+      "reminderInterval": {
+        "title": "Herinneringsinterval",
+        "description": "Minuten tussen herinneringen dat er \"nog steeds wordt opgenomen\" nadat een vergadering had moeten eindigen.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Geavanceerd",
+        "show": "Geavanceerde instellingen tonen",
+        "hide": "Geavanceerde instellingen verbergen",
+        "matchThreshold": {
+          "title": "Drempel voor automatische koppeling",
+          "description": "Stemovereenkomst vanaf welke een spreker automatisch een naam krijgt. Daaronder vraagt de koppeling \"Bevestigen?\"."
+        },
+        "suggestThreshold": {
+          "title": "Suggestiedrempel",
+          "description": "Stemovereenkomst waaronder een bekende persoon helemaal niet wordt voorgesteld."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Opslaan",
+      "cancel": "Annuleren",
+      "delete": "Verwijderen",
+      "loading": "Laden..."
+    },
+    "summary": {
+      "heading": "Samenvatting",
+      "actionItems": "Actiepunten",
+      "generate": "Samenvatting genereren",
+      "regenerate": "Opnieuw genereren",
+      "regenerateWith": "Opnieuw genereren met...",
+      "generateWith": "Genereren met {{model}}",
+      "otherModels": "Andere modellen",
+      "otherModel": "Ander model…",
+      "generating": "Vergadering samenvatten...",
+      "generatingLocal": "Vergadering samenvatten. Met een lokaal model kan dit een paar minuten duren.",
+      "progress": "Samenvatten ({{done}} van {{total}} stappen)",
+      "empty": "Nog geen samenvatting. Genereer er een uit het transcript.",
+      "untitled": "Naamloze vergadering",
+      "edit": "Bewerken",
+      "title": "Titel",
+      "shortSummary": "Korte samenvatting",
+      "shortSummaryPlaceholder": "Waar de vergadering over ging, in een paar zinnen",
+      "decisions": "Besluiten",
+      "topics": "Onderwerpen",
+      "linesPlaceholder": "Eén per regel",
+      "onePerLine": "Besluiten en onderwerpen: één per regel.",
+      "none": "Geen",
+      "generatedBy": "Gegenereerd met {{model}}",
+      "generatedByCost": "Gegenereerd met {{model}} · {{cost}} · {{input}} in / {{output}} uit tokens",
+      "generatedByTokens": "Gegenereerd met {{model}} · {{input}} in / {{output}} uit tokens",
+      "pickerTitle": "Model voor deze samenvatting",
+      "pickerDescription": "Genereer opnieuw met een andere provider en een ander model. Je vergadermodel in de instellingen blijft ongewijzigd. Actiepunten die al een Linear-issue hebben, blijven behouden.",
+      "run": "Genereren",
+      "noItems": "Geen actiepunten.",
+      "newItemPlaceholder": "Actiepunt toevoegen",
+      "addItem": "Toevoegen",
+      "deleteItem": "Actiepunt verwijderen",
+      "due": "Deadline",
+      "duePlaceholder": "bijv. 2026-10-31",
+      "jumpToMoment": "Dit moment in het transcript afspelen",
+      "owner": {
+        "title": "Eigenaar",
+        "none": "Geen eigenaar",
+        "me": "Ik",
+        "meNamed": "Ik ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear-tickets",
+      "draft": "Tickets opstellen",
+      "approveSelected": "Selectie goedkeuren ({{count}})",
+      "createApproved": "Goedgekeurde aanmaken ({{count}})",
+      "noKey": "Koppel Linear om actiepunten in tickets om te zetten.",
+      "openSettings": "Instellingen openen",
+      "noItems": "Geen actiepunten om in tickets om te zetten.",
+      "notDrafted": "Stel tickets op uit de actiepunten om ze hier te beoordelen.",
+      "approve": "Goedkeuren",
+      "approveTip": "Markeer dit ticket om aan te maken. Er wordt niets aangemaakt totdat je op Goedgekeurde aanmaken klikt.",
+      "needsTeam": "Kies een team voordat je goedkeurt",
+      "unapprove": "Goedkeuring intrekken",
+      "discard": "Verwerpen",
+      "restore": "Herstellen",
+      "edit": "Titel en beschrijving bewerken",
+      "approved": "Goedgekeurd",
+      "draftState": "Concept",
+      "created": "Aangemaakt in Linear",
+      "alreadyExisted": "Staat al in Linear: er is niets nieuws aangemaakt",
+      "createFailed": "Niet aangemaakt: {{error}}",
+      "issue": "Issue",
+      "team": "Team",
+      "pickTeam": "Kies een team",
+      "project": "Project",
+      "noProject": "Geen project",
+      "assignee": "Toegewezen aan",
+      "unassigned": "Niet toegewezen",
+      "labels": "Labels",
+      "addLabel": "Labels toevoegen",
+      "labelCount": "{{count}} labels",
+      "priority": {
+        "title": "Prioriteit",
+        "none": "Geen prioriteit",
+        "urgent": "Urgent",
+        "high": "Hoog",
+        "medium": "Gemiddeld",
+        "low": "Laag"
+      }
+    },
+    "llm": {
+      "heading": "Samenvattingen",
+      "provider": "Provider",
+      "providerDescription": "Model voor vergadersamenvattingen en actiepunten. Naverwerking van dicteren houdt een eigen provider.",
+      "builtin": "Ingebouwd (op deze Mac)",
+      "builtinDescription": "Voert een lokaal model uit met llama.cpp. Er verlaat niets je Mac.",
+      "model": "Model",
+      "modelDescription": "Vink een model aan om het aan je modellen toe te voegen. Alleen modellen die tekst uitvoeren worden getoond. \"Geschikt voor samenvattingen\" betekent dat het model gestructureerde uitvoer ondersteunt, waar samenvattingen op steunen.",
+      "modelPlaceholder": "Model-ID",
+      "pickModel": "Selecteer een model",
+      "noLocalModels": "Download hieronder een model",
+      "usingPostProcessModel": "Gebruikt het naverwerkingsmodel ({{model}})",
+      "refreshModels": "Verversen",
+      "testConnection": "Verbinding testen",
+      "testDescription": "Controleer of de provider, sleutel en het model werken.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Model op het apparaat zelf, op Macs met Apple silicon waarop Apple Intelligence is ingeschakeld.",
+      "appleAvailable": "Beschikbaar",
+      "appleUnavailable": "Apple Intelligence is niet beschikbaar op deze Mac",
+      "activeHeading": "Samenvattingen worden gemaakt door",
+      "place": "Waar samenvattingen worden uitgevoerd",
+      "placeDescription": "Alleen de geselecteerde optie wordt gebruikt.",
+      "tabCloud": "Cloudprovider",
+      "tabLocal": "Op deze Mac",
+      "onThisMac": "Deze Mac · offline",
+      "apiKey": "API-sleutel",
+      "apiKeyDescription": "Opgeslagen in je Sleutelhanger en gedeeld met Naverwerking.",
+      "getKey": "{{provider}}-sleutel aanvragen",
+      "modelDescriptionCustom": "Typ de model-ID die je eindpunt verwacht en druk op Enter om deze toe te voegen, of vink er een aan uit de lijst.",
+      "searchModels": "Modellen zoeken",
+      "goodOnly": "Geschikt voor samenvattingen",
+      "goodForSummaries": "samenvattingen",
+      "reasoning": "redeneren",
+      "unknownModel": "niet in register",
+      "noModels": "Geen overeenkomende modellen.",
+      "context": "{{n}} ctx",
+      "free": "gratis",
+      "modelCount": "{{shown}}/{{total}} modellen",
+      "registryBundled": "Modelgegevens van models.dev (meegeleverd met de app)",
+      "registryUpdated": "Modelgegevens van models.dev, bijgewerkt {{when}}",
+      "justNow": "zojuist",
+      "minutesAgo": "{{n}} min geleden",
+      "hoursAgo": "{{n}} u geleden",
+      "daysAgo": "{{n}} d geleden",
+      "needsKey": "Voeg je {{provider}}-API-sleutel toe",
+      "needsModel": "Kies een {{provider}}-model",
+      "needsLocalModel": "Download een model om op deze Mac samen te vatten",
+      "localDescription": "Werkt offline op deze Mac. Kies een gedownload model.",
+      "appleUnavailableHint": "Niet beschikbaar op deze Mac. Schakel het in via Systeeminstellingen > Apple Intelligence en Siri.",
+      "unavailable": "niet beschikbaar",
+      "yourModels": "Je modellen",
+      "yourModelsDescription": "Samenvatting genereren biedt elk model hier aan, zodat je er per vergadering een kunt kiezen. Het geselecteerde model is de standaard.",
+      "yourModelsEmpty": "Nog geen cloudmodellen. Kies hieronder een provider, voeg de API-sleutel toe en vink de gewenste modellen aan.",
+      "default": "standaard",
+      "removeModel": "Verwijderen uit je modellen",
+      "addFrom": "Modellen toevoegen van",
+      "addFromDescription": "Kies een provider om de sleutel in te voeren en vink modellen aan om toe te voegen. De standaard verandert hierdoor niet."
+    },
+    "local": {
+      "heading": "Lokale modellen",
+      "empty": "Er zijn geen ingebouwde modellen beschikbaar.",
+      "default": "Standaard",
+      "recommendedRam": "Aanbevolen voor {{gb}} GB+ RAM",
+      "notEnoughRam": "Deze Mac heeft minder geheugen dan aanbevolen voor dit model.",
+      "downloaded": "Gedownload",
+      "download": "Downloaden",
+      "downloading": "Downloaden {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Persoonlijke API-sleutel",
+      "keyDescription": "Opgeslagen in je macOS-Sleutelhanger. Wordt gebruikt om tickets op te stellen en aan te maken uit actiepunten.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Er is een sleutel opgeslagen in je Sleutelhanger.",
+      "noKey": "Geen sleutel opgeslagen.",
+      "getKey": "Maak een sleutel aan op linear.app/settings/api",
+      "removeKey": "Sleutel verwijderen",
+      "test": "Verbinding testen",
+      "testDescription": "Controleer de sleutel bij Linear.",
+      "connectedAs": "Verbonden als {{name}}"
+    },
+    "byok": {
+      "testConnection": "Verbinding testen",
+      "testDescription": "Controleer de basis-URL, API-sleutel en het model met een klein verzoek.",
+      "baseUrlEditable": "API-basis-URL voor deze provider. Vervang elke {placeholder} (bijv. je Cloudflare-account-ID).",
+      "cloudflareHint": "Cloudflare: zet je account-ID (en gateway-ID voor AI Gateway) in de basis-URL."
+    }
   }
 }

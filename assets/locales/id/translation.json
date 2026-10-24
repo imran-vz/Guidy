@@ -7,7 +7,23 @@
     "model": "Model",
     "quit": "Keluar",
     "cancel": "Batal",
-    "secureInputWarning": "⚠ Pintasan diblokir oleh Secure Input"
+    "secureInputWarning": "⚠ Pintasan diblokir oleh Secure Input",
+    "startMeetingNotes": "Mulai Catatan Rapat",
+    "stopMeetingNotes": "Hentikan Catatan Rapat",
+    "pauseMeetingNotes": "Jeda Perekaman",
+    "resumeMeetingNotes": "Lanjutkan Perekaman",
+    "meetingPaused": "Dijeda",
+    "meetingStillRecording": "Guidy masih merekam",
+    "meetingStop": "Hentikan",
+    "meetingKeepGoing": "Lanjutkan",
+    "meetingTakeNotesFor": "Buat catatan untuk {{title}}?",
+    "meetingStart": "Mulai",
+    "meetingUntitled": "Rapat"
+  },
+  "notch": {
+    "pause": "Jeda perekaman",
+    "resume": "Lanjutkan perekaman",
+    "stop": "Hentikan catatan rapat"
   },
   "sidebar": {
     "general": "Umum",
@@ -16,7 +32,58 @@
     "postProcessing": "Pascaproses",
     "history": "Riwayat",
     "debug": "Debug",
+    "usage": "Penggunaan",
     "about": "Tentang"
+  },
+  "usage": {
+    "title": "Penggunaan",
+    "description": "Biaya penyedia AI cloud, dan pekerjaan yang dilakukan model di Mac ini.",
+    "cloud": "Cloud",
+    "local": "Di Mac ini",
+    "refresh": "Segarkan",
+    "total": "Total biaya",
+    "last30Days": "30 hari terakhir",
+    "callsTitle": "Panggilan",
+    "byModel": "Per model",
+    "byFeature": "Per fitur",
+    "empty": "Belum ada panggilan AI cloud.",
+    "calls_one": "{{count}} panggilan",
+    "calls_other": "{{count}} panggilan",
+    "average": "rata-rata {{cost}}",
+    "highest": "tertinggi {{cost}}",
+    "tokens": "{{input}} token masuk / {{output}} token keluar",
+    "unknownPrice": "harga tidak diketahui",
+    "feature": {
+      "dictation": "Dikte",
+      "meetingTranscription": "Transkripsi rapat",
+      "meetingSummary": "Ringkasan rapat",
+      "other": "Lainnya"
+    },
+    "localAudio": "Audio ditranskripsi",
+    "localWords": "Kata",
+    "localTokens": "Token LLM",
+    "localCloudEquivalent": "Setara cloud",
+    "localEmpty": "Belum ada yang dijalankan di model lokal.",
+    "localByModel": "Model lokal",
+    "localByFeature": "Pekerjaan lokal per fitur",
+    "kind": {
+      "transcription": "Transkripsi",
+      "llm": "LLM bawaan"
+    },
+    "runs_one": "{{count}} kali dijalankan",
+    "runs_other": "{{count}} kali dijalankan",
+    "audio": "audio {{duration}}",
+    "words": "{{count}} kata",
+    "realtime": "{{speed}} waktu nyata",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "pembuatan {{speed}}",
+    "loadTime": "dimuat dalam {{time}}",
+    "localNote": "Kecepatan waktu nyata adalah durasi audio ÷ waktu pemrosesan, tanpa waktu memuat; dikte yang didekode langsung saat Anda berbicara tidak diukur waktunya. Setara cloud menghitung audio dengan harga ${{price}} per menit (OpenAI Whisper).",
+    "estimateNote": "~ menandai jumlah yang diperkirakan dari harga per token yang dipublikasikan; penyedia yang melaporkan biayanya sendiri (seperti OpenRouter) bersifat pasti. Periksa dasbor penyedia Anda untuk tagihan.",
+    "reportedNote": "Jumlah sesuai laporan penyedia. Periksa dasbor penyedia Anda untuk tagihan.",
+    "clear": "Hapus riwayat",
+    "clearTitle": "Hapus riwayat penggunaan?",
+    "clearConfirm": "Panggilan, biaya, dan eksekusi model lokal yang tercatat akan dihapus. Penggunaan yang ditampilkan pada ringkasan rapat tetap ada."
   },
   "onboarding": {
     "subtitle": "Untuk memulai, pilih model transkripsi",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "akurasi",
-      "speed": "kecepatan"
+      "speed": "kecepatan",
+      "size": "ukuran"
     },
     "models": {
       "small": {
@@ -117,7 +185,9 @@
       "translation": "Dapat menerjemahkan ke bahasa Inggris",
       "translate": "Terjemahkan",
       "streaming": "Menampilkan transkripsi langsung saat Anda berbicara"
-    }
+    },
+    "download": "Unduh",
+    "use": "Gunakan"
   },
   "settings": {
     "modelSettings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "Umum",
+      "description": "Cara memulai dikte, bahasa yang didengarkan, dan suara yang Anda dengar.",
+      "shortcutsGroup": "Pintasan",
       "shortcut": {
         "title": "Pintasan Guidy",
         "description": "Atur pintasan keyboard untuk memulai perekaman ucapan-ke-teks",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Lanjutan",
+      "description": "Startup, penempelan, penyesuaian transkripsi, dan riwayat.",
       "groups": {
         "app": "Aplikasi",
         "output": "Keluaran",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Pascaproses",
+      "description": "Rapikan atau tulis ulang transkripsi dengan model AI sebelum ditempel.",
       "hotkey": {
         "title": "Pintasan"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Penyedia",
           "description": "Pilih penyedia yang kompatibel dengan OpenAI atau Anthropic."
+        },
+        "builtin": {
+          "label": "Model bawaan (di Mac ini)",
+          "description": "Menjalankan model lokal di Mac ini. Tidak ada data yang keluar dari komputer Anda.",
+          "manage": "Kelola model bawaan"
         },
         "apiFormat": {
           "title": "Format API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "Kunci API",
           "description": "Kunci API untuk penyedia yang dipilih.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Gagal menyimpan kunci API"
         },
         "model": {
           "title": "Model",
@@ -600,6 +682,10 @@
         "title": "Versi",
         "description": "Versi Guidy saat ini"
       },
+      "author": {
+        "title": "Dibuat oleh",
+        "description": "Imran"
+      },
       "whatsNewUpdates": {
         "label": "Tampilkan Yang Baru",
         "description": "Tampilkan catatan rilis setelah Guidy diperbarui"
@@ -625,6 +711,12 @@
           "description": "Pustaka tensor berkinerja tinggi untuk inferensi pembelajaran mesin di perangkat",
           "details": "Fitur ucapan-ke-teks lokal Guidy dibangun menggunakan transcribe.cpp dan ggml. Terima kasih kepada Georgi Gerganov dan para kontributor atas karya luar biasa mereka."
         }
+      },
+      "hero": {
+        "headline": "Ucapan ke teks yang tetap di Mac ini",
+        "lede": "Tekan pintasan, berbicaralah, dan Guidy mengetik ke aplikasi yang aktif. Transkripsi berjalan secara lokal.",
+        "engine": "Mesin",
+        "model": "Model"
       }
     }
   },
@@ -706,5 +798,561 @@
     "learnMore": "Cara memperbaiki",
     "recorderBlocked": "Pintasan tidak dapat direkam saat ini — macOS Secure Input memblokir peristiwa tombol. Selesaikan peringatan Secure Input terlebih dahulu.",
     "dismiss": "Tutup"
+  },
+  "meetings": {
+    "title": "Rapat",
+    "selection": {
+      "hint": "Seret, atau Shift-klik, untuk menandai beberapa baris",
+      "count_one": "{{count}} baris dipilih",
+      "count_other": "{{count}} baris dipilih",
+      "keys": "Shift-klik: rentang · ⌘-klik: tambah atau hapus · Esc: kosongkan",
+      "setSpeaker": "Atur pembicara",
+      "clear": "Kosongkan"
+    },
+    "speakersRedo": {
+      "action": "Ulangi pembicara",
+      "tooltip": "Bedakan para pembicara lagi dengan {{model}}. Transkrip tetap sama. Baris yang Anda tandai dan pembicara yang Anda beri nama tetap pada orangnya; sisanya dicocokkan ulang berdasarkan suara.",
+      "standard": "Model pembicara standar",
+      "download": "Unduhan {{size}}, sekali saja",
+      "error": "Gagal mengulangi pembicara",
+      "confirmTitle": "Temukan pembicara dengan Deepgram?",
+      "confirmDeepgram": "Audio peserta lain dari rapat ini diunggah ke Deepgram untuk membedakan mereka, dengan biaya sekitar {{cost}}. Transkrip tetap seperti semula.",
+      "confirmDeepgramUnpriced": "Audio peserta lain dari rapat ini diunggah ke Deepgram untuk membedakan mereka. Transkrip tetap seperti semula."
+    },
+    "day": {
+      "today": "Hari ini",
+      "tomorrow": "Besok",
+      "yesterday": "Kemarin"
+    },
+    "copy": {
+      "summary": "Salin",
+      "transcript": "Salin transkrip",
+      "copied": "Disalin"
+    },
+    "redo": {
+      "action": "Ulangi transkrip",
+      "localTitle": "Di Mac ini",
+      "cloudTitle": "Cloud",
+      "error": "Gagal memulai transkripsi ulang",
+      "issueRepetition": "Sebagian transkrip ini berulang, yang biasanya berarti model kehilangan jejak audio.",
+      "issueTooFewWords": "Transkrip ini memiliki jauh lebih sedikit kata daripada yang diperkirakan dari durasi bicara, jadi sebagian rapat kemungkinan terlewat.",
+      "issueHint": "Model cloud sering kali lebih baik untuk audio yang sulit.",
+      "tooltip": "Transkripsikan ulang dengan {{model}}. Menggantikan transkrip dan pembicara; orang yang Anda beri nama dicocokkan ulang berdasarkan suara.",
+      "more": "Model lain",
+      "noKeyShort": "memerlukan kunci API (Rapat › Pengaturan › AI)",
+      "confirmTitle": "Transkripsikan dengan {{provider}}?",
+      "confirmCloud": "Audio rapat ini diunggah ke {{provider}} dan ditranskripsi dengan {{model}}, dengan biaya sekitar {{cost}}. Transkrip dan pembicara akan diganti.",
+      "confirmCloudUnpriced": "Audio rapat ini diunggah ke {{provider}} dan ditranskripsi dengan {{model}}. Transkrip dan pembicara akan diganti."
+    },
+    "widget": {
+      "recording": "Merekam",
+      "paused": "Dijeda",
+      "you": "Anda",
+      "others": "Lainnya",
+      "mic": "Mikrofon",
+      "system": "Audio sistem",
+      "liveStarting": "Memuat model transkripsi…",
+      "liveListening": "Mendengarkan. Baris akan muncul di sini saat orang berbicara.",
+      "liveOff": "Transkripsi langsung nonaktif. Aktifkan di Rapat › Pengaturan.",
+      "liveUnavailable": "Transkripsi langsung tidak tersedia: {{reason}}",
+      "pause": "Jeda",
+      "resume": "Lanjutkan",
+      "stop": "Hentikan",
+      "openNotes": "Buka catatan",
+      "expand": "Tampilkan transkrip langsung",
+      "collapse": "Ciutkan",
+      "liveTitle": "Transkrip langsung",
+      "liveHint": "Sejauh yang terdengar. Transkrip lengkap dengan nama pembicara dibuat saat rapat berakhir."
+    },
+    "description": "Rekam rapat di Mac ini, lalu baca transkrip dengan nama para pembicara.",
+    "init": {
+      "starting": "Memulai catatan rapat...",
+      "failed": "Catatan rapat gagal dimulai",
+      "retry": "Coba lagi",
+      "keyMissing": {
+        "title": "Catatan rapat tidak dapat didekripsi",
+        "description": "Kunci enkripsi catatan rapat tidak ada di Rantai Kunci atau tidak cocok dengan catatan rapat Anda yang ada, sehingga catatan tersebut tidak dapat dibuka. Jika Anda dapat memulihkan kunci (misalnya dari cadangan Rantai Kunci), lakukan itu lalu pilih Coba lagi. Jika tidak, atur ulang untuk memulai dari awal: catatan rapat lama Anda dipindahkan, tidak dihapus."
+      },
+      "reset": {
+        "action": "Atur ulang data catatan rapat",
+        "title": "Atur ulang data catatan rapat?",
+        "confirm": "Catatan rapat dan rekaman Anda saat ini akan dipindahkan ke folder \"meetings-unreadable\" di folder data Guidy (tidak ada yang dihapus) dan kunci enkripsi baru akan dibuat. Guidy tidak akan dapat menampilkan catatan lama."
+      }
+    },
+    "errors": {
+      "unavailable": "Catatan rapat tidak tersedia di Mac ini.",
+      "modelMissing": "Model transkripsi rapat ({{name}}) belum diunduh.",
+      "modelUnknown": "Model rapat {{name}} tidak terinstal. Pilih model rapat lain di Pengaturan.",
+      "speakerModelMissing": "Unduh model pengenalan pembicara di Rapat > Pengaturan, lalu proses rapat.",
+      "noLinearKey": "Tambahkan kunci API Linear di Pengaturan terlebih dahulu.",
+      "linearUnauthorized": "Linear menolak kunci API. Periksa di Pengaturan."
+    },
+    "model": {
+      "download": "Unduh model rapat",
+      "downloadError": "Gagal mengunduh model rapat"
+    },
+    "tabs": {
+      "meetings": "Rapat",
+      "people": "Orang",
+      "settings": "Pengaturan"
+    },
+    "recorder": {
+      "start": "Mulai catatan rapat",
+      "stop": "Hentikan catatan rapat",
+      "recording": "Merekam",
+      "idle": "Tidak merekam",
+      "startError": "Gagal memulai perekaman",
+      "stopError": "Gagal menghentikan perekaman",
+      "disabled": "Aktifkan catatan rapat di Pengaturan untuk merekam."
+    },
+    "upcoming": {
+      "title": "Mendatang",
+      "empty": "Tidak ada rapat kalender mendatang dengan tautan panggilan.",
+      "start": "Mulai"
+    },
+    "list": {
+      "title": "Rekaman",
+      "empty": "Belum ada rapat. Mulai catatan rapat untuk merekamnya.",
+      "loading": "Memuat rapat...",
+      "loadError": "Gagal memuat rapat",
+      "speakerModelMissing": "Rekaman tidak diproses sampai model pengenalan pembicara diunduh.",
+      "minutes": "{{count}} mnt",
+      "open": "Buka",
+      "rename": "Ganti nama",
+      "delete": "Hapus",
+      "process": "Proses",
+      "retry": "Coba lagi",
+      "cancelProcessing": "Batalkan pemrosesan",
+      "save": "Simpan",
+      "cancel": "Batal",
+      "titlePlaceholder": "Judul rapat",
+      "deleteTitle": "Hapus rapat?",
+      "deleteConfirm": "\"{{title}}\" akan dihapus beserta transkrip dan audionya. Sidik suara tetap disimpan.",
+      "deleteError": "Gagal menghapus rapat",
+      "renameError": "Gagal mengganti nama rapat",
+      "processError": "Gagal memulai pemrosesan",
+      "cancelError": "Gagal membatalkan pemrosesan"
+    },
+    "status": {
+      "recording": "Merekam",
+      "recorded": "Belum diproses",
+      "processing": "Memproses",
+      "processed": "Siap",
+      "failed": "Gagal"
+    },
+    "stage": {
+      "decode": "Mendekode audio",
+      "vad": "Mencari ucapan",
+      "transcribe": "Mentranskripsikan",
+      "voiceprints": "Menghitung sidik suara",
+      "cluster": "Mengelompokkan pembicara",
+      "merge": "Menggabungkan trek",
+      "done": "Selesai"
+    },
+    "detail": {
+      "back": "Semua rapat",
+      "transcript": "Transkrip",
+      "empty": "Belum ada transkrip. Proses rapat untuk membuatnya.",
+      "loading": "Memuat transkrip...",
+      "loadError": "Gagal memuat rapat",
+      "playError": "Gagal memutar segmen ini",
+      "play": "Putar dari sini",
+      "you": "Anda",
+      "speakers": "Pembicara",
+      "attendees": "Peserta",
+      "duration": "Durasi",
+      "words": "Kata",
+      "talkTime": "Waktu bicara",
+      "share": "Porsi",
+      "youSpoke": "Anda berbicara",
+      "minutes": "Mnt"
+    },
+    "speaker": {
+      "rename": "Beri nama pembicara ini",
+      "confirm": "Konfirmasi?",
+      "confirmAction": "Konfirmasi",
+      "change": "Ubah",
+      "suggestions": "Saran",
+      "attendee": "Peserta",
+      "knownPerson": "Orang yang dikenal",
+      "noSuggestions": "Tidak ada saran",
+      "newPerson": "Orang baru",
+      "namePlaceholder": "Nama",
+      "emailPlaceholder": "Email (opsional)",
+      "save": "Simpan",
+      "cancel": "Batal",
+      "assignError": "Gagal memberi nama pembicara",
+      "confirmError": "Gagal mengonfirmasi pembicara",
+      "unnamed": "Pembicara {{n}}",
+      "unknown": "Tidak diketahui",
+      "whoIsThis": "Siapa ini?",
+      "whoSaidThis": "Siapa yang mengatakan ini?"
+    },
+    "people": {
+      "title": "Orang",
+      "description": "Orang yang telah Anda beri nama dalam rapat. Guidy mengenali suara mereka di rapat berikutnya.",
+      "empty": "Belum ada orang. Beri nama pembicara dalam rapat untuk menambahkannya.",
+      "loadError": "Gagal memuat daftar orang",
+      "voiceprints_one": "{{count}} sidik suara",
+      "voiceprints_other": "{{count}} sidik suara",
+      "edit": "Edit",
+      "merge": "Gabungkan",
+      "mergeInto": "Gabungkan ke...",
+      "mergeHint": "Pilih orang yang dipertahankan. Sidik suara dan nama pembicara dipindahkan ke orang tersebut.",
+      "mergeIntoName": "Gabungkan ke {{name}}",
+      "samples": {
+        "hint": "Dengarkan sidik suara terlebih dahulu: masing-masing diambil dari satu baris dalam rapat.",
+        "none": "Tidak ada sidik suara.",
+        "play": "Putar",
+        "pause": "Jeda",
+        "noText": "(tanpa kata)",
+        "noLine": "Baris asalnya sudah tidak ada",
+        "audioDeleted": "audio dihapus",
+        "loadError": "Gagal memuat sidik suara"
+      },
+      "mergeTitle": "Gabungkan orang?",
+      "mergeConfirm": "{{from}} akan digabungkan ke {{into}}, lalu dihapus.",
+      "mergeError": "Gagal menggabungkan orang",
+      "delete": "Hapus",
+      "deleteTitle": "Hapus orang?",
+      "deleteConfirm": "{{name}} dan {{count}} sidik suara yang tersimpan akan dihapus. Guidy tidak akan mengenali suaranya di rapat mendatang.",
+      "deleteError": "Gagal menghapus orang",
+      "renameError": "Gagal memperbarui orang",
+      "namePlaceholder": "Nama",
+      "emailPlaceholder": "Email (opsional)",
+      "save": "Simpan",
+      "cancel": "Batal",
+      "voice": {
+        "title": "Suara Anda",
+        "notRecorded": "Belum direkam",
+        "recordedTitle": "Direkam",
+        "description": "Rekam contoh singkat suara Anda agar Guidy dapat membedakan Anda dari orang lain di ruangan saat rapat tatap muka.",
+        "recorded": "Pada rapat yang diproses mulai sekarang, hanya ucapan yang terdengar seperti Anda yang diberi label Anda. Proses ulang rapat lama untuk menerapkannya.",
+        "record": "Rekam suara saya",
+        "recordAgain": "Rekam lagi",
+        "starting": "Membuka mikrofon...",
+        "recording": "Merekam",
+        "readAloud": "Bacakan teks ini dengan suara normal Anda, lalu tekan Selesai.",
+        "passage": "Saat bergabung dalam rapat, saya biasanya memulai dengan memeriksa agenda dan catatan dari pertemuan sebelumnya. Lalu kami membahas apa yang berubah sejak terakhir kali kami berbicara, apa yang terhambat, dan siapa yang akan mengerjakan langkah berikutnya. Jika ada yang perlu diputuskan, kami mencoba memutuskannya sebelum panggilan berakhir, supaya tidak ada yang harus menunggu rapat lain. Setelah itu saya membagikan ringkasan singkat kepada semua orang yang hadir.",
+        "done": "Selesai",
+        "saving": "Menyimpan suara Anda...",
+        "loadError": "Gagal memuat suara Anda",
+        "recordError": "Gagal memulai perekaman",
+        "saveError": "Gagal menyimpan suara Anda",
+        "deleteTitle": "Hapus suara Anda?",
+        "deleteConfirm": "Suara Anda yang direkam akan dihapus. Guidy akan kembali memberi label Anda pada semua ucapan dari mikrofon.",
+        "deleteError": "Gagal menghapus suara Anda"
+      }
+    },
+    "settings": {
+      "general": "Catatan rapat",
+      "enabled": {
+        "title": "Catatan rapat",
+        "description": "Rekam rapat dengan mikrofon dan audio komputer Anda. Mengaktifkan ini akan meminta akses kalender, audio sistem, dan notifikasi."
+      },
+      "permissions": {
+        "title": "Izin",
+        "calendar": "Kalender",
+        "systemAudio": "Audio sistem",
+        "microphone": "Mikrofon",
+        "notifications": "Notifikasi",
+        "granted": "Diizinkan",
+        "denied": "Tidak diizinkan",
+        "error": "Gagal meminta izin",
+        "requestAgain": "Minta lagi",
+        "openSettings": "Buka Pengaturan Sistem"
+      },
+      "you": "Anda",
+      "userName": {
+        "title": "Nama Anda",
+        "description": "Trek mikrofon Anda selalu diberi label dengan nama ini.",
+        "placeholder": "Nama Anda"
+      },
+      "userEmails": {
+        "title": "Alamat email",
+        "description": "Setiap alamat yang Anda gunakan untuk bergabung ke rapat, seperti pribadi dan kantor. Jika salah satunya ada di undangan rapat, peserta tersebut adalah Anda.",
+        "labelPlaceholder": "Label, mis. Kantor",
+        "emailPlaceholder": "nama@example.com",
+        "noLabel": "Tanpa label",
+        "add": "Tambah",
+        "remove": "Hapus alamat ini",
+        "invalid": "Itu bukan alamat email yang valid.",
+        "duplicate": "Alamat itu sudah ada di daftar."
+      },
+      "recording": "Perekaman",
+      "meetingModel": {
+        "title": "Model transkripsi",
+        "usesDictation": "Rapat menggunakan model dikte Anda: {{name}}.",
+        "noDictation": "Belum ada model dikte yang diunduh. Unduh satu di halaman Model, atau pilih model untuk rapat.",
+        "separate": "Gunakan model lain",
+        "choice": "Model untuk rapat",
+        "choiceDescription": "Parakeet memberikan waktu per kata, yang membantu saat orang berbicara bersamaan.",
+        "notDownloaded": "{{name}} (belum diunduh)",
+        "chosenMissing": "{{name}} belum diunduh. Rapat menggunakan model dikte Anda sampai model itu tersedia.",
+        "chosenUnknown": "{{name}} tidak terinstal. Pilih model lain, atau nonaktifkan \"Gunakan model lain\"."
+      },
+      "separation": {
+        "title": "Membedakan suara",
+        "description": "Model pembicara yang menentukan siapa yang mengucapkan setiap baris. Model yang lebih besar lebih baik membedakan suara yang mirip, tetapi memakan lebih banyak ruang dan memperlambat pemrosesan. Orang yang telah Anda beri nama selalu dikenali dengan model standar, jadi beralih model tetap mempertahankan sidik suara mereka.",
+        "downloaded": "Sudah diunduh.",
+        "notDownloaded": "Diunduh saat dipilih.",
+        "downloading": "Mengunduh...",
+        "delete": "Hapus model ini ({{size}})",
+        "downloadError": "Gagal mengunduh model pembicara",
+        "deleteError": "Gagal menghapus model pembicara",
+        "about": {
+          "resnet34": "Standar. Kecil dan cepat, serta mengenali orang yang telah Anda beri nama.",
+          "cam_plus_plus": "Sama kecilnya, dan paling cepat.",
+          "resnet152": "Lebih baik untuk suara yang mirip; pemrosesan memakan waktu sekitar 3 kali lebih lama.",
+          "titanet_large": "Dari NVIDIA, juga dilatih dengan panggilan telepon, sehingga cocok untuk audio panggilan. Sama cepatnya dengan model standar.",
+          "resnet293": "Paling akurat di sini; pemrosesan memakan waktu sekitar 6 kali lebih lama."
+        }
+      },
+      "speakerModel": {
+        "title": "Pengenalan pembicara",
+        "description": "Membedakan suara dan mengenali orang yang pernah Anda beri nama. Menggunakan {{name}} ({{trainedOn}}), {{size}}. Hanya diunduh saat Anda mengeklik Unduh.",
+        "ready": "Sudah diunduh",
+        "download": "Unduh ({{size}})",
+        "retry": "Coba unduh lagi",
+        "failed": "Unduhan gagal: {{error}}"
+      },
+      "retention": {
+        "title": "Simpan audio rapat",
+        "description": "Audio mentah dihapus setelah waktu ini. Transkrip dan sidik suara tetap disimpan.",
+        "days3": "3 hari",
+        "days7": "7 hari",
+        "days30": "30 hari",
+        "forever": "Selamanya"
+      },
+      "mcp": {
+        "group": "Aplikasi lain",
+        "title": "Server MCP",
+        "description": "Izinkan aplikasi AI di Mac ini, seperti Claude atau Cursor, membaca daftar rapat, ringkasan, dan transkrip Anda. Hanya lokal dan hanya baca.",
+        "url": "URL server (Streamable HTTP)",
+        "stdio": "Perintah (untuk aplikasi yang hanya menjalankan server stdio)",
+        "failed": "Gagal memulai server MCP di port {{port}}. Mungkin port sedang digunakan aplikasi lain."
+      },
+      "calendarNotifications": {
+        "title": "Notifikasi kalender",
+        "description": "Tawarkan untuk membuat catatan saat rapat kalender dengan tautan panggilan dimulai."
+      },
+      "recordingControls": {
+        "title": "Kontrol perekaman",
+        "description": "Letak tombol jeda, hentikan, dan transkrip langsung saat rapat direkam.",
+        "floating": "Mengambang, di tepi layar",
+        "notch": "Di sekitar notch"
+      },
+      "deepgram": {
+        "title": "Kunci API Deepgram",
+        "description": "Memungkinkan Anda mengulangi pembicara rapat di cloud dengan Deepgram, yang membedakan suara dengan baik pada panggilan. Disimpan di Rantai Kunci.",
+        "placeholder": "Tempel kunci lalu tekan Enter",
+        "saved": "Tersimpan",
+        "remove": "Hapus",
+        "error": "Gagal menyimpan kunci Deepgram"
+      },
+      "liveTranscription": {
+        "title": "Transkripsi langsung",
+        "description": "Transkripsikan rapat di Mac ini selagi berlangsung. Transkrip lengkap tetap dibuat setelah rapat.",
+        "model": "Model untuk transkripsi langsung",
+        "modelDescription": "Model kecil dan cepat paling bisa mengimbangi saat Anda sedang dalam panggilan. Transkrip yang dibuat setelah rapat menggunakan model rapat.",
+        "sameModel": "Sama dengan rapat"
+      },
+      "reminderInterval": {
+        "title": "Interval pengingat",
+        "description": "Menit di antara pengingat \"masih merekam\" setelah rapat seharusnya berakhir.",
+        "minutes": "{{count}} mnt"
+      },
+      "advanced": {
+        "title": "Lanjutan",
+        "show": "Tampilkan pengaturan lanjutan",
+        "hide": "Sembunyikan pengaturan lanjutan",
+        "matchThreshold": {
+          "title": "Ambang pencocokan otomatis",
+          "description": "Kemiripan suara yang pada atau di atas nilai ini membuat pembicara diberi nama secara otomatis. Di bawahnya, kecocokan akan menanyakan \"Konfirmasi?\"."
+        },
+        "suggestThreshold": {
+          "title": "Ambang saran",
+          "description": "Kemiripan suara yang di bawah nilai ini membuat orang yang dikenal sama sekali tidak disarankan."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Simpan",
+      "cancel": "Batal",
+      "delete": "Hapus",
+      "loading": "Memuat..."
+    },
+    "summary": {
+      "heading": "Ringkasan",
+      "actionItems": "Tindak lanjut",
+      "generate": "Buat ringkasan",
+      "regenerate": "Buat ulang",
+      "regenerateWith": "Buat ulang dengan...",
+      "generateWith": "Buat dengan {{model}}",
+      "otherModels": "Model lain",
+      "otherModel": "Model lain…",
+      "generating": "Meringkas rapat...",
+      "generatingLocal": "Meringkas rapat. Ini bisa memakan waktu beberapa menit dengan model lokal.",
+      "progress": "Meringkas ({{done}} dari {{total}} langkah)",
+      "empty": "Belum ada ringkasan. Buat dari transkrip.",
+      "untitled": "Rapat tanpa judul",
+      "edit": "Edit",
+      "title": "Judul",
+      "shortSummary": "Ringkasan singkat",
+      "shortSummaryPlaceholder": "Isi rapat, dalam beberapa kalimat",
+      "decisions": "Keputusan",
+      "topics": "Topik",
+      "linesPlaceholder": "Satu per baris",
+      "onePerLine": "Keputusan dan topik: satu per baris.",
+      "none": "Tidak ada",
+      "generatedBy": "Dibuat dengan {{model}}",
+      "generatedByCost": "Dibuat dengan {{model}} · {{cost}} · {{input}} token masuk / {{output}} token keluar",
+      "generatedByTokens": "Dibuat dengan {{model}} · {{input}} token masuk / {{output}} token keluar",
+      "pickerTitle": "Model untuk ringkasan ini",
+      "pickerDescription": "Buat ulang dengan penyedia dan model lain. Model rapat Anda di pengaturan tidak berubah. Tindak lanjut yang sudah memiliki issue Linear tetap dipertahankan.",
+      "run": "Buat",
+      "noItems": "Tidak ada tindak lanjut.",
+      "newItemPlaceholder": "Tambahkan tindak lanjut",
+      "addItem": "Tambah",
+      "deleteItem": "Hapus tindak lanjut",
+      "due": "Tenggat",
+      "duePlaceholder": "mis. 2026-10-31",
+      "jumpToMoment": "Putar momen ini di transkrip",
+      "owner": {
+        "title": "Penanggung jawab",
+        "none": "Tanpa penanggung jawab",
+        "me": "Saya",
+        "meNamed": "Saya ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Tiket Linear",
+      "draft": "Buat draf tiket",
+      "approveSelected": "Setujui yang dipilih ({{count}})",
+      "createApproved": "Buat yang disetujui ({{count}})",
+      "noKey": "Hubungkan Linear untuk mengubah tindak lanjut menjadi tiket.",
+      "openSettings": "Buka pengaturan",
+      "noItems": "Tidak ada tindak lanjut untuk dijadikan tiket.",
+      "notDrafted": "Buat draf tiket dari tindak lanjut untuk meninjaunya di sini.",
+      "approve": "Setujui",
+      "approveTip": "Tandai tiket ini untuk dibuat. Tidak ada yang dibuat sampai Anda mengeklik Buat yang disetujui.",
+      "needsTeam": "Pilih tim sebelum menyetujui",
+      "unapprove": "Batalkan persetujuan",
+      "discard": "Buang",
+      "restore": "Pulihkan",
+      "edit": "Edit judul dan deskripsi",
+      "approved": "Disetujui",
+      "draftState": "Draf",
+      "created": "Dibuat di Linear",
+      "alreadyExisted": "Sudah ada di Linear: tidak ada yang baru dibuat",
+      "createFailed": "Tidak dibuat: {{error}}",
+      "issue": "Issue",
+      "team": "Tim",
+      "pickTeam": "Pilih tim",
+      "project": "Proyek",
+      "noProject": "Tanpa proyek",
+      "assignee": "Penerima tugas",
+      "unassigned": "Belum ditugaskan",
+      "labels": "Label",
+      "addLabel": "Tambah label",
+      "labelCount": "{{count}} label",
+      "priority": {
+        "title": "Prioritas",
+        "none": "Tanpa prioritas",
+        "urgent": "Mendesak",
+        "high": "Tinggi",
+        "medium": "Sedang",
+        "low": "Rendah"
+      }
+    },
+    "llm": {
+      "heading": "Ringkasan",
+      "provider": "Penyedia",
+      "providerDescription": "Model yang digunakan untuk ringkasan rapat dan tindak lanjut. Pascaproses dikte tetap menggunakan penyedianya sendiri.",
+      "builtin": "Bawaan (di Mac ini)",
+      "builtinDescription": "Menjalankan model lokal dengan llama.cpp. Tidak ada data yang keluar dari Mac Anda.",
+      "model": "Model",
+      "modelDescription": "Centang model untuk menambahkannya ke model Anda. Hanya model yang menghasilkan teks yang ditampilkan. \"Cocok untuk ringkasan\" berarti model mendukung keluaran terstruktur, yang diperlukan ringkasan.",
+      "modelPlaceholder": "ID model",
+      "pickModel": "Pilih model",
+      "noLocalModels": "Unduh model di bawah",
+      "usingPostProcessModel": "Menggunakan model pascaproses ({{model}})",
+      "refreshModels": "Segarkan",
+      "testConnection": "Uji koneksi",
+      "testDescription": "Periksa apakah penyedia, kunci, dan model berfungsi.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Model di perangkat pada Mac Apple silicon dengan Apple Intelligence diaktifkan.",
+      "appleAvailable": "Tersedia",
+      "appleUnavailable": "Apple Intelligence tidak tersedia di Mac ini",
+      "activeHeading": "Ringkasan dibuat oleh",
+      "place": "Tempat ringkasan dijalankan",
+      "placeDescription": "Hanya opsi yang dipilih yang digunakan.",
+      "tabCloud": "Penyedia cloud",
+      "tabLocal": "Di Mac ini",
+      "onThisMac": "Mac ini · offline",
+      "apiKey": "Kunci API",
+      "apiKeyDescription": "Disimpan di Rantai Kunci Anda dan digunakan bersama Pascaproses.",
+      "getKey": "Dapatkan kunci {{provider}}",
+      "modelDescriptionCustom": "Ketik ID model yang diharapkan endpoint Anda lalu tekan Enter untuk menambahkannya, atau centang salah satu yang ditampilkan.",
+      "searchModels": "Cari model",
+      "goodOnly": "Cocok untuk ringkasan",
+      "goodForSummaries": "ringkasan",
+      "reasoning": "penalaran",
+      "unknownModel": "tidak ada di registri",
+      "noModels": "Tidak ada model yang cocok.",
+      "context": "{{n}} ctx",
+      "free": "gratis",
+      "modelCount": "{{shown}}/{{total}} model",
+      "registryBundled": "Detail model dari models.dev (disertakan dalam aplikasi)",
+      "registryUpdated": "Detail model dari models.dev, diperbarui {{when}}",
+      "justNow": "baru saja",
+      "minutesAgo": "{{n}} mnt lalu",
+      "hoursAgo": "{{n}} jam lalu",
+      "daysAgo": "{{n}} hari lalu",
+      "needsKey": "Tambahkan kunci API {{provider}} Anda",
+      "needsModel": "Pilih model {{provider}}",
+      "needsLocalModel": "Unduh model untuk meringkas di Mac ini",
+      "localDescription": "Berjalan offline di Mac ini. Pilih model yang sudah diunduh.",
+      "appleUnavailableHint": "Tidak tersedia di Mac ini. Aktifkan di Pengaturan Sistem > Apple Intelligence & Siri.",
+      "unavailable": "tidak tersedia",
+      "yourModels": "Model Anda",
+      "yourModelsDescription": "Buat ringkasan menawarkan setiap model di sini, sehingga Anda dapat memilih satu per rapat. Model yang dipilih menjadi default.",
+      "yourModelsEmpty": "Belum ada model cloud. Pilih penyedia di bawah, tambahkan kunci API-nya, lalu centang model yang Anda inginkan.",
+      "default": "default",
+      "removeModel": "Hapus dari model Anda",
+      "addFrom": "Tambahkan model dari",
+      "addFromDescription": "Pilih penyedia untuk memasukkan kuncinya dan centang model yang ingin ditambahkan. Ini tidak mengubah default."
+    },
+    "local": {
+      "heading": "Model lokal",
+      "empty": "Tidak ada model bawaan yang tersedia.",
+      "default": "Default",
+      "recommendedRam": "Direkomendasikan untuk RAM {{gb}} GB+",
+      "notEnoughRam": "Memori Mac ini lebih kecil dari yang direkomendasikan untuk model ini.",
+      "downloaded": "Sudah diunduh",
+      "download": "Unduh",
+      "downloading": "Mengunduh {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Kunci API pribadi",
+      "keyDescription": "Disimpan di Rantai Kunci macOS Anda. Digunakan untuk membuat draf dan tiket dari tindak lanjut.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Kunci tersimpan di Rantai Kunci Anda.",
+      "noKey": "Belum ada kunci tersimpan.",
+      "getKey": "Buat kunci di linear.app/settings/api",
+      "removeKey": "Hapus kunci",
+      "test": "Uji koneksi",
+      "testDescription": "Periksa kunci dengan Linear.",
+      "connectedAs": "Terhubung sebagai {{name}}"
+    },
+    "byok": {
+      "testConnection": "Uji koneksi",
+      "testDescription": "Periksa URL dasar, kunci API, dan model dengan permintaan kecil.",
+      "baseUrlEditable": "URL dasar API untuk penyedia ini. Ganti setiap {placeholder} (mis. ID akun Cloudflare Anda).",
+      "cloudflareHint": "Cloudflare: masukkan ID akun Anda (dan ID gateway untuk AI Gateway) ke dalam URL dasar."
+    }
   }
 }

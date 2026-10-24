@@ -7,7 +7,23 @@
     "model": "Modell",
     "quit": "Beenden",
     "cancel": "Abbrechen",
-    "secureInputWarning": "⚠ Tastenkürzel durch Secure Input blockiert"
+    "secureInputWarning": "⚠ Tastenkürzel durch Secure Input blockiert",
+    "startMeetingNotes": "Meeting-Notizen starten",
+    "stopMeetingNotes": "Meeting-Notizen beenden",
+    "pauseMeetingNotes": "Aufnahme pausieren",
+    "resumeMeetingNotes": "Aufnahme fortsetzen",
+    "meetingPaused": "Pausiert",
+    "meetingStillRecording": "Guidy nimmt noch auf",
+    "meetingStop": "Beenden",
+    "meetingKeepGoing": "Weiter aufnehmen",
+    "meetingTakeNotesFor": "Notizen für {{title}} erstellen?",
+    "meetingStart": "Starten",
+    "meetingUntitled": "Meeting"
+  },
+  "notch": {
+    "pause": "Aufnahme pausieren",
+    "resume": "Aufnahme fortsetzen",
+    "stop": "Meeting-Notizen beenden"
   },
   "sidebar": {
     "general": "Allgemein",
@@ -16,7 +32,58 @@
     "postProcessing": "Nachbearbeitung",
     "history": "Verlauf",
     "debug": "Debug",
+    "usage": "Nutzung",
     "about": "Info"
+  },
+  "usage": {
+    "title": "Nutzung",
+    "description": "Was Cloud-KI-Anbieter gekostet haben und welche Arbeit Modelle auf diesem Mac erledigt haben.",
+    "cloud": "Cloud",
+    "local": "Auf diesem Mac",
+    "refresh": "Aktualisieren",
+    "total": "Gesamtkosten",
+    "last30Days": "Letzte 30 Tage",
+    "callsTitle": "Aufrufe",
+    "byModel": "Nach Modell",
+    "byFeature": "Nach Funktion",
+    "empty": "Noch keine Cloud-KI-Aufrufe.",
+    "calls_one": "{{count}} Aufruf",
+    "calls_other": "{{count}} Aufrufe",
+    "average": "Ø {{cost}}",
+    "highest": "max. {{cost}}",
+    "tokens": "{{input}} Eingabe- / {{output}} Ausgabe-Tokens",
+    "unknownPrice": "Preis unbekannt",
+    "feature": {
+      "dictation": "Diktat",
+      "meetingTranscription": "Meeting-Transkription",
+      "meetingSummary": "Meeting-Zusammenfassungen",
+      "other": "Sonstiges"
+    },
+    "localAudio": "Transkribiertes Audio",
+    "localWords": "Wörter",
+    "localTokens": "LLM-Tokens",
+    "localCloudEquivalent": "Cloud-Gegenwert",
+    "localEmpty": "Bisher lief noch nichts auf einem lokalen Modell.",
+    "localByModel": "Lokale Modelle",
+    "localByFeature": "Lokale Arbeit nach Funktion",
+    "kind": {
+      "transcription": "Transkription",
+      "llm": "Integriertes LLM"
+    },
+    "runs_one": "{{count}} Durchlauf",
+    "runs_other": "{{count}} Durchläufe",
+    "audio": "{{duration}} Audio",
+    "words": "{{count}} Wörter",
+    "realtime": "{{speed}} Echtzeit",
+    "promptSpeed": "Prompt {{speed}}",
+    "generationSpeed": "Generierung {{speed}}",
+    "loadTime": "lädt in {{time}}",
+    "localNote": "Echtzeitfaktor = Audiolänge ÷ Verarbeitungszeit, ohne Ladezeit; live beim Sprechen dekodiertes Diktat wird nicht gemessen. Der Cloud-Gegenwert berechnet das Audio mit ${{price}} pro Minute (OpenAI Whisper).",
+    "estimateNote": "~ kennzeichnet Beträge, die anhand veröffentlichter Preise pro Token geschätzt sind; Anbieter, die ihre eigenen Kosten melden (etwa OpenRouter), sind exakt. Die Abrechnung findest du im Dashboard deines Anbieters.",
+    "reportedNote": "Beträge wie von den Anbietern gemeldet. Die Abrechnung findest du im Dashboard deines Anbieters.",
+    "clear": "Verlauf löschen",
+    "clearTitle": "Nutzungsverlauf löschen?",
+    "clearConfirm": "Die erfassten Aufrufe, Kosten und lokalen Modelldurchläufe werden gelöscht. Die Nutzung, die bei Meeting-Zusammenfassungen angezeigt wird, bleibt erhalten."
   },
   "onboarding": {
     "subtitle": "Wähle ein Transkriptionsmodell, um loszulegen",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "Genauigkeit",
-      "speed": "Geschwindigkeit"
+      "speed": "Geschwindigkeit",
+      "size": "Größe"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "Nur {{language}}",
       "streaming": "Zeigt die Transkription live während des Sprechens an"
     },
+    "download": "Herunterladen",
+    "use": "Verwenden",
     "cancel": "Abbrechen",
     "cancelDownload": "Download abbrechen",
     "legacy": "Veraltet"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "Allgemein",
+      "description": "Wie du das Diktat startest, auf welche Sprache es hört und was du hörst.",
+      "shortcutsGroup": "Tastenkürzel",
       "shortcut": {
         "title": "Guidy-Tastenkürzel",
         "description": "Tastenkürzel für die Sprachaufnahme konfigurieren",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Erweitert",
+      "description": "Start, Einfügen, Feinabstimmung der Transkription und Verlauf.",
       "groups": {
         "app": "App",
         "output": "Ausgabe",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Nachbearbeitung",
+      "description": "Eine Transkription vor dem Einfügen mit einem KI-Modell bereinigen oder umschreiben.",
       "hotkey": {
         "title": "Tastenkürzel"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Anbieter",
           "description": "Wähle einen OpenAI- oder Anthropic-kompatiblen Anbieter."
+        },
+        "builtin": {
+          "label": "Integriertes Modell (auf diesem Mac)",
+          "description": "Führt ein lokales Modell auf diesem Mac aus. Nichts verlässt deinen Computer.",
+          "manage": "Integrierte Modelle verwalten"
         },
         "apiFormat": {
           "title": "API-Format",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "API-Schlüssel",
           "description": "API-Schlüssel für den ausgewählten Anbieter.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "API-Schlüssel konnte nicht gespeichert werden"
         },
         "model": {
           "title": "Modell",
@@ -600,6 +682,10 @@
         "title": "Version",
         "description": "Aktuelle Version von Guidy"
       },
+      "author": {
+        "title": "Entwickelt von",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "App-Datenverzeichnis",
         "description": "Speicherort der Guidy-Daten"
@@ -621,6 +707,12 @@
           "description": "Hochleistungs-Inferenz des Whisper-Spracherkennungsmodells von OpenAI",
           "details": "Guidy verwendet ggml für schnelle, lokale Sprach-zu-Text-Verarbeitung. Dank an Georgi Gerganov und die Mitwirkenden für ihre großartige Arbeit."
         }
+      },
+      "hero": {
+        "headline": "Sprache zu Text, die auf diesem Mac bleibt",
+        "lede": "Drück ein Tastenkürzel, sprich, und Guidy tippt in die aktive App. Die Transkription läuft lokal.",
+        "engine": "Engine",
+        "model": "Modell"
       },
       "whatsNewUpdates": {
         "label": "Neuerungen anzeigen",
@@ -706,5 +798,561 @@
     "learnMore": "So behebst du das",
     "recorderBlocked": "Tastenkürzel können gerade nicht aufgezeichnet werden — macOS Secure Input blockiert Tastenereignisse. Behebe zuerst die Secure-Input-Warnung.",
     "dismiss": "Ausblenden"
+  },
+  "meetings": {
+    "title": "Meetings",
+    "selection": {
+      "hint": "Ziehen oder Umschalt-Klick, um mehrere Zeilen zuzuordnen",
+      "count_one": "{{count}} Zeile ausgewählt",
+      "count_other": "{{count}} Zeilen ausgewählt",
+      "keys": "Umschalt-Klick: Bereich · ⌘-Klick: hinzufügen oder entfernen · Esc: aufheben",
+      "setSpeaker": "Sprecher festlegen",
+      "clear": "Aufheben"
+    },
+    "speakersRedo": {
+      "action": "Sprecher neu erkennen",
+      "tooltip": "Die Sprecher erneut mit {{model}} unterscheiden. Das Transkript bleibt erhalten. Von dir zugeordnete Zeilen und benannte Sprecher behalten ihre Person; der Rest wird erneut per Stimme zugeordnet.",
+      "standard": "Standard-Sprechermodell",
+      "download": "{{size}} Download, einmalig",
+      "error": "Sprecher konnten nicht neu erkannt werden",
+      "confirmTitle": "Sprecher mit Deepgram erkennen?",
+      "confirmDeepgram": "Das Audio der anderen Teilnehmer aus diesem Meeting wird zu Deepgram hochgeladen, um sie zu unterscheiden, für etwa {{cost}}. Das Transkript bleibt unverändert.",
+      "confirmDeepgramUnpriced": "Das Audio der anderen Teilnehmer aus diesem Meeting wird zu Deepgram hochgeladen, um sie zu unterscheiden. Das Transkript bleibt unverändert."
+    },
+    "day": {
+      "today": "Heute",
+      "tomorrow": "Morgen",
+      "yesterday": "Gestern"
+    },
+    "copy": {
+      "summary": "Kopieren",
+      "transcript": "Transkript kopieren",
+      "copied": "Kopiert"
+    },
+    "redo": {
+      "action": "Neu transkribieren",
+      "localTitle": "Auf diesem Mac",
+      "cloudTitle": "Cloud",
+      "error": "Erneute Transkription konnte nicht gestartet werden",
+      "issueRepetition": "Teile dieses Transkripts wiederholen sich, was meist bedeutet, dass das Modell den Faden im Audio verloren hat.",
+      "issueTooFewWords": "Dieses Transkript hat deutlich weniger Wörter, als die Sprechzeit vermuten lässt. Vermutlich fehlen Teile des Meetings.",
+      "issueHint": "Ein Cloud-Modell kommt mit schwierigem Audio oft besser zurecht.",
+      "tooltip": "Erneut mit {{model}} transkribieren. Ersetzt Transkript und Sprecher; benannte Personen werden erneut per Stimme zugeordnet.",
+      "more": "Andere Modelle",
+      "noKeyShort": "API-Schlüssel nötig (Meetings › Einstellungen › KI)",
+      "confirmTitle": "Mit {{provider}} transkribieren?",
+      "confirmCloud": "Das Audio dieses Meetings wird zu {{provider}} hochgeladen und mit {{model}} transkribiert, für etwa {{cost}}. Transkript und Sprecher werden ersetzt.",
+      "confirmCloudUnpriced": "Das Audio dieses Meetings wird zu {{provider}} hochgeladen und mit {{model}} transkribiert. Transkript und Sprecher werden ersetzt."
+    },
+    "widget": {
+      "recording": "Aufnahme",
+      "paused": "Pausiert",
+      "you": "Du",
+      "others": "Andere",
+      "mic": "Mikrofon",
+      "system": "Systemaudio",
+      "liveStarting": "Transkriptionsmodell wird geladen…",
+      "liveListening": "Hört zu. Zeilen erscheinen hier, sobald jemand spricht.",
+      "liveOff": "Live-Transkription ist aus. Aktiviere sie unter Meetings › Einstellungen.",
+      "liveUnavailable": "Live-Transkription ist nicht verfügbar: {{reason}}",
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "stop": "Beenden",
+      "openNotes": "Notizen öffnen",
+      "expand": "Live-Transkript anzeigen",
+      "collapse": "Einklappen",
+      "liveTitle": "Live-Transkript",
+      "liveHint": "So weit bisher gehört. Das vollständige Transkript mit Sprechernamen wird am Ende des Meetings erstellt."
+    },
+    "description": "Nimm ein Meeting auf diesem Mac auf und lies dann das Transkript mit benannten Sprechern.",
+    "init": {
+      "starting": "Meeting-Notizen werden gestartet...",
+      "failed": "Meeting-Notizen konnten nicht gestartet werden",
+      "retry": "Erneut versuchen",
+      "keyMissing": {
+        "title": "Meeting-Notizen können nicht entschlüsselt werden",
+        "description": "Der Verschlüsselungsschlüssel für die Meeting-Notizen fehlt im Schlüsselbund oder passt nicht zu deinen vorhandenen Meeting-Notizen, daher können sie nicht geöffnet werden. Wenn du den Schlüssel wiederherstellen kannst (zum Beispiel aus einem Schlüsselbund-Backup), tu das und wähle „Erneut versuchen“. Andernfalls setze zurück, um neu zu beginnen: Deine alten Meeting-Notizen werden beiseitegelegt, nicht gelöscht."
+      },
+      "reset": {
+        "action": "Meeting-Notizen-Daten zurücksetzen",
+        "title": "Meeting-Notizen-Daten zurücksetzen?",
+        "confirm": "Deine aktuellen Meeting-Notizen und Aufnahmen werden in einen Ordner „meetings-unreadable“ im Datenordner von Guidy verschoben (nichts wird gelöscht) und ein neuer Verschlüsselungsschlüssel wird erstellt. Guidy kann die alten Notizen dann nicht mehr anzeigen."
+      }
+    },
+    "errors": {
+      "unavailable": "Meeting-Notizen sind auf diesem Mac nicht verfügbar.",
+      "modelMissing": "Das Meeting-Transkriptionsmodell ({{name}}) ist noch nicht heruntergeladen.",
+      "modelUnknown": "Das Meeting-Modell {{name}} ist nicht installiert. Wähle in den Einstellungen ein anderes Meeting-Modell.",
+      "speakerModelMissing": "Lade das Sprechererkennungsmodell unter Meetings > Einstellungen herunter und verarbeite dann das Meeting.",
+      "noLinearKey": "Füge zuerst in den Einstellungen einen Linear-API-Schlüssel hinzu.",
+      "linearUnauthorized": "Linear hat den API-Schlüssel abgelehnt. Prüfe ihn in den Einstellungen."
+    },
+    "model": {
+      "download": "Meeting-Modell herunterladen",
+      "downloadError": "Meeting-Modell konnte nicht heruntergeladen werden"
+    },
+    "tabs": {
+      "meetings": "Meetings",
+      "people": "Personen",
+      "settings": "Einstellungen"
+    },
+    "recorder": {
+      "start": "Meeting-Notizen starten",
+      "stop": "Meeting-Notizen beenden",
+      "recording": "Aufnahme läuft",
+      "idle": "Keine Aufnahme",
+      "startError": "Aufnahme konnte nicht gestartet werden",
+      "stopError": "Aufnahme konnte nicht beendet werden",
+      "disabled": "Aktiviere Meeting-Notizen in den Einstellungen, um aufzunehmen."
+    },
+    "upcoming": {
+      "title": "Anstehend",
+      "empty": "Keine anstehenden Kalender-Meetings mit Anruflink.",
+      "start": "Starten"
+    },
+    "list": {
+      "title": "Aufnahmen",
+      "empty": "Noch keine Meetings. Starte Meeting-Notizen, um eines aufzunehmen.",
+      "loading": "Meetings werden geladen...",
+      "loadError": "Meetings konnten nicht geladen werden",
+      "speakerModelMissing": "Aufnahmen werden erst verarbeitet, wenn das Sprechererkennungsmodell heruntergeladen ist.",
+      "minutes": "{{count}} Min.",
+      "open": "Öffnen",
+      "rename": "Umbenennen",
+      "delete": "Löschen",
+      "process": "Verarbeiten",
+      "retry": "Erneut versuchen",
+      "cancelProcessing": "Verarbeitung abbrechen",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "titlePlaceholder": "Meeting-Titel",
+      "deleteTitle": "Meeting löschen?",
+      "deleteConfirm": "„{{title}}“ wird mit Transkript und Audio gelöscht. Stimmprofile bleiben erhalten.",
+      "deleteError": "Meeting konnte nicht gelöscht werden",
+      "renameError": "Meeting konnte nicht umbenannt werden",
+      "processError": "Verarbeitung konnte nicht gestartet werden",
+      "cancelError": "Verarbeitung konnte nicht abgebrochen werden"
+    },
+    "status": {
+      "recording": "Aufnahme",
+      "recorded": "Nicht verarbeitet",
+      "processing": "Wird verarbeitet",
+      "processed": "Fertig",
+      "failed": "Fehlgeschlagen"
+    },
+    "stage": {
+      "decode": "Audio wird dekodiert",
+      "vad": "Sprache wird erkannt",
+      "transcribe": "Wird transkribiert",
+      "voiceprints": "Stimmprofile werden berechnet",
+      "cluster": "Sprecher werden gruppiert",
+      "merge": "Spuren werden zusammengeführt",
+      "done": "Fertig"
+    },
+    "detail": {
+      "back": "Alle Meetings",
+      "transcript": "Transkript",
+      "empty": "Noch kein Transkript. Verarbeite das Meeting, um eines zu erstellen.",
+      "loading": "Transkript wird geladen...",
+      "loadError": "Meeting konnte nicht geladen werden",
+      "playError": "Dieser Abschnitt konnte nicht abgespielt werden",
+      "play": "Ab hier abspielen",
+      "you": "Du",
+      "speakers": "Sprecher",
+      "attendees": "Teilnehmer",
+      "duration": "Dauer",
+      "words": "Wörter",
+      "talkTime": "Sprechzeit",
+      "share": "Anteil",
+      "youSpoke": "Dein Anteil",
+      "minutes": "Min."
+    },
+    "speaker": {
+      "rename": "Diesen Sprecher benennen",
+      "confirm": "Bestätigen?",
+      "confirmAction": "Bestätigen",
+      "change": "Ändern",
+      "suggestions": "Vorschläge",
+      "attendee": "Teilnehmer",
+      "knownPerson": "Bekannte Person",
+      "noSuggestions": "Keine Vorschläge",
+      "newPerson": "Neue Person",
+      "namePlaceholder": "Name",
+      "emailPlaceholder": "E-Mail (optional)",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "assignError": "Sprecher konnte nicht benannt werden",
+      "confirmError": "Sprecher konnte nicht bestätigt werden",
+      "unnamed": "Sprecher {{n}}",
+      "unknown": "Unbekannt",
+      "whoIsThis": "Wer ist das?",
+      "whoSaidThis": "Wer hat das gesagt?"
+    },
+    "people": {
+      "title": "Personen",
+      "description": "Personen, die du in Meetings benannt hast. Guidy erkennt ihre Stimmen in späteren Meetings wieder.",
+      "empty": "Noch keine Personen. Benenne einen Sprecher in einem Meeting, um eine hinzuzufügen.",
+      "loadError": "Personen konnten nicht geladen werden",
+      "voiceprints_one": "{{count}} Stimmprofil",
+      "voiceprints_other": "{{count}} Stimmprofile",
+      "edit": "Bearbeiten",
+      "merge": "Zusammenführen",
+      "mergeInto": "Zusammenführen mit...",
+      "mergeHint": "Wähle die Person, die bleiben soll. Stimmprofile und Sprechernamen gehen auf sie über.",
+      "mergeIntoName": "Mit {{name}} zusammenführen",
+      "samples": {
+        "hint": "Hör dir zuerst die Stimmprofile an: Jedes stammt aus einer Zeile eines Meetings.",
+        "none": "Keine Stimmprofile.",
+        "play": "Abspielen",
+        "pause": "Pausieren",
+        "noText": "(keine Wörter)",
+        "noLine": "Die zugehörige Zeile existiert nicht mehr",
+        "audioDeleted": "Audio gelöscht",
+        "loadError": "Stimmprofile konnten nicht geladen werden"
+      },
+      "mergeTitle": "Personen zusammenführen?",
+      "mergeConfirm": "{{from}} wird mit {{into}} zusammengeführt und dann entfernt.",
+      "mergeError": "Personen konnten nicht zusammengeführt werden",
+      "delete": "Löschen",
+      "deleteTitle": "Person löschen?",
+      "deleteConfirm": "{{name}} und die {{count}} gespeicherten Stimmprofile werden gelöscht. Guidy erkennt diese Stimme in künftigen Meetings nicht mehr.",
+      "deleteError": "Person konnte nicht gelöscht werden",
+      "renameError": "Person konnte nicht aktualisiert werden",
+      "namePlaceholder": "Name",
+      "emailPlaceholder": "E-Mail (optional)",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "voice": {
+        "title": "Deine Stimme",
+        "notRecorded": "Nicht aufgenommen",
+        "recordedTitle": "Aufgenommen",
+        "description": "Nimm eine kurze Probe deiner Stimme auf, damit Guidy dich bei Präsenz-Meetings von anderen Personen im Raum unterscheiden kann.",
+        "recorded": "In ab jetzt verarbeiteten Meetings wird nur Sprache, die nach dir klingt, dir zugeordnet. Verarbeite ältere Meetings erneut, um das anzuwenden.",
+        "record": "Meine Stimme aufnehmen",
+        "recordAgain": "Erneut aufnehmen",
+        "starting": "Mikrofon wird geöffnet...",
+        "recording": "Aufnahme läuft",
+        "readAloud": "Lies diesen Text mit deiner normalen Stimme vor und drück dann auf „Fertig“.",
+        "passage": "Wenn ich an einem Meeting teilnehme, schaue ich mir meist zuerst die Agenda und die Notizen vom letzten Mal an. Dann gehen wir durch, was sich seit unserem letzten Gespräch geändert hat, was blockiert ist und wer die nächsten Schritte übernimmt. Wenn etwas entschieden werden muss, versuchen wir, das vor dem Ende des Gesprächs zu tun, damit niemand auf ein weiteres Meeting warten muss. Danach teile ich eine kurze Zusammenfassung mit allen, die dabei waren.",
+        "done": "Fertig",
+        "saving": "Deine Stimme wird gespeichert...",
+        "loadError": "Deine Stimme konnte nicht geladen werden",
+        "recordError": "Aufnahme konnte nicht gestartet werden",
+        "saveError": "Deine Stimme konnte nicht gespeichert werden",
+        "deleteTitle": "Deine Stimme löschen?",
+        "deleteConfirm": "Deine aufgenommene Stimme wird gelöscht. Guidy ordnet dann wieder alle Mikrofon-Sprache dir zu.",
+        "deleteError": "Deine Stimme konnte nicht gelöscht werden"
+      }
+    },
+    "settings": {
+      "general": "Meeting-Notizen",
+      "enabled": {
+        "title": "Meeting-Notizen",
+        "description": "Meetings mit deinem Mikrofon und dem Audio deines Computers aufnehmen. Beim Aktivieren wird nach Zugriff auf Kalender, Systemaudio und Mitteilungen gefragt."
+      },
+      "permissions": {
+        "title": "Berechtigungen",
+        "calendar": "Kalender",
+        "systemAudio": "Systemaudio",
+        "microphone": "Mikrofon",
+        "notifications": "Mitteilungen",
+        "granted": "Erteilt",
+        "denied": "Nicht erteilt",
+        "error": "Berechtigungen konnten nicht angefragt werden",
+        "requestAgain": "Erneut anfragen",
+        "openSettings": "Systemeinstellungen öffnen"
+      },
+      "you": "Du",
+      "userName": {
+        "title": "Dein Name",
+        "description": "Deine Mikrofonspur wird immer mit diesem Namen gekennzeichnet.",
+        "placeholder": "Dein Name"
+      },
+      "userEmails": {
+        "title": "E-Mail-Adressen",
+        "description": "Alle Adressen, mit denen du an Meetings teilnimmst, etwa privat und beruflich. Steht eine davon in einer Meeting-Einladung, bist du dieser Teilnehmer.",
+        "labelPlaceholder": "Bezeichnung, z. B. Arbeit",
+        "emailPlaceholder": "name@example.com",
+        "noLabel": "Keine Bezeichnung",
+        "add": "Hinzufügen",
+        "remove": "Diese Adresse entfernen",
+        "invalid": "Das ist keine gültige E-Mail-Adresse.",
+        "duplicate": "Diese Adresse ist bereits in der Liste."
+      },
+      "recording": "Aufnahme",
+      "meetingModel": {
+        "title": "Transkriptionsmodell",
+        "usesDictation": "Meetings verwenden dein Diktatmodell: {{name}}.",
+        "noDictation": "Es ist noch kein Diktatmodell heruntergeladen. Lade eines auf der Seite „Modelle“ herunter oder wähle ein Modell für Meetings.",
+        "separate": "Anderes Modell verwenden",
+        "choice": "Modell für Meetings",
+        "choiceDescription": "Parakeet liefert Zeitstempel pro Wort, was hilft, wenn Personen durcheinander sprechen.",
+        "notDownloaded": "{{name}} (nicht heruntergeladen)",
+        "chosenMissing": "{{name}} ist noch nicht heruntergeladen. Bis dahin verwenden Meetings dein Diktatmodell.",
+        "chosenUnknown": "{{name}} ist nicht installiert. Wähle ein anderes Modell oder deaktiviere „Anderes Modell verwenden“."
+      },
+      "separation": {
+        "title": "Stimmen unterscheiden",
+        "description": "Das Sprechermodell, das entscheidet, wer welche Zeile gesprochen hat. Größere Modelle unterscheiden ähnliche Stimmen besser, belegen aber mehr Speicher und verlangsamen die Verarbeitung. Benannte Personen werden immer mit dem Standardmodell erkannt, daher bleiben ihre Stimmprofile beim Wechsel erhalten.",
+        "downloaded": "Heruntergeladen.",
+        "notDownloaded": "Wird bei Auswahl heruntergeladen.",
+        "downloading": "Wird heruntergeladen...",
+        "delete": "Dieses Modell löschen ({{size}})",
+        "downloadError": "Sprechermodell konnte nicht heruntergeladen werden",
+        "deleteError": "Sprechermodell konnte nicht gelöscht werden",
+        "about": {
+          "resnet34": "Standard. Klein und schnell und erkennt auch benannte Personen.",
+          "cam_plus_plus": "Etwa genauso klein und am schnellsten.",
+          "resnet152": "Besser bei ähnlichen Stimmen; die Verarbeitung dauert etwa dreimal so lange.",
+          "titanet_large": "Von NVIDIA, auch mit Telefonaten trainiert, was zu Anruf-Audio passen kann. Etwa so schnell wie das Standardmodell.",
+          "resnet293": "Das genaueste hier; die Verarbeitung dauert etwa sechsmal so lange."
+        }
+      },
+      "speakerModel": {
+        "title": "Sprechererkennung",
+        "description": "Unterscheidet Stimmen und erkennt bereits benannte Personen. Verwendet {{name}} ({{trainedOn}}), {{size}}. Wird nur heruntergeladen, wenn du auf „Herunterladen“ klickst.",
+        "ready": "Heruntergeladen",
+        "download": "Herunterladen ({{size}})",
+        "retry": "Download wiederholen",
+        "failed": "Download fehlgeschlagen: {{error}}"
+      },
+      "retention": {
+        "title": "Meeting-Audio aufbewahren",
+        "description": "Rohaudio wird nach dieser Zeit gelöscht. Transkripte und Stimmprofile bleiben erhalten.",
+        "days3": "3 Tage",
+        "days7": "7 Tage",
+        "days30": "30 Tage",
+        "forever": "Unbegrenzt"
+      },
+      "mcp": {
+        "group": "Andere Apps",
+        "title": "MCP-Server",
+        "description": "KI-Apps auf diesem Mac, etwa Claude oder Cursor, deine Meeting-Liste, Zusammenfassungen und Transkripte lesen lassen. Nur lokal und nur lesend.",
+        "url": "Server-URL (Streamable HTTP)",
+        "stdio": "Befehl (für Apps, die nur stdio-Server ausführen)",
+        "failed": "Der MCP-Server konnte auf Port {{port}} nicht gestartet werden. Möglicherweise verwendet eine andere App ihn."
+      },
+      "calendarNotifications": {
+        "title": "Kalendermitteilungen",
+        "description": "Nachfragen, ob Notizen erstellt werden sollen, wenn ein Kalender-Meeting mit Anruflink beginnt."
+      },
+      "recordingControls": {
+        "title": "Aufnahmesteuerung",
+        "description": "Wo Pause, Stopp und das Live-Transkript während einer Meeting-Aufnahme angezeigt werden.",
+        "floating": "Schwebend, am Bildschirmrand",
+        "notch": "Rund um die Notch"
+      },
+      "deepgram": {
+        "title": "Deepgram-API-Schlüssel",
+        "description": "Ermöglicht es, die Sprecher eines Meetings in der Cloud mit Deepgram neu zu erkennen, das Stimmen bei Anrufen gut unterscheidet. Wird im Schlüsselbund gespeichert.",
+        "placeholder": "Schlüssel einfügen und Enter drücken",
+        "saved": "Gespeichert",
+        "remove": "Entfernen",
+        "error": "Deepgram-Schlüssel konnte nicht gespeichert werden"
+      },
+      "liveTranscription": {
+        "title": "Live-Transkription",
+        "description": "Das Meeting während des Gesprächs auf diesem Mac transkribieren. Das vollständige Transkript wird trotzdem nach dem Meeting erstellt.",
+        "model": "Modell für Live-Transkription",
+        "modelDescription": "Ein kleines, schnelles Modell hält während eines Anrufs am besten mit. Das Transkript nach dem Meeting verwendet das Meeting-Modell.",
+        "sameModel": "Wie bei Meetings"
+      },
+      "reminderInterval": {
+        "title": "Erinnerungsintervall",
+        "description": "Minuten zwischen Erinnerungen „Nimmt noch auf“, nachdem ein Meeting hätte enden sollen.",
+        "minutes": "{{count}} Min."
+      },
+      "advanced": {
+        "title": "Erweitert",
+        "show": "Erweiterte Einstellungen anzeigen",
+        "hide": "Erweiterte Einstellungen ausblenden",
+        "matchThreshold": {
+          "title": "Schwelle für automatische Zuordnung",
+          "description": "Stimmähnlichkeit, ab der ein Sprecher automatisch benannt wird. Darunter fragt die Zuordnung „Bestätigen?“."
+        },
+        "suggestThreshold": {
+          "title": "Vorschlagsschwelle",
+          "description": "Stimmähnlichkeit, unterhalb derer eine bekannte Person gar nicht vorgeschlagen wird."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "delete": "Löschen",
+      "loading": "Wird geladen..."
+    },
+    "summary": {
+      "heading": "Zusammenfassung",
+      "actionItems": "Aufgaben",
+      "generate": "Zusammenfassung erstellen",
+      "regenerate": "Neu erstellen",
+      "regenerateWith": "Neu erstellen mit...",
+      "generateWith": "Mit {{model}} erstellen",
+      "otherModels": "Andere Modelle",
+      "otherModel": "Anderes Modell…",
+      "generating": "Meeting wird zusammengefasst...",
+      "generatingLocal": "Meeting wird zusammengefasst. Mit einem lokalen Modell kann das einige Minuten dauern.",
+      "progress": "Wird zusammengefasst ({{done}} von {{total}} Schritten)",
+      "empty": "Noch keine Zusammenfassung. Erstelle eine aus dem Transkript.",
+      "untitled": "Unbenanntes Meeting",
+      "edit": "Bearbeiten",
+      "title": "Titel",
+      "shortSummary": "Kurzfassung",
+      "shortSummaryPlaceholder": "Worum es im Meeting ging, in wenigen Sätzen",
+      "decisions": "Entscheidungen",
+      "topics": "Themen",
+      "linesPlaceholder": "Eins pro Zeile",
+      "onePerLine": "Entscheidungen und Themen: eins pro Zeile.",
+      "none": "Keine",
+      "generatedBy": "Erstellt mit {{model}}",
+      "generatedByCost": "Erstellt mit {{model}} · {{cost}} · {{input}} Eingabe- / {{output}} Ausgabe-Tokens",
+      "generatedByTokens": "Erstellt mit {{model}} · {{input}} Eingabe- / {{output}} Ausgabe-Tokens",
+      "pickerTitle": "Modell für diese Zusammenfassung",
+      "pickerDescription": "Mit einem anderen Anbieter und Modell neu erstellen. Dein Meeting-Modell in den Einstellungen bleibt unverändert. Aufgaben, die bereits ein Linear-Issue haben, bleiben erhalten.",
+      "run": "Erstellen",
+      "noItems": "Keine Aufgaben.",
+      "newItemPlaceholder": "Aufgabe hinzufügen",
+      "addItem": "Hinzufügen",
+      "deleteItem": "Aufgabe löschen",
+      "due": "Fällig",
+      "duePlaceholder": "z. B. 2026-10-31",
+      "jumpToMoment": "Diese Stelle im Transkript abspielen",
+      "owner": {
+        "title": "Verantwortlich",
+        "none": "Niemand verantwortlich",
+        "me": "Ich",
+        "meNamed": "Ich ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Linear-Tickets",
+      "draft": "Tickets entwerfen",
+      "approveSelected": "Auswahl freigeben ({{count}})",
+      "createApproved": "Freigegebene erstellen ({{count}})",
+      "noKey": "Verbinde Linear, um aus Aufgaben Tickets zu machen.",
+      "openSettings": "Einstellungen öffnen",
+      "noItems": "Keine Aufgaben, aus denen Tickets werden können.",
+      "notDrafted": "Entwirf Tickets aus den Aufgaben, um sie hier zu prüfen.",
+      "approve": "Freigeben",
+      "approveTip": "Dieses Ticket zum Erstellen markieren. Es wird erst etwas erstellt, wenn du auf „Freigegebene erstellen“ klickst.",
+      "needsTeam": "Wähle vor der Freigabe ein Team",
+      "unapprove": "Freigabe aufheben",
+      "discard": "Verwerfen",
+      "restore": "Wiederherstellen",
+      "edit": "Titel und Beschreibung bearbeiten",
+      "approved": "Freigegeben",
+      "draftState": "Entwurf",
+      "created": "In Linear erstellt",
+      "alreadyExisted": "Bereits in Linear: Es wurde nichts Neues erstellt",
+      "createFailed": "Nicht erstellt: {{error}}",
+      "issue": "Issue",
+      "team": "Team",
+      "pickTeam": "Team wählen",
+      "project": "Projekt",
+      "noProject": "Kein Projekt",
+      "assignee": "Zuständig",
+      "unassigned": "Nicht zugewiesen",
+      "labels": "Labels",
+      "addLabel": "Labels hinzufügen",
+      "labelCount": "{{count}} Labels",
+      "priority": {
+        "title": "Priorität",
+        "none": "Keine Priorität",
+        "urgent": "Dringend",
+        "high": "Hoch",
+        "medium": "Mittel",
+        "low": "Niedrig"
+      }
+    },
+    "llm": {
+      "heading": "Zusammenfassungen",
+      "provider": "Anbieter",
+      "providerDescription": "Modell für Meeting-Zusammenfassungen und Aufgaben. Die Nachbearbeitung von Diktaten behält ihren eigenen Anbieter.",
+      "builtin": "Integriert (auf diesem Mac)",
+      "builtinDescription": "Führt ein lokales Modell mit llama.cpp aus. Nichts verlässt deinen Mac.",
+      "model": "Modell",
+      "modelDescription": "Hake ein Modell an, um es zu deinen Modellen hinzuzufügen. Nur Modelle mit Textausgabe werden aufgeführt. „Gut für Zusammenfassungen“ bedeutet, dass das Modell strukturierte Ausgabe unterstützt, auf die Zusammenfassungen angewiesen sind.",
+      "modelPlaceholder": "Modell-ID",
+      "pickModel": "Modell auswählen",
+      "noLocalModels": "Lade unten ein Modell herunter",
+      "usingPostProcessModel": "Verwendet das Nachbearbeitungsmodell ({{model}})",
+      "refreshModels": "Aktualisieren",
+      "testConnection": "Verbindung testen",
+      "testDescription": "Prüfen, ob Anbieter, Schlüssel und Modell funktionieren.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Modell auf dem Gerät, für Macs mit Apple Silicon und aktiviertem Apple Intelligence.",
+      "appleAvailable": "Verfügbar",
+      "appleUnavailable": "Apple Intelligence ist auf diesem Mac nicht verfügbar",
+      "activeHeading": "Zusammenfassungen erstellt von",
+      "place": "Wo Zusammenfassungen laufen",
+      "placeDescription": "Nur die ausgewählte Option wird verwendet.",
+      "tabCloud": "Cloud-Anbieter",
+      "tabLocal": "Auf diesem Mac",
+      "onThisMac": "Dieser Mac · offline",
+      "apiKey": "API-Schlüssel",
+      "apiKeyDescription": "Im Schlüsselbund gespeichert und mit der Nachbearbeitung geteilt.",
+      "getKey": "{{provider}}-Schlüssel erhalten",
+      "modelDescriptionCustom": "Gib die Modell-ID ein, die dein Endpunkt erwartet, und drück Enter, um sie hinzuzufügen, oder hake ein aufgeführtes Modell an.",
+      "searchModels": "Modelle suchen",
+      "goodOnly": "Gut für Zusammenfassungen",
+      "goodForSummaries": "Zusammenfassungen",
+      "reasoning": "Reasoning",
+      "unknownModel": "nicht im Verzeichnis",
+      "noModels": "Keine passenden Modelle.",
+      "context": "{{n}} Kontext",
+      "free": "kostenlos",
+      "modelCount": "{{shown}}/{{total}} Modelle",
+      "registryBundled": "Modelldetails von models.dev (in der App enthalten)",
+      "registryUpdated": "Modelldetails von models.dev, aktualisiert {{when}}",
+      "justNow": "gerade eben",
+      "minutesAgo": "vor {{n}} Min.",
+      "hoursAgo": "vor {{n}} Std.",
+      "daysAgo": "vor {{n}} T.",
+      "needsKey": "Füge deinen {{provider}}-API-Schlüssel hinzu",
+      "needsModel": "Wähle ein {{provider}}-Modell",
+      "needsLocalModel": "Lade ein Modell herunter, um auf diesem Mac zusammenzufassen",
+      "localDescription": "Läuft offline auf diesem Mac. Wähle ein heruntergeladenes Modell.",
+      "appleUnavailableHint": "Auf diesem Mac nicht verfügbar. Aktiviere es unter Systemeinstellungen > Apple Intelligence & Siri.",
+      "unavailable": "nicht verfügbar",
+      "yourModels": "Deine Modelle",
+      "yourModelsDescription": "„Zusammenfassung erstellen“ bietet alle Modelle hier an, sodass du pro Meeting eines wählen kannst. Das ausgewählte ist der Standard.",
+      "yourModelsEmpty": "Noch keine Cloud-Modelle. Wähle unten einen Anbieter, füge seinen API-Schlüssel hinzu und hake die gewünschten Modelle an.",
+      "default": "Standard",
+      "removeModel": "Aus deinen Modellen entfernen",
+      "addFrom": "Modelle hinzufügen von",
+      "addFromDescription": "Wähle einen Anbieter, gib seinen Schlüssel ein und hake Modelle zum Hinzufügen an. Der Standard ändert sich dadurch nicht."
+    },
+    "local": {
+      "heading": "Lokale Modelle",
+      "empty": "Keine integrierten Modelle verfügbar.",
+      "default": "Standard",
+      "recommendedRam": "Empfohlen ab {{gb}} GB RAM",
+      "notEnoughRam": "Dieser Mac hat weniger Arbeitsspeicher als für dieses Modell empfohlen.",
+      "downloaded": "Heruntergeladen",
+      "download": "Herunterladen",
+      "downloading": "Herunterladen {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Persönlicher API-Schlüssel",
+      "keyDescription": "Im macOS-Schlüsselbund gespeichert. Wird verwendet, um aus Aufgaben Tickets zu entwerfen und zu erstellen.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Ein Schlüssel ist in deinem Schlüsselbund gespeichert.",
+      "noKey": "Kein Schlüssel gespeichert.",
+      "getKey": "Erstelle einen Schlüssel unter linear.app/settings/api",
+      "removeKey": "Schlüssel entfernen",
+      "test": "Verbindung testen",
+      "testDescription": "Den Schlüssel bei Linear prüfen.",
+      "connectedAs": "Verbunden als {{name}}"
+    },
+    "byok": {
+      "testConnection": "Verbindung testen",
+      "testDescription": "Basis-URL, API-Schlüssel und Modell mit einer kleinen Anfrage prüfen.",
+      "baseUrlEditable": "API-Basis-URL für diesen Anbieter. Ersetze alle {placeholder} (z. B. deine Cloudflare-Account-ID).",
+      "cloudflareHint": "Cloudflare: Trage deine Account-ID (und für AI Gateway die Gateway-ID) in die Basis-URL ein."
+    }
   }
 }

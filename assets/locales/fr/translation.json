@@ -7,7 +7,23 @@
     "model": "Modèle",
     "quit": "Quitter",
     "cancel": "Annuler",
-    "secureInputWarning": "⚠ Raccourcis bloqués par Secure Input"
+    "secureInputWarning": "⚠ Raccourcis bloqués par Secure Input",
+    "startMeetingNotes": "Démarrer les notes de réunion",
+    "stopMeetingNotes": "Arrêter les notes de réunion",
+    "pauseMeetingNotes": "Mettre l'enregistrement en pause",
+    "resumeMeetingNotes": "Reprendre l'enregistrement",
+    "meetingPaused": "En pause",
+    "meetingStillRecording": "Guidy enregistre toujours",
+    "meetingStop": "Arrêter",
+    "meetingKeepGoing": "Continuer",
+    "meetingTakeNotesFor": "Prendre des notes pour {{title}} ?",
+    "meetingStart": "Démarrer",
+    "meetingUntitled": "Réunion"
+  },
+  "notch": {
+    "pause": "Mettre l'enregistrement en pause",
+    "resume": "Reprendre l'enregistrement",
+    "stop": "Arrêter les notes de réunion"
   },
   "sidebar": {
     "general": "Général",
@@ -16,7 +32,58 @@
     "postProcessing": "Post-traitement",
     "history": "Historique",
     "debug": "Débogage",
+    "usage": "Utilisation",
     "about": "À propos"
+  },
+  "usage": {
+    "title": "Utilisation",
+    "description": "Ce qu'ont coûté les fournisseurs d'IA dans le cloud, et le travail effectué par les modèles sur ce Mac.",
+    "cloud": "Cloud",
+    "local": "Sur ce Mac",
+    "refresh": "Actualiser",
+    "total": "Total dépensé",
+    "last30Days": "30 derniers jours",
+    "callsTitle": "Appels",
+    "byModel": "Par modèle",
+    "byFeature": "Par fonctionnalité",
+    "empty": "Aucun appel à une IA dans le cloud pour l'instant.",
+    "calls_one": "{{count}} appel",
+    "calls_other": "{{count}} appels",
+    "average": "moy. {{cost}}",
+    "highest": "max. {{cost}}",
+    "tokens": "{{input}} jetons en entrée / {{output}} en sortie",
+    "unknownPrice": "prix inconnu",
+    "feature": {
+      "dictation": "Dictée",
+      "meetingTranscription": "Transcription des réunions",
+      "meetingSummary": "Résumés de réunion",
+      "other": "Autre"
+    },
+    "localAudio": "Audio transcrit",
+    "localWords": "Mots",
+    "localTokens": "Jetons LLM",
+    "localCloudEquivalent": "Équivalent cloud",
+    "localEmpty": "Rien n'a encore été exécuté sur un modèle local.",
+    "localByModel": "Modèles locaux",
+    "localByFeature": "Travail local par fonctionnalité",
+    "kind": {
+      "transcription": "Transcription",
+      "llm": "LLM intégré"
+    },
+    "runs_one": "{{count}} exécution",
+    "runs_other": "{{count}} exécutions",
+    "audio": "{{duration}} d'audio",
+    "words": "{{count}} mots",
+    "realtime": "{{speed}} le temps réel",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "génération {{speed}}",
+    "loadTime": "chargement en {{time}}",
+    "localNote": "La vitesse par rapport au temps réel correspond à la durée de l'audio ÷ le temps de traitement, chargement exclu ; la dictée décodée en direct pendant que vous parlez n'est pas chronométrée. L'équivalent cloud évalue l'audio à {{price}} $ par minute (OpenAI Whisper).",
+    "estimateNote": "~ indique des montants estimés à partir des prix publiés par jeton ; les fournisseurs qui indiquent leur propre coût (comme OpenRouter) sont exacts. Consultez le tableau de bord de votre fournisseur pour la facturation.",
+    "reportedNote": "Les montants sont ceux indiqués par les fournisseurs. Consultez le tableau de bord de votre fournisseur pour la facturation.",
+    "clear": "Effacer l'historique",
+    "clearTitle": "Effacer l'historique d'utilisation ?",
+    "clearConfirm": "Les appels, coûts et exécutions de modèles locaux enregistrés seront supprimés. L'utilisation affichée sur les résumés de réunion est conservée."
   },
   "onboarding": {
     "subtitle": "Pour commencer, choisissez un modèle de transcription",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "précision",
-      "speed": "vitesse"
+      "speed": "vitesse",
+      "size": "taille"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "{{language}} uniquement",
       "streaming": "Affiche la transcription en direct pendant que vous parlez"
     },
+    "download": "Télécharger",
+    "use": "Utiliser",
     "cancel": "Annuler",
     "cancelDownload": "Annuler le téléchargement",
     "legacy": "Hérité"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "Général",
+      "description": "Comment démarrer la dictée, la langue écoutée et ce que vous entendez.",
+      "shortcutsGroup": "Raccourcis",
       "shortcut": {
         "title": "Raccourcis Guidy",
         "description": "Configurer les raccourcis clavier pour déclencher l'enregistrement de la reconnaissance vocale",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Avancé",
+      "description": "Démarrage, collage, réglages de transcription et historique.",
       "groups": {
         "app": "Application",
         "output": "Sortie",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Post-traitement",
+      "description": "Nettoyer ou réécrire une transcription avec un modèle d'IA avant qu'elle soit collée.",
       "hotkey": {
         "title": "Raccourci clavier"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Fournisseur",
           "description": "Sélectionnez un fournisseur compatible OpenAI ou Anthropic."
+        },
+        "builtin": {
+          "label": "Modèle intégré (sur ce Mac)",
+          "description": "Exécute un modèle local sur ce Mac. Rien ne quitte votre ordinateur.",
+          "manage": "Gérer les modèles intégrés"
         },
         "apiFormat": {
           "title": "Format d'API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "Clé API",
           "description": "Clé API pour le fournisseur sélectionné.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Impossible d'enregistrer la clé API"
         },
         "model": {
           "title": "Modèle",
@@ -600,6 +682,10 @@
         "title": "Version",
         "description": "Version actuelle de Guidy"
       },
+      "author": {
+        "title": "Créé par",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "Emplacement des données de l'application",
         "description": "Emplacement où Guidy stocke ses données"
@@ -621,6 +707,12 @@
           "description": "Inférence haute performance du modèle de reconnaissance vocale automatique Whisper d'OpenAI",
           "details": "Guidy utilise ggml pour un traitement rapide et local de la parole en texte. Merci au travail incroyable de Georgi Gerganov et des contributeurs."
         }
+      },
+      "hero": {
+        "headline": "La reconnaissance vocale qui reste sur ce Mac",
+        "lede": "Appuyez sur un raccourci, parlez, et Guidy tape le texte dans l'application active. La transcription s'effectue localement.",
+        "engine": "Moteur",
+        "model": "Modèle"
       },
       "whatsNewUpdates": {
         "label": "Afficher les nouveautés",
@@ -706,5 +798,561 @@
     "learnMore": "Comment résoudre ce problème",
     "recorderBlocked": "Impossible d'enregistrer un raccourci pour le moment : Secure Input de macOS bloque les événements clavier. Résolvez d'abord l'avertissement Secure Input.",
     "dismiss": "Ignorer"
+  },
+  "meetings": {
+    "title": "Réunions",
+    "selection": {
+      "hint": "Faites glisser, ou Maj-clic, pour attribuer plusieurs lignes",
+      "count_one": "{{count}} ligne sélectionnée",
+      "count_other": "{{count}} lignes sélectionnées",
+      "keys": "Maj-clic : plage · ⌘-clic : ajouter ou retirer · Échap : effacer",
+      "setSpeaker": "Définir l'intervenant",
+      "clear": "Effacer"
+    },
+    "speakersRedo": {
+      "action": "Refaire les intervenants",
+      "tooltip": "Distinguer à nouveau les intervenants avec {{model}}. La transcription est conservée. Les lignes que vous avez attribuées et les intervenants que vous avez nommés gardent leur personne ; les autres sont à nouveau identifiés par la voix.",
+      "standard": "Modèle d'intervenants standard",
+      "download": "Téléchargement unique de {{size}}",
+      "error": "Impossible de refaire les intervenants",
+      "confirmTitle": "Identifier les intervenants avec Deepgram ?",
+      "confirmDeepgram": "L'audio des autres participants de cette réunion est envoyé à Deepgram pour les distinguer, pour environ {{cost}}. La transcription reste telle quelle.",
+      "confirmDeepgramUnpriced": "L'audio des autres participants de cette réunion est envoyé à Deepgram pour les distinguer. La transcription reste telle quelle."
+    },
+    "day": {
+      "today": "Aujourd'hui",
+      "tomorrow": "Demain",
+      "yesterday": "Hier"
+    },
+    "copy": {
+      "summary": "Copier",
+      "transcript": "Copier la transcription",
+      "copied": "Copié"
+    },
+    "redo": {
+      "action": "Refaire la transcription",
+      "localTitle": "Sur ce Mac",
+      "cloudTitle": "Cloud",
+      "error": "Impossible de relancer la transcription",
+      "issueRepetition": "Certaines parties de cette transcription se répètent, ce qui signifie généralement que le modèle a perdu le fil de l'audio.",
+      "issueTooFewWords": "Cette transcription contient beaucoup moins de mots que ne le laisse supposer le temps de parole : des parties de la réunion ont probablement été manquées.",
+      "issueHint": "Un modèle cloud s'en sort souvent mieux avec un audio difficile.",
+      "tooltip": "Transcrire à nouveau avec {{model}}. Remplace la transcription et les intervenants ; les personnes que vous avez nommées sont à nouveau identifiées par la voix.",
+      "more": "Autres modèles",
+      "noKeyShort": "nécessite une clé API (Réunions › Paramètres › IA)",
+      "confirmTitle": "Transcrire avec {{provider}} ?",
+      "confirmCloud": "L'audio de cette réunion est envoyé à {{provider}} et transcrit avec {{model}}, pour environ {{cost}}. La transcription et les intervenants sont remplacés.",
+      "confirmCloudUnpriced": "L'audio de cette réunion est envoyé à {{provider}} et transcrit avec {{model}}. La transcription et les intervenants sont remplacés."
+    },
+    "widget": {
+      "recording": "Enregistrement",
+      "paused": "En pause",
+      "you": "Vous",
+      "others": "Autres",
+      "mic": "Microphone",
+      "system": "Audio système",
+      "liveStarting": "Chargement du modèle de transcription…",
+      "liveListening": "À l'écoute. Les lignes apparaissent ici à mesure que les gens parlent.",
+      "liveOff": "La transcription en direct est désactivée. Activez-la dans Réunions › Paramètres.",
+      "liveUnavailable": "La transcription en direct n'est pas disponible : {{reason}}",
+      "pause": "Pause",
+      "resume": "Reprendre",
+      "stop": "Arrêter",
+      "openNotes": "Ouvrir les notes",
+      "expand": "Afficher la transcription en direct",
+      "collapse": "Réduire",
+      "liveTitle": "Transcription en direct",
+      "liveHint": "Tel qu'entendu jusqu'ici. La transcription complète avec le nom des intervenants est créée à la fin de la réunion."
+    },
+    "description": "Enregistrez une réunion sur ce Mac, puis lisez la transcription avec le nom des intervenants.",
+    "init": {
+      "starting": "Démarrage des notes de réunion...",
+      "failed": "Les notes de réunion n'ont pas pu démarrer",
+      "retry": "Réessayer",
+      "keyMissing": {
+        "title": "Impossible de déchiffrer les notes de réunion",
+        "description": "La clé de chiffrement des notes de réunion est absente du Trousseau ou ne correspond pas à vos notes existantes : elles ne peuvent donc pas être ouvertes. Si vous pouvez restaurer la clé (par exemple depuis une sauvegarde du Trousseau), faites-le puis choisissez Réessayer. Sinon, réinitialisez pour repartir de zéro : vos anciennes notes de réunion sont mises de côté, pas supprimées."
+      },
+      "reset": {
+        "action": "Réinitialiser les données des notes de réunion",
+        "title": "Réinitialiser les données des notes de réunion ?",
+        "confirm": "Vos notes de réunion et enregistrements actuels seront déplacés dans un dossier « meetings-unreadable » du dossier de données de Guidy (rien n'est supprimé) et une nouvelle clé de chiffrement sera créée. Guidy ne pourra plus afficher les anciennes notes."
+      }
+    },
+    "errors": {
+      "unavailable": "Les notes de réunion ne sont pas disponibles sur ce Mac.",
+      "modelMissing": "Le modèle de transcription des réunions ({{name}}) n'est pas encore téléchargé.",
+      "modelUnknown": "Le modèle de réunion {{name}} n'est pas installé. Choisissez un autre modèle de réunion dans les Paramètres.",
+      "speakerModelMissing": "Téléchargez le modèle de reconnaissance des intervenants dans Réunions > Paramètres, puis traitez la réunion.",
+      "noLinearKey": "Ajoutez d'abord une clé API Linear dans les Paramètres.",
+      "linearUnauthorized": "Linear a refusé la clé API. Vérifiez-la dans les Paramètres."
+    },
+    "model": {
+      "download": "Télécharger le modèle de réunion",
+      "downloadError": "Impossible de télécharger le modèle de réunion"
+    },
+    "tabs": {
+      "meetings": "Réunions",
+      "people": "Personnes",
+      "settings": "Paramètres"
+    },
+    "recorder": {
+      "start": "Démarrer les notes de réunion",
+      "stop": "Arrêter les notes de réunion",
+      "recording": "Enregistrement",
+      "idle": "Pas d'enregistrement",
+      "startError": "Impossible de démarrer l'enregistrement",
+      "stopError": "Impossible d'arrêter l'enregistrement",
+      "disabled": "Activez les notes de réunion dans les Paramètres pour enregistrer."
+    },
+    "upcoming": {
+      "title": "À venir",
+      "empty": "Aucune réunion à venir dans le calendrier avec un lien d'appel.",
+      "start": "Démarrer"
+    },
+    "list": {
+      "title": "Enregistrements",
+      "empty": "Aucune réunion pour l'instant. Démarrez les notes de réunion pour en enregistrer une.",
+      "loading": "Chargement des réunions...",
+      "loadError": "Impossible de charger les réunions",
+      "speakerModelMissing": "Les enregistrements ne sont pas traités tant que le modèle de reconnaissance des intervenants n'est pas téléchargé.",
+      "minutes": "{{count}} min",
+      "open": "Ouvrir",
+      "rename": "Renommer",
+      "delete": "Supprimer",
+      "process": "Traiter",
+      "retry": "Réessayer",
+      "cancelProcessing": "Annuler le traitement",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "titlePlaceholder": "Titre de la réunion",
+      "deleteTitle": "Supprimer la réunion ?",
+      "deleteConfirm": "« {{title}} » sera supprimée avec sa transcription et son audio. Les empreintes vocales sont conservées.",
+      "deleteError": "Impossible de supprimer la réunion",
+      "renameError": "Impossible de renommer la réunion",
+      "processError": "Impossible de démarrer le traitement",
+      "cancelError": "Impossible d'annuler le traitement"
+    },
+    "status": {
+      "recording": "Enregistrement",
+      "recorded": "Non traitée",
+      "processing": "Traitement",
+      "processed": "Prête",
+      "failed": "Échec"
+    },
+    "stage": {
+      "decode": "Décodage de l'audio",
+      "vad": "Détection de la parole",
+      "transcribe": "Transcription",
+      "voiceprints": "Calcul des empreintes vocales",
+      "cluster": "Regroupement des intervenants",
+      "merge": "Fusion des pistes",
+      "done": "Terminé"
+    },
+    "detail": {
+      "back": "Toutes les réunions",
+      "transcript": "Transcription",
+      "empty": "Pas encore de transcription. Traitez la réunion pour en créer une.",
+      "loading": "Chargement de la transcription...",
+      "loadError": "Impossible de charger la réunion",
+      "playError": "Impossible de lire ce segment",
+      "play": "Lire à partir d'ici",
+      "you": "Vous",
+      "speakers": "Intervenants",
+      "attendees": "Participants",
+      "duration": "Durée",
+      "words": "Mots",
+      "talkTime": "Temps de parole",
+      "share": "Part",
+      "youSpoke": "Votre temps de parole",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Nommer cet intervenant",
+      "confirm": "Confirmer ?",
+      "confirmAction": "Confirmer",
+      "change": "Modifier",
+      "suggestions": "Suggestions",
+      "attendee": "Participant",
+      "knownPerson": "Personne connue",
+      "noSuggestions": "Aucune suggestion",
+      "newPerson": "Nouvelle personne",
+      "namePlaceholder": "Nom",
+      "emailPlaceholder": "E-mail (facultatif)",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "assignError": "Impossible de nommer l'intervenant",
+      "confirmError": "Impossible de confirmer l'intervenant",
+      "unnamed": "Intervenant {{n}}",
+      "unknown": "Inconnu",
+      "whoIsThis": "Qui est-ce ?",
+      "whoSaidThis": "Qui a dit ça ?"
+    },
+    "people": {
+      "title": "Personnes",
+      "description": "Les personnes que vous avez nommées dans des réunions. Guidy reconnaît leur voix dans les réunions suivantes.",
+      "empty": "Aucune personne pour l'instant. Nommez un intervenant dans une réunion pour en ajouter une.",
+      "loadError": "Impossible de charger les personnes",
+      "voiceprints_one": "{{count}} empreinte vocale",
+      "voiceprints_other": "{{count}} empreintes vocales",
+      "edit": "Modifier",
+      "merge": "Fusionner",
+      "mergeInto": "Fusionner avec...",
+      "mergeHint": "Choisissez la personne à conserver. Les empreintes vocales et les noms d'intervenants lui sont transférés.",
+      "mergeIntoName": "Fusionner avec {{name}}",
+      "samples": {
+        "hint": "Écoutez d'abord les empreintes vocales : chacune provient d'une ligne d'une réunion.",
+        "none": "Aucune empreinte vocale.",
+        "play": "Lire",
+        "pause": "Pause",
+        "noText": "(aucun mot)",
+        "noLine": "La ligne d'origine n'existe plus",
+        "audioDeleted": "audio supprimé",
+        "loadError": "Impossible de charger les empreintes vocales"
+      },
+      "mergeTitle": "Fusionner les personnes ?",
+      "mergeConfirm": "{{from}} sera fusionné avec {{into}}, puis supprimé.",
+      "mergeError": "Impossible de fusionner les personnes",
+      "delete": "Supprimer",
+      "deleteTitle": "Supprimer la personne ?",
+      "deleteConfirm": "{{name}} et ses {{count}} empreintes vocales enregistrées seront supprimés. Guidy ne reconnaîtra plus sa voix dans les prochaines réunions.",
+      "deleteError": "Impossible de supprimer la personne",
+      "renameError": "Impossible de mettre à jour la personne",
+      "namePlaceholder": "Nom",
+      "emailPlaceholder": "E-mail (facultatif)",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "voice": {
+        "title": "Votre voix",
+        "notRecorded": "Non enregistrée",
+        "recordedTitle": "Enregistrée",
+        "description": "Enregistrez un court échantillon de votre voix pour que Guidy puisse vous distinguer des autres personnes présentes lors des réunions en personne.",
+        "recorded": "Dans les réunions traitées à partir de maintenant, seule la parole qui ressemble à votre voix vous est attribuée. Retraitez les réunions plus anciennes pour l'appliquer.",
+        "record": "Enregistrer ma voix",
+        "recordAgain": "Enregistrer à nouveau",
+        "starting": "Ouverture du microphone...",
+        "recording": "Enregistrement",
+        "readAloud": "Lisez ce texte à voix haute avec votre voix habituelle, puis appuyez sur Terminé.",
+        "passage": "Quand je rejoins une réunion, je commence généralement par consulter l'ordre du jour et les notes de la dernière fois. Ensuite, nous passons en revue ce qui a changé depuis notre dernier échange, ce qui est bloqué et qui se charge des prochaines étapes. Si une décision doit être prise, nous essayons de la prendre avant la fin de l'appel, pour que personne n'ait à attendre une autre réunion. Après coup, je partage un court résumé avec tous ceux qui étaient présents.",
+        "done": "Terminé",
+        "saving": "Enregistrement de votre voix...",
+        "loadError": "Impossible de charger votre voix",
+        "recordError": "Impossible de démarrer l'enregistrement",
+        "saveError": "Impossible d'enregistrer votre voix",
+        "deleteTitle": "Supprimer votre voix ?",
+        "deleteConfirm": "Votre voix enregistrée sera supprimée. Guidy vous attribuera à nouveau toute la parole captée par le microphone.",
+        "deleteError": "Impossible de supprimer votre voix"
+      }
+    },
+    "settings": {
+      "general": "Notes de réunion",
+      "enabled": {
+        "title": "Notes de réunion",
+        "description": "Enregistrez les réunions avec votre microphone et l'audio de votre ordinateur. L'activation demande l'accès au calendrier, à l'audio système et aux notifications."
+      },
+      "permissions": {
+        "title": "Autorisations",
+        "calendar": "Calendrier",
+        "systemAudio": "Audio système",
+        "microphone": "Microphone",
+        "notifications": "Notifications",
+        "granted": "Accordé",
+        "denied": "Non accordé",
+        "error": "Impossible de demander les autorisations",
+        "requestAgain": "Redemander",
+        "openSettings": "Ouvrir Réglages du système"
+      },
+      "you": "Vous",
+      "userName": {
+        "title": "Votre nom",
+        "description": "Votre piste de microphone est toujours étiquetée avec ce nom.",
+        "placeholder": "Votre nom"
+      },
+      "userEmails": {
+        "title": "Adresses e-mail",
+        "description": "Toutes les adresses avec lesquelles vous rejoignez des réunions, par exemple personnelle et professionnelle. Si l'une d'elles figure sur une invitation, ce participant, c'est vous.",
+        "labelPlaceholder": "Libellé, ex. Travail",
+        "emailPlaceholder": "nom@exemple.com",
+        "noLabel": "Sans libellé",
+        "add": "Ajouter",
+        "remove": "Retirer cette adresse",
+        "invalid": "Cette adresse e-mail n'est pas valide.",
+        "duplicate": "Cette adresse figure déjà dans la liste."
+      },
+      "recording": "Enregistrement",
+      "meetingModel": {
+        "title": "Modèle de transcription",
+        "usesDictation": "Les réunions utilisent votre modèle de dictée : {{name}}.",
+        "noDictation": "Aucun modèle de dictée n'est encore téléchargé. Téléchargez-en un sur la page Modèles, ou choisissez un modèle pour les réunions.",
+        "separate": "Utiliser un autre modèle",
+        "choice": "Modèle pour les réunions",
+        "choiceDescription": "Parakeet fournit un horodatage par mot, utile quand des personnes parlent en même temps.",
+        "notDownloaded": "{{name}} (non téléchargé)",
+        "chosenMissing": "{{name}} n'est pas encore téléchargé. Les réunions utilisent votre modèle de dictée en attendant.",
+        "chosenUnknown": "{{name}} n'est pas installé. Choisissez un autre modèle, ou désactivez « Utiliser un autre modèle »."
+      },
+      "separation": {
+        "title": "Distinguer les voix",
+        "description": "Le modèle d'intervenants qui détermine qui a prononcé chaque ligne. Les modèles plus grands distinguent mieux les voix similaires, mais occupent plus d'espace et ralentissent le traitement. Les personnes que vous avez nommées sont toujours reconnues avec le modèle standard : changer de modèle conserve donc leurs empreintes vocales.",
+        "downloaded": "Téléchargé.",
+        "notDownloaded": "Téléchargé une fois choisi.",
+        "downloading": "Téléchargement...",
+        "delete": "Supprimer ce modèle ({{size}})",
+        "downloadError": "Impossible de télécharger le modèle d'intervenants",
+        "deleteError": "Impossible de supprimer le modèle d'intervenants",
+        "about": {
+          "resnet34": "Standard. Petit et rapide, il reconnaît aussi les personnes que vous avez nommées.",
+          "cam_plus_plus": "Presque aussi petit, et le plus rapide.",
+          "resnet152": "Meilleur avec les voix similaires ; le traitement prend environ 3 fois plus de temps.",
+          "titanet_large": "De NVIDIA, également entraîné sur des appels téléphoniques, ce qui peut convenir à l'audio des appels. À peu près aussi rapide que le modèle standard.",
+          "resnet293": "Le plus précis ici ; le traitement prend environ 6 fois plus de temps."
+        }
+      },
+      "speakerModel": {
+        "title": "Reconnaissance des intervenants",
+        "description": "Distingue les voix et reconnaît les personnes que vous avez déjà nommées. Utilise {{name}} ({{trainedOn}}), {{size}}. Téléchargé uniquement lorsque vous cliquez sur Télécharger.",
+        "ready": "Téléchargé",
+        "download": "Télécharger ({{size}})",
+        "retry": "Réessayer le téléchargement",
+        "failed": "Échec du téléchargement : {{error}}"
+      },
+      "retention": {
+        "title": "Conserver l'audio des réunions",
+        "description": "L'audio brut est supprimé après ce délai. Les transcriptions et les empreintes vocales sont conservées.",
+        "days3": "3 jours",
+        "days7": "7 jours",
+        "days30": "30 jours",
+        "forever": "Toujours"
+      },
+      "mcp": {
+        "group": "Autres applications",
+        "title": "Serveur MCP",
+        "description": "Permettez aux applications d'IA de ce Mac, comme Claude ou Cursor, de lire votre liste de réunions, vos résumés et vos transcriptions. Local uniquement et en lecture seule.",
+        "url": "URL du serveur (Streamable HTTP)",
+        "stdio": "Commande (pour les applications qui n'exécutent que des serveurs stdio)",
+        "failed": "Impossible de démarrer le serveur MCP sur le port {{port}}. Une autre application l'utilise peut-être."
+      },
+      "calendarNotifications": {
+        "title": "Notifications du calendrier",
+        "description": "Proposer de prendre des notes quand une réunion du calendrier avec un lien d'appel commence."
+      },
+      "recordingControls": {
+        "title": "Commandes d'enregistrement",
+        "description": "Emplacement de la pause, de l'arrêt et de la transcription en direct pendant l'enregistrement d'une réunion.",
+        "floating": "Flottantes, au bord de l'écran",
+        "notch": "Autour de l'encoche"
+      },
+      "deepgram": {
+        "title": "Clé API Deepgram",
+        "description": "Permet de refaire les intervenants d'une réunion dans le cloud avec Deepgram, qui distingue bien les voix lors des appels. Stockée dans le Trousseau.",
+        "placeholder": "Collez une clé et appuyez sur Entrée",
+        "saved": "Enregistrée",
+        "remove": "Supprimer",
+        "error": "Impossible d'enregistrer la clé Deepgram"
+      },
+      "liveTranscription": {
+        "title": "Transcription en direct",
+        "description": "Transcrire la réunion sur ce Mac pendant qu'elle se déroule. La transcription complète est toujours créée après la réunion.",
+        "model": "Modèle pour la transcription en direct",
+        "modelDescription": "Un modèle petit et rapide suit mieux le rythme pendant un appel. La transcription créée après la réunion utilise le modèle des réunions.",
+        "sameModel": "Identique aux réunions"
+      },
+      "reminderInterval": {
+        "title": "Intervalle de rappel",
+        "description": "Minutes entre les rappels « enregistrement en cours » une fois l'heure de fin d'une réunion passée.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Avancé",
+        "show": "Afficher les paramètres avancés",
+        "hide": "Masquer les paramètres avancés",
+        "matchThreshold": {
+          "title": "Seuil d'identification automatique",
+          "description": "Similarité vocale à partir de laquelle un intervenant est nommé automatiquement. En dessous, l'identification demande « Confirmer ? »."
+        },
+        "suggestThreshold": {
+          "title": "Seuil de suggestion",
+          "description": "Similarité vocale en dessous de laquelle une personne connue n'est pas du tout suggérée."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "delete": "Supprimer",
+      "loading": "Chargement..."
+    },
+    "summary": {
+      "heading": "Résumé",
+      "actionItems": "Actions à mener",
+      "generate": "Générer le résumé",
+      "regenerate": "Régénérer",
+      "regenerateWith": "Régénérer avec...",
+      "generateWith": "Générer avec {{model}}",
+      "otherModels": "Autres modèles",
+      "otherModel": "Autre modèle…",
+      "generating": "Résumé de la réunion en cours...",
+      "generatingLocal": "Résumé de la réunion en cours. Cela peut prendre quelques minutes avec un modèle local.",
+      "progress": "Résumé en cours (étape {{done}} sur {{total}})",
+      "empty": "Pas encore de résumé. Générez-en un à partir de la transcription.",
+      "untitled": "Réunion sans titre",
+      "edit": "Modifier",
+      "title": "Titre",
+      "shortSummary": "Résumé court",
+      "shortSummaryPlaceholder": "Le sujet de la réunion, en quelques phrases",
+      "decisions": "Décisions",
+      "topics": "Sujets",
+      "linesPlaceholder": "Un par ligne",
+      "onePerLine": "Décisions et sujets : un par ligne.",
+      "none": "Aucun",
+      "generatedBy": "Généré avec {{model}}",
+      "generatedByCost": "Généré avec {{model}} · {{cost}} · {{input}} jetons en entrée / {{output}} en sortie",
+      "generatedByTokens": "Généré avec {{model}} · {{input}} jetons en entrée / {{output}} en sortie",
+      "pickerTitle": "Modèle pour ce résumé",
+      "pickerDescription": "Régénérez avec un autre fournisseur et modèle. Votre modèle des réunions dans les paramètres reste inchangé. Les actions qui ont déjà un ticket Linear sont conservées.",
+      "run": "Générer",
+      "noItems": "Aucune action à mener.",
+      "newItemPlaceholder": "Ajouter une action",
+      "addItem": "Ajouter",
+      "deleteItem": "Supprimer l'action",
+      "due": "Échéance",
+      "duePlaceholder": "ex. 2026-10-31",
+      "jumpToMoment": "Lire ce moment dans la transcription",
+      "owner": {
+        "title": "Responsable",
+        "none": "Aucun responsable",
+        "me": "Moi",
+        "meNamed": "Moi ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Tickets Linear",
+      "draft": "Préparer les tickets",
+      "approveSelected": "Approuver la sélection ({{count}})",
+      "createApproved": "Créer les approuvés ({{count}})",
+      "noKey": "Connectez Linear pour transformer les actions en tickets.",
+      "openSettings": "Ouvrir les paramètres",
+      "noItems": "Aucune action à transformer en tickets.",
+      "notDrafted": "Préparez des tickets à partir des actions pour les vérifier ici.",
+      "approve": "Approuver",
+      "approveTip": "Marquer ce ticket pour création. Rien n'est créé tant que vous n'avez pas cliqué sur Créer les approuvés.",
+      "needsTeam": "Choisissez une équipe avant d'approuver",
+      "unapprove": "Retirer l'approbation",
+      "discard": "Écarter",
+      "restore": "Restaurer",
+      "edit": "Modifier le titre et la description",
+      "approved": "Approuvé",
+      "draftState": "Brouillon",
+      "created": "Créé dans Linear",
+      "alreadyExisted": "Déjà dans Linear : rien de nouveau n'a été créé",
+      "createFailed": "Non créé : {{error}}",
+      "issue": "Ticket",
+      "team": "Équipe",
+      "pickTeam": "Choisir une équipe",
+      "project": "Projet",
+      "noProject": "Aucun projet",
+      "assignee": "Assigné à",
+      "unassigned": "Non assigné",
+      "labels": "Étiquettes",
+      "addLabel": "Ajouter des étiquettes",
+      "labelCount": "{{count}} étiquettes",
+      "priority": {
+        "title": "Priorité",
+        "none": "Aucune priorité",
+        "urgent": "Urgente",
+        "high": "Haute",
+        "medium": "Moyenne",
+        "low": "Basse"
+      }
+    },
+    "llm": {
+      "heading": "Résumés",
+      "provider": "Fournisseur",
+      "providerDescription": "Modèle utilisé pour les résumés de réunion et les actions à mener. Le post-traitement de la dictée garde son propre fournisseur.",
+      "builtin": "Intégré (sur ce Mac)",
+      "builtinDescription": "Exécute un modèle local avec llama.cpp. Rien ne quitte votre Mac.",
+      "model": "Modèle",
+      "modelDescription": "Cochez un modèle pour l'ajouter à vos modèles. Seuls les modèles qui produisent du texte sont listés. « Adapté aux résumés » signifie que le modèle prend en charge la sortie structurée, sur laquelle reposent les résumés.",
+      "modelPlaceholder": "Identifiant du modèle",
+      "pickModel": "Sélectionner un modèle",
+      "noLocalModels": "Téléchargez un modèle ci-dessous",
+      "usingPostProcessModel": "Utilise le modèle de post-traitement ({{model}})",
+      "refreshModels": "Actualiser",
+      "testConnection": "Tester la connexion",
+      "testDescription": "Vérifier que le fournisseur, la clé et le modèle fonctionnent.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Modèle sur l'appareil, sur les Mac Apple Silicon avec Apple Intelligence activé.",
+      "appleAvailable": "Disponible",
+      "appleUnavailable": "Apple Intelligence n'est pas disponible sur ce Mac",
+      "activeHeading": "Les résumés sont créés par",
+      "place": "Où les résumés sont générés",
+      "placeDescription": "Seule l'option sélectionnée est utilisée.",
+      "tabCloud": "Fournisseur cloud",
+      "tabLocal": "Sur ce Mac",
+      "onThisMac": "Ce Mac · hors ligne",
+      "apiKey": "Clé API",
+      "apiKeyDescription": "Enregistrée dans votre Trousseau et partagée avec le Post-traitement.",
+      "getKey": "Obtenir une clé {{provider}}",
+      "modelDescriptionCustom": "Saisissez l'identifiant de modèle attendu par votre point de terminaison et appuyez sur Entrée pour l'ajouter, ou cochez-en un dans la liste.",
+      "searchModels": "Rechercher des modèles",
+      "goodOnly": "Adapté aux résumés",
+      "goodForSummaries": "résumés",
+      "reasoning": "raisonnement",
+      "unknownModel": "absent du registre",
+      "noModels": "Aucun modèle ne correspond.",
+      "context": "{{n}} ctx",
+      "free": "gratuit",
+      "modelCount": "{{shown}}/{{total}} modèles",
+      "registryBundled": "Détails des modèles fournis par models.dev (inclus dans l'application)",
+      "registryUpdated": "Détails des modèles fournis par models.dev, mis à jour {{when}}",
+      "justNow": "à l'instant",
+      "minutesAgo": "il y a {{n}} min",
+      "hoursAgo": "il y a {{n}} h",
+      "daysAgo": "il y a {{n}} j",
+      "needsKey": "Ajoutez votre clé API {{provider}}",
+      "needsModel": "Choisissez un modèle {{provider}}",
+      "needsLocalModel": "Téléchargez un modèle pour résumer sur ce Mac",
+      "localDescription": "Fonctionne hors ligne sur ce Mac. Choisissez un modèle téléchargé.",
+      "appleUnavailableHint": "Non disponible sur ce Mac. Activez-le dans Réglages du système > Apple Intelligence et Siri.",
+      "unavailable": "indisponible",
+      "yourModels": "Vos modèles",
+      "yourModelsDescription": "Générer le résumé propose tous les modèles listés ici, pour que vous puissiez en choisir un par réunion. Celui sélectionné est le modèle par défaut.",
+      "yourModelsEmpty": "Aucun modèle cloud pour l'instant. Choisissez un fournisseur ci-dessous, ajoutez sa clé API et cochez les modèles souhaités.",
+      "default": "par défaut",
+      "removeModel": "Retirer de vos modèles",
+      "addFrom": "Ajouter des modèles depuis",
+      "addFromDescription": "Choisissez un fournisseur pour saisir sa clé et cochez les modèles à ajouter. Cela ne change pas le modèle par défaut."
+    },
+    "local": {
+      "heading": "Modèles locaux",
+      "empty": "Aucun modèle intégré n'est disponible.",
+      "default": "Par défaut",
+      "recommendedRam": "Recommandé pour {{gb}} Go de RAM ou plus",
+      "notEnoughRam": "Ce Mac dispose de moins de mémoire que recommandé pour ce modèle.",
+      "downloaded": "Téléchargé",
+      "download": "Télécharger",
+      "downloading": "Téléchargement {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Clé API personnelle",
+      "keyDescription": "Stockée dans votre Trousseau macOS. Sert à préparer et créer des tickets à partir des actions à mener.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Une clé est enregistrée dans votre Trousseau.",
+      "noKey": "Aucune clé enregistrée.",
+      "getKey": "Créez une clé sur linear.app/settings/api",
+      "removeKey": "Supprimer la clé",
+      "test": "Tester la connexion",
+      "testDescription": "Vérifier la clé auprès de Linear.",
+      "connectedAs": "Connecté en tant que {{name}}"
+    },
+    "byok": {
+      "testConnection": "Tester la connexion",
+      "testDescription": "Vérifier l'URL de base, la clé API et le modèle avec une petite requête.",
+      "baseUrlEditable": "URL de base de l'API pour ce fournisseur. Remplacez chaque {placeholder} (par ex. l'identifiant de votre compte Cloudflare).",
+      "cloudflareHint": "Cloudflare : indiquez l'identifiant de votre compte (et celui de la passerelle pour AI Gateway) dans l'URL de base."
+    }
   }
 }

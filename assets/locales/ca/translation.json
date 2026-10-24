@@ -7,7 +7,23 @@
     "model": "Model",
     "quit": "Surt",
     "cancel": "Cancel·la",
-    "secureInputWarning": "⚠ Dreceres blocades per l'entrada segura"
+    "secureInputWarning": "⚠ Dreceres blocades per l'entrada segura",
+    "startMeetingNotes": "Inicia les notes de reunió",
+    "stopMeetingNotes": "Atura les notes de reunió",
+    "pauseMeetingNotes": "Posa en pausa l'enregistrament",
+    "resumeMeetingNotes": "Reprèn l'enregistrament",
+    "meetingPaused": "En pausa",
+    "meetingStillRecording": "El Guidy encara està enregistrant",
+    "meetingStop": "Atura",
+    "meetingKeepGoing": "Continua",
+    "meetingTakeNotesFor": "Voleu prendre notes de {{title}}?",
+    "meetingStart": "Inicia",
+    "meetingUntitled": "Reunió"
+  },
+  "notch": {
+    "pause": "Posa en pausa l'enregistrament",
+    "resume": "Reprèn l'enregistrament",
+    "stop": "Atura les notes de reunió"
   },
   "sidebar": {
     "general": "General",
@@ -16,7 +32,58 @@
     "postProcessing": "Postprocessament",
     "history": "Historial",
     "debug": "Depuració",
+    "usage": "Ús",
     "about": "Quant a"
+  },
+  "usage": {
+    "title": "Ús",
+    "description": "El que han costat els proveïdors d'IA al núvol i la feina que han fet els models en aquest Mac.",
+    "cloud": "Núvol",
+    "local": "En aquest Mac",
+    "refresh": "Actualitza",
+    "total": "Despesa total",
+    "last30Days": "Últims 30 dies",
+    "callsTitle": "Crides",
+    "byModel": "Per model",
+    "byFeature": "Per funció",
+    "empty": "Encara no hi ha cap crida a IA al núvol.",
+    "calls_one": "{{count}} crida",
+    "calls_other": "{{count}} crides",
+    "average": "mitjana {{cost}}",
+    "highest": "màxim {{cost}}",
+    "tokens": "{{input}} tokens d'entrada / {{output}} de sortida",
+    "unknownPrice": "preu desconegut",
+    "feature": {
+      "dictation": "Dictat",
+      "meetingTranscription": "Transcripció de reunions",
+      "meetingSummary": "Resums de reunions",
+      "other": "Altres"
+    },
+    "localAudio": "Àudio transcrit",
+    "localWords": "Paraules",
+    "localTokens": "Tokens de LLM",
+    "localCloudEquivalent": "Equivalent al núvol",
+    "localEmpty": "Encara no s'ha executat res amb un model local.",
+    "localByModel": "Models locals",
+    "localByFeature": "Feina local per funció",
+    "kind": {
+      "transcription": "Transcripció",
+      "llm": "LLM integrat"
+    },
+    "runs_one": "{{count}} execució",
+    "runs_other": "{{count}} execucions",
+    "audio": "{{duration}} d'àudio",
+    "words": "{{count}} paraules",
+    "realtime": "{{speed}} del temps real",
+    "promptSpeed": "indicació {{speed}}",
+    "generationSpeed": "generació {{speed}}",
+    "loadTime": "es carrega en {{time}}",
+    "localNote": "La velocitat respecte al temps real és la durada de l'àudio ÷ el temps de processament, sense comptar la càrrega; el dictat descodificat en directe mentre parleu no es cronometra. L'equivalent al núvol calcula l'àudio a ${{price}} per minut (OpenAI Whisper).",
+    "estimateNote": "~ indica imports estimats a partir dels preus per token publicats; els proveïdors que informen del seu propi cost (com ara OpenRouter) són exactes. Consulteu el tauler del proveïdor per a la facturació.",
+    "reportedNote": "Els imports són els que informen els proveïdors. Consulteu el tauler del proveïdor per a la facturació.",
+    "clear": "Esborra l'historial",
+    "clearTitle": "Voleu esborrar l'historial d'ús?",
+    "clearConfirm": "Se suprimiran les crides, els costos i les execucions de models locals registrats. L'ús que es mostra als resums de reunions es manté."
   },
   "onboarding": {
     "subtitle": "Per començar, trieu un model de transcripció",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "precisió",
-      "speed": "velocitat"
+      "speed": "velocitat",
+      "size": "mida"
     },
     "models": {
       "small": {
@@ -117,7 +185,9 @@
       "translation": "Pot traduir a l'anglès",
       "translate": "Tradueix",
       "streaming": "Mostra la transcripció en temps real mentre parleu"
-    }
+    },
+    "download": "Baixa",
+    "use": "Utilitza"
   },
   "settings": {
     "modelSettings": {
@@ -125,6 +195,8 @@
     },
     "general": {
       "title": "General",
+      "description": "Com inicieu el dictat, la llengua que escolta i què sentiu.",
+      "shortcutsGroup": "Dreceres",
       "shortcut": {
         "title": "Dreceres del Guidy",
         "description": "Configura les dreceres de teclat per iniciar l'enregistrament de veu per a la transcripció",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Avançat",
+      "description": "Inici, enganxament, ajustos de transcripció i historial.",
       "groups": {
         "app": "Aplicació",
         "output": "Sortida",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Postprocessament",
+      "description": "Netegeu o reescriviu una transcripció amb un model d'IA abans d'enganxar-la.",
       "hotkey": {
         "title": "Drecera de teclat"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Proveïdor",
           "description": "Seleccioneu un proveïdor compatible amb OpenAI o Anthropic."
+        },
+        "builtin": {
+          "label": "Model integrat (en aquest Mac)",
+          "description": "Executa un model local en aquest Mac. No surt res de l'ordinador.",
+          "manage": "Gestiona els models integrats"
         },
         "apiFormat": {
           "title": "Format de l'API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "Clau de l'API",
           "description": "Clau de l'API del proveïdor seleccionat.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "No s'ha pogut desar la clau de l'API"
         },
         "model": {
           "title": "Model",
@@ -600,6 +682,10 @@
         "title": "Versió",
         "description": "Versió actual del Guidy"
       },
+      "author": {
+        "title": "Creat per",
+        "description": "Imran"
+      },
       "whatsNewUpdates": {
         "label": "Mostra les novetats",
         "description": "Mostra les notes de la versió després d'actualitzar el Guidy"
@@ -625,6 +711,12 @@
           "description": "Biblioteca de tensors d'alt rendiment per a la inferència d'aprenentatge automàtic al dispositiu",
           "details": "La transcripció local de veu a text del Guidy es basa en el transcribe.cpp i el ggml. Gràcies a la gran feina de Georgi Gerganov i dels col·laboradors."
         }
+      },
+      "hero": {
+        "headline": "Veu a text que es queda en aquest Mac",
+        "lede": "Premeu una drecera, parleu i el Guidy escriu a l'aplicació activa. La transcripció es fa localment.",
+        "engine": "Motor",
+        "model": "Model"
       }
     }
   },
@@ -706,5 +798,561 @@
     "learnMore": "Com es resol",
     "recorderBlocked": "Ara no se'n poden enregistrar dreceres: l'entrada segura del macOS bloca els esdeveniments de tecla. Resol primer l'avís d'entrada segura.",
     "dismiss": "Descarta"
+  },
+  "meetings": {
+    "title": "Reunions",
+    "selection": {
+      "hint": "Arrossegueu o feu Maj+clic per etiquetar diverses línies",
+      "count_one": "{{count}} línia seleccionada",
+      "count_other": "{{count}} línies seleccionades",
+      "keys": "Maj+clic: interval · ⌘+clic: afegeix o treu · Esc: neteja",
+      "setSpeaker": "Assigna el parlant",
+      "clear": "Neteja"
+    },
+    "speakersRedo": {
+      "action": "Refés els parlants",
+      "tooltip": "Torna a distingir els parlants amb {{model}}. La transcripció es manté. Les línies que heu etiquetat i els parlants que heu anomenat conserven la seva persona; la resta es tornen a identificar per la veu.",
+      "standard": "Model de parlants estàndard",
+      "download": "Baixada de {{size}}, una sola vegada",
+      "error": "No s'han pogut refer els parlants",
+      "confirmTitle": "Voleu identificar els parlants amb Deepgram?",
+      "confirmDeepgram": "L'àudio dels altres participants d'aquesta reunió es puja a Deepgram per distingir-los, per uns {{cost}}. La transcripció es manté tal com és.",
+      "confirmDeepgramUnpriced": "L'àudio dels altres participants d'aquesta reunió es puja a Deepgram per distingir-los. La transcripció es manté tal com és."
+    },
+    "day": {
+      "today": "Avui",
+      "tomorrow": "Demà",
+      "yesterday": "Ahir"
+    },
+    "copy": {
+      "summary": "Copia",
+      "transcript": "Copia la transcripció",
+      "copied": "Copiat"
+    },
+    "redo": {
+      "action": "Refés la transcripció",
+      "localTitle": "En aquest Mac",
+      "cloudTitle": "Núvol",
+      "error": "No s'ha pogut tornar a transcriure",
+      "issueRepetition": "Hi ha parts d'aquesta transcripció que es repeteixen, cosa que sol indicar que el model ha perdut el fil de l'àudio.",
+      "issueTooFewWords": "Aquesta transcripció té moltes menys paraules de les que faria pensar el temps parlat, així que probablement s'han perdut parts de la reunió.",
+      "issueHint": "Un model al núvol sovint funciona millor amb àudio difícil.",
+      "tooltip": "Torna a transcriure amb {{model}}. Substitueix la transcripció i els parlants; les persones que heu anomenat es tornen a identificar per la veu.",
+      "more": "Altres models",
+      "noKeyShort": "cal una clau de l'API (Reunions › Configuració › IA)",
+      "confirmTitle": "Voleu transcriure amb {{provider}}?",
+      "confirmCloud": "L'àudio d'aquesta reunió es puja a {{provider}} i es transcriu amb {{model}}, per uns {{cost}}. Se substitueixen la transcripció i els parlants.",
+      "confirmCloudUnpriced": "L'àudio d'aquesta reunió es puja a {{provider}} i es transcriu amb {{model}}. Se substitueixen la transcripció i els parlants."
+    },
+    "widget": {
+      "recording": "S'està enregistrant",
+      "paused": "En pausa",
+      "you": "Vós",
+      "others": "Altres",
+      "mic": "Micròfon",
+      "system": "Àudio del sistema",
+      "liveStarting": "S'està carregant el model de transcripció…",
+      "liveListening": "S'està escoltant. Les línies apareixen aquí a mesura que la gent parla.",
+      "liveOff": "La transcripció en directe està desactivada. Activeu-la a Reunions › Configuració.",
+      "liveUnavailable": "La transcripció en directe no està disponible: {{reason}}",
+      "pause": "Pausa",
+      "resume": "Reprèn",
+      "stop": "Atura",
+      "openNotes": "Obre les notes",
+      "expand": "Mostra la transcripció en directe",
+      "collapse": "Redueix",
+      "liveTitle": "Transcripció en directe",
+      "liveHint": "Tal com s'ha sentit fins ara. La transcripció completa amb els noms dels parlants es fa quan acaba la reunió."
+    },
+    "description": "Enregistreu una reunió en aquest Mac i després llegiu-ne la transcripció amb els parlants identificats.",
+    "init": {
+      "starting": "S'estan iniciant les notes de reunió...",
+      "failed": "No s'han pogut iniciar les notes de reunió",
+      "retry": "Torna-ho a provar",
+      "keyMissing": {
+        "title": "No es poden desxifrar les notes de reunió",
+        "description": "La clau de xifratge de les notes de reunió no és al Clauer o no coincideix amb les notes de reunió existents, de manera que no es poden obrir. Si podeu restaurar la clau (per exemple, des d'una còpia de seguretat del Clauer), feu-ho i trieu «Torna-ho a provar». Si no, restabliu-les per començar de zero: les notes de reunió antigues es mouen a part, no se suprimeixen."
+      },
+      "reset": {
+        "action": "Restableix les dades de les notes de reunió",
+        "title": "Voleu restablir les dades de les notes de reunió?",
+        "confirm": "Les notes de reunió i els enregistraments actuals es mouran a una carpeta «meetings-unreadable» dins de la carpeta de dades del Guidy (no se suprimeix res) i es crearà una clau de xifratge nova. El Guidy no podrà mostrar les notes antigues."
+      }
+    },
+    "errors": {
+      "unavailable": "Les notes de reunió no estan disponibles en aquest Mac.",
+      "modelMissing": "Encara no s'ha baixat el model de transcripció de reunions ({{name}}).",
+      "modelUnknown": "El model de reunions {{name}} no està instal·lat. Trieu-ne un altre a la configuració.",
+      "speakerModelMissing": "Baixeu el model de reconeixement de parlants a Reunions > Configuració i després processeu la reunió.",
+      "noLinearKey": "Primer afegiu una clau de l'API de Linear a la configuració.",
+      "linearUnauthorized": "Linear ha rebutjat la clau de l'API. Comproveu-la a la configuració."
+    },
+    "model": {
+      "download": "Baixa el model de reunions",
+      "downloadError": "No s'ha pogut baixar el model de reunions"
+    },
+    "tabs": {
+      "meetings": "Reunions",
+      "people": "Persones",
+      "settings": "Configuració"
+    },
+    "recorder": {
+      "start": "Inicia les notes de reunió",
+      "stop": "Atura les notes de reunió",
+      "recording": "S'està enregistrant",
+      "idle": "No s'està enregistrant",
+      "startError": "No s'ha pogut iniciar l'enregistrament",
+      "stopError": "No s'ha pogut aturar l'enregistrament",
+      "disabled": "Activeu les notes de reunió a la configuració per enregistrar."
+    },
+    "upcoming": {
+      "title": "Properes",
+      "empty": "No hi ha properes reunions al calendari amb un enllaç de trucada.",
+      "start": "Inicia"
+    },
+    "list": {
+      "title": "Enregistraments",
+      "empty": "Encara no hi ha reunions. Inicieu les notes de reunió per enregistrar-ne una.",
+      "loading": "S'estan carregant les reunions...",
+      "loadError": "No s'han pogut carregar les reunions",
+      "speakerModelMissing": "Els enregistraments no es processen fins que es baixa el model de reconeixement de parlants.",
+      "minutes": "{{count}} min",
+      "open": "Obre",
+      "rename": "Canvia el nom",
+      "delete": "Suprimeix",
+      "process": "Processa",
+      "retry": "Torna-ho a provar",
+      "cancelProcessing": "Cancel·la el processament",
+      "save": "Desa",
+      "cancel": "Cancel·la",
+      "titlePlaceholder": "Títol de la reunió",
+      "deleteTitle": "Voleu suprimir la reunió?",
+      "deleteConfirm": "Se suprimirà «{{title}}» amb la transcripció i l'àudio. Les empremtes de veu es conserven.",
+      "deleteError": "No s'ha pogut suprimir la reunió",
+      "renameError": "No s'ha pogut canviar el nom de la reunió",
+      "processError": "No s'ha pogut iniciar el processament",
+      "cancelError": "No s'ha pogut cancel·lar el processament"
+    },
+    "status": {
+      "recording": "S'està enregistrant",
+      "recorded": "Sense processar",
+      "processing": "S'està processant",
+      "processed": "A punt",
+      "failed": "Ha fallat"
+    },
+    "stage": {
+      "decode": "S'està descodificant l'àudio",
+      "vad": "S'està detectant la parla",
+      "transcribe": "S'està transcrivint",
+      "voiceprints": "S'estan calculant les empremtes de veu",
+      "cluster": "S'estan agrupant els parlants",
+      "merge": "S'estan combinant les pistes",
+      "done": "Fet"
+    },
+    "detail": {
+      "back": "Totes les reunions",
+      "transcript": "Transcripció",
+      "empty": "Encara no hi ha transcripció. Processeu la reunió per crear-ne una.",
+      "loading": "S'està carregant la transcripció...",
+      "loadError": "No s'ha pogut carregar la reunió",
+      "playError": "No s'ha pogut reproduir aquest fragment",
+      "play": "Reprodueix des d'aquí",
+      "you": "Vós",
+      "speakers": "Parlants",
+      "attendees": "Assistents",
+      "duration": "Durada",
+      "words": "Paraules",
+      "talkTime": "Temps parlat",
+      "share": "Proporció",
+      "youSpoke": "Heu parlat",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Anomena aquest parlant",
+      "confirm": "Voleu confirmar-ho?",
+      "confirmAction": "Confirma",
+      "change": "Canvia",
+      "suggestions": "Suggeriments",
+      "attendee": "Assistent",
+      "knownPerson": "Persona coneguda",
+      "noSuggestions": "Cap suggeriment",
+      "newPerson": "Persona nova",
+      "namePlaceholder": "Nom",
+      "emailPlaceholder": "Correu electrònic (opcional)",
+      "save": "Desa",
+      "cancel": "Cancel·la",
+      "assignError": "No s'ha pogut anomenar el parlant",
+      "confirmError": "No s'ha pogut confirmar el parlant",
+      "unnamed": "Parlant {{n}}",
+      "unknown": "Desconegut",
+      "whoIsThis": "Qui és?",
+      "whoSaidThis": "Qui ho ha dit?"
+    },
+    "people": {
+      "title": "Persones",
+      "description": "Persones que heu anomenat a les reunions. El Guidy en reconeix la veu en reunions posteriors.",
+      "empty": "Encara no hi ha persones. Anomeneu un parlant en una reunió per afegir-ne una.",
+      "loadError": "No s'han pogut carregar les persones",
+      "voiceprints_one": "{{count}} empremta de veu",
+      "voiceprints_other": "{{count}} empremtes de veu",
+      "edit": "Edita",
+      "merge": "Combina",
+      "mergeInto": "Combina amb...",
+      "mergeHint": "Trieu la persona que voleu conservar. Les empremtes de veu i els noms de parlant hi passen.",
+      "mergeIntoName": "Combina amb {{name}}",
+      "samples": {
+        "hint": "Escolteu primer les empremtes de veu: cadascuna s'ha extret d'una línia d'una reunió.",
+        "none": "No hi ha empremtes de veu.",
+        "play": "Reprodueix",
+        "pause": "Pausa",
+        "noText": "(sense paraules)",
+        "noLine": "La línia d'on prové ja no hi és",
+        "audioDeleted": "àudio suprimit",
+        "loadError": "No s'han pogut carregar les empremtes de veu"
+      },
+      "mergeTitle": "Voleu combinar les persones?",
+      "mergeConfirm": "{{from}} es combinarà amb {{into}} i després s'eliminarà.",
+      "mergeError": "No s'han pogut combinar les persones",
+      "delete": "Suprimeix",
+      "deleteTitle": "Voleu suprimir la persona?",
+      "deleteConfirm": "Se suprimiran {{name}} i les seves {{count}} empremtes de veu desades. El Guidy no en reconeixerà la veu en reunions futures.",
+      "deleteError": "No s'ha pogut suprimir la persona",
+      "renameError": "No s'ha pogut actualitzar la persona",
+      "namePlaceholder": "Nom",
+      "emailPlaceholder": "Correu electrònic (opcional)",
+      "save": "Desa",
+      "cancel": "Cancel·la",
+      "voice": {
+        "title": "La vostra veu",
+        "notRecorded": "No enregistrada",
+        "recordedTitle": "Enregistrada",
+        "description": "Enregistreu una mostra breu de la vostra veu perquè el Guidy us pugui distingir de les altres persones de la sala en les reunions presencials.",
+        "recorded": "A les reunions que es processin a partir d'ara, només la parla que sembli vostra s'etiquetarà com a vostra. Torneu a processar les reunions anteriors per aplicar-ho.",
+        "record": "Enregistra la meva veu",
+        "recordAgain": "Torna a enregistrar",
+        "starting": "S'està obrint el micròfon...",
+        "recording": "S'està enregistrant",
+        "readAloud": "Llegiu això en veu alta amb la veu habitual i després premeu «Fet».",
+        "passage": "Quan entro en una reunió, normalment començo revisant l'ordre del dia i les notes de l'última vegada. Després repassem què ha canviat des que vam parlar, què està bloquejat i qui s'encarrega dels passos següents. Si cal prendre una decisió, intentem fer-ho abans que acabi la trucada, perquè ningú hagi d'esperar una altra reunió. Després comparteixo un resum breu amb tothom que hi era.",
+        "done": "Fet",
+        "saving": "S'està desant la vostra veu...",
+        "loadError": "No s'ha pogut carregar la vostra veu",
+        "recordError": "No s'ha pogut iniciar l'enregistrament",
+        "saveError": "No s'ha pogut desar la vostra veu",
+        "deleteTitle": "Voleu suprimir la vostra veu?",
+        "deleteConfirm": "Se suprimirà la veu enregistrada. El Guidy tornarà a etiquetar tota la parla del micròfon com a vostra.",
+        "deleteError": "No s'ha pogut suprimir la vostra veu"
+      }
+    },
+    "settings": {
+      "general": "Notes de reunió",
+      "enabled": {
+        "title": "Notes de reunió",
+        "description": "Enregistreu reunions amb el micròfon i l'àudio de l'ordinador. Si ho activeu, es demanarà accés al calendari, a l'àudio del sistema i a les notificacions."
+      },
+      "permissions": {
+        "title": "Permisos",
+        "calendar": "Calendari",
+        "systemAudio": "Àudio del sistema",
+        "microphone": "Micròfon",
+        "notifications": "Notificacions",
+        "granted": "Concedit",
+        "denied": "No concedit",
+        "error": "No s'han pogut sol·licitar els permisos",
+        "requestAgain": "Torna-ho a sol·licitar",
+        "openSettings": "Obre la configuració del sistema"
+      },
+      "you": "Vós",
+      "userName": {
+        "title": "El vostre nom",
+        "description": "La pista del vostre micròfon sempre s'etiqueta amb aquest nom.",
+        "placeholder": "El vostre nom"
+      },
+      "userEmails": {
+        "title": "Adreces electròniques",
+        "description": "Totes les adreces amb què us uniu a reunions, com ara la personal i la de la feina. Si una d'elles és en una invitació, aquell assistent sou vós.",
+        "labelPlaceholder": "Etiqueta, p. ex. Feina",
+        "emailPlaceholder": "nom@example.com",
+        "noLabel": "Sense etiqueta",
+        "add": "Afegeix",
+        "remove": "Elimina aquesta adreça",
+        "invalid": "No és una adreça electrònica vàlida.",
+        "duplicate": "Aquesta adreça ja és a la llista."
+      },
+      "recording": "Enregistrament",
+      "meetingModel": {
+        "title": "Model de transcripció",
+        "usesDictation": "Les reunions utilitzen el vostre model de dictat: {{name}}.",
+        "noDictation": "Encara no s'ha baixat cap model de dictat. Baixeu-ne un a la pàgina Models o trieu un model per a les reunions.",
+        "separate": "Utilitza un model diferent",
+        "choice": "Model per a les reunions",
+        "choiceDescription": "Parakeet dona temps per paraula, cosa que ajuda quan la gent parla alhora.",
+        "notDownloaded": "{{name}} (no baixat)",
+        "chosenMissing": "Encara no s'ha baixat {{name}}. Fins aleshores, les reunions utilitzen el vostre model de dictat.",
+        "chosenUnknown": "{{name}} no està instal·lat. Trieu un altre model o desactiveu «Utilitza un model diferent»."
+      },
+      "separation": {
+        "title": "Distinció de veus",
+        "description": "El model de parlants que decideix qui ha dit cada línia. Els models més grans distingeixen millor les veus semblants, però ocupen més espai i alenteixen el processament. Les persones que heu anomenat sempre es reconeixen amb el model estàndard, així que si en canvieu es conserven les seves empremtes de veu.",
+        "downloaded": "Baixat.",
+        "notDownloaded": "Es baixa quan es tria.",
+        "downloading": "S'està baixant...",
+        "delete": "Suprimeix aquest model ({{size}})",
+        "downloadError": "No s'ha pogut baixar el model de parlants",
+        "deleteError": "No s'ha pogut suprimir el model de parlants",
+        "about": {
+          "resnet34": "Estàndard. Petit i ràpid, i també reconeix les persones que heu anomenat.",
+          "cam_plus_plus": "Gairebé igual de petit, i el més ràpid.",
+          "resnet152": "Millor amb veus semblants; el processament triga unes 3 vegades més.",
+          "titanet_large": "De NVIDIA, entrenat també amb trucades telefòniques, cosa que pot anar bé per a l'àudio de trucades. Gairebé tan ràpid com l'estàndard.",
+          "resnet293": "El més precís; el processament triga unes 6 vegades més."
+        }
+      },
+      "speakerModel": {
+        "title": "Reconeixement de parlants",
+        "description": "Distingeix les veus i reconeix les persones que heu anomenat abans. Utilitza {{name}} ({{trainedOn}}), {{size}}. Només es baixa quan feu clic a «Baixa».",
+        "ready": "Baixat",
+        "download": "Baixa ({{size}})",
+        "retry": "Torna a provar la baixada",
+        "failed": "La baixada ha fallat: {{error}}"
+      },
+      "retention": {
+        "title": "Conserva l'àudio de les reunions",
+        "description": "L'àudio original se suprimeix passat aquest temps. Les transcripcions i les empremtes de veu es conserven.",
+        "days3": "3 dies",
+        "days7": "7 dies",
+        "days30": "30 dies",
+        "forever": "Per sempre"
+      },
+      "mcp": {
+        "group": "Altres aplicacions",
+        "title": "Servidor MCP",
+        "description": "Permet que aplicacions d'IA d'aquest Mac, com Claude o Cursor, llegeixin la llista de reunions, els resums i les transcripcions. Només local i només de lectura.",
+        "url": "URL del servidor (Streamable HTTP)",
+        "stdio": "Ordre (per a aplicacions que només executen servidors stdio)",
+        "failed": "No s'ha pogut iniciar el servidor MCP al port {{port}}. Potser una altra aplicació l'està utilitzant."
+      },
+      "calendarNotifications": {
+        "title": "Notificacions del calendari",
+        "description": "Pregunta si voleu prendre notes quan comença una reunió del calendari amb un enllaç de trucada."
+      },
+      "recordingControls": {
+        "title": "Controls d'enregistrament",
+        "description": "On són la pausa, l'aturada i la transcripció en directe mentre s'enregistra una reunió.",
+        "floating": "Flotants, a la vora de la pantalla",
+        "notch": "Al voltant de la pestanya"
+      },
+      "deepgram": {
+        "title": "Clau de l'API de Deepgram",
+        "description": "Permet refer els parlants d'una reunió al núvol amb Deepgram, que distingeix bé les veus en trucades. Es desa al Clauer.",
+        "placeholder": "Enganxeu una clau i premeu Retorn",
+        "saved": "Desada",
+        "remove": "Elimina",
+        "error": "No s'ha pogut desar la clau de Deepgram"
+      },
+      "liveTranscription": {
+        "title": "Transcripció en directe",
+        "description": "Transcriu la reunió en aquest Mac mentre té lloc. La transcripció completa es continua fent després de la reunió.",
+        "model": "Model per a la transcripció en directe",
+        "modelDescription": "Un model petit i ràpid és el que segueix millor el ritme durant una trucada. La transcripció que es fa després de la reunió utilitza el model de reunions.",
+        "sameModel": "El mateix que les reunions"
+      },
+      "reminderInterval": {
+        "title": "Interval de recordatoris",
+        "description": "Minuts entre els recordatoris «encara s'està enregistrant» un cop hauria d'haver acabat la reunió.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Avançat",
+        "show": "Mostra la configuració avançada",
+        "hide": "Amaga la configuració avançada",
+        "matchThreshold": {
+          "title": "Llindar d'identificació automàtica",
+          "description": "Similitud de veu a partir de la qual s'anomena un parlant automàticament. Per sota, la coincidència demana «Voleu confirmar-ho?»."
+        },
+        "suggestThreshold": {
+          "title": "Llindar de suggeriment",
+          "description": "Similitud de veu per sota de la qual no se suggereix cap persona coneguda."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Desa",
+      "cancel": "Cancel·la",
+      "delete": "Suprimeix",
+      "loading": "S'està carregant..."
+    },
+    "summary": {
+      "heading": "Resum",
+      "actionItems": "Tasques",
+      "generate": "Genera el resum",
+      "regenerate": "Torna a generar",
+      "regenerateWith": "Torna a generar amb...",
+      "generateWith": "Genera amb {{model}}",
+      "otherModels": "Altres models",
+      "otherModel": "Un altre model…",
+      "generating": "S'està resumint la reunió...",
+      "generatingLocal": "S'està resumint la reunió. Amb un model local pot trigar uns minuts.",
+      "progress": "S'està resumint ({{done}} de {{total}} passos)",
+      "empty": "Encara no hi ha resum. Genereu-ne un a partir de la transcripció.",
+      "untitled": "Reunió sense títol",
+      "edit": "Edita",
+      "title": "Títol",
+      "shortSummary": "Resum breu",
+      "shortSummaryPlaceholder": "De què ha tractat la reunió, en unes quantes frases",
+      "decisions": "Decisions",
+      "topics": "Temes",
+      "linesPlaceholder": "Un per línia",
+      "onePerLine": "Decisions i temes: un per línia.",
+      "none": "Cap",
+      "generatedBy": "Generat amb {{model}}",
+      "generatedByCost": "Generat amb {{model}} · {{cost}} · {{input}} tokens d'entrada / {{output}} de sortida",
+      "generatedByTokens": "Generat amb {{model}} · {{input}} tokens d'entrada / {{output}} de sortida",
+      "pickerTitle": "Model per a aquest resum",
+      "pickerDescription": "Torneu a generar amb un altre proveïdor i model. El model de reunions de la configuració no canvia. Es conserven les tasques que ja tenen una incidència a Linear.",
+      "run": "Genera",
+      "noItems": "No hi ha tasques.",
+      "newItemPlaceholder": "Afegiu una tasca",
+      "addItem": "Afegeix",
+      "deleteItem": "Suprimeix la tasca",
+      "due": "Venciment",
+      "duePlaceholder": "p. ex. 2026-10-31",
+      "jumpToMoment": "Reprodueix aquest moment de la transcripció",
+      "owner": {
+        "title": "Responsable",
+        "none": "Sense responsable",
+        "me": "Jo",
+        "meNamed": "Jo ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Tiquets de Linear",
+      "draft": "Redacta tiquets",
+      "approveSelected": "Aprova els seleccionats ({{count}})",
+      "createApproved": "Crea els aprovats ({{count}})",
+      "noKey": "Connecteu Linear per convertir les tasques en tiquets.",
+      "openSettings": "Obre la configuració",
+      "noItems": "No hi ha tasques per convertir en tiquets.",
+      "notDrafted": "Redacteu tiquets a partir de les tasques per revisar-los aquí.",
+      "approve": "Aprova",
+      "approveTip": "Marca aquest tiquet per crear-lo. No es crea res fins que feu clic a «Crea els aprovats».",
+      "needsTeam": "Trieu un equip abans d'aprovar",
+      "unapprove": "Desaprova",
+      "discard": "Descarta",
+      "restore": "Restaura",
+      "edit": "Edita el títol i la descripció",
+      "approved": "Aprovat",
+      "draftState": "Esborrany",
+      "created": "Creat a Linear",
+      "alreadyExisted": "Ja és a Linear: no s'ha creat res de nou",
+      "createFailed": "No s'ha creat: {{error}}",
+      "issue": "Incidència",
+      "team": "Equip",
+      "pickTeam": "Trieu un equip",
+      "project": "Projecte",
+      "noProject": "Sense projecte",
+      "assignee": "Assignat a",
+      "unassigned": "Sense assignar",
+      "labels": "Etiquetes",
+      "addLabel": "Afegeix etiquetes",
+      "labelCount": "{{count}} etiquetes",
+      "priority": {
+        "title": "Prioritat",
+        "none": "Sense prioritat",
+        "urgent": "Urgent",
+        "high": "Alta",
+        "medium": "Mitjana",
+        "low": "Baixa"
+      }
+    },
+    "llm": {
+      "heading": "Resums",
+      "provider": "Proveïdor",
+      "providerDescription": "Model utilitzat per als resums i les tasques de les reunions. El postprocessament del dictat conserva el seu propi proveïdor.",
+      "builtin": "Integrat (en aquest Mac)",
+      "builtinDescription": "Executa un model local amb llama.cpp. No surt res del Mac.",
+      "model": "Model",
+      "modelDescription": "Marqueu un model per afegir-lo als vostres models. Només es mostren els models que generen text. «Bo per a resums» vol dir que el model admet sortida estructurada, que és necessària per als resums.",
+      "modelPlaceholder": "Identificador del model",
+      "pickModel": "Seleccioneu un model",
+      "noLocalModels": "Baixeu un model a continuació",
+      "usingPostProcessModel": "S'utilitza el model de postprocessament ({{model}})",
+      "refreshModels": "Actualitza",
+      "testConnection": "Prova la connexió",
+      "testDescription": "Comprova que el proveïdor, la clau i el model funcionen.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Model al dispositiu en Macs amb Apple Silicon i l'Apple Intelligence activada.",
+      "appleAvailable": "Disponible",
+      "appleUnavailable": "L'Apple Intelligence no està disponible en aquest Mac",
+      "activeHeading": "Els resums els fa",
+      "place": "On es fan els resums",
+      "placeDescription": "Només s'utilitza l'opció seleccionada.",
+      "tabCloud": "Proveïdor al núvol",
+      "tabLocal": "En aquest Mac",
+      "onThisMac": "Aquest Mac · sense connexió",
+      "apiKey": "Clau de l'API",
+      "apiKeyDescription": "Es desa al Clauer i es comparteix amb el postprocessament.",
+      "getKey": "Obteniu una clau de {{provider}}",
+      "modelDescriptionCustom": "Escriviu l'identificador de model que espera el punt de connexió i premeu Retorn per afegir-lo, o marqueu-ne un de la llista.",
+      "searchModels": "Cerca models",
+      "goodOnly": "Bo per a resums",
+      "goodForSummaries": "resums",
+      "reasoning": "raonament",
+      "unknownModel": "no és al registre",
+      "noModels": "Cap model no coincideix.",
+      "context": "{{n}} ctx",
+      "free": "gratuït",
+      "modelCount": "{{shown}}/{{total}} models",
+      "registryBundled": "Detalls dels models de models.dev (inclosos amb l'aplicació)",
+      "registryUpdated": "Detalls dels models de models.dev, actualitzats {{when}}",
+      "justNow": "ara mateix",
+      "minutesAgo": "fa {{n}} min",
+      "hoursAgo": "fa {{n}} h",
+      "daysAgo": "fa {{n}} d",
+      "needsKey": "Afegiu la clau de l'API de {{provider}}",
+      "needsModel": "Trieu un model de {{provider}}",
+      "needsLocalModel": "Baixeu un model per resumir en aquest Mac",
+      "localDescription": "S'executa sense connexió en aquest Mac. Trieu un model baixat.",
+      "appleUnavailableHint": "No disponible en aquest Mac. Activeu-la a Configuració del sistema > Apple Intelligence i Siri.",
+      "unavailable": "no disponible",
+      "yourModels": "Els vostres models",
+      "yourModelsDescription": "«Genera el resum» ofereix tots els models d'aquí perquè en pugueu triar un per reunió. El seleccionat és el predeterminat.",
+      "yourModelsEmpty": "Encara no hi ha models al núvol. Trieu un proveïdor a continuació, afegiu-ne la clau de l'API i marqueu els models que vulgueu.",
+      "default": "predeterminat",
+      "removeModel": "Elimina dels vostres models",
+      "addFrom": "Afegeix models de",
+      "addFromDescription": "Trieu un proveïdor per introduir-ne la clau i marqueu els models que voleu afegir. Això no canvia el predeterminat."
+    },
+    "local": {
+      "heading": "Models locals",
+      "empty": "No hi ha models integrats disponibles.",
+      "default": "Predeterminat",
+      "recommendedRam": "Recomanat per a {{gb}} GB o més de RAM",
+      "notEnoughRam": "Aquest Mac té menys memòria de la recomanada per a aquest model.",
+      "downloaded": "Baixat",
+      "download": "Baixa",
+      "downloading": "S'està baixant: {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Clau de l'API personal",
+      "keyDescription": "Es desa al Clauer del macOS. S'utilitza per redactar i crear tiquets a partir de les tasques.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Hi ha una clau desada al Clauer.",
+      "noKey": "No hi ha cap clau desada.",
+      "getKey": "Creeu una clau a linear.app/settings/api",
+      "removeKey": "Elimina la clau",
+      "test": "Prova la connexió",
+      "testDescription": "Comprova la clau amb Linear.",
+      "connectedAs": "Connectat com a {{name}}"
+    },
+    "byok": {
+      "testConnection": "Prova la connexió",
+      "testDescription": "Comprova l'URL de base, la clau de l'API i el model amb una sol·licitud petita.",
+      "baseUrlEditable": "URL de base de l'API d'aquest proveïdor. Substituïu qualsevol {placeholder} (p. ex., l'identificador del compte de Cloudflare).",
+      "cloudflareHint": "Cloudflare: poseu l'identificador del compte (i el de la passarel·la per a l'AI Gateway) a l'URL de base."
+    }
   }
 }

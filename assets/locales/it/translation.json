@@ -7,7 +7,23 @@
     "model": "Modello",
     "quit": "Esci",
     "cancel": "Annulla",
-    "secureInputWarning": "⚠ Scorciatoie bloccate da Secure Input"
+    "secureInputWarning": "⚠ Scorciatoie bloccate da Secure Input",
+    "startMeetingNotes": "Avvia note riunione",
+    "stopMeetingNotes": "Interrompi note riunione",
+    "pauseMeetingNotes": "Metti in pausa la registrazione",
+    "resumeMeetingNotes": "Riprendi la registrazione",
+    "meetingPaused": "In pausa",
+    "meetingStillRecording": "Guidy sta ancora registrando",
+    "meetingStop": "Interrompi",
+    "meetingKeepGoing": "Continua",
+    "meetingTakeNotesFor": "Prendere note per {{title}}?",
+    "meetingStart": "Avvia",
+    "meetingUntitled": "Riunione"
+  },
+  "notch": {
+    "pause": "Metti in pausa la registrazione",
+    "resume": "Riprendi la registrazione",
+    "stop": "Interrompi note riunione"
   },
   "sidebar": {
     "general": "Generale",
@@ -16,7 +32,58 @@
     "postProcessing": "Post-Elaborazione",
     "history": "Cronologia",
     "debug": "Debug",
+    "usage": "Utilizzo",
     "about": "Informazioni"
+  },
+  "usage": {
+    "title": "Utilizzo",
+    "description": "Quanto sono costati i provider IA cloud e il lavoro svolto dai modelli su questo Mac.",
+    "cloud": "Cloud",
+    "local": "Su questo Mac",
+    "refresh": "Aggiorna",
+    "total": "Totale speso",
+    "last30Days": "Ultimi 30 giorni",
+    "callsTitle": "Chiamate",
+    "byModel": "Per modello",
+    "byFeature": "Per funzione",
+    "empty": "Ancora nessuna chiamata a IA cloud.",
+    "calls_one": "{{count}} chiamata",
+    "calls_other": "{{count}} chiamate",
+    "average": "media {{cost}}",
+    "highest": "massimo {{cost}}",
+    "tokens": "token: {{input}} in ingresso / {{output}} in uscita",
+    "unknownPrice": "prezzo sconosciuto",
+    "feature": {
+      "dictation": "Dettatura",
+      "meetingTranscription": "Trascrizione riunioni",
+      "meetingSummary": "Riepiloghi riunioni",
+      "other": "Altro"
+    },
+    "localAudio": "Audio trascritto",
+    "localWords": "Parole",
+    "localTokens": "Token LLM",
+    "localCloudEquivalent": "Equivalente cloud",
+    "localEmpty": "Nessuna elaborazione ancora eseguita con un modello locale.",
+    "localByModel": "Modelli locali",
+    "localByFeature": "Lavoro locale per funzione",
+    "kind": {
+      "transcription": "Trascrizione",
+      "llm": "LLM integrato"
+    },
+    "runs_one": "{{count}} esecuzione",
+    "runs_other": "{{count}} esecuzioni",
+    "audio": "{{duration}} di audio",
+    "words": "{{count}} parole",
+    "realtime": "{{speed}} il tempo reale",
+    "promptSpeed": "prompt {{speed}}",
+    "generationSpeed": "generazione {{speed}}",
+    "loadTime": "si carica in {{time}}",
+    "localNote": "La velocità rispetto al tempo reale è la durata dell'audio ÷ il tempo di elaborazione, escluso il caricamento; la dettatura decodificata in diretta mentre parli non viene cronometrata. L'equivalente cloud calcola l'audio a ${{price}} al minuto (OpenAI Whisper).",
+    "estimateNote": "~ indica importi stimati dai prezzi per token pubblicati; i provider che comunicano il proprio costo (come OpenRouter) sono esatti. Per la fatturazione controlla la dashboard del tuo provider.",
+    "reportedNote": "Gli importi sono quelli comunicati dai provider. Per la fatturazione controlla la dashboard del tuo provider.",
+    "clear": "Cancella cronologia",
+    "clearTitle": "Cancellare la cronologia di utilizzo?",
+    "clearConfirm": "Le chiamate, i costi e le esecuzioni dei modelli locali registrati verranno eliminati. L'utilizzo mostrato nei riepiloghi delle riunioni resta."
   },
   "onboarding": {
     "subtitle": "Per cominciare, scegli un modello di riconoscimento vocale",
@@ -40,7 +107,8 @@
     },
     "modelCard": {
       "accuracy": "accuratezza",
-      "speed": "velocità"
+      "speed": "velocità",
+      "size": "dimensione"
     },
     "models": {
       "small": {
@@ -115,6 +183,8 @@
       "languageOnly": "Solo {{language}}",
       "streaming": "Mostra la trascrizione in tempo reale mentre parli"
     },
+    "download": "Scarica",
+    "use": "Usa",
     "cancel": "Annulla",
     "cancelDownload": "Annulla download",
     "legacy": "Obsoleto"
@@ -152,6 +222,8 @@
     },
     "general": {
       "title": "Generale",
+      "description": "Come avvii la dettatura, la lingua che ascolta e cosa senti.",
+      "shortcutsGroup": "Scorciatoie",
       "shortcut": {
         "title": "Scorciatoie di Guidy",
         "description": "Configura le scorciatoie per attivare la trascrizione vocale",
@@ -231,6 +303,8 @@
       }
     },
     "advanced": {
+      "title": "Avanzate",
+      "description": "Avvio, incollaggio, regolazione della trascrizione e cronologia.",
       "groups": {
         "app": "App",
         "output": "Output",
@@ -382,6 +456,8 @@
       }
     },
     "postProcessing": {
+      "title": "Post-Elaborazione",
+      "description": "Ripulisci o riscrivi una trascrizione con un modello IA prima che venga incollata.",
       "hotkey": {
         "title": "Tasto di scelta rapida"
       },
@@ -390,6 +466,11 @@
         "provider": {
           "title": "Provider",
           "description": "Seleziona un provider compatibile con OpenAI o Anthropic."
+        },
+        "builtin": {
+          "label": "Modello integrato (su questo Mac)",
+          "description": "Esegue un modello locale su questo Mac. Nulla lascia il tuo computer.",
+          "manage": "Gestisci modelli integrati"
         },
         "apiFormat": {
           "title": "Formato API",
@@ -411,7 +492,8 @@
         "apiKey": {
           "title": "Chiave API",
           "description": "Chiave API per il provider selezionato.",
-          "placeholder": "sk-..."
+          "placeholder": "sk-...",
+          "saveFailed": "Impossibile salvare la chiave API"
         },
         "model": {
           "title": "Modello",
@@ -600,6 +682,10 @@
         "title": "Versione",
         "description": "Versione attuale di Guidy"
       },
+      "author": {
+        "title": "Creato da",
+        "description": "Imran"
+      },
       "appDataDirectory": {
         "title": "Cartella Dati App",
         "description": "Cartella in cui Guidy salva i dati"
@@ -621,6 +707,12 @@
           "description": "Inferenza ad alte prestazioni del modello di riconoscimento vocale automatico Whisper di OpenAI",
           "details": "Guidy usa ggml per il riconoscimento vocale veloce in locale. Grazie a Georgi Gerganov e collaboratori per il fantastico lavoro."
         }
+      },
+      "hero": {
+        "headline": "Da voce a testo, tutto su questo Mac",
+        "lede": "Premi una scorciatoia, parla e Guidy scrive nell'app in primo piano. La trascrizione avviene in locale.",
+        "engine": "Motore",
+        "model": "Modello"
       },
       "whatsNewUpdates": {
         "label": "Mostra novità",
@@ -706,5 +798,561 @@
     "learnMore": "Come risolvere",
     "recorderBlocked": "Non è possibile registrare scorciatoie in questo momento: Secure Input di macOS sta bloccando gli eventi dei tasti. Risolvi prima l'avviso di Secure Input.",
     "dismiss": "Ignora"
+  },
+  "meetings": {
+    "title": "Riunioni",
+    "selection": {
+      "hint": "Trascina o fai Maiusc-clic per etichettare più righe",
+      "count_one": "{{count}} riga selezionata",
+      "count_other": "{{count}} righe selezionate",
+      "keys": "Maiusc-clic: intervallo · ⌘-clic: aggiungi o rimuovi · Esc: deseleziona",
+      "setSpeaker": "Imposta interlocutore",
+      "clear": "Deseleziona"
+    },
+    "speakersRedo": {
+      "action": "Rifai interlocutori",
+      "tooltip": "Distingui di nuovo gli interlocutori con {{model}}. La trascrizione resta. Le righe che hai etichettato e gli interlocutori a cui hai dato un nome mantengono la loro persona; gli altri vengono riassociati in base alla voce.",
+      "standard": "Modello interlocutori standard",
+      "download": "Download di {{size}}, una volta sola",
+      "error": "Impossibile rifare gli interlocutori",
+      "confirmTitle": "Trovare gli interlocutori con Deepgram?",
+      "confirmDeepgram": "L'audio degli altri partecipanti a questa riunione viene caricato su Deepgram per distinguerli, al costo di circa {{cost}}. La trascrizione resta invariata.",
+      "confirmDeepgramUnpriced": "L'audio degli altri partecipanti a questa riunione viene caricato su Deepgram per distinguerli. La trascrizione resta invariata."
+    },
+    "day": {
+      "today": "Oggi",
+      "tomorrow": "Domani",
+      "yesterday": "Ieri"
+    },
+    "copy": {
+      "summary": "Copia",
+      "transcript": "Copia trascrizione",
+      "copied": "Copiato"
+    },
+    "redo": {
+      "action": "Rifai trascrizione",
+      "localTitle": "Su questo Mac",
+      "cloudTitle": "Cloud",
+      "error": "Impossibile avviare di nuovo la trascrizione",
+      "issueRepetition": "Alcune parti di questa trascrizione si ripetono, il che di solito significa che il modello ha perso il filo dell'audio.",
+      "issueTooFewWords": "Questa trascrizione ha molte meno parole di quanto suggerisca il tempo di conversazione, quindi probabilmente alcune parti della riunione sono andate perse.",
+      "issueHint": "Un modello cloud spesso funziona meglio con audio difficile.",
+      "tooltip": "Trascrivi di nuovo con {{model}}. Sostituisce la trascrizione e gli interlocutori; le persone a cui hai dato un nome vengono riassociate in base alla voce.",
+      "more": "Altri modelli",
+      "noKeyShort": "serve una chiave API (Riunioni › Impostazioni › IA)",
+      "confirmTitle": "Trascrivere con {{provider}}?",
+      "confirmCloud": "L'audio di questa riunione viene caricato su {{provider}} e trascritto con {{model}}, al costo di circa {{cost}}. La trascrizione e gli interlocutori vengono sostituiti.",
+      "confirmCloudUnpriced": "L'audio di questa riunione viene caricato su {{provider}} e trascritto con {{model}}. La trascrizione e gli interlocutori vengono sostituiti."
+    },
+    "widget": {
+      "recording": "Registrazione",
+      "paused": "In pausa",
+      "you": "Tu",
+      "others": "Altri",
+      "mic": "Microfono",
+      "system": "Audio di sistema",
+      "liveStarting": "Caricamento del modello di trascrizione…",
+      "liveListening": "In ascolto. Le righe compaiono qui mentre le persone parlano.",
+      "liveOff": "La trascrizione in tempo reale è disattivata. Attivala in Riunioni › Impostazioni.",
+      "liveUnavailable": "Trascrizione in tempo reale non disponibile: {{reason}}",
+      "pause": "Pausa",
+      "resume": "Riprendi",
+      "stop": "Interrompi",
+      "openNotes": "Apri note",
+      "expand": "Mostra la trascrizione in tempo reale",
+      "collapse": "Comprimi",
+      "liveTitle": "Trascrizione in tempo reale",
+      "liveHint": "Quanto sentito finora. La trascrizione completa con i nomi degli interlocutori viene creata al termine della riunione."
+    },
+    "description": "Registra una riunione su questo Mac, poi leggi la trascrizione con gli interlocutori identificati per nome.",
+    "init": {
+      "starting": "Avvio delle note riunione...",
+      "failed": "Impossibile avviare le note riunione",
+      "retry": "Riprova",
+      "keyMissing": {
+        "title": "Impossibile decifrare le note riunione",
+        "description": "La chiave di cifratura delle note riunione manca dal Portachiavi o non corrisponde alle note esistenti, quindi non possono essere aperte. Se puoi ripristinare la chiave (ad esempio da un backup del Portachiavi), fallo e scegli Riprova. Altrimenti, reimposta per ricominciare da zero: le vecchie note riunione vengono spostate da parte, non eliminate."
+      },
+      "reset": {
+        "action": "Reimposta dati note riunione",
+        "title": "Reimpostare i dati delle note riunione?",
+        "confirm": "Le note riunione e le registrazioni attuali verranno spostate in una cartella \"meetings-unreadable\" nella cartella dati di Guidy (nulla viene eliminato) e verrà creata una nuova chiave di cifratura. Guidy non potrà mostrare le vecchie note."
+      }
+    },
+    "errors": {
+      "unavailable": "Le note riunione non sono disponibili su questo Mac.",
+      "modelMissing": "Il modello di trascrizione delle riunioni ({{name}}) non è ancora stato scaricato.",
+      "modelUnknown": "Il modello per le riunioni {{name}} non è installato. Scegline un altro nelle Impostazioni.",
+      "speakerModelMissing": "Scarica il modello di riconoscimento degli interlocutori in Riunioni > Impostazioni, poi elabora la riunione.",
+      "noLinearKey": "Aggiungi prima una chiave API di Linear nelle Impostazioni.",
+      "linearUnauthorized": "Linear ha rifiutato la chiave API. Controllala nelle Impostazioni."
+    },
+    "model": {
+      "download": "Scarica modello per le riunioni",
+      "downloadError": "Impossibile scaricare il modello per le riunioni"
+    },
+    "tabs": {
+      "meetings": "Riunioni",
+      "people": "Persone",
+      "settings": "Impostazioni"
+    },
+    "recorder": {
+      "start": "Avvia note riunione",
+      "stop": "Interrompi note riunione",
+      "recording": "Registrazione",
+      "idle": "Non in registrazione",
+      "startError": "Impossibile avviare la registrazione",
+      "stopError": "Impossibile interrompere la registrazione",
+      "disabled": "Attiva le note riunione nelle Impostazioni per registrare."
+    },
+    "upcoming": {
+      "title": "Prossime",
+      "empty": "Nessuna riunione in calendario con un link di chiamata.",
+      "start": "Avvia"
+    },
+    "list": {
+      "title": "Registrazioni",
+      "empty": "Ancora nessuna riunione. Avvia le note riunione per registrarne una.",
+      "loading": "Caricamento riunioni...",
+      "loadError": "Impossibile caricare le riunioni",
+      "speakerModelMissing": "Le registrazioni non vengono elaborate finché non scarichi il modello di riconoscimento degli interlocutori.",
+      "minutes": "{{count}} min",
+      "open": "Apri",
+      "rename": "Rinomina",
+      "delete": "Elimina",
+      "process": "Elabora",
+      "retry": "Riprova",
+      "cancelProcessing": "Annulla elaborazione",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "titlePlaceholder": "Titolo della riunione",
+      "deleteTitle": "Eliminare la riunione?",
+      "deleteConfirm": "\"{{title}}\" verrà eliminata insieme a trascrizione e audio. Le impronte vocali vengono mantenute.",
+      "deleteError": "Impossibile eliminare la riunione",
+      "renameError": "Impossibile rinominare la riunione",
+      "processError": "Impossibile avviare l'elaborazione",
+      "cancelError": "Impossibile annullare l'elaborazione"
+    },
+    "status": {
+      "recording": "In registrazione",
+      "recorded": "Non elaborata",
+      "processing": "In elaborazione",
+      "processed": "Pronta",
+      "failed": "Non riuscita"
+    },
+    "stage": {
+      "decode": "Decodifica audio",
+      "vad": "Ricerca del parlato",
+      "transcribe": "Trascrizione",
+      "voiceprints": "Calcolo impronte vocali",
+      "cluster": "Raggruppamento interlocutori",
+      "merge": "Unione tracce",
+      "done": "Fatto"
+    },
+    "detail": {
+      "back": "Tutte le riunioni",
+      "transcript": "Trascrizione",
+      "empty": "Ancora nessuna trascrizione. Elabora la riunione per crearne una.",
+      "loading": "Caricamento trascrizione...",
+      "loadError": "Impossibile caricare la riunione",
+      "playError": "Impossibile riprodurre questo segmento",
+      "play": "Riproduci da qui",
+      "you": "Tu",
+      "speakers": "Interlocutori",
+      "attendees": "Partecipanti",
+      "duration": "Durata",
+      "words": "Parole",
+      "talkTime": "Tempo di parola",
+      "share": "Quota",
+      "youSpoke": "Hai parlato",
+      "minutes": "Min"
+    },
+    "speaker": {
+      "rename": "Dai un nome a questo interlocutore",
+      "confirm": "Confermi?",
+      "confirmAction": "Conferma",
+      "change": "Cambia",
+      "suggestions": "Suggerimenti",
+      "attendee": "Partecipante",
+      "knownPerson": "Persona nota",
+      "noSuggestions": "Nessun suggerimento",
+      "newPerson": "Nuova persona",
+      "namePlaceholder": "Nome",
+      "emailPlaceholder": "Email (facoltativa)",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "assignError": "Impossibile dare un nome all'interlocutore",
+      "confirmError": "Impossibile confermare l'interlocutore",
+      "unnamed": "Interlocutore {{n}}",
+      "unknown": "Sconosciuto",
+      "whoIsThis": "Chi è?",
+      "whoSaidThis": "Chi l'ha detto?"
+    },
+    "people": {
+      "title": "Persone",
+      "description": "Le persone a cui hai dato un nome nelle riunioni. Guidy riconosce la loro voce nelle riunioni successive.",
+      "empty": "Ancora nessuna persona. Dai un nome a un interlocutore in una riunione per aggiungerne una.",
+      "loadError": "Impossibile caricare le persone",
+      "voiceprints_one": "{{count}} impronta vocale",
+      "voiceprints_other": "{{count}} impronte vocali",
+      "edit": "Modifica",
+      "merge": "Unisci",
+      "mergeInto": "Unisci a...",
+      "mergeHint": "Scegli la persona da mantenere. Impronte vocali e nomi degli interlocutori passano a lei.",
+      "mergeIntoName": "Unisci a {{name}}",
+      "samples": {
+        "hint": "Ascolta prima le impronte vocali: ognuna è stata ricavata da una riga di una riunione.",
+        "none": "Nessuna impronta vocale.",
+        "play": "Riproduci",
+        "pause": "Pausa",
+        "noText": "(nessuna parola)",
+        "noLine": "La riga da cui proviene non esiste più",
+        "audioDeleted": "audio eliminato",
+        "loadError": "Impossibile caricare le impronte vocali"
+      },
+      "mergeTitle": "Unire le persone?",
+      "mergeConfirm": "{{from}} verrà unito a {{into}} e poi rimosso.",
+      "mergeError": "Impossibile unire le persone",
+      "delete": "Elimina",
+      "deleteTitle": "Eliminare la persona?",
+      "deleteConfirm": "{{name}} e le sue {{count}} impronte vocali salvate verranno eliminate. Guidy non riconoscerà più la sua voce nelle riunioni future.",
+      "deleteError": "Impossibile eliminare la persona",
+      "renameError": "Impossibile aggiornare la persona",
+      "namePlaceholder": "Nome",
+      "emailPlaceholder": "Email (facoltativa)",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "voice": {
+        "title": "La tua voce",
+        "notRecorded": "Non registrata",
+        "recordedTitle": "Registrata",
+        "description": "Registra un breve campione della tua voce, così Guidy può distinguerti dalle altre persone nella stanza durante le riunioni in presenza.",
+        "recorded": "Nelle riunioni elaborate da ora in poi, solo il parlato che somiglia alla tua voce viene attribuito a te. Rielabora le riunioni precedenti per applicarlo.",
+        "record": "Registra la mia voce",
+        "recordAgain": "Registra di nuovo",
+        "starting": "Apertura del microfono...",
+        "recording": "Registrazione",
+        "readAloud": "Leggi questo testo ad alta voce con il tuo tono normale, poi premi Fatto.",
+        "passage": "Quando partecipo a una riunione, di solito comincio controllando l'ordine del giorno e gli appunti dell'ultima volta. Poi esaminiamo cosa è cambiato dall'ultima volta che ci siamo sentiti, cosa è bloccato e chi si occupa dei prossimi passi. Se serve una decisione, cerchiamo di prenderla prima della fine della chiamata, così nessuno deve aspettare un'altra riunione. Dopo condivido un breve riepilogo con tutti i presenti.",
+        "done": "Fatto",
+        "saving": "Salvataggio della tua voce...",
+        "loadError": "Impossibile caricare la tua voce",
+        "recordError": "Impossibile avviare la registrazione",
+        "saveError": "Impossibile salvare la tua voce",
+        "deleteTitle": "Eliminare la tua voce?",
+        "deleteConfirm": "La tua voce registrata verrà eliminata. Guidy attribuirà di nuovo a te tutto il parlato del microfono.",
+        "deleteError": "Impossibile eliminare la tua voce"
+      }
+    },
+    "settings": {
+      "general": "Note riunione",
+      "enabled": {
+        "title": "Note riunione",
+        "description": "Registra le riunioni con il microfono e l'audio del computer. Attivandole verrà chiesto l'accesso a calendario, audio di sistema e notifiche."
+      },
+      "permissions": {
+        "title": "Permessi",
+        "calendar": "Calendario",
+        "systemAudio": "Audio di sistema",
+        "microphone": "Microfono",
+        "notifications": "Notifiche",
+        "granted": "Concesso",
+        "denied": "Non concesso",
+        "error": "Impossibile richiedere i permessi",
+        "requestAgain": "Richiedi di nuovo",
+        "openSettings": "Apri Impostazioni di Sistema"
+      },
+      "you": "Tu",
+      "userName": {
+        "title": "Il tuo nome",
+        "description": "La traccia del tuo microfono viene sempre etichettata con questo nome.",
+        "placeholder": "Il tuo nome"
+      },
+      "userEmails": {
+        "title": "Indirizzi email",
+        "description": "Ogni indirizzo con cui partecipi alle riunioni, ad esempio personale e di lavoro. Se uno di questi è in un invito, quel partecipante sei tu.",
+        "labelPlaceholder": "Etichetta, es. Lavoro",
+        "emailPlaceholder": "nome@esempio.com",
+        "noLabel": "Nessuna etichetta",
+        "add": "Aggiungi",
+        "remove": "Rimuovi questo indirizzo",
+        "invalid": "Questo non è un indirizzo email valido.",
+        "duplicate": "Questo indirizzo è già nell'elenco."
+      },
+      "recording": "Registrazione",
+      "meetingModel": {
+        "title": "Modello di trascrizione",
+        "usesDictation": "Le riunioni usano il tuo modello di dettatura: {{name}}.",
+        "noDictation": "Nessun modello di dettatura ancora scaricato. Scaricane uno nella pagina Modelli o scegli un modello per le riunioni.",
+        "separate": "Usa un modello diverso",
+        "choice": "Modello per le riunioni",
+        "choiceDescription": "Parakeet fornisce i tempi a livello di parola, utili quando le persone si sovrappongono.",
+        "notDownloaded": "{{name}} (non scaricato)",
+        "chosenMissing": "{{name}} non è ancora stato scaricato. Fino ad allora le riunioni usano il tuo modello di dettatura.",
+        "chosenUnknown": "{{name}} non è installato. Scegli un altro modello o disattiva \"Usa un modello diverso\"."
+      },
+      "separation": {
+        "title": "Distinguere le voci",
+        "description": "Il modello degli interlocutori che decide chi ha detto ogni riga. I modelli più grandi distinguono meglio le voci simili, ma occupano più spazio e rallentano l'elaborazione. Le persone a cui hai dato un nome vengono sempre riconosciute con il modello standard, quindi cambiando modello le loro impronte vocali restano.",
+        "downloaded": "Scaricato.",
+        "notDownloaded": "Viene scaricato quando lo scegli.",
+        "downloading": "Download in corso...",
+        "delete": "Elimina questo modello ({{size}})",
+        "downloadError": "Impossibile scaricare il modello degli interlocutori",
+        "deleteError": "Impossibile eliminare il modello degli interlocutori",
+        "about": {
+          "resnet34": "Standard. Piccolo e veloce, e riconosce anche le persone a cui hai dato un nome.",
+          "cam_plus_plus": "Piccolo più o meno uguale, ed è il più veloce.",
+          "resnet152": "Migliore con voci simili; l'elaborazione richiede circa il triplo del tempo.",
+          "titanet_large": "Di NVIDIA, addestrato anche su telefonate, il che può adattarsi all'audio delle chiamate. Veloce più o meno come quello standard.",
+          "resnet293": "Il più accurato qui; l'elaborazione richiede circa 6 volte il tempo."
+        }
+      },
+      "speakerModel": {
+        "title": "Riconoscimento interlocutori",
+        "description": "Distingue le voci e riconosce le persone a cui hai già dato un nome. Usa {{name}} ({{trainedOn}}), {{size}}. Viene scaricato solo quando fai clic su Scarica.",
+        "ready": "Scaricato",
+        "download": "Scarica ({{size}})",
+        "retry": "Riprova download",
+        "failed": "Download non riuscito: {{error}}"
+      },
+      "retention": {
+        "title": "Conserva l'audio delle riunioni",
+        "description": "L'audio grezzo viene eliminato dopo questo periodo. Trascrizioni e impronte vocali vengono mantenute.",
+        "days3": "3 giorni",
+        "days7": "7 giorni",
+        "days30": "30 giorni",
+        "forever": "Per sempre"
+      },
+      "mcp": {
+        "group": "Altre app",
+        "title": "Server MCP",
+        "description": "Consenti alle app IA su questo Mac, come Claude o Cursor, di leggere l'elenco delle riunioni, i riepiloghi e le trascrizioni. Solo in locale e in sola lettura.",
+        "url": "URL del server (Streamable HTTP)",
+        "stdio": "Comando (per le app che eseguono solo server stdio)",
+        "failed": "Impossibile avviare il server MCP sulla porta {{port}}. Potrebbe essere in uso da un'altra app."
+      },
+      "calendarNotifications": {
+        "title": "Notifiche del calendario",
+        "description": "Chiedi se prendere note quando inizia una riunione in calendario con un link di chiamata."
+      },
+      "recordingControls": {
+        "title": "Controlli di registrazione",
+        "description": "Dove si trovano pausa, interruzione e trascrizione in tempo reale mentre una riunione viene registrata.",
+        "floating": "Mobili, al bordo dello schermo",
+        "notch": "Intorno al notch"
+      },
+      "deepgram": {
+        "title": "Chiave API Deepgram",
+        "description": "Ti consente di rifare gli interlocutori di una riunione nel cloud con Deepgram, che distingue bene le voci nelle chiamate. Salvata nel Portachiavi.",
+        "placeholder": "Incolla una chiave e premi Invio",
+        "saved": "Salvata",
+        "remove": "Rimuovi",
+        "error": "Impossibile salvare la chiave Deepgram"
+      },
+      "liveTranscription": {
+        "title": "Trascrizione in tempo reale",
+        "description": "Trascrivi la riunione su questo Mac mentre si svolge. La trascrizione completa viene comunque creata dopo la riunione.",
+        "model": "Modello per la trascrizione in tempo reale",
+        "modelDescription": "Un modello piccolo e veloce tiene meglio il passo mentre sei in chiamata. La trascrizione creata dopo la riunione usa il modello per le riunioni.",
+        "sameModel": "Uguale alle riunioni"
+      },
+      "reminderInterval": {
+        "title": "Intervallo promemoria",
+        "description": "Minuti tra un promemoria \"ancora in registrazione\" e l'altro dopo l'orario di fine previsto della riunione.",
+        "minutes": "{{count}} min"
+      },
+      "advanced": {
+        "title": "Avanzate",
+        "show": "Mostra impostazioni avanzate",
+        "hide": "Nascondi impostazioni avanzate",
+        "matchThreshold": {
+          "title": "Soglia di associazione automatica",
+          "description": "Somiglianza vocale pari o superiore alla quale un interlocutore riceve automaticamente un nome. Al di sotto, l'associazione chiede \"Confermi?\"."
+        },
+        "suggestThreshold": {
+          "title": "Soglia dei suggerimenti",
+          "description": "Somiglianza vocale al di sotto della quale una persona nota non viene proprio suggerita."
+        }
+      }
+    }
+  },
+  "meetingsAi": {
+    "common": {
+      "save": "Salva",
+      "cancel": "Annulla",
+      "delete": "Elimina",
+      "loading": "Caricamento..."
+    },
+    "summary": {
+      "heading": "Riepilogo",
+      "actionItems": "Azioni da fare",
+      "generate": "Genera riepilogo",
+      "regenerate": "Rigenera",
+      "regenerateWith": "Rigenera con...",
+      "generateWith": "Genera con {{model}}",
+      "otherModels": "Altri modelli",
+      "otherModel": "Altro modello…",
+      "generating": "Riepilogo della riunione in corso...",
+      "generatingLocal": "Riepilogo della riunione in corso. Con un modello locale può richiedere qualche minuto.",
+      "progress": "Riepilogo in corso ({{done}} di {{total}} passaggi)",
+      "empty": "Ancora nessun riepilogo. Generane uno dalla trascrizione.",
+      "untitled": "Riunione senza titolo",
+      "edit": "Modifica",
+      "title": "Titolo",
+      "shortSummary": "Breve riepilogo",
+      "shortSummaryPlaceholder": "Di cosa si è parlato nella riunione, in poche frasi",
+      "decisions": "Decisioni",
+      "topics": "Argomenti",
+      "linesPlaceholder": "Uno per riga",
+      "onePerLine": "Decisioni e argomenti: uno per riga.",
+      "none": "Nessuno",
+      "generatedBy": "Generato con {{model}}",
+      "generatedByCost": "Generato con {{model}} · {{cost}} · token: {{input}} in ingresso / {{output}} in uscita",
+      "generatedByTokens": "Generato con {{model}} · token: {{input}} in ingresso / {{output}} in uscita",
+      "pickerTitle": "Modello per questo riepilogo",
+      "pickerDescription": "Rigenera con un provider e un modello diversi. Il modello per le riunioni nelle impostazioni resta invariato. Le azioni da fare che hanno già un issue Linear vengono mantenute.",
+      "run": "Genera",
+      "noItems": "Nessuna azione da fare.",
+      "newItemPlaceholder": "Aggiungi un'azione da fare",
+      "addItem": "Aggiungi",
+      "deleteItem": "Elimina azione da fare",
+      "due": "Scadenza",
+      "duePlaceholder": "es. 2026-10-31",
+      "jumpToMoment": "Riproduci questo momento nella trascrizione",
+      "owner": {
+        "title": "Responsabile",
+        "none": "Nessun responsabile",
+        "me": "Io",
+        "meNamed": "Io ({{name}})"
+      }
+    },
+    "tickets": {
+      "heading": "Ticket Linear",
+      "draft": "Prepara bozze dei ticket",
+      "approveSelected": "Approva selezionati ({{count}})",
+      "createApproved": "Crea approvati ({{count}})",
+      "noKey": "Collega Linear per trasformare le azioni da fare in ticket.",
+      "openSettings": "Apri impostazioni",
+      "noItems": "Nessuna azione da fare da trasformare in ticket.",
+      "notDrafted": "Prepara le bozze dei ticket dalle azioni da fare per rivederle qui.",
+      "approve": "Approva",
+      "approveTip": "Segna questo ticket per la creazione. Non viene creato nulla finché non fai clic su Crea approvati.",
+      "needsTeam": "Scegli un team prima di approvare",
+      "unapprove": "Annulla approvazione",
+      "discard": "Scarta",
+      "restore": "Ripristina",
+      "edit": "Modifica titolo e descrizione",
+      "approved": "Approvato",
+      "draftState": "Bozza",
+      "created": "Creato in Linear",
+      "alreadyExisted": "Già in Linear: non è stato creato nulla di nuovo",
+      "createFailed": "Non creato: {{error}}",
+      "issue": "Issue",
+      "team": "Team",
+      "pickTeam": "Scegli un team",
+      "project": "Progetto",
+      "noProject": "Nessun progetto",
+      "assignee": "Assegnatario",
+      "unassigned": "Non assegnato",
+      "labels": "Etichette",
+      "addLabel": "Aggiungi etichette",
+      "labelCount": "{{count}} etichette",
+      "priority": {
+        "title": "Priorità",
+        "none": "Nessuna priorità",
+        "urgent": "Urgente",
+        "high": "Alta",
+        "medium": "Media",
+        "low": "Bassa"
+      }
+    },
+    "llm": {
+      "heading": "Riepiloghi",
+      "provider": "Provider",
+      "providerDescription": "Modello usato per i riepiloghi delle riunioni e le azioni da fare. La post-elaborazione della dettatura mantiene il proprio provider.",
+      "builtin": "Integrato (su questo Mac)",
+      "builtinDescription": "Esegue un modello locale con llama.cpp. Nulla lascia il tuo Mac.",
+      "model": "Modello",
+      "modelDescription": "Seleziona un modello per aggiungerlo ai tuoi modelli. Sono elencati solo i modelli che generano testo. \"Adatto ai riepiloghi\" significa che il modello supporta l'output strutturato, su cui si basano i riepiloghi.",
+      "modelPlaceholder": "ID del modello",
+      "pickModel": "Seleziona un modello",
+      "noLocalModels": "Scarica un modello qui sotto",
+      "usingPostProcessModel": "Usa il modello di post-elaborazione ({{model}})",
+      "refreshModels": "Aggiorna",
+      "testConnection": "Verifica connessione",
+      "testDescription": "Verifica che provider, chiave e modello funzionino.",
+      "apple": "Apple Intelligence",
+      "appleDescription": "Modello sul dispositivo per Mac con Apple Silicon e Apple Intelligence attivata.",
+      "appleAvailable": "Disponibile",
+      "appleUnavailable": "Apple Intelligence non è disponibile su questo Mac",
+      "activeHeading": "I riepiloghi vengono creati da",
+      "place": "Dove vengono creati i riepiloghi",
+      "placeDescription": "Viene usata solo l'opzione selezionata.",
+      "tabCloud": "Provider cloud",
+      "tabLocal": "Su questo Mac",
+      "onThisMac": "Questo Mac · offline",
+      "apiKey": "Chiave API",
+      "apiKeyDescription": "Salvata nel Portachiavi e condivisa con la Post-Elaborazione.",
+      "getKey": "Ottieni una chiave {{provider}}",
+      "modelDescriptionCustom": "Digita l'ID del modello previsto dal tuo endpoint e premi Invio per aggiungerlo, oppure selezionane uno tra quelli elencati.",
+      "searchModels": "Cerca modelli",
+      "goodOnly": "Adatto ai riepiloghi",
+      "goodForSummaries": "riepiloghi",
+      "reasoning": "ragionamento",
+      "unknownModel": "non nel registro",
+      "noModels": "Nessun modello corrispondente.",
+      "context": "{{n}} ctx",
+      "free": "gratis",
+      "modelCount": "{{shown}}/{{total}} modelli",
+      "registryBundled": "Dettagli dei modelli da models.dev (inclusi nell'app)",
+      "registryUpdated": "Dettagli dei modelli da models.dev, aggiornati {{when}}",
+      "justNow": "proprio ora",
+      "minutesAgo": "{{n}} min fa",
+      "hoursAgo": "{{n}} h fa",
+      "daysAgo": "{{n}} g fa",
+      "needsKey": "Aggiungi la tua chiave API {{provider}}",
+      "needsModel": "Scegli un modello {{provider}}",
+      "needsLocalModel": "Scarica un modello per creare riepiloghi su questo Mac",
+      "localDescription": "Funziona offline su questo Mac. Scegli un modello scaricato.",
+      "appleUnavailableHint": "Non disponibile su questo Mac. Attivalo in Impostazioni di Sistema > Apple Intelligence e Siri.",
+      "unavailable": "non disponibile",
+      "yourModels": "I tuoi modelli",
+      "yourModelsDescription": "Genera riepilogo propone tutti i modelli qui elencati, così puoi sceglierne uno per ogni riunione. Quello selezionato è il predefinito.",
+      "yourModelsEmpty": "Ancora nessun modello cloud. Scegli un provider qui sotto, aggiungi la sua chiave API e seleziona i modelli che vuoi.",
+      "default": "predefinito",
+      "removeModel": "Rimuovi dai tuoi modelli",
+      "addFrom": "Aggiungi modelli da",
+      "addFromDescription": "Scegli un provider per inserire la sua chiave e seleziona i modelli da aggiungere. Il predefinito non cambia."
+    },
+    "local": {
+      "heading": "Modelli locali",
+      "empty": "Nessun modello integrato disponibile.",
+      "default": "Predefinito",
+      "recommendedRam": "Consigliato per {{gb}} GB+ di RAM",
+      "notEnoughRam": "Questo Mac ha meno memoria di quella consigliata per questo modello.",
+      "downloaded": "Scaricato",
+      "download": "Scarica",
+      "downloading": "Download {{percentage}}%"
+    },
+    "linear": {
+      "heading": "Linear",
+      "key": "Chiave API personale",
+      "keyDescription": "Salvata nel Portachiavi di macOS. Usata per preparare e creare ticket dalle azioni da fare.",
+      "keyPlaceholder": "lin_api_...",
+      "keySaved": "Una chiave è salvata nel Portachiavi.",
+      "noKey": "Nessuna chiave salvata.",
+      "getKey": "Crea una chiave su linear.app/settings/api",
+      "removeKey": "Rimuovi chiave",
+      "test": "Verifica connessione",
+      "testDescription": "Verifica la chiave con Linear.",
+      "connectedAs": "Connesso come {{name}}"
+    },
+    "byok": {
+      "testConnection": "Verifica connessione",
+      "testDescription": "Verifica URL base, chiave API e modello con una piccola richiesta.",
+      "baseUrlEditable": "URL base dell'API per questo provider. Sostituisci ogni {placeholder} (ad es. l'ID del tuo account Cloudflare).",
+      "cloudflareHint": "Cloudflare: inserisci l'ID del tuo account (e l'ID del gateway per AI Gateway) nell'URL base."
+    }
   }
 }
