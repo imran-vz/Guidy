@@ -373,6 +373,9 @@ mod tests {
                 status: crate::meetings::types::MeetingStatus::Processed,
                 error: None,
                 processing_stage: None,
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             })
             .unwrap();
         (s, id)

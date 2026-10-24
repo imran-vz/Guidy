@@ -403,6 +403,9 @@ mod tests {
                 status: MeetingStatus::Recorded,
                 error: None,
                 processing_stage: None,
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             }])
         }
         fn meeting(&self, _: MeetingId) -> Result<Option<Meeting>> {

@@ -12,6 +12,8 @@
 //! - [`live`]: live transcription of the recording in progress.
 //! - [`processing`]: VAD -> transcription -> voiceprints -> clustering -> timeline.
 //! - [`summarize`]: chunked LLM summaries and action items.
+//! - [`titles`]: titles and descriptions generated from a summary.
+//! - [`search`]: full-text search across meetings.
 //! - [`manager`]: [`manager::MeetingsManager`], the facade the app calls.
 
 pub mod audio_store;
@@ -21,9 +23,11 @@ pub mod manager;
 pub mod native;
 pub mod processing;
 pub mod recorder;
+pub mod search;
 pub mod settings;
 pub mod store;
 pub mod summarize;
+pub mod titles;
 pub mod types;
 
 /// Meeting features need Core Audio process taps (macOS 14.2+).

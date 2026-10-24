@@ -116,6 +116,54 @@ pub struct Meeting {
     pub error: Option<String>,
     /// Last completed processing stage, so processing can resume.
     pub processing_stage: Option<String>,
+    /// One line on what the meeting was about (generated from its summary,
+    /// see [`crate::meetings::titles`]). `None` until generated.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Where `title` came from, so generating titles keeps the user's own
+    /// and (by default) the calendar's.
+    #[serde(default)]
+    pub title_source: TitleSource,
+    /// The meeting has a stored summary (filled by reads; ignored by
+    /// writes). Titles are generated from it.
+    #[serde(default)]
+    pub has_summary: bool,
+}
+
+/// Where a meeting's title came from.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleSource {
+    /// The recorder's placeholder ("Meeting Oct 23, 14:19").
+    #[default]
+    Default,
+    /// The linked calendar event's title.
+    Calendar,
+    /// The user typed it.
+    User,
+    /// Generated from the summary.
+    Generated,
+}
+
+impl TitleSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Calendar => "calendar",
+            Self::User => "user",
+            Self::Generated => "generated",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "default" => Self::Default,
+            "calendar" => Self::Calendar,
+            "user" => Self::User,
+            "generated" => Self::Generated,
+            _ => return None,
+        })
+    }
 }
 
 impl Meeting {

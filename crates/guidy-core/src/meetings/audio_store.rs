@@ -1219,6 +1219,9 @@ mod tests {
             system_audio_path: Some(sys),
             // Processed meetings went through the whole pipeline.
             processing_stage: (status == MeetingStatus::Processed).then(|| "done".into()),
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
             status,
             error: None,
         }

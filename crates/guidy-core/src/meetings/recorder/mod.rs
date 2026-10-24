@@ -322,12 +322,15 @@ impl MeetingRecorder {
                 event
             })
             .or_else(|| self.current_event(now));
-        let title = match &event {
-            Some(e) if !e.title.trim().is_empty() => e.title.clone(),
-            _ => format!(
-                "{} {}",
-                (self.deps.strings)().untitled_meeting,
-                local_time(now, "%b %-d, %H:%M")
+        let (title, title_source) = match &event {
+            Some(e) if !e.title.trim().is_empty() => (e.title.clone(), TitleSource::Calendar),
+            _ => (
+                format!(
+                    "{} {}",
+                    (self.deps.strings)().untitled_meeting,
+                    local_time(now, "%b %-d, %H:%M")
+                ),
+                TitleSource::Default,
             ),
         };
         let meeting = Meeting {
@@ -342,6 +345,9 @@ impl MeetingRecorder {
             status: MeetingStatus::Recording,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source,
+            has_summary: false,
         };
         let id = self.deps.repo.insert_meeting(&meeting)?;
 

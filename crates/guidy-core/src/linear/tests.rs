@@ -584,6 +584,9 @@ mod service {
                 status: MeetingStatus::Processed,
                 error: None,
                 processing_stage: None,
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             }),
             people: vec![Person {
                 id: 5,
@@ -688,6 +691,9 @@ mod with_store {
                 status: MeetingStatus::Processed,
                 error: None,
                 processing_stage: None,
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             })
             .unwrap();
         let mut item = approved_item(0);
@@ -807,6 +813,9 @@ mod idempotent {
                 status: MeetingStatus::Processed,
                 error: None,
                 processing_stage: None,
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             })
             .unwrap();
         let mut item = approved_item(0);

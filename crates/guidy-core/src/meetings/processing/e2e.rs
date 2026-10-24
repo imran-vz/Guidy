@@ -173,6 +173,9 @@ fn full_pipeline_on_the_fixture() {
             status: MeetingStatus::Processing,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         })
         .unwrap();
     let dir = tempfile::tempdir().unwrap();

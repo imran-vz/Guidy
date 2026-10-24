@@ -856,6 +856,9 @@ fn recovery_waits_for_a_start_or_stop_in_progress() {
             status: MeetingStatus::Recording,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         })
         .unwrap();
     let done = std::sync::atomic::AtomicBool::new(false);
@@ -890,6 +893,9 @@ fn recovery_without_files_uses_the_start_time() {
             status: MeetingStatus::Recording,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         })
         .unwrap();
     assert_eq!(r.rec.recover_interrupted().unwrap(), vec![id]);
@@ -977,6 +983,9 @@ mod manager_section {
                 status: MeetingStatus::Processed,
                 error: None,
                 processing_stage: Some("done".into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             })
             .unwrap();
         let rel = audio_store::track_file_name(id, Track::Mic);

@@ -230,6 +230,93 @@ pub(crate) static MIGRATIONS: &[M] = &[
         PRIMARY KEY (meeting_id, segment_id)
     );",
     ),
+    // 12: a one-line `description` and where the title came from
+    // (`TitleSource`), for generated titles. Earlier titles that are the
+    // calendar event's are `calendar`; ones ending like the recorder's
+    // placeholder ("Meeting Oct 23, 14:19") are `default`; the rest were
+    // typed by the user.
+    //
+    // And full-text search (`meetings::search`): FTS5 indexes over meeting
+    // titles and descriptions, summaries and transcript lines. They are
+    // external-content tables (the text stays only in its own table), kept
+    // in step by triggers, so every writer of those tables (cascading
+    // deletes too) updates them. The `fts5vocab` tables list their terms,
+    // for spelling correction.
+    M::up(
+        "ALTER TABLE meetings ADD COLUMN description TEXT;
+    ALTER TABLE meetings ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';
+    UPDATE meetings SET title_source = CASE
+        WHEN calendar_event IS NOT NULL
+            AND title = json_extract(calendar_event, '$.title') THEN 'calendar'
+        WHEN title GLOB '*[0-9]:[0-9][0-9]' THEN 'default'
+        ELSE 'user' END;
+
+    CREATE VIRTUAL TABLE meetings_fts USING fts5(
+        title, description,
+        content='meetings', content_rowid='id',
+        tokenize='unicode61 remove_diacritics 2', prefix='2 3'
+    );
+    CREATE TRIGGER meetings_fts_ai AFTER INSERT ON meetings BEGIN
+        INSERT INTO meetings_fts (rowid, title, description)
+            VALUES (new.id, new.title, new.description);
+    END;
+    CREATE TRIGGER meetings_fts_ad AFTER DELETE ON meetings BEGIN
+        INSERT INTO meetings_fts (meetings_fts, rowid, title, description)
+            VALUES ('delete', old.id, old.title, old.description);
+    END;
+    CREATE TRIGGER meetings_fts_au AFTER UPDATE OF title, description ON meetings BEGIN
+        INSERT INTO meetings_fts (meetings_fts, rowid, title, description)
+            VALUES ('delete', old.id, old.title, old.description);
+        INSERT INTO meetings_fts (rowid, title, description)
+            VALUES (new.id, new.title, new.description);
+    END;
+    INSERT INTO meetings_fts (meetings_fts) VALUES ('rebuild');
+
+    CREATE VIRTUAL TABLE summaries_fts USING fts5(
+        title, short_summary, decisions, topics,
+        content='meeting_summaries', content_rowid='meeting_id',
+        tokenize='unicode61 remove_diacritics 2', prefix='2 3'
+    );
+    CREATE TRIGGER summaries_fts_ai AFTER INSERT ON meeting_summaries BEGIN
+        INSERT INTO summaries_fts (rowid, title, short_summary, decisions, topics)
+            VALUES (new.meeting_id, new.title, new.short_summary, new.decisions, new.topics);
+    END;
+    CREATE TRIGGER summaries_fts_ad AFTER DELETE ON meeting_summaries BEGIN
+        INSERT INTO summaries_fts (summaries_fts, rowid, title, short_summary, decisions, topics)
+            VALUES ('delete', old.meeting_id, old.title, old.short_summary, old.decisions,
+                old.topics);
+    END;
+    CREATE TRIGGER summaries_fts_au
+        AFTER UPDATE OF title, short_summary, decisions, topics ON meeting_summaries BEGIN
+        INSERT INTO summaries_fts (summaries_fts, rowid, title, short_summary, decisions, topics)
+            VALUES ('delete', old.meeting_id, old.title, old.short_summary, old.decisions,
+                old.topics);
+        INSERT INTO summaries_fts (rowid, title, short_summary, decisions, topics)
+            VALUES (new.meeting_id, new.title, new.short_summary, new.decisions, new.topics);
+    END;
+    INSERT INTO summaries_fts (summaries_fts) VALUES ('rebuild');
+
+    CREATE VIRTUAL TABLE segments_fts USING fts5(
+        text,
+        content='meeting_segments', content_rowid='id',
+        tokenize='unicode61 remove_diacritics 2', prefix='2 3'
+    );
+    CREATE TRIGGER segments_fts_ai AFTER INSERT ON meeting_segments BEGIN
+        INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER segments_fts_ad AFTER DELETE ON meeting_segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    CREATE TRIGGER segments_fts_au AFTER UPDATE OF text ON meeting_segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+    END;
+    INSERT INTO segments_fts (segments_fts) VALUES ('rebuild');
+
+    CREATE VIRTUAL TABLE segments_vocab USING fts5vocab(segments_fts, 'row');
+    CREATE VIRTUAL TABLE meetings_vocab USING fts5vocab(meetings_fts, 'row');
+    CREATE VIRTUAL TABLE summaries_vocab USING fts5vocab(summaries_fts, 'row');",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -276,7 +363,8 @@ fn bad_value(idx: usize, what: &str, v: &str) -> rusqlite::Error {
 }
 
 const MEETING_COLS: &str = "id, title, calendar_event_id, calendar_event, started_at, ended_at, \
-     mic_audio_path, system_audio_path, status, error, processing_stage";
+     mic_audio_path, system_audio_path, status, error, processing_stage, description, title_source, \
+     EXISTS (SELECT 1 FROM meeting_summaries s WHERE s.meeting_id = meetings.id)";
 
 fn map_meeting(row: &Row<'_>) -> rusqlite::Result<Meeting> {
     let calendar_event: Option<String> = row.get(3)?;
@@ -296,6 +384,12 @@ fn map_meeting(row: &Row<'_>) -> rusqlite::Result<Meeting> {
         status: MeetingStatus::parse(&status).ok_or_else(|| bad_value(8, "status", &status))?,
         error: row.get(9)?,
         processing_stage: row.get(10)?,
+        description: row.get(11)?,
+        title_source: {
+            let v: String = row.get(12)?;
+            TitleSource::parse(&v).ok_or_else(|| bad_value(12, "title_source", &v))?
+        },
+        has_summary: row.get(13)?,
     })
 }
 
@@ -635,8 +729,9 @@ impl MeetingsStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO meetings (title, calendar_event_id, calendar_event, started_at, ended_at,
-                mic_audio_path, system_audio_path, status, error, processing_stage)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                mic_audio_path, system_audio_path, status, error, processing_stage, description,
+                title_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 m.title,
                 m.calendar_event_id,
@@ -648,6 +743,8 @@ impl MeetingsStore {
                 m.status.as_str(),
                 m.error,
                 m.processing_stage,
+                m.description,
+                m.title_source.as_str(),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -754,12 +851,55 @@ impl MeetingsStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn set_meeting_title(&self, id: MeetingId, title: &str) -> Result<()> {
+    /// Set the title and where it came from.
+    pub fn set_meeting_title(&self, id: MeetingId, title: &str, source: TitleSource) -> Result<()> {
         let n = self.conn.lock().execute(
-            "UPDATE meetings SET title = ?2 WHERE id = ?1",
-            params![id, title],
+            "UPDATE meetings SET title = ?2, title_source = ?3 WHERE id = ?1",
+            params![id, title, source.as_str()],
         )?;
         expect_one(n, "meeting", id)
+    }
+
+    /// Store a generated description and, when given, a generated title
+    /// (one statement: a reader never sees half of it).
+    pub fn set_generated_title(
+        &self,
+        id: MeetingId,
+        title: Option<&str>,
+        description: &str,
+    ) -> Result<()> {
+        let n = self.conn.lock().execute(
+            "UPDATE meetings SET description = ?3,
+                title = coalesce(?2, title),
+                title_source = CASE WHEN ?2 IS NULL THEN title_source ELSE 'generated' END
+             WHERE id = ?1",
+            params![id, title, description],
+        )?;
+        expect_one(n, "meeting", id)
+    }
+
+    /// Meetings with a summary whose title or description is still to be
+    /// generated: no description yet, or the placeholder title. Newest
+    /// first.
+    pub fn title_candidates(&self) -> Result<Vec<MeetingId>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT m.id FROM meetings m JOIN meeting_summaries s ON s.meeting_id = m.id
+             WHERE m.description IS NULL OR m.title_source = 'default'
+             ORDER BY m.started_at DESC, m.id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Full-text search over titles, descriptions, summaries and
+    /// transcripts. See [`crate::meetings::search`].
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<crate::meetings::search::SearchResults> {
+        crate::meetings::search::search(&self.conn.lock(), query, limit)
     }
 
     /// Set the status and error message (pass `None` to clear the error).
@@ -2077,6 +2217,9 @@ pub(crate) mod tests {
             status: MeetingStatus::Recorded,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         }
     }
 
@@ -2161,7 +2304,8 @@ pub(crate) mod tests {
         m.id = id;
         assert_eq!(s.get_meeting(id).unwrap(), Some(m.clone()));
 
-        s.set_meeting_title(id, "Renamed").unwrap();
+        s.set_meeting_title(id, "Renamed", TitleSource::User)
+            .unwrap();
         s.set_meeting_status(id, MeetingStatus::Failed, Some("boom"))
             .unwrap();
         s.set_processing_stage(id, Some(ProcessingStage::Vad))
@@ -2186,7 +2330,7 @@ pub(crate) mod tests {
         s.update_meeting(&full).unwrap();
         assert_eq!(s.get_meeting(id).unwrap(), Some(full));
 
-        assert!(s.set_meeting_title(999, "x").is_err());
+        assert!(s.set_meeting_title(999, "x", TitleSource::User).is_err());
         assert_eq!(s.get_meeting(999).unwrap(), None);
     }
 
@@ -2953,7 +3097,8 @@ pub(crate) mod tests {
         rec.status = MeetingStatus::Recording;
         rec.ended_at = None;
         let id = s.insert_meeting(&rec).unwrap();
-        s.set_meeting_title(id, "Renamed").unwrap();
+        s.set_meeting_title(id, "Renamed", TitleSource::User)
+            .unwrap();
         assert!(s.finish_recording(id, 500, Some("mic track: x")).unwrap());
         let got = s.get_meeting(id).unwrap().unwrap();
         assert_eq!(got.title, "Renamed");
@@ -3429,5 +3574,58 @@ pub(crate) mod tests {
             .query_row("PRAGMA cipher_version", [], |r| r.get(0))
             .unwrap();
         assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn migration_12_sorts_titles_and_indexes_existing_meetings() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        Migrations::new(MIGRATIONS[..11].to_vec())
+            .to_latest(&mut conn)
+            .unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO meetings (id, title, calendar_event, started_at, status) VALUES
+                (1, 'Daily stand-up', '{"id":"e","title":"Daily stand-up","start_at":0,"end_at":0,"meeting_url":null,"attendees":[]}', 1, 'processed'),
+                (2, 'Meeting Oct 23, 14:19', NULL, 2, 'processed'),
+                (3, 'Pricing with Acme', NULL, 3, 'processed');
+            INSERT INTO meeting_segments (meeting_id, track, t0_ms, t1_ms, text)
+                VALUES (2, 'system', 0, 1, 'The courier is late again.');
+            INSERT INTO meeting_summaries (meeting_id, title, short_summary, generated_by, generated_at)
+                VALUES (3, 'Pricing', 'Agreed on a discount.', 'x/y', 1);"#,
+        )
+        .unwrap();
+        let s = MeetingsStore::init(conn).unwrap();
+        let source = |id| s.get_meeting(id).unwrap().unwrap().title_source;
+        assert_eq!(source(1), TitleSource::Calendar);
+        assert_eq!(source(2), TitleSource::Default);
+        assert_eq!(source(3), TitleSource::User);
+        assert!(s.get_meeting(3).unwrap().unwrap().has_summary);
+        assert!(!s.get_meeting(2).unwrap().unwrap().has_summary);
+        let found = |q: &str| -> Vec<MeetingId> {
+            s.search(q, 10)
+                .unwrap()
+                .hits
+                .iter()
+                .map(|h| h.meeting_id)
+                .collect()
+        };
+        assert_eq!(found("stand"), vec![1]);
+        assert_eq!(found("courier"), vec![2]);
+        assert_eq!(found("discount"), vec![3]);
+        // Only the summarized meeting can be titled; it has no description.
+        assert_eq!(s.title_candidates().unwrap(), vec![3]);
+        s.set_generated_title(3, None, "Discount agreed.").unwrap();
+        assert!(s.title_candidates().unwrap().is_empty());
+        let m = s.get_meeting(3).unwrap().unwrap();
+        assert_eq!(m.title, "Pricing with Acme");
+        assert_eq!(m.title_source, TitleSource::User);
+        assert_eq!(m.description.as_deref(), Some("Discount agreed."));
+        s.set_generated_title(3, Some("Acme discount"), "d")
+            .unwrap();
+        let m = s.get_meeting(3).unwrap().unwrap();
+        assert_eq!(
+            (m.title.as_str(), m.title_source),
+            ("Acme discount", TitleSource::Generated)
+        );
     }
 }

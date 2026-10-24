@@ -1035,6 +1035,9 @@ mod tests {
             status,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         }
     }
 
@@ -1109,6 +1112,9 @@ mod tests {
                 mic_audio_path: None,
                 system_audio_path: None,
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Processed)
             })
             .unwrap();
@@ -1192,6 +1198,9 @@ mod tests {
                 ended_at: Some(now - 9 * DAY),
                 mic_audio_path: Some("1-mic.gopus".into()),
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Processed)
             })
             .unwrap();
@@ -1457,6 +1466,9 @@ mod tests {
             let id = store
                 .insert_meeting(&Meeting {
                     processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                    description: None,
+                    title_source: Default::default(),
+                    has_summary: false,
                     ..meeting(MeetingStatus::Processed)
                 })
                 .unwrap();
@@ -1634,6 +1646,9 @@ mod tests {
         let id = store
             .insert_meeting(&Meeting {
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Processed)
             })
             .unwrap();
@@ -1769,6 +1784,9 @@ mod tests {
         let id = store
             .insert_meeting(&Meeting {
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Processed)
             })
             .unwrap();
@@ -1858,6 +1876,9 @@ mod tests {
         let done = store
             .insert_meeting(&Meeting {
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Processed)
             })
             .unwrap();
@@ -1895,6 +1916,9 @@ mod tests {
             .insert_meeting(&Meeting {
                 error: Some("boom".into()),
                 processing_stage: Some(ProcessingStage::Transcribe.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
                 ..meeting(MeetingStatus::Failed)
             })
             .unwrap();

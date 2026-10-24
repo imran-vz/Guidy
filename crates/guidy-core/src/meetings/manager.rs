@@ -108,6 +108,9 @@ pub struct MeetingsManager {
     deletions: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
     /// Live transcript of the recording in progress (fed by the recorder).
     live: Arc<crate::meetings::live::LiveTranscriber>,
+    /// Set to stop the title generations running now
+    /// ([`Self::cancel_title_generation`]); replaced after each cancel.
+    title_cancel: parking_lot::Mutex<crate::llm::CancelFlag>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -140,6 +143,7 @@ impl MeetingsManager {
             summary_commits: Default::default(),
             deletions: Default::default(),
             live: Arc::new(crate::meetings::live::LiveTranscriber::new(app)),
+            title_cancel: Default::default(),
         }))
     }
 
@@ -491,7 +495,8 @@ impl MeetingsManager {
         if title.is_empty() {
             anyhow::bail!("a meeting title can't be empty");
         }
-        self.store.set_meeting_title(id, title)?;
+        self.store
+            .set_meeting_title(id, title, crate::meetings::types::TitleSource::User)?;
         self.emit_meeting_changed(id);
         Ok(())
     }
@@ -1198,6 +1203,105 @@ impl MeetingsManager {
         Ok(())
     }
 
+    // ===== Titles & search ===================================================
+
+    /// Generate the meeting's description, and its title unless that is
+    /// kept ([`crate::meetings::titles::keep_title`]: the calendar's name
+    /// by default, and in `bulk` a title the user typed), from its summary
+    /// with the meetings model. Fails with
+    /// [`crate::meetings::titles::TitleNeedsSummary`] when there is no
+    /// summary yet. In `bulk`, a meeting with nothing to generate (a kept
+    /// title and a description already) is left alone without a model call.
+    ///
+    /// Blocking (a model call): call it off the UI thread.
+    pub fn generate_title(
+        &self,
+        id: MeetingId,
+        bulk: bool,
+    ) -> Result<crate::meetings::titles::TitleOutcome> {
+        use crate::meetings::titles;
+
+        let meeting = self
+            .store
+            .get_meeting(id)?
+            .ok_or_else(|| anyhow::anyhow!("meeting {id} not found"))?;
+        let summary = self
+            .store
+            .summary(id)?
+            .ok_or_else(|| anyhow::Error::new(titles::TitleNeedsSummary))?;
+        let settings = crate::settings::get_settings(&self.app);
+        let keep = titles::keep_title(&meeting, settings.meetings.prefer_calendar_titles, bulk);
+        if bulk && keep && meeting.description.is_some() {
+            return Ok(titles::TitleOutcome {
+                meeting,
+                title_changed: false,
+                generated: false,
+            });
+        }
+        let provider = crate::llm::provider_for_feature(
+            &self.app,
+            &settings,
+            crate::llm::Feature::Meetings,
+            None,
+        )?;
+        let items = self.store.action_items(id)?;
+        let cancel = self.title_cancel.lock().clone();
+        let opts = crate::llm::ChatOptions {
+            cancel: Some(cancel.clone()),
+            meter: Some(crate::llm::usage::UsageMeter::new(
+                crate::llm::usage::UsageFeature::MeetingSummary,
+                Some(id),
+            )),
+            ..Default::default()
+        };
+        log::info!(
+            "Generating the title of meeting {id} with {}",
+            provider.name()
+        );
+        let calendar_title = meeting.calendar_event.as_ref().map(|e| e.title.as_str());
+        let generated =
+            titles::generate(provider.as_ref(), &summary, &items, calendar_title, &opts)?;
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!(crate::llm::CANCELLED);
+        }
+        let new_title = (!keep).then_some(generated.title.as_str());
+        self.store
+            .set_generated_title(id, new_title, &generated.description)?;
+        self.emit_meeting_changed(id);
+        let meeting = self
+            .store
+            .get_meeting(id)?
+            .ok_or_else(|| anyhow::anyhow!("meeting {id} not found"))?;
+        Ok(titles::TitleOutcome {
+            meeting,
+            title_changed: new_title.is_some(),
+            generated: true,
+        })
+    }
+
+    /// Meetings bulk titling would change (summarized, and with no
+    /// description or the placeholder title), newest first.
+    pub fn title_candidates(&self) -> Result<Vec<MeetingId>> {
+        self.store.title_candidates()
+    }
+
+    /// Stop the title generations running now: they end with the
+    /// "cancelled" error and store nothing.
+    pub fn cancel_title_generation(&self) {
+        let mut flag = self.title_cancel.lock();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        *flag = Default::default();
+    }
+
+    /// Search titles, descriptions, summaries and transcripts.
+    pub fn search_meetings(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<crate::meetings::search::SearchResults> {
+        self.store.search(query, limit)
+    }
+
     // ===== Linear (owner: linear/F) =========================================
 
     /// Store the personal API key in the Keychain. An empty key deletes it.
@@ -1533,6 +1637,9 @@ mod store_section_tests {
             status: MeetingStatus::Processed,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         }
     }
 

@@ -70,6 +70,9 @@ pub struct MeetingSettings {
     pub speaker_separation_model: String,
     /// Where the controls of a recording in progress are shown.
     pub recording_controls: RecordingControls,
+    /// Generating a title keeps the calendar event's name (only the
+    /// description is generated) for meetings linked to an event.
+    pub prefer_calendar_titles: bool,
 }
 
 /// Where the controls of a recording in progress are shown.
@@ -159,6 +162,7 @@ impl Default for MeetingSettings {
             live_model: None,
             speaker_separation_model: String::new(),
             recording_controls: RecordingControls::Floating,
+            prefer_calendar_titles: true,
         }
     }
 }
@@ -200,6 +204,7 @@ impl std::fmt::Debug for MeetingSettings {
             .field("live_model", &self.live_model)
             .field("speaker_separation_model", &self.speaker_separation_model)
             .field("recording_controls", &self.recording_controls)
+            .field("prefer_calendar_titles", &self.prefer_calendar_titles)
             .finish()
     }
 }
