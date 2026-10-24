@@ -15,14 +15,21 @@ contracts between the workstreams.
   with Metal). Two static copies of ggml can't link into one binary, so a
   worker *mode* of `guidy` is impossible. The app starts `guidy-llm` next to
   its own executable.
-- **SQLCipher:** `rusqlite` is built with `bundled-sqlcipher`, which uses
-  CommonCrypto on macOS and vendored OpenSSL elsewhere. A database without a
-  key (`history.db`) is plain SQLite, and `meetings.db` is keyed.
-- **Secrets:** `keyring` 3 (Keychain on macOS), wrapped by `crate::secrets`.
+- **Meeting data:** `meetings.db` is plain SQLite, like `history.db`. It also
+  holds each meeting's processing checkpoint and per-segment voiceprints.
+  `rusqlite` is still built with `bundled-sqlcipher` (CommonCrypto on macOS,
+  vendored OpenSSL elsewhere), only so that `meetings::legacy` can convert a
+  database an earlier version encrypted.
+- **Secrets:** `keyring` 3 (Keychain on macOS), wrapped by `crate::secrets`:
+  API keys. The old meetings data key is read only for that conversion, then
+  kept under `meetings_data_key.backup-<stamp>` and deleted.
 - **Audio at rest:** Opus (`opus` crate) at 16 kHz mono, in a chunked file
-  where each chunk is encrypted with ChaCha20-Poly1305 using the meetings data
-  key. Chunks are flushed as recording happens, so a crash loses at most the
-  last chunk.
+  (`.gopus` version 2) with a CRC-32 per chunk. Chunks are flushed as
+  recording happens, so a crash loses at most the last chunk.
+- **Earlier encrypted data:** on start, `meetings::legacy` converts an
+  encrypted `meetings.db`, the encrypted sidecar files and version 1
+  (encrypted) tracks, checking each copy, and moves the originals into
+  `meetings-encrypted-backup-<stamp>/` in the app data dir.
 
 ## Shared contracts (already in the tree; change only with care)
 

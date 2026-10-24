@@ -1,23 +1,21 @@
-//! Encrypted, crash-safe Opus track files (`.gopus`) and audio retention.
+//! Crash-safe Opus track files (`.gopus`) and audio retention.
 //!
 //! One file per track: `<app_data_dir>/meetings/audio/<meeting_id>-{mic,system}.gopus`.
 //!
-//! ## Format (version 1, all integers little-endian)
+//! ## Format (version 2, all integers little-endian)
 //!
 //! ```text
-//! header (44 bytes)
+//! header (20 bytes)
 //!   magic            [u8; 8]  "GDYOPUS\0"
-//!   version          u16      1
+//!   version          u16      2
 //!   sample_rate      u32      16000
 //!   frame_samples    u16      320 (20 ms)
 //!   packets_per_chunk u16     50 (1 s)
 //!   pre_skip         u16      encoder lookahead, dropped when decoding
-//!   nonce_prefix     [u8; 8]  random per file
-//!   key_check        [u8; 16] AEAD tag of an empty message (nonce counter u32::MAX)
 //! records, repeated
-//!   len              u32      ciphertext length
-//!   ciphertext       [u8; len] ChaCha20-Poly1305, nonce = nonce_prefix || record_index (u32 BE),
-//!                             AAD = the first 28 header bytes
+//!   len              u32      bytes after this field (4 + plaintext length)
+//!   crc              u32      CRC-32 of the plaintext
+//!   plaintext        [u8]
 //! ```
 //!
 //! A record's plaintext is either an audio chunk (`0u8, n_packets: u16, then
@@ -25,17 +23,23 @@
 //! written by [`TrackWriter::finish`]. Every audio chunk but the last holds
 //! exactly `packets_per_chunk` packets, so record `i` starts at sample
 //! `i × 16000` of the encoded stream and range reads can seek without
-//! decrypting earlier chunks.
+//! decoding earlier chunks.
 //!
 //! Chunks are appended as soon as they fill and fsync'd every few seconds, so
 //! a crash loses at most the unsynced tail. [`TrackReader`] treats a short or
-//! undecryptable *final* record as the end of the file.
+//! damaged (CRC mismatch) *final* record as the end of the file.
+//!
+//! Version 1 files were encrypted (a 28-byte header ending in a random nonce
+//! prefix, then a 16-byte key check; records ChaCha20-Poly1305 with the
+//! meetings data key). They are read only to convert them
+//! ([`convert_legacy_track`]); [`TrackReader::open`] refuses them with
+//! [`LegacyEncrypted`].
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
@@ -50,9 +54,14 @@ pub const BITRATE: i32 = 24_000;
 pub const FILE_EXTENSION: &str = "gopus";
 
 const MAGIC: &[u8; 8] = b"GDYOPUS\0";
-const VERSION: u16 = 1;
-const FIXED_HEADER_LEN: usize = 28;
-const HEADER_LEN: usize = FIXED_HEADER_LEN + 16;
+const VERSION: u16 = 2;
+/// Header of a version 2 file.
+const HEADER_LEN: usize = 20;
+/// The encrypted version 1: its fixed header (authenticated as AAD), then
+/// the key check.
+const LEGACY_VERSION: u16 = 1;
+const LEGACY_FIXED_HEADER_LEN: usize = 28;
+const LEGACY_HEADER_LEN: usize = LEGACY_FIXED_HEADER_LEN + 16;
 /// fsync after this many chunks (seconds of audio).
 const SYNC_EVERY_CHUNKS: u32 = 5;
 /// Sanity bound on a record length; anything larger is a torn write.
@@ -62,7 +71,8 @@ const MAX_PACKET_BYTES: usize = 1275;
 const KIND_AUDIO: u8 = 0;
 const KIND_END: u8 = 1;
 
-/// The file was encrypted with a different key (or the header is damaged).
+/// A version 1 (encrypted) file was encrypted with a different key (or its
+/// header is damaged).
 #[derive(Debug)]
 pub struct WrongKey;
 
@@ -73,6 +83,19 @@ impl std::fmt::Display for WrongKey {
 }
 
 impl std::error::Error for WrongKey {}
+
+/// [`TrackReader::open`] found a version 1 (encrypted) file: it must be
+/// converted first ([`convert_legacy_track`]).
+#[derive(Debug)]
+pub struct LegacyEncrypted;
+
+impl std::fmt::Display for LegacyEncrypted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "meeting audio: still in the old encrypted format")
+    }
+}
+
+impl std::error::Error for LegacyEncrypted {}
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -131,7 +154,7 @@ pub fn delete_track_files(audio_dir: &Path, meeting: &Meeting) -> Result<usize> 
 }
 
 // ---------------------------------------------------------------------------
-// Header / crypto helpers
+// Header / record helpers
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,36 +163,27 @@ struct Header {
     frame_samples: u16,
     packets_per_chunk: u16,
     pre_skip: u16,
-    nonce_prefix: [u8; 8],
 }
 
 impl Header {
-    fn fixed_bytes(&self) -> [u8; FIXED_HEADER_LEN] {
-        let mut b = [0u8; FIXED_HEADER_LEN];
+    fn bytes(&self) -> [u8; HEADER_LEN] {
+        let mut b = [0u8; HEADER_LEN];
         b[0..8].copy_from_slice(MAGIC);
         b[8..10].copy_from_slice(&VERSION.to_le_bytes());
         b[10..14].copy_from_slice(&self.sample_rate.to_le_bytes());
         b[14..16].copy_from_slice(&self.frame_samples.to_le_bytes());
         b[16..18].copy_from_slice(&self.packets_per_chunk.to_le_bytes());
         b[18..20].copy_from_slice(&self.pre_skip.to_le_bytes());
-        b[20..28].copy_from_slice(&self.nonce_prefix);
         b
     }
 
-    fn parse(b: &[u8; FIXED_HEADER_LEN]) -> Result<Self> {
-        if &b[0..8] != MAGIC {
-            bail!("not a meeting audio file");
-        }
-        let version = u16::from_le_bytes([b[8], b[9]]);
-        if version != VERSION {
-            bail!("unsupported meeting audio version {version}");
-        }
+    /// The fields after magic and version (the same in both versions).
+    fn parse_fields(b: &[u8]) -> Result<Self> {
         let h = Header {
             sample_rate: u32::from_le_bytes(b[10..14].try_into().unwrap()),
             frame_samples: u16::from_le_bytes([b[14], b[15]]),
             packets_per_chunk: u16::from_le_bytes([b[16], b[17]]),
             pre_skip: u16::from_le_bytes([b[18], b[19]]),
-            nonce_prefix: b[20..28].try_into().unwrap(),
         };
         if h.sample_rate != SAMPLE_RATE || h.frame_samples == 0 || h.packets_per_chunk == 0 {
             bail!("unsupported meeting audio parameters");
@@ -177,6 +191,36 @@ impl Header {
         Ok(h)
     }
 
+    fn chunk_samples(&self) -> u64 {
+        self.frame_samples as u64 * self.packets_per_chunk as u64
+    }
+}
+
+/// A file's version, from its first 10 bytes.
+fn parse_version(b: &[u8]) -> Result<u16> {
+    if b.len() < 10 || &b[0..8] != MAGIC {
+        bail!("not a meeting audio file");
+    }
+    Ok(u16::from_le_bytes([b[8], b[9]]))
+}
+
+/// Whether the file at `path` is a version 1 (encrypted) track.
+pub fn is_legacy_track(path: &Path) -> Result<bool> {
+    let mut head = [0u8; 10];
+    File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .with_context(|| format!("read {}", path.display()))?;
+    Ok(parse_version(&head)? == LEGACY_VERSION)
+}
+
+/// The decryption of a version 1 file.
+struct LegacyCrypto {
+    cipher: ChaCha20Poly1305,
+    nonce_prefix: [u8; 8],
+    aad: [u8; LEGACY_FIXED_HEADER_LEN],
+}
+
+impl LegacyCrypto {
     fn nonce(&self, counter: u32) -> [u8; 12] {
         let mut n = [0u8; 12];
         n[..8].copy_from_slice(&self.nonce_prefix);
@@ -184,41 +228,8 @@ impl Header {
         n
     }
 
-    fn chunk_samples(&self) -> u64 {
-        self.frame_samples as u64 * self.packets_per_chunk as u64
-    }
-}
-
-struct Crypto {
-    cipher: ChaCha20Poly1305,
-    header: Header,
-    aad: [u8; FIXED_HEADER_LEN],
-}
-
-impl Crypto {
-    fn new(key: &[u8; 32], header: Header) -> Self {
-        Self {
-            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
-            aad: header.fixed_bytes(),
-            header,
-        }
-    }
-
-    fn seal(&self, counter: u32, msg: &[u8]) -> Result<Vec<u8>> {
-        let nonce = self.header.nonce(counter);
-        self.cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg,
-                    aad: &self.aad,
-                },
-            )
-            .map_err(|_| anyhow!("meeting audio: encryption failed"))
-    }
-
     fn open(&self, counter: u32, ct: &[u8]) -> Option<Vec<u8>> {
-        let nonce = self.header.nonce(counter);
+        let nonce = self.nonce(counter);
         self.cipher
             .decrypt(
                 Nonce::from_slice(&nonce),
@@ -230,9 +241,51 @@ impl Crypto {
             .ok()
     }
 
-    fn key_check(&self) -> Result<[u8; 16]> {
-        let tag = self.seal(u32::MAX, &[])?;
-        Ok(tag.as_slice().try_into().expect("tag is 16 bytes"))
+    #[cfg(test)]
+    fn seal(&self, counter: u32, msg: &[u8]) -> Vec<u8> {
+        let nonce = self.nonce(counter);
+        self.cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg,
+                    aad: &self.aad,
+                },
+            )
+            .expect("encrypt")
+    }
+}
+
+/// How a file's records are stored.
+enum Records {
+    /// Version 2: `crc || plaintext`.
+    Plain,
+    /// Version 1: ChaCha20-Poly1305 per record.
+    Legacy(LegacyCrypto),
+}
+
+impl Records {
+    /// The plaintext of record `idx` from its stored bytes (`None` when
+    /// damaged).
+    fn open(&self, idx: u32, stored: &[u8]) -> Option<Vec<u8>> {
+        match self {
+            Records::Plain => {
+                let (crc, pt) = stored.split_at_checked(4)?;
+                (u32::from_le_bytes(crc.try_into().ok()?) == crc32fast::hash(pt))
+                    .then(|| pt.to_vec())
+            }
+            Records::Legacy(c) => c.open(idx, stored),
+        }
+    }
+
+    /// Bounds of a stored record's length.
+    fn len_range(&self) -> std::ops::RangeInclusive<u32> {
+        match self {
+            // The CRC and at least the kind byte.
+            Records::Plain => 5..=MAX_RECORD_LEN,
+            // At least the AEAD tag.
+            Records::Legacy(_) => 16..=MAX_RECORD_LEN,
+        }
     }
 }
 
@@ -253,39 +306,16 @@ impl TrackSummary {
     }
 }
 
-/// Encodes 16 kHz mono f32 into an encrypted `.gopus` file as it arrives.
-pub struct TrackWriter {
+/// Appends records to a new `.gopus` file.
+struct RecordWriter {
     path: PathBuf,
     file: File,
-    crypto: Crypto,
-    encoder: opus::Encoder,
-    frame: Vec<f32>,
-    packets: Vec<Vec<u8>>,
-    next_record: u32,
-    chunks_since_sync: u32,
-    samples: u64,
+    header: Header,
 }
 
-impl TrackWriter {
-    /// Create (or truncate) `path` and write the header.
-    pub fn create(path: &Path, key: &[u8; 32]) -> Result<Self> {
-        let mut encoder =
-            opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)
-                .context("opus encoder")?;
-        encoder
-            .set_bitrate(opus::Bitrate::Bits(BITRATE))
-            .context("opus bitrate")?;
-        let pre_skip = encoder.get_lookahead().context("opus lookahead")?.max(0) as u16;
-
-        let header = Header {
-            sample_rate: SAMPLE_RATE,
-            frame_samples: FRAME_SAMPLES as u16,
-            packets_per_chunk: PACKETS_PER_CHUNK as u16,
-            pre_skip,
-            nonce_prefix: rand::random(),
-        };
-        let crypto = Crypto::new(key, header);
-
+impl RecordWriter {
+    /// Create (or truncate) `path`, owner-only, and write the header.
+    fn create(path: &Path, header: Header) -> Result<Self> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
@@ -305,25 +335,90 @@ impl TrackWriter {
             use std::os::unix::fs::PermissionsExt;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
-        file.write_all(&crypto.aad)?;
-        file.write_all(&crypto.key_check()?)?;
+        file.write_all(&header.bytes())?;
         file.sync_all()?;
-
         Ok(Self {
             path: path.to_path_buf(),
             file,
-            crypto,
+            header,
+        })
+    }
+
+    fn write(&mut self, plaintext: &[u8]) -> Result<()> {
+        let mut rec = Vec::with_capacity(8 + plaintext.len());
+        rec.extend_from_slice(&(4 + plaintext.len() as u32).to_le_bytes());
+        rec.extend_from_slice(&crc32fast::hash(plaintext).to_le_bytes());
+        rec.extend_from_slice(plaintext);
+        // One write per record keeps a torn write confined to the tail.
+        self.file
+            .write_all(&rec)
+            .with_context(|| format!("write {}", self.path.display()))
+    }
+
+    fn write_audio(&mut self, packets: &[Vec<u8>]) -> Result<()> {
+        let mut pt = Vec::with_capacity(3 + packets.iter().map(|p| p.len() + 2).sum::<usize>());
+        pt.push(KIND_AUDIO);
+        pt.extend_from_slice(&(packets.len() as u16).to_le_bytes());
+        for p in packets {
+            pt.extend_from_slice(&(p.len() as u16).to_le_bytes());
+            pt.extend_from_slice(p);
+        }
+        self.write(&pt)
+    }
+
+    fn write_end(&mut self, total_samples: u64) -> Result<()> {
+        let mut end = vec![KIND_END];
+        end.extend_from_slice(&total_samples.to_le_bytes());
+        self.write(&end)
+    }
+
+    fn sync_data(&mut self) -> Result<()> {
+        self.file.sync_data().context("fsync meeting audio")
+    }
+
+    fn sync_all(&mut self) -> Result<()> {
+        self.file.sync_all().context("fsync meeting audio")
+    }
+}
+
+/// Encodes 16 kHz mono f32 into a `.gopus` file as it arrives.
+pub struct TrackWriter {
+    out: RecordWriter,
+    encoder: opus::Encoder,
+    frame: Vec<f32>,
+    packets: Vec<Vec<u8>>,
+    chunks_since_sync: u32,
+    samples: u64,
+}
+
+impl TrackWriter {
+    /// Create (or truncate) `path` and write the header.
+    pub fn create(path: &Path) -> Result<Self> {
+        let mut encoder =
+            opus::Encoder::new(SAMPLE_RATE, opus::Channels::Mono, opus::Application::Voip)
+                .context("opus encoder")?;
+        encoder
+            .set_bitrate(opus::Bitrate::Bits(BITRATE))
+            .context("opus bitrate")?;
+        let pre_skip = encoder.get_lookahead().context("opus lookahead")?.max(0) as u16;
+        let header = Header {
+            sample_rate: SAMPLE_RATE,
+            frame_samples: FRAME_SAMPLES as u16,
+            packets_per_chunk: PACKETS_PER_CHUNK as u16,
+            pre_skip,
+        };
+        Ok(Self {
+            out: RecordWriter::create(path, header)?,
             encoder,
             frame: Vec::with_capacity(FRAME_SAMPLES),
             packets: Vec::with_capacity(PACKETS_PER_CHUNK),
-            next_record: 0,
             chunks_since_sync: 0,
             samples: 0,
         })
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.out.path
     }
 
     /// Real samples pushed so far.
@@ -369,33 +464,12 @@ impl TrackWriter {
         Ok(())
     }
 
-    fn write_record(&mut self, plaintext: &[u8]) -> Result<()> {
-        let ct = self.crypto.seal(self.next_record, plaintext)?;
-        let mut rec = Vec::with_capacity(4 + ct.len());
-        rec.extend_from_slice(&(ct.len() as u32).to_le_bytes());
-        rec.extend_from_slice(&ct);
-        // One write per record keeps a torn write confined to the tail.
-        self.file
-            .write_all(&rec)
-            .with_context(|| format!("write {}", self.path.display()))?;
-        self.next_record += 1;
-        Ok(())
-    }
-
     fn write_audio_chunk(&mut self) -> Result<()> {
         if self.packets.is_empty() {
             return Ok(());
         }
-        let mut pt =
-            Vec::with_capacity(3 + self.packets.iter().map(|p| p.len() + 2).sum::<usize>());
-        pt.push(KIND_AUDIO);
-        pt.extend_from_slice(&(self.packets.len() as u16).to_le_bytes());
-        for p in &self.packets {
-            pt.extend_from_slice(&(p.len() as u16).to_le_bytes());
-            pt.extend_from_slice(p);
-        }
+        self.out.write_audio(&self.packets)?;
         self.packets.clear();
-        self.write_record(&pt)?;
         self.chunks_since_sync += 1;
         if self.chunks_since_sync >= SYNC_EVERY_CHUNKS {
             self.sync()?;
@@ -406,7 +480,7 @@ impl TrackWriter {
     /// fsync what has been written so far.
     pub fn sync(&mut self) -> Result<()> {
         self.chunks_since_sync = 0;
-        self.file.sync_data().context("fsync meeting audio")
+        self.out.sync_data()
     }
 
     /// Flush the encoder tail, write the final chunk and the end marker, and
@@ -414,17 +488,15 @@ impl TrackWriter {
     /// like a crash (everything but the partial chunk).
     pub fn finish(mut self) -> Result<TrackSummary> {
         // Push the encoder's lookahead out, then pad the last frame.
-        let tail = vec![0.0f32; self.crypto.header.pre_skip as usize];
+        let tail = vec![0.0f32; self.out.header.pre_skip as usize];
         self.push_raw(&tail)?;
         if !self.frame.is_empty() {
             self.frame.resize(FRAME_SAMPLES, 0.0);
             self.encode_frame()?;
         }
         self.write_audio_chunk()?;
-        let mut end = vec![KIND_END];
-        end.extend_from_slice(&self.samples.to_le_bytes());
-        self.write_record(&end)?;
-        self.file.sync_all().context("fsync meeting audio")?;
+        self.out.write_end(self.samples)?;
+        self.out.sync_all()?;
         Ok(TrackSummary {
             samples: self.samples,
         })
@@ -464,47 +536,92 @@ fn parse_record(pt: &[u8]) -> Option<Record> {
 /// Decodes a `.gopus` file back to 16 kHz mono f32.
 pub struct TrackReader {
     file: File,
-    crypto: Crypto,
-    /// `(offset of ciphertext, len)` of every complete audio record.
+    header: Header,
+    records: Records,
+    /// `(offset of the stored record, len)` of every complete audio record.
     chunks: Vec<(u64, u32)>,
     /// Real sample count from the end marker (absent after a crash).
     total_samples: Option<u64>,
 }
 
 impl TrackReader {
-    /// Open a track, check the key, and index its chunks. Errors with
-    /// [`WrongKey`] (downcastable) when the key doesn't match.
-    pub fn open(path: &Path, key: &[u8; 32]) -> Result<Self> {
+    /// Open a track and index its chunks. A version 1 (encrypted) file is
+    /// [`LegacyEncrypted`] (downcastable).
+    pub fn open(path: &Path) -> Result<Self> {
         let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
         let mut head = [0u8; HEADER_LEN];
         file.read_exact(&mut head)
             .with_context(|| format!("{}: truncated header", path.display()))?;
-        let header = Header::parse(head[..FIXED_HEADER_LEN].try_into().unwrap())?;
-        let crypto = Crypto::new(key, header);
-        if crypto.open(u32::MAX, &head[FIXED_HEADER_LEN..]).is_none() {
+        match parse_version(&head)? {
+            VERSION => {}
+            LEGACY_VERSION => return Err(LegacyEncrypted.into()),
+            v => bail!("unsupported meeting audio version {v}"),
+        }
+        let header = Header::parse_fields(&head)?;
+        Self::index(path, file, header, Records::Plain, HEADER_LEN)
+    }
+
+    /// Open a version 1 (encrypted) track with the meetings data key it was
+    /// written with. Errors with [`WrongKey`] (downcastable) when it isn't.
+    pub fn open_legacy(path: &Path, key: &[u8; 32]) -> Result<Self> {
+        let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut head = [0u8; LEGACY_HEADER_LEN];
+        file.read_exact(&mut head)
+            .with_context(|| format!("{}: truncated header", path.display()))?;
+        let version = parse_version(&head)?;
+        if version != LEGACY_VERSION {
+            bail!("not an encrypted meeting audio file (version {version})");
+        }
+        let header = Header::parse_fields(&head)?;
+        let crypto = LegacyCrypto {
+            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+            nonce_prefix: head[20..28].try_into().unwrap(),
+            aad: head[..LEGACY_FIXED_HEADER_LEN].try_into().unwrap(),
+        };
+        // The key check: the AEAD tag of an empty message, counter u32::MAX.
+        if crypto
+            .open(u32::MAX, &head[LEGACY_FIXED_HEADER_LEN..])
+            .is_none()
+        {
             return Err(WrongKey.into());
         }
+        Self::index(
+            path,
+            file,
+            header,
+            Records::Legacy(crypto),
+            LEGACY_HEADER_LEN,
+        )
+    }
 
-        // Index records by their length prefixes.
+    /// Index the records after the header by their length prefixes.
+    fn index(
+        path: &Path,
+        mut file: File,
+        header: Header,
+        records: Records,
+        header_len: usize,
+    ) -> Result<Self> {
         let file_len = file.metadata()?.len();
-        let mut records: Vec<(u64, u32)> = Vec::new();
-        let mut pos = HEADER_LEN as u64;
+        let mut chunks: Vec<(u64, u32)> = Vec::new();
+        let mut pos = header_len as u64;
         while pos + 4 <= file_len {
             let mut len = [0u8; 4];
             file.seek(SeekFrom::Start(pos))?;
             file.read_exact(&mut len)?;
             let len = u32::from_le_bytes(len);
-            if !(16..=MAX_RECORD_LEN).contains(&len) || pos + 4 + len as u64 > file_len {
+            if !records.len_range().contains(&len) || pos + 4 + len as u64 > file_len {
                 break; // torn final write
             }
-            records.push((pos + 4, len));
+            chunks.push((pos + 4, len));
             pos += 4 + len as u64;
         }
 
         let mut reader = Self {
             file,
-            crypto,
-            chunks: records,
+            header,
+            records,
+            chunks,
             total_samples: None,
         };
         // The last record is either the end marker, a (possibly torn) audio
@@ -530,10 +647,13 @@ impl TrackReader {
     }
 
     fn read_record(&mut self, idx: u32, off: u64, len: u32) -> Result<Option<Record>> {
-        let mut ct = vec![0u8; len as usize];
+        let mut stored = vec![0u8; len as usize];
         self.file.seek(SeekFrom::Start(off))?;
-        self.file.read_exact(&mut ct)?;
-        Ok(self.crypto.open(idx, &ct).and_then(|pt| parse_record(&pt)))
+        self.file.read_exact(&mut stored)?;
+        Ok(self
+            .records
+            .open(idx, &stored)
+            .and_then(|pt| parse_record(&pt)))
     }
 
     fn audio_chunk(&mut self, idx: usize) -> Result<Vec<Vec<u8>>> {
@@ -550,7 +670,7 @@ impl TrackReader {
     }
 
     fn pre_skip(&self) -> u64 {
-        self.crypto.header.pre_skip as u64
+        self.header.pre_skip as u64
     }
 
     /// Real samples in the track.
@@ -562,8 +682,8 @@ impl TrackReader {
             return Ok(0);
         };
         let last_packets = self.audio_chunk(last)?.len() as u64;
-        let encoded = last as u64 * self.crypto.header.chunk_samples()
-            + last_packets * self.crypto.header.frame_samples as u64;
+        let encoded = last as u64 * self.header.chunk_samples()
+            + last_packets * self.header.frame_samples as u64;
         Ok(encoded.saturating_sub(self.pre_skip()))
     }
 
@@ -575,9 +695,8 @@ impl TrackReader {
     fn decode_chunks(&mut self, first: usize, last: usize) -> Result<Vec<f32>> {
         let mut decoder =
             opus::Decoder::new(SAMPLE_RATE, opus::Channels::Mono).context("opus decoder")?;
-        let frame = self.crypto.header.frame_samples as usize;
-        let mut out =
-            Vec::with_capacity((last + 1 - first) * self.crypto.header.chunk_samples() as usize);
+        let frame = self.header.frame_samples as usize;
+        let mut out = Vec::with_capacity((last + 1 - first) * self.header.chunk_samples() as usize);
         let mut buf = vec![0f32; 5760];
         for idx in first..=last {
             for packet in self.audio_chunk(idx)? {
@@ -616,7 +735,7 @@ impl TrackReader {
         if s1 <= s0 || self.chunks.is_empty() {
             return Ok(Vec::new());
         }
-        let cs = self.crypto.header.chunk_samples();
+        let cs = self.header.chunk_samples();
         let (e0, e1) = (s0 + self.pre_skip(), s1 + self.pre_skip());
         let last_chunk = self.chunks.len() - 1;
         // One chunk of pre-roll so the decoder state has settled by e0.
@@ -628,6 +747,71 @@ impl TrackReader {
         let b = ((e1 - base) as usize).min(decoded.len());
         Ok(decoded[a..b].to_vec())
     }
+}
+
+/// Write the version 1 (encrypted) track at `src` to `dst` as version 2,
+/// copying its Opus packets as they are (no re-encoding): the same audio,
+/// chunk for chunk, and the end marker only if `src` had one. Returns the
+/// track's sample count, which `dst` is checked to read back the same.
+pub fn convert_legacy_track(src: &Path, dst: &Path, key: &[u8; 32]) -> Result<u64> {
+    let mut reader = TrackReader::open_legacy(src, key)?;
+    let total = reader.total_samples()?;
+    let mut out = RecordWriter::create(dst, reader.header)?;
+    for idx in 0..reader.chunks.len() {
+        out.write_audio(&reader.audio_chunk(idx)?)?;
+    }
+    if let Some(total) = reader.total_samples {
+        out.write_end(total)?;
+    }
+    out.sync_all()?;
+    drop(out);
+    let mut check = TrackReader::open(dst)?;
+    let (chunks, samples) = (check.chunks.len(), check.total_samples()?);
+    if chunks != reader.chunks.len() || samples != total {
+        bail!(
+            "{}: converted copy reads {chunks} chunks / {samples} samples, not {} / {total}",
+            dst.display(),
+            reader.chunks.len()
+        );
+    }
+    Ok(total)
+}
+
+/// `src` (version 2) written as a version 1 file encrypted with `key`,
+/// as the app wrote them before.
+#[cfg(test)]
+pub(crate) fn write_legacy(src: &Path, dst: &Path, key: &[u8; 32]) {
+    let mut r = TrackReader::open(src).unwrap();
+    let mut aad = [0u8; LEGACY_FIXED_HEADER_LEN];
+    aad[..HEADER_LEN].copy_from_slice(&r.header.bytes());
+    aad[8..10].copy_from_slice(&LEGACY_VERSION.to_le_bytes());
+    aad[20..28].copy_from_slice(&[3u8; 8]);
+    let crypto = LegacyCrypto {
+        cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+        nonce_prefix: [3u8; 8],
+        aad,
+    };
+    let mut out = aad.to_vec();
+    out.extend_from_slice(&crypto.seal(u32::MAX, &[]));
+    let mut records: Vec<Vec<u8>> = Vec::new();
+    for i in 0..r.chunks.len() {
+        let (off, len) = r.chunks[i];
+        let mut stored = vec![0u8; len as usize];
+        r.file.seek(SeekFrom::Start(off)).unwrap();
+        r.file.read_exact(&mut stored).unwrap();
+        records.push(stored[4..].to_vec());
+    }
+    if let Some(total) = r.total_samples {
+        let mut end = vec![KIND_END];
+        end.extend_from_slice(&total.to_le_bytes());
+        records.push(end);
+    }
+    for (i, pt) in records.iter().enumerate() {
+        let ct = crypto.seal(i as u32, pt);
+        out.extend_from_slice(&(ct.len() as u32).to_le_bytes());
+        out.extend_from_slice(&ct);
+    }
+    fs::write(dst, out).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -777,7 +961,7 @@ mod tests {
     }
 
     fn write(path: &Path, samples: &[f32], finish: bool) -> Option<TrackSummary> {
-        let mut w = TrackWriter::create(path, &KEY).unwrap();
+        let mut w = TrackWriter::create(path).unwrap();
         // Uneven pushes, like audio callbacks.
         for c in samples.chunks(437) {
             w.push(c).unwrap();
@@ -799,7 +983,7 @@ mod tests {
         assert_eq!(summary.samples, input.len() as u64);
         assert_eq!(summary.duration_ms(), 3300);
 
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(r.is_complete());
         assert_eq!(r.duration_ms().unwrap(), 3300);
         let out = r.read_all().unwrap();
@@ -816,29 +1000,64 @@ mod tests {
     }
 
     #[test]
-    fn file_contents_are_encrypted() {
+    fn an_encrypted_track_converts_to_the_same_audio() {
         let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.gopus");
-        let b = dir.path().join("b.gopus");
-        let input = tone(1.0);
-        write(&a, &input, true);
-        write(&b, &input, true);
-        // Random nonce prefixes: identical audio gives different ciphertext.
-        assert_ne!(
-            fs::read(&a).unwrap()[HEADER_LEN..],
-            fs::read(&b).unwrap()[HEADER_LEN..]
+        let (plain, legacy, converted) = (
+            dir.path().join("p.gopus"),
+            dir.path().join("1-mic.gopus"),
+            dir.path().join("1-mic.gopus.plain"),
+        );
+        let input = tone(2.3);
+        write(&plain, &input, true);
+        write_legacy(&plain, &legacy, &KEY);
+        assert!(is_legacy_track(&legacy).unwrap());
+        assert!(!is_legacy_track(&plain).unwrap());
+        // The app's reader refuses it until it is converted.
+        let err = TrackReader::open(&legacy).err().expect("must fail");
+        assert!(err.downcast_ref::<LegacyEncrypted>().is_some(), "{err:#}");
+
+        let samples = convert_legacy_track(&legacy, &converted, &KEY).unwrap();
+        assert_eq!(samples, input.len() as u64);
+        // Packet for packet: the very bytes of the original plain file.
+        assert_eq!(fs::read(&converted).unwrap(), fs::read(&plain).unwrap());
+        let mut r = TrackReader::open(&converted).unwrap();
+        assert!(r.is_complete());
+        assert_eq!(
+            r.read_all().unwrap(),
+            TrackReader::open(&plain).unwrap().read_all().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_interrupted_encrypted_track_converts_without_an_end_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let (plain, legacy, converted) = (
+            dir.path().join("p.gopus"),
+            dir.path().join("l.gopus"),
+            dir.path().join("c.gopus"),
+        );
+        write(&plain, &tone(2.5), false);
+        write_legacy(&plain, &legacy, &KEY);
+        convert_legacy_track(&legacy, &converted, &KEY).unwrap();
+        let mut r = TrackReader::open(&converted).unwrap();
+        assert!(!r.is_complete());
+        assert_eq!(
+            r.total_samples().unwrap(),
+            TrackReader::open(&plain).unwrap().total_samples().unwrap()
         );
     }
 
     #[test]
     fn wrong_key_is_reported() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("1-system.gopus");
-        write(&path, &tone(1.5), true);
-        let err = TrackReader::open(&path, &[8u8; 32])
+        let (plain, legacy) = (dir.path().join("p.gopus"), dir.path().join("l.gopus"));
+        write(&plain, &tone(1.5), true);
+        write_legacy(&plain, &legacy, &KEY);
+        let err = TrackReader::open_legacy(&legacy, &[8u8; 32])
             .err()
             .expect("must fail");
         assert!(err.downcast_ref::<WrongKey>().is_some(), "{err:#}");
+        assert!(convert_legacy_track(&legacy, &dir.path().join("c.gopus"), &[8u8; 32]).is_err());
     }
 
     #[test]
@@ -849,7 +1068,7 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         bytes[HEADER_LEN + 10] ^= 0xff; // inside the first chunk
         fs::write(&path, &bytes).unwrap();
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(r.read_all().is_err());
     }
 
@@ -859,7 +1078,7 @@ mod tests {
         let path = dir.path().join("c.gopus");
         let input = tone(2.5);
         write(&path, &input, false);
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(!r.is_complete());
         let out = r.read_all().unwrap();
         // Two full chunks made it to disk; the partial third did not.
@@ -875,14 +1094,14 @@ mod tests {
         let input = tone(3.0);
         write(&path, &input, true);
         let full = fs::read(&path).unwrap();
-        let r = TrackReader::open(&path, &KEY).unwrap();
+        let r = TrackReader::open(&path).unwrap();
         let chunks = r.chunks.clone();
         drop(r);
 
         // Cut in the middle of the last audio chunk (a torn write).
         let (off, len) = chunks[2];
         fs::write(&path, &full[..(off + len as u64 / 2) as usize]).unwrap();
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(!r.is_complete());
         let out = r.read_all().unwrap();
         assert_eq!(
@@ -892,7 +1111,7 @@ mod tests {
 
         // Cut inside a length prefix.
         fs::write(&path, &full[..(chunks[1].0 - 2) as usize]).unwrap();
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert_eq!(
             r.read_all().unwrap().len(),
             CHUNK_SAMPLES as usize - r.pre_skip() as usize
@@ -903,7 +1122,7 @@ mod tests {
         let last = garbled.len() - 5;
         garbled[last] ^= 0x55;
         fs::write(&path, &garbled).unwrap();
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert_eq!(
             r.read_all().unwrap().len(),
             2 * CHUNK_SAMPLES as usize - r.pre_skip() as usize
@@ -911,13 +1130,13 @@ mod tests {
 
         // Header only.
         fs::write(&path, &full[..HEADER_LEN]).unwrap();
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(r.read_all().unwrap().is_empty());
         assert_eq!(r.duration_ms().unwrap(), 0);
 
         // Less than a header is an error, not a panic.
         fs::write(&path, &full[..10]).unwrap();
-        assert!(TrackReader::open(&path, &KEY).is_err());
+        assert!(TrackReader::open(&path).is_err());
     }
 
     #[test]
@@ -926,7 +1145,7 @@ mod tests {
         let path = dir.path().join("r.gopus");
         let input = tone(4.2);
         write(&path, &input, true);
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         let all = r.read_all().unwrap();
 
         for (t0, t1) in [
@@ -960,9 +1179,9 @@ mod tests {
     fn empty_track_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.gopus");
-        let s = TrackWriter::create(&path, &KEY).unwrap().finish().unwrap();
+        let s = TrackWriter::create(&path).unwrap().finish().unwrap();
         assert_eq!(s.samples, 0);
-        let mut r = TrackReader::open(&path, &KEY).unwrap();
+        let mut r = TrackReader::open(&path).unwrap();
         assert!(r.is_complete());
         assert!(r.read_all().unwrap().is_empty());
     }
@@ -1162,7 +1381,7 @@ mod tests {
         let path = dir.path().join("1-mic.gopus");
         fs::write(&path, b"old").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        let w = TrackWriter::create(&path, &[1u8; 32]).unwrap();
+        let w = TrackWriter::create(&path).unwrap();
         w.finish().unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);

@@ -63,6 +63,7 @@ interprocess = "2"
 # Meeting notes: Keychain secrets, voiceprints, encrypted audio.
 sherpa-onnx = "1.13.8"
 chacha20poly1305 = "0.10"
+crc32fast = "1.5"
 rand = "0.9"
 opus = "0.3"
 base64 = "0.22"

@@ -4,8 +4,8 @@
 
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_range,
-    needs_confirmation, non_empty, select_lines, speaker_name, status_key, talk_time,
+    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_near,
+    line_range, needs_confirmation, non_empty, select_lines, speaker_name, status_key, talk_time,
     transcript_issue, LineClick, MeetingsEvent, RedoChoice, SpeakerBlock, SpeakerRedoChoice,
     TalkTime, TranscriptIssue,
 };
@@ -13,6 +13,7 @@ use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill, Stat};
 use crate::ui::kit::{crumb_title, group, icon, t, t_args};
+use crate::ui::main_window::PageScroll;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -25,7 +26,9 @@ use guidy_core::meetings::types::{
     CloudTranscriptionOption, DiarizationOptions, LiveStatus, Meeting, MeetingId, MeetingSpeaker,
     MeetingStatus, Person, ProcessingProgress, Segment, SpeakerId, Track, TranscriptionEngine,
 };
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// `segment_audio` returns 16 kHz mono.
@@ -78,6 +81,10 @@ pub struct MeetingDetail {
     cancelling: bool,
     /// Deep link: seek and play here once the transcript has loaded.
     pending_seek: Option<i64>,
+    /// A talk-time click: scroll the page to this line on the next paint.
+    reveal: Option<i64>,
+    /// The line just revealed, highlighted for a moment.
+    flash: Option<i64>,
     /// Cloud providers the transcript can be redone with.
     cloud_options: Vec<CloudTranscriptionOption>,
     /// What "Redo speakers" can use.
@@ -149,6 +156,8 @@ impl MeetingDetail {
             processing_busy: false,
             cancelling: false,
             pending_seek: None,
+            reveal: None,
+            flash: None,
             cloud_options: Vec::new(),
             diarization: DiarizationOptions::default(),
             transcript_copied: false,
@@ -875,6 +884,56 @@ impl MeetingDetail {
         }
     }
 
+    /// Scroll to the line and highlight it for a moment.
+    fn reveal_line(&mut self, seg_id: i64, cx: &mut Context<Self>) {
+        self.reveal = Some(seg_id);
+        self.flash = Some(seg_id);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1_600))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.flash == Some(seg_id) {
+                    this.flash = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Painted over the revealed line: once its position is known, scrolls
+    /// the page so the line sits a third of the way down.
+    fn reveal_marker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity().downgrade();
+        canvas(
+            move |line: Bounds<Pixels>, _, cx| {
+                if let Some(PageScroll(scroll)) = cx.try_global::<PageScroll>() {
+                    let view = scroll.bounds();
+                    let mut offset = scroll.offset();
+                    let target = view.top() + view.size.height / 3.;
+                    offset.y = (offset.y - (line.top() - target))
+                        .min(px(0.))
+                        .max(-scroll.max_offset().y);
+                    scroll.set_offset(offset);
+                }
+                cx.defer(move |cx| {
+                    entity
+                        .update(cx, |this, cx| {
+                            this.reveal = None;
+                            cx.notify();
+                        })
+                        .ok();
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
     // -- playback -------------------------------------------------------------
 
     fn clip_key(&self, segment_id: i64) -> PathBuf {
@@ -967,7 +1026,8 @@ impl MeetingDetail {
             .speakers
             .iter()
             .take(MAX_ROWS)
-            .map(|row| {
+            .enumerate()
+            .map(|(i, row)| {
                 let speaker = row
                     .speaker_id
                     .and_then(|id| self.speakers.iter().find(|s| s.id == id));
@@ -980,6 +1040,9 @@ impl MeetingDetail {
                 } else {
                     tone.line_art.opacity(0.75)
                 };
+                let speaker_id = row.speaker_id;
+                let lane = Rc::new(Cell::new(None::<Bounds<Pixels>>));
+                let lane_paint = lane.clone();
                 h_flex()
                     .h(dp(28.))
                     .gap(dp(12.))
@@ -994,9 +1057,32 @@ impl MeetingDetail {
                     )
                     .child(
                         div()
+                            .id(SharedString::from(format!("talk-lane-{i}")))
                             .relative()
                             .flex_1()
                             .h(dp(10.))
+                            .child(
+                                canvas(move |b, _, _| lane_paint.set(Some(b)), |_, _, _, _| {})
+                                    .absolute()
+                                    .size_full(),
+                            )
+                            // A click on (or just by) one of their marks
+                            // goes to that line in the transcript.
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                    let Some(b) = lane.get() else { return };
+                                    let w = f32::from(b.size.width).max(1.);
+                                    let x = f32::from(ev.position.x - b.left()).clamp(0., w);
+                                    let t_ms = (x / w * total) as i64;
+                                    let slack_ms = (6. / w * total) as i64;
+                                    if let Some(id) =
+                                        line_near(&this.segments, speaker_id, t_ms, slack_ms)
+                                    {
+                                        this.reveal_line(id, cx);
+                                    }
+                                }),
+                            )
                             .child(
                                 div()
                                     .absolute()
@@ -1014,6 +1100,7 @@ impl MeetingDetail {
                                     .min_w(dp(2.))
                                     .rounded(dp(2.))
                                     .bg(bar)
+                                    .cursor_pointer()
                                     .left(relative(*t0 as f32 / total))
                                     .w(relative((*t1 - *t0) as f32 / total))
                             })),
@@ -1649,7 +1736,14 @@ impl MeetingDetail {
                             .py(px(1.))
                             .rounded(dp(6.))
                             .cursor_pointer()
+                            .relative()
                             .when(active, |d| d.bg(tone.accent_soft))
+                            .when(self.flash == Some(seg_id) && !selected, |d| {
+                                d.bg(tone.accent.opacity(0.18))
+                            })
+                            .when(self.reveal == Some(seg_id), |d| {
+                                d.child(self.reveal_marker(cx))
+                            })
                             .when(selected, |d| {
                                 d.bg(tone.accent.opacity(0.18))
                                     .border_l_2()

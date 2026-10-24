@@ -2,3 +2,7 @@
 .DS_Store
 /crates/guidy-core/transcribe-libs
 .wrangler
+brag-output*/
+.agents/skills/brag/
+.claude/skills/brag
+skills-lock.json

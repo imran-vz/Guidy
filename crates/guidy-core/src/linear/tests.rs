@@ -674,7 +674,7 @@ mod with_store {
     use crate::meetings::types::{Meeting, MeetingStatus};
 
     fn store_with_item() -> (MeetingsStore, i64, i64) {
-        let store = MeetingsStore::open_in_memory(&[3u8; 32]).unwrap();
+        let store = MeetingsStore::open_in_memory().unwrap();
         let meeting_id = store
             .insert_meeting(&Meeting {
                 id: 0,
@@ -790,7 +790,7 @@ mod idempotent {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn store_with_approved() -> (MeetingsStore, i64) {
-        add_approved(MeetingsStore::open_in_memory(&[4u8; 32]).unwrap())
+        add_approved(MeetingsStore::open_in_memory().unwrap())
     }
 
     fn add_approved(store: MeetingsStore) -> (MeetingsStore, i64) {
@@ -1162,17 +1162,16 @@ mod idempotent {
         let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(crate::meetings::store::MEETINGS_DB_FILE);
-        let key = [5u8; 32];
         let id = {
             let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
-            let (store, id) = add_approved(MeetingsStore::open(&path, &key).unwrap());
+            let (store, id) = add_approved(MeetingsStore::open(&path).unwrap());
             let first = s.create_tickets(&store, &[id]).await.unwrap();
             assert!(first.results[0].result.is_err());
             id
         };
 
         let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
-        let store = MeetingsStore::open(&path, &key).unwrap();
+        let store = MeetingsStore::open(&path).unwrap();
         let mut edited = store.get_action_item(id).unwrap().unwrap().ticket;
         edited.title = "Edited after restart".into();
         store.update_ticket_draft(id, &edited).unwrap();
@@ -1194,17 +1193,16 @@ mod idempotent {
         let (m, lookups_fail) = timed_out_create(issue_changed_in_linear(), true).await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(crate::meetings::store::MEETINGS_DB_FILE);
-        let key = [6u8; 32];
         let id = {
             let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
-            let (store, id) = add_approved(MeetingsStore::open(&path, &key).unwrap());
+            let (store, id) = add_approved(MeetingsStore::open(&path).unwrap());
             assert!(s.create_tickets(&store, &[id]).await.unwrap().results[0]
                 .result
                 .is_err());
             id
         };
         let s = LinearService::new(&m.url, KeySource::Fixed(Some("k".into())));
-        let store = MeetingsStore::open(&path, &key).unwrap();
+        let store = MeetingsStore::open(&path).unwrap();
         lookups_fail.store(false, Ordering::SeqCst);
         let out = s.create_tickets(&store, &[id]).await.unwrap();
         assert_eq!(out.results[0].result, Ok("ENG-5".into()));

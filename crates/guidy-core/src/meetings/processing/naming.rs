@@ -3,7 +3,6 @@
 //! (D11: voiceprints only for people the user names).
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use anyhow::{bail, Result};
 
@@ -68,21 +67,19 @@ pub fn suggestions(
 /// people already named in the meeting (the line may well be one of them).
 pub fn segment_suggestions(
     store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
     segment_id: i64,
     settings: &MeetingSettings,
 ) -> Result<Vec<NameSuggestion>> {
     let Some(segment) = store.get_segment(segment_id)? else {
         bail!("segment {segment_id} not found");
     };
-    let voice = segment_voiceprint(meetings_dir, key, &segment);
+    let voice = segment_voiceprint(store, &segment);
     ranked_suggestions(store, segment.meeting_id, voice.as_deref(), None, settings)
 }
 
 /// One segment's voiceprint from the meeting's sidecar, if it has one.
-fn segment_voiceprint(meetings_dir: &Path, key: &[u8; 32], segment: &Segment) -> Option<Vec<f32>> {
-    match sidecar::read_embeddings(meetings_dir, segment.meeting_id, key) {
+fn segment_voiceprint(store: &MeetingsStore, segment: &Segment) -> Option<Vec<f32>> {
+    match sidecar::read_embeddings(store, segment.meeting_id) {
         Ok(v) => v?
             .into_iter()
             .find(|e| e.segment_id == segment.id && !e.embedding.is_empty())
@@ -219,16 +216,11 @@ struct SourceMeeting {
 }
 
 impl SourceMeeting {
-    fn load(
-        store: &MeetingsStore,
-        meetings_dir: &Path,
-        key: &[u8; 32],
-        id: MeetingId,
-    ) -> Result<Option<Self>> {
+    fn load(store: &MeetingsStore, id: MeetingId) -> Result<Option<Self>> {
         let Some(meeting) = store.get_meeting(id)? else {
             return Ok(None);
         };
-        let embeddings = match sidecar::read_embeddings(meetings_dir, id, key) {
+        let embeddings = match sidecar::read_embeddings(store, id) {
             Ok(e) => e.unwrap_or_default(),
             Err(e) => {
                 log::warn!("meeting {id}: segment voiceprints unreadable: {e:#}");
@@ -245,18 +237,13 @@ impl SourceMeeting {
 
 /// `person_id`'s voiceprints, each with the line it was taken from (found
 /// in its meeting's per-segment voiceprints), newest meeting first.
-pub fn voice_samples(
-    store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
-    person_id: PersonId,
-) -> Result<Vec<VoiceSample>> {
+pub fn voice_samples(store: &MeetingsStore, person_id: PersonId) -> Result<Vec<VoiceSample>> {
     let prints = store.voiceprints_for_person(person_id)?;
     // The meetings they came from (gone ones stay `None`), each read once.
     let mut meetings: HashMap<MeetingId, Option<SourceMeeting>> = HashMap::new();
     for m in prints.iter().filter_map(|v| v.source_meeting_id) {
         if let std::collections::hash_map::Entry::Vacant(slot) = meetings.entry(m) {
-            slot.insert(SourceMeeting::load(store, meetings_dir, key, m)?);
+            slot.insert(SourceMeeting::load(store, m)?);
         }
     }
     let mut out = Vec::with_capacity(prints.len());
@@ -312,29 +299,23 @@ pub fn voice_samples(
 /// This speaker's voiceprints, longest segments first (at most
 /// [`MAX_PRINTS_PER_MEETING`]). Falls back to the cluster centroid when the
 /// per-segment sidecar is missing.
-pub fn speaker_prints(
-    store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
-    speaker: &MeetingSpeaker,
-) -> Result<Vec<Vec<f32>>> {
+pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result<Vec<Vec<f32>>> {
     let segment_ids: HashSet<i64> = store
         .segments(speaker.meeting_id)?
         .into_iter()
         .filter(|s| s.speaker_id == Some(speaker.id))
         .map(|s| s.id)
         .collect();
-    let stored: Vec<SegmentEmbedding> =
-        match sidecar::read_embeddings(meetings_dir, speaker.meeting_id, key) {
-            Ok(v) => v.unwrap_or_default(),
-            Err(e) => {
-                log::warn!(
-                    "meeting {}: segment voiceprints unreadable: {e:#}",
-                    speaker.meeting_id
-                );
-                Vec::new()
-            }
-        };
+    let stored: Vec<SegmentEmbedding> = match sidecar::read_embeddings(store, speaker.meeting_id) {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => {
+            log::warn!(
+                "meeting {}: segment voiceprints unreadable: {e:#}",
+                speaker.meeting_id
+            );
+            Vec::new()
+        }
+    };
     let mut mine: Vec<SegmentEmbedding> = stored
         .into_iter()
         .filter(|e| segment_ids.contains(&e.segment_id) && !e.embedding.is_empty())
@@ -363,12 +344,10 @@ pub fn speaker_prints(
 /// stored and keeping the per-meeting cap. Returns how many were added.
 pub fn store_prints(
     store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
     speaker: &MeetingSpeaker,
     person_id: PersonId,
 ) -> Result<usize> {
-    let prints = speaker_prints(store, meetings_dir, key, speaker)?;
+    let prints = speaker_prints(store, speaker)?;
     let existing: Vec<Vec<f32>> = store
         .voiceprints_for_person(person_id)?
         .into_iter()
@@ -396,12 +375,10 @@ pub fn store_prints(
 /// one speaker and named), and would keep matching the wrong person.
 fn remove_prints_from_others(
     store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
     speaker: &MeetingSpeaker,
     keep: PersonId,
 ) -> Result<()> {
-    let prints = speaker_prints(store, meetings_dir, key, speaker)?;
+    let prints = speaker_prints(store, speaker)?;
     for v in store.voiceprints()? {
         if v.person_id != keep
             && v.source_meeting_id == Some(speaker.meeting_id)
@@ -415,20 +392,14 @@ fn remove_prints_from_others(
 
 /// Name a speaker (creating the person if new), store their voiceprints and
 /// mark the speaker confirmed. Returns the person id.
-pub fn assign(
-    store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
-    speaker_id: SpeakerId,
-    person: PersonRef,
-) -> Result<PersonId> {
+pub fn assign(store: &MeetingsStore, speaker_id: SpeakerId, person: PersonRef) -> Result<PersonId> {
     let Some(mut speaker) = store.get_speaker(speaker_id)? else {
         bail!("speaker {speaker_id} not found");
     };
     let person_id = resolve_person(store, person)?;
     let previous = speaker.person_id;
     if !speaker.is_user {
-        remove_prints_from_others(store, meetings_dir, key, &speaker, person_id)?;
+        remove_prints_from_others(store, &speaker, person_id)?;
     }
     if previous != Some(person_id) {
         // The automatic match (if any) was for someone else.
@@ -439,20 +410,21 @@ pub fn assign(
     store.update_speaker(&speaker)?;
     if !speaker.is_user {
         pin_speaker(store, &speaker, person_id)?;
-        store_prints(store, meetings_dir, key, &speaker, person_id)?;
+        store_prints(store, &speaker, person_id)?;
     }
     Ok(person_id)
 }
 
 /// Pin every line of `speaker` to `person_id`: the user said who it is, and
-/// a redo of the speakers must not take it back (see [`SegmentPin`]).
+/// a redo of the speakers keeps it, except for lines whose own voice
+/// clearly sounds like someone else (see [`SegmentPin::by_hand`]).
 fn pin_speaker(store: &MeetingsStore, speaker: &MeetingSpeaker, person_id: PersonId) -> Result<()> {
     let lines: Vec<Segment> = store
         .segments(speaker.meeting_id)?
         .into_iter()
         .filter(|s| s.speaker_id == Some(speaker.id))
         .collect();
-    store.pin_segments(speaker.meeting_id, &lines, person_id)
+    store.pin_segments(speaker.meeting_id, &lines, person_id, false)
 }
 
 /// The person a [`PersonRef`] names, creating a new one (or finding them
@@ -491,8 +463,6 @@ fn resolve_person(store: &MeetingsStore, person: PersonRef) -> Result<PersonId> 
 /// voices better. A speaker left without segments is removed.
 pub fn assign_segment(
     store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
     segment_id: i64,
     person: PersonRef,
 ) -> Result<PersonId> {
@@ -530,9 +500,9 @@ pub fn assign_segment(
         }
     };
     store.set_segment_speaker(segment_id, Some(target.id))?;
-    store.pin_segments(meeting_id, std::slice::from_ref(&segment), person_id)?;
+    store.pin_segments(meeting_id, std::slice::from_ref(&segment), person_id, true)?;
 
-    let voice = segment_voiceprint(meetings_dir, key, &segment);
+    let voice = segment_voiceprint(store, &segment);
     if let Some(voice) = &voice {
         // Out of whoever it was wrongly given to (one print each)...
         let mut cleared = HashSet::new();
@@ -569,12 +539,7 @@ pub fn assign_segment(
 }
 
 /// Accept an uncertain automatic match ("Confirm?").
-pub fn confirm(
-    store: &MeetingsStore,
-    meetings_dir: &Path,
-    key: &[u8; 32],
-    speaker_id: SpeakerId,
-) -> Result<()> {
+pub fn confirm(store: &MeetingsStore, speaker_id: SpeakerId) -> Result<()> {
     let Some(mut speaker) = store.get_speaker(speaker_id)? else {
         bail!("speaker {speaker_id} not found");
     };
@@ -585,7 +550,7 @@ pub fn confirm(
     store.update_speaker(&speaker)?;
     if !speaker.is_user {
         pin_speaker(store, &speaker, person_id)?;
-        store_prints(store, meetings_dir, key, &speaker, person_id)?;
+        store_prints(store, &speaker, person_id)?;
     }
     Ok(())
 }

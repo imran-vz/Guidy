@@ -3,7 +3,7 @@
 //! [`MeetingRecorder`] is the session state machine:
 //!
 //! - **start**: link a calendar event (the given one, else whichever is on
-//!   now), create the meeting row (`Recording`), open the two encrypted
+//!   now), create the meeting row (`Recording`), open the two
 //!   [`TrackWriter`]s and start capture. Capture callbacks only push samples
 //!   into a channel; a writer thread encodes and writes them.
 //! - **stop**: stop capture, finish both files, set `ended_at` and status
@@ -73,7 +73,6 @@ pub struct RecorderDeps {
     pub capture: Arc<dyn CaptureBackend>,
     pub calendar: Arc<dyn CalendarSource>,
     pub notifier: Arc<dyn Notifier>,
-    pub data_key: Shared<dyn Fn() -> Result<[u8; 32]> + Send + Sync>,
     pub audio_dir: PathBuf,
     pub settings: Shared<dyn Fn() -> MeetingSettings + Send + Sync>,
     pub strings: Shared<dyn Fn() -> NotificationStrings + Send + Sync>,
@@ -309,7 +308,6 @@ impl MeetingRecorder {
         if let Err(e) = self.retry_pending() {
             log::warn!("meetings: finishing a previous recording failed again: {e:#}");
         }
-        let key = (self.deps.data_key)().context("meetings data key")?;
 
         let event = calendar_event_id
             .as_deref()
@@ -347,7 +345,7 @@ impl MeetingRecorder {
         };
         let id = self.deps.repo.insert_meeting(&meeting)?;
 
-        let session = match self.open_session(meeting, id, &key) {
+        let session = match self.open_session(meeting, id) {
             Ok(s) => s,
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
@@ -376,9 +374,9 @@ impl MeetingRecorder {
     /// Create the track files and start capture. On failure, every file it
     /// created is deleted (tracked here, not read back from the row: the
     /// failure may be the row update itself).
-    fn open_session(&self, meeting: Meeting, id: MeetingId, key: &[u8; 32]) -> Result<Session> {
+    fn open_session(&self, meeting: Meeting, id: MeetingId) -> Result<Session> {
         let mut created = Vec::new();
-        let result = self.open_session_inner(meeting, id, key, &mut created);
+        let result = self.open_session_inner(meeting, id, &mut created);
         if result.is_err() {
             // The writers are dropped (closed) by now.
             for path in &created {
@@ -399,7 +397,6 @@ impl MeetingRecorder {
         &self,
         mut meeting: Meeting,
         id: MeetingId,
-        key: &[u8; 32],
         created: &mut Vec<PathBuf>,
     ) -> Result<Session> {
         let mic_rel = audio_store::track_file_name(id, Track::Mic);
@@ -409,9 +406,9 @@ impl MeetingRecorder {
         // Tracked before `create`, which may fail after opening (truncating)
         // the file: whatever is at these fresh-id paths is ours.
         created.push(mic_path.clone());
-        let mic = TrackWriter::create(&mic_path, key)?;
+        let mic = TrackWriter::create(&mic_path)?;
         created.push(sys_path.clone());
-        let sys = TrackWriter::create(&sys_path, key)?;
+        let sys = TrackWriter::create(&sys_path)?;
         // Targeted: never overwrite the whole row (a rename may race this).
         self.deps
             .repo
@@ -903,8 +900,7 @@ impl MeetingRecorder {
         }
         .ok_or_else(|| anyhow!("the audio of this meeting was deleted"))?;
         let path = audio_store::resolve_track_path(&self.deps.audio_dir, &rel)?;
-        let key = (self.deps.data_key)()?;
-        audio_store::TrackReader::open(&path, &key)?.read_range(t0_ms, t1_ms)
+        audio_store::TrackReader::open(&path)?.read_range(t0_ms, t1_ms)
     }
 
     /// Apply the retention setting at `now`. `is_busy` says whether the

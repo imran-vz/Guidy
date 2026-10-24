@@ -108,7 +108,7 @@ pub struct Meeting {
     pub calendar_event: Option<CalendarEvent>,
     pub started_at: i64,
     pub ended_at: Option<i64>,
-    /// Encrypted Opus files, relative to `<app_data_dir>/meetings/audio/`.
+    /// Opus track files, relative to `<app_data_dir>/meetings/audio/`.
     /// `None` once deleted by retention.
     pub mic_audio_path: Option<String>,
     pub system_audio_path: Option<String>,
@@ -155,6 +155,11 @@ pub struct SegmentPin {
     pub t0_ms: i64,
     pub t1_ms: i64,
     pub person_id: PersonId,
+    /// The line itself was tagged. Otherwise its whole speaker was named,
+    /// and a redo gives the line to whoever its own voice clearly sounds
+    /// like (the speaker may have held two voices).
+    #[serde(default)]
+    pub by_hand: bool,
 }
 
 /// A speaker within one meeting (a voiceprint cluster, or the mic user).
@@ -767,4 +772,13 @@ mod tests {
         assert_eq!(t.status, LiveStatus::Off);
         assert_eq!(t.lines.len(), 1);
     }
+}
+
+/// A stored segment's voiceprint (see
+/// [`crate::meetings::processing::sidecar`]).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SegmentEmbedding {
+    pub segment_id: i64,
+    pub duration_ms: i64,
+    pub embedding: Vec<f32>,
 }

@@ -641,10 +641,12 @@ impl MeetingsPage {
         };
         design::panel(cx)
             .id("meeting-recorder")
+            // The sheen travels only while a meeting is being recorded; idle
+            // stays still.
             .when(recording, |d| {
                 d.border_color(tone.accent_text.opacity(0.35))
+                    .child(design::sheen("meeting-rec-sheen", design::RADIUS_PANEL, cx))
             })
-            .child(design::sheen("meeting-rec-sheen", design::RADIUS_PANEL, cx))
             .child(
                 h_flex()
                     .w_full()

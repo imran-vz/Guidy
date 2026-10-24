@@ -3,8 +3,6 @@ use super::schedule::MINUTE_MS as M;
 use super::*;
 use crate::meetings::audio_store::TrackReader;
 
-const KEY: [u8; 32] = [3u8; 32];
-
 struct Rig {
     rec: MeetingRecorder,
     repo: Arc<MemRepo>,
@@ -47,7 +45,6 @@ fn rig_with_live(live: Option<Arc<dyn LiveSink>>) -> Rig {
         capture: capture.clone(),
         calendar: calendar.clone(),
         notifier: notifier.clone(),
-        data_key: Arc::new(|| Ok(KEY)),
         audio_dir: dir.path().join("meetings/audio"),
         settings: Arc::new(move || s.lock().clone()),
         strings: Arc::new(NotificationStrings::default),
@@ -147,12 +144,10 @@ fn start_feed_stop_produces_a_recorded_meeting_with_two_tracks() {
     assert_eq!(m.ended_at, Some(T0 + 2_500));
     assert_eq!(m.error, None);
 
-    let mut mr =
-        TrackReader::open(&audio_path(&r, m.mic_audio_path.as_ref().unwrap()), &KEY).unwrap();
+    let mut mr = TrackReader::open(&audio_path(&r, m.mic_audio_path.as_ref().unwrap())).unwrap();
     assert!(mr.is_complete());
     assert_eq!(mr.read_all().unwrap().len(), mic.len());
-    let mut sr =
-        TrackReader::open(&audio_path(&r, m.system_audio_path.as_ref().unwrap()), &KEY).unwrap();
+    let mut sr = TrackReader::open(&audio_path(&r, m.system_audio_path.as_ref().unwrap())).unwrap();
     assert_eq!(sr.read_all().unwrap().len(), sys.len());
 
     // Playback goes through the same files.
@@ -200,7 +195,7 @@ fn pause_writes_silence_and_freezes_the_elapsed_time() {
     assert!(!r.rec.set_paused(true, T0 + 6_000), "idle");
 
     let m = r.repo.get_meeting(id).unwrap().unwrap();
-    let audio = TrackReader::open(&audio_path(&r, m.mic_audio_path.as_ref().unwrap()), &KEY)
+    let audio = TrackReader::open(&audio_path(&r, m.mic_audio_path.as_ref().unwrap()))
         .unwrap()
         .read_all()
         .unwrap();
@@ -496,14 +491,6 @@ fn a_failed_write_stops_that_track_and_is_reported() {
     assert_eq!(*sys_pushes.lock(), 4);
     assert!(*sys_finished.lock());
     assert!(sys.is_ok());
-}
-
-#[test]
-fn missing_key_fails_before_creating_a_meeting() {
-    let mut r = rig();
-    r.rec.deps.data_key = Arc::new(|| anyhow::bail!("keychain locked"));
-    assert!(r.rec.start(None, T0).is_err());
-    assert!(r.repo.list_meetings().unwrap().is_empty());
 }
 
 #[test]
@@ -992,9 +979,8 @@ mod manager_section {
                 processing_stage: Some("done".into()),
             })
             .unwrap();
-        let key = crate::secrets::meetings_data_key().unwrap();
         let rel = audio_store::track_file_name(id, Track::Mic);
-        let mut w = TrackWriter::create(&mgr.audio_dir().join(&rel), &key).unwrap();
+        let mut w = TrackWriter::create(&mgr.audio_dir().join(&rel)).unwrap();
         w.push(&vec![0.25; 32_000]).unwrap();
         w.finish().unwrap();
         mgr.store().set_audio_paths(id, Some(&rel), None).unwrap();

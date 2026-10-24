@@ -2,14 +2,14 @@
 //! decode -> VAD -> transcribe -> voiceprints -> cluster/match -> merge.
 //!
 //! Each completed stage is recorded as `Meeting::processing_stage`, and its
-//! results are kept in the encrypted [`ProcessingCache`] sidecar, so a
+//! results are kept in the [`ProcessingCache`] checkpoint (in `meetings.db`), so a
 //! cancelled or crashed run resumes from the next stage. The transcribe and
 //! voiceprint stages also checkpoint part-way, so they resume mid-stage.
 //!
 //! The engines are traits ([`SegmentTranscriber`], [`Embedder`], a VAD
 //! factory), so the whole pipeline runs in tests on synthetic audio.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -83,6 +83,16 @@ pub enum Diarizer<'a> {
     Model(&'a mut dyn Embedder),
     /// A diarization service's speaker turns, for system audio.
     Service(&'a mut dyn SpeakerTurns),
+}
+
+/// A pin a line's own voice overruled (see `Pipeline::overruled_pins`).
+struct Overruled {
+    /// Its index in the meeting's pins.
+    pin: usize,
+    /// Whom it pinned the line to.
+    person_id: PersonId,
+    /// The line's unit.
+    unit: usize,
 }
 
 /// Tunables, from settings plus fixed defaults.
@@ -259,7 +269,6 @@ pub struct Pipeline<'a> {
     pub store: &'a MeetingsStore,
     /// `<app_data_dir>/meetings` (sidecars live under it).
     pub meetings_dir: &'a Path,
-    pub key: [u8; 32],
     pub config: PipelineConfig,
     pub mic: Option<Box<dyn AudioSource + 'a>>,
     pub system: Option<Box<dyn AudioSource + 'a>>,
@@ -290,7 +299,7 @@ impl<'a> Pipeline<'a> {
             .processing_stage
             .as_deref()
             .and_then(ProcessingStage::parse);
-        let cached = match sidecar::read_cache(self.meetings_dir, id, &self.key) {
+        let cached = match sidecar::read_cache(self.store, id) {
             Ok(c) => c,
             Err(e) => {
                 log::warn!("meeting {id}: discarding the processing checkpoint: {e:#}");
@@ -323,7 +332,7 @@ impl<'a> Pipeline<'a> {
             stage = next_stage(stage);
         }
         self.record_stage(Some(ProcessingStage::Done))?;
-        if let Err(e) = sidecar::delete_cache(self.meetings_dir, id) {
+        if let Err(e) = sidecar::delete_cache(self.store, id) {
             log::warn!("meeting {id}: {e:#}");
         }
         self.progress(ProcessingStage::Done, 1.0, None);
@@ -380,7 +389,7 @@ impl<'a> Pipeline<'a> {
     fn save(&self, cache: &ProcessingCache) -> Result<()> {
         let _lock = sidecar::lock_embeddings(self.meetings_dir, self.meeting_id);
         self.ensure_still_processing()?;
-        sidecar::write_cache(self.meetings_dir, self.meeting_id, &self.key, cache)
+        sidecar::write_cache(self.store, self.meeting_id, cache)
     }
 
     fn source(&mut self, track: Track) -> Result<&mut (dyn AudioSource + 'a)> {
@@ -761,8 +770,16 @@ impl<'a> Pipeline<'a> {
     fn merge(&mut self, cache: &ProcessingCache) -> Result<()> {
         let clustering = cache.clustering.clone().unwrap_or_default();
         let mut built = build_transcript(cache, &clustering, &self.config);
-        // The user's word on who spoke what outranks the model's.
-        let pins = self.store.segment_pins(self.meeting_id)?;
+        // The user's word on who spoke what outranks the model's, except
+        // that a whole speaker's name gives way to a line's own voice.
+        let all_pins = self.store.segment_pins(self.meeting_id)?;
+        let overruled = self.overruled_pins(&built, &clustering, &all_pins)?;
+        let pins: Vec<SegmentPin> = all_pins
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !overruled.iter().any(|o| o.pin == *i))
+            .map(|(_, p)| p.clone())
+            .collect();
         if !pins.is_empty() {
             // Matches made before a merge name whom they went into, so a
             // pin finds its person's speaker (`replace_transcript` checks
@@ -791,19 +808,86 @@ impl<'a> Pipeline<'a> {
             .store
             .replace_transcript(self.meeting_id, &built.0, &built.1)?;
         let written = self.store_voiceprints(cache, &clustering, &built, &stored);
-        if !pins.is_empty() {
-            // On the new segments' times, so the next redo finds them as is.
+        if let Err(e) = self.drop_overruled_prints(cache, &overruled) {
+            log::warn!("meeting {}: voiceprints not moved: {e:#}", self.meeting_id);
+        }
+        if !all_pins.is_empty() {
+            // On the new segments' times, so the next redo finds them as is
+            // (the overruled ones are dropped: the voice decides those).
             let moved = repin(&stored.1, &pins);
             if let Err(e) = self.store.replace_segment_pins(self.meeting_id, &moved) {
                 log::warn!("meeting {}: pins not moved: {e:#}", self.meeting_id);
             }
         }
         if written.is_err() {
-            if let Err(e) = sidecar::delete_embeddings(self.meetings_dir, self.meeting_id) {
+            if let Err(e) = sidecar::delete_embeddings(self.store, self.meeting_id) {
                 log::warn!("meeting {}: {e:#}", self.meeting_id);
             }
         }
         written
+    }
+
+    /// The pins a line's own voice overrules: ones from naming a whole
+    /// speaker (not tagged by hand) on a line whose voiceprint clearly
+    /// sounds like someone else (see [`Clustering::voices`]).
+    fn overruled_pins(
+        &self,
+        (_, segments, unit_of_segment): &(Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>),
+        clustering: &Clustering,
+        pins: &[SegmentPin],
+    ) -> Result<Vec<Overruled>> {
+        let mut out = Vec::new();
+        for (seg, &unit) in segments.iter().zip(unit_of_segment) {
+            let Some(pin) = pin_for(seg, pins).filter(|p| !p.by_hand) else {
+                continue;
+            };
+            let Some(voice) = clustering.voices.get(unit).copied().flatten() else {
+                continue;
+            };
+            // Matched before a merge of people, maybe (a resumed run).
+            let Some(voice) = self.store.resolve_person(voice)? else {
+                continue;
+            };
+            if voice != pin.person_id {
+                out.push(Overruled {
+                    pin: pins
+                        .iter()
+                        .position(|q| std::ptr::eq(q, pin))
+                        .expect("in pins"),
+                    person_id: pin.person_id,
+                    unit,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Take the overruled lines' voiceprints (stored when their speaker was
+    /// named) from the person they were pinned to: they would keep matching
+    /// that person with someone else's voice.
+    fn drop_overruled_prints(
+        &self,
+        cache: &ProcessingCache,
+        overruled: &[Overruled],
+    ) -> Result<()> {
+        if overruled.is_empty() {
+            return Ok(());
+        }
+        let prints = self.store.voiceprints()?;
+        for o in overruled {
+            let Some(Some(Some(voice))) = cache.embeddings.get(o.unit) else {
+                continue;
+            };
+            for v in &prints {
+                if v.person_id == o.person_id
+                    && v.source_meeting_id == Some(self.meeting_id)
+                    && cluster::cosine(&v.embedding, voice) >= cluster::SAME_PRINT_SIMILARITY
+                {
+                    self.store.delete_voiceprint(v.id)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// [`Self::merge`] after the transcript is stored: speaker centroids and
@@ -843,7 +927,7 @@ impl<'a> Pipeline<'a> {
                 })
             })
             .collect();
-        sidecar::write_embeddings(self.meetings_dir, self.meeting_id, &self.key, &embeddings)
+        sidecar::write_embeddings(self.store, self.meeting_id, &embeddings)
     }
 }
 
@@ -1046,6 +1130,10 @@ pub fn cluster_units_with(
             .filter(|&i| vector_of(i).is_some())
             .collect(),
     };
+    let mut is_embedded = vec![false; n];
+    for &i in &embedded {
+        is_embedded[i] = true;
+    }
     let vectors: Vec<Vec<f32>> = embedded
         .iter()
         .map(|&i| vector_of(i).expect("embedded"))
@@ -1135,6 +1223,40 @@ pub fn cluster_units_with(
         }
     }
 
+    // A line that clearly sounds like someone the user named is theirs,
+    // whatever the clusters say: voices merged into one cluster, or left
+    // unknown, are told apart by the voiceprints of the people named.
+    // (Not the user's own mic speech.)
+    let mut voices: Vec<Option<PersonId>> = vec![None; n];
+    if !known.is_empty() {
+        for &i in &speech {
+            if cache.units[i].track == Track::Mic && labels[i].is_none() {
+                continue;
+            }
+            if let Some(voice) = cache.embeddings[i].as_ref().and_then(Option::as_deref) {
+                voices[i] = cluster::match_line(voice, known, config.match_threshold).map(|m| m.0);
+            }
+        }
+    }
+    let moved = move_to_voices(cache, config, known, &mut labels, &voices);
+    if !moved.is_empty() && !matches!(source, ClusterSource::SystemLabels(_)) {
+        // Short lines follow the voices around them again.
+        let system_labels: Vec<Option<usize>> = system
+            .iter()
+            .map(|&i| labels[i].filter(|_| is_embedded[i]))
+            .collect();
+        if system_labels.iter().any(Option::is_some) {
+            for (&i, l) in system
+                .iter()
+                .zip(cluster::attach_by_time(&spans, &system_labels))
+            {
+                if !is_embedded[i] {
+                    labels[i] = l;
+                }
+            }
+        }
+    }
+
     // Renumber clusters by first appearance in time.
     let mut order: Vec<usize> = Vec::new();
     let mut by_time: Vec<usize> = (0..n).collect();
@@ -1165,17 +1287,104 @@ pub fn cluster_units_with(
             )
         })
         .collect();
-    let matches = cluster::match_clusters(
-        &centroids,
-        known,
-        config.match_threshold,
-        config.suggest_threshold,
-    );
+    let moved: HashMap<usize, (PersonId, bool)> =
+        moved.into_iter().map(|(c, m)| (renumber[&c], m)).collect();
+    let matches = match_moved_clusters(&centroids, known, config, &moved);
     Clustering {
         labels,
         centroids,
         matches,
+        voices,
     }
+}
+
+/// Put each line `voices` names in its person's cluster: the one the
+/// clusters match them to now, else a new one. Returns the clusters lines
+/// went into, with their person and whether the cluster is new.
+fn move_to_voices(
+    cache: &ProcessingCache,
+    config: &PipelineConfig,
+    known: &[KnownVoice],
+    labels: &mut [Option<usize>],
+    voices: &[Option<PersonId>],
+) -> HashMap<usize, (PersonId, bool)> {
+    let mut moved = HashMap::new();
+    if voices.iter().all(Option::is_none) {
+        return moved;
+    }
+    let k = labels.iter().flatten().max().map_or(0, |m| m + 1);
+    let centroids: Vec<Option<Vec<f32>>> = (0..k)
+        .map(|c| {
+            cluster::centroid(
+                (0..labels.len())
+                    .filter(|&i| labels[i] == Some(c))
+                    .filter_map(|i| cache.embeddings[i].as_ref()?.as_deref()),
+            )
+        })
+        .collect();
+    let mut owner: HashMap<PersonId, (usize, bool)> = cluster::match_clusters(
+        &centroids,
+        known,
+        config.match_threshold,
+        config.suggest_threshold,
+    )
+    .iter()
+    .enumerate()
+    .filter_map(|(c, m)| Some((m.person_id?, (c, false))))
+    .collect();
+    let mut next = k;
+    for (label, voice) in labels.iter_mut().zip(voices) {
+        let Some(person) = *voice else { continue };
+        let (target, new) = *owner.entry(person).or_insert_with(|| {
+            next += 1;
+            (next - 1, true)
+        });
+        if *label != Some(target) {
+            *label = Some(target);
+            moved.insert(target, (person, new));
+        }
+    }
+    moved
+}
+
+/// [`cluster::match_clusters`], except that the clusters lines were moved
+/// into (see [`move_to_voices`]) are their person's: confirmed when the
+/// cluster is new or its centroid reaches the match threshold.
+fn match_moved_clusters(
+    centroids: &[Option<Vec<f32>>],
+    known: &[KnownVoice],
+    config: &PipelineConfig,
+    moved: &HashMap<usize, (PersonId, bool)>,
+) -> Vec<cluster::SpeakerMatch> {
+    let taken: HashSet<PersonId> = moved.values().map(|m| m.0).collect();
+    let free: Vec<KnownVoice> = known
+        .iter()
+        .filter(|p| !taken.contains(&p.person_id))
+        .cloned()
+        .collect();
+    let open: Vec<Option<Vec<f32>>> = centroids
+        .iter()
+        .enumerate()
+        .map(|(c, x)| x.clone().filter(|_| !moved.contains_key(&c)))
+        .collect();
+    let mut matches = cluster::match_clusters(
+        &open,
+        &free,
+        config.match_threshold,
+        config.suggest_threshold,
+    );
+    for (&c, &(person, new)) in moved {
+        let confidence = centroids[c].as_deref().and_then(|x| {
+            let prints = &known.iter().find(|p| p.person_id == person)?.prints;
+            cluster::person_similarity(x, prints)
+        });
+        matches[c] = cluster::SpeakerMatch {
+            person_id: Some(person),
+            confidence,
+            confirmed: new || confidence.is_some_and(|s| s >= config.match_threshold),
+        };
+    }
+    matches
 }
 
 /// Local speaker id of the mic user, and of cluster `c`.
@@ -1286,6 +1495,7 @@ fn repin(segments: &[Segment], pins: &[SegmentPin]) -> Vec<SegmentPin> {
                 t0_ms: s.t0_ms,
                 t1_ms: s.t1_ms,
                 person_id: p.person_id,
+                by_hand: p.by_hand,
             })
         })
         .collect();

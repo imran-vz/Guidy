@@ -1,13 +1,15 @@
-//! Encrypted `meetings.db` (SQLCipher). See docs/MEETING_NOTES_ARCH.md.
+//! `meetings.db`, a plain SQLite database. See docs/MEETING_NOTES_ARCH.md.
 //!
-//! The database is keyed with the 32-byte meetings data key from
-//! [`crate::secrets::meetings_data_key`] (raw-key syntax, so SQLCipher skips
-//! its passphrase KDF). Schema changes go through `rusqlite_migration`, like
+//! It also holds the processing checkpoints and the per-segment voiceprints
+//! (see [`crate::meetings::processing::sidecar`]). Earlier versions encrypted
+//! it with SQLCipher; [`crate::meetings::legacy`] converts such a database
+//! once. Schema changes go through `rusqlite_migration`, like
 //! `managers/history.rs`: append to [`MIGRATIONS`], never edit a shipped entry.
 //!
 //! Foreign keys:
-//! - deleting a meeting deletes its segments, speakers, summary and action
-//!   items; its voiceprints stay (`source_meeting_id` becomes NULL);
+//! - deleting a meeting deletes its segments, speakers, summary, action
+//!   items, processing checkpoint and per-segment voiceprints; the
+//!   voiceprints stored under people stay (`source_meeting_id` becomes NULL);
 //! - deleting a person deletes their voiceprints and clears speaker links and
 //!   action-item owners that pointed at them, and the `person_merges` rows
 //!   that resolve people merged into them.
@@ -26,7 +28,7 @@ use rusqlite_migration::{Migrations, M};
 use crate::linear::SentDraft;
 use crate::meetings::types::*;
 
-static MIGRATIONS: &[M] = &[
+pub(crate) static MIGRATIONS: &[M] = &[
     M::up(
         "CREATE TABLE people (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,6 +196,39 @@ static MIGRATIONS: &[M] = &[
         FROM meeting_segments g JOIN meeting_speakers s ON s.id = g.speaker_id
         WHERE s.person_id IS NOT NULL AND s.confirmed = 1
             AND s.match_confidence IS NULL AND s.is_user = 0;",
+    ),
+    // 10: `segment_pins.by_hand`: the line itself was tagged, not its whole
+    // speaker named (see `SegmentPin::by_hand`). Earlier pins didn't say;
+    // a line tagged into a speaker the tag made (labelled with the
+    // person's name, until a redo) surely was.
+    M::up(
+        "ALTER TABLE segment_pins ADD COLUMN by_hand INTEGER NOT NULL DEFAULT 0;
+    UPDATE segment_pins SET by_hand = 1 WHERE EXISTS (
+        SELECT 1 FROM meeting_segments g
+        JOIN meeting_speakers s ON s.id = g.speaker_id
+        JOIN people p ON p.id = s.person_id
+        WHERE g.meeting_id = segment_pins.meeting_id AND g.track = segment_pins.track
+            AND g.t0_ms = segment_pins.t0_ms AND g.t1_ms = segment_pins.t1_ms
+            AND s.person_id = segment_pins.person_id AND s.is_user = 0
+            AND s.cluster_label = p.display_name
+    );",
+    ),
+    // 11: what were encrypted files beside the database: a meeting's
+    // processing checkpoint (`ProcessingCache` JSON), and its per-segment
+    // voiceprints (keyed by segment id, not a foreign key: a run writes
+    // them for the transcript it just stored, and replaces them all).
+    M::up(
+        "CREATE TABLE processing_checkpoints (
+        meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+        cache TEXT NOT NULL
+    );
+    CREATE TABLE segment_embeddings (
+        meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        segment_id INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        embedding BLOB NOT NULL,
+        PRIMARY KEY (meeting_id, segment_id)
+    );",
     ),
 ];
 
@@ -517,31 +552,32 @@ impl std::fmt::Display for TicketEditError {
 
 impl std::error::Error for TicketEditError {}
 
-/// `meetings.db` exists but the data key doesn't decrypt it (SQLite reads
-/// it as "not a database"): the key is wrong. Other open failures (a busy
-/// or locked file, I/O, a migration error) are not this.
+/// `meetings.db` can't be read as a plain SQLite database ("not a
+/// database"): still encrypted (the conversion in
+/// [`crate::meetings::legacy`] didn't run) or damaged. Other open failures
+/// (a busy or locked file, I/O, a migration error) are not this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeetingsDbUndecryptable;
 
 impl std::fmt::Display for MeetingsDbUndecryptable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("meetings.db could not be decrypted (wrong key?)")
+        f.write_str("meetings.db could not be read (still encrypted, or damaged)")
     }
 }
 
 impl std::error::Error for MeetingsDbUndecryptable {}
 
-/// The encrypted meetings database. Cheap to share as `Arc<MeetingsStore>`;
-/// every call takes the connection lock for its duration.
+/// The meetings database. Cheap to share as `Arc<MeetingsStore>`; every
+/// call takes the connection lock for its duration.
 pub struct MeetingsStore {
     conn: Mutex<Connection>,
 }
 
 impl MeetingsStore {
-    /// Open (creating if needed) the database at `path`, keyed with `key`,
-    /// and migrate it. Fails with [`MeetingsDbUndecryptable`] (in the error
-    /// chain) if the file exists but `key` is wrong.
-    pub fn open(path: &Path, key: &[u8; 32]) -> Result<Self> {
+    /// Open (creating if needed) the database at `path` and migrate it.
+    /// Fails with [`MeetingsDbUndecryptable`] (in the error chain) if the
+    /// file isn't a plain SQLite database (e.g. still encrypted).
+    pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
@@ -549,18 +585,17 @@ impl MeetingsStore {
         // database file's mode.
         restrict_file(path)?;
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        Self::init(conn, key)
+        Self::init(conn)
     }
 
-    /// A keyed in-memory database (tests).
-    pub fn open_in_memory(key: &[u8; 32]) -> Result<Self> {
-        Self::init(Connection::open_in_memory()?, key)
+    /// An in-memory database (tests).
+    pub fn open_in_memory() -> Result<Self> {
+        Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(mut conn: Connection, key: &[u8; 32]) -> Result<Self> {
-        apply_key(&conn, key)?;
-        // Reading the schema is the first access that decrypts a page; a wrong
-        // key fails here with "file is not a database".
+    fn init(mut conn: Connection) -> Result<Self> {
+        // Reading the schema is the first page read; an encrypted (or
+        // damaged) file fails here with "file is not a database".
         if let Err(e) = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
             r.get::<_, i64>(0)
         }) {
@@ -1053,17 +1088,24 @@ impl MeetingsStore {
     }
 
     /// Pin `segments` of `meeting_id` to `person_id` (replacing any pin
-    /// they had): the user said that is who spoke them.
+    /// they had): the user said that is who spoke them, tagging these lines
+    /// (`by_hand`) or naming their speaker. Naming doesn't undo a tag of a
+    /// line to the same person.
     pub fn pin_segments(
         &self,
         meeting_id: MeetingId,
         segments: &[Segment],
         person_id: PersonId,
+        by_hand: bool,
     ) -> Result<()> {
         self.with_tx(|tx| {
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id, by_hand)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (meeting_id, track, t0_ms, t1_ms) DO UPDATE SET
+                     by_hand = CASE WHEN person_id = excluded.person_id
+                         THEN max(by_hand, excluded.by_hand) ELSE excluded.by_hand END,
+                     person_id = excluded.person_id",
             )?;
             for s in segments {
                 stmt.execute(params![
@@ -1071,7 +1113,8 @@ impl MeetingsStore {
                     s.track.as_str(),
                     s.t0_ms,
                     s.t1_ms,
-                    person_id
+                    person_id,
+                    by_hand
                 ])?;
             }
             Ok(())
@@ -1082,7 +1125,7 @@ impl MeetingsStore {
     pub fn segment_pins(&self, meeting_id: MeetingId) -> Result<Vec<SegmentPin>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT track, t0_ms, t1_ms, person_id FROM segment_pins WHERE meeting_id = ?1
+            "SELECT track, t0_ms, t1_ms, person_id, by_hand FROM segment_pins WHERE meeting_id = ?1
              ORDER BY t0_ms, track",
         )?;
         let rows = stmt.query_map([meeting_id], |row| {
@@ -1092,6 +1135,7 @@ impl MeetingsStore {
                 t0_ms: row.get(1)?,
                 t1_ms: row.get(2)?,
                 person_id: row.get(3)?,
+                by_hand: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1105,8 +1149,9 @@ impl MeetingsStore {
                 [meeting_id],
             )?;
             let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
-                 SELECT ?1, ?2, ?3, ?4, id FROM people WHERE id = ?5",
+                "INSERT OR REPLACE INTO segment_pins
+                     (meeting_id, track, t0_ms, t1_ms, person_id, by_hand)
+                 SELECT ?1, ?2, ?3, ?4, id, ?6 FROM people WHERE id = ?5",
             )?;
             for p in pins {
                 stmt.execute(params![
@@ -1114,7 +1159,8 @@ impl MeetingsStore {
                     p.track.as_str(),
                     p.t0_ms,
                     p.t1_ms,
-                    p.person_id
+                    p.person_id,
+                    p.by_hand
                 ])?;
             }
             Ok(())
@@ -1288,7 +1334,7 @@ impl MeetingsStore {
     /// (`meeting_speakers.embedding`) of the speakers linked to them, which
     /// are their voice too. Returns false if they didn't exist.
     ///
-    /// Per-segment voiceprints live in the encrypted embeddings sidecars;
+    /// Per-segment voiceprints are dropped separately (under their lock);
     /// [`Self::delete_person_within`] also returns the segments whose ones to
     /// drop.
     pub fn delete_person(&self, id: PersonId) -> Result<bool> {
@@ -1432,6 +1478,111 @@ impl MeetingsStore {
     }
 
     // ----- the user's voice -------------------------------------------------
+
+    // ----- processing checkpoints & per-segment voiceprints -----------------
+
+    /// A meeting's processing checkpoint (`ProcessingCache` JSON), if any.
+    pub fn processing_checkpoint(&self, meeting_id: MeetingId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT cache FROM processing_checkpoints WHERE meeting_id = ?1",
+                [meeting_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Store (replace) a meeting's processing checkpoint. A meeting deleted
+    /// meanwhile gets none (and this is no error).
+    pub fn set_processing_checkpoint(&self, meeting_id: MeetingId, cache: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT OR REPLACE INTO processing_checkpoints (meeting_id, cache)
+             SELECT id, ?2 FROM meetings WHERE id = ?1",
+            params![meeting_id, cache],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_processing_checkpoint(&self, meeting_id: MeetingId) -> Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM processing_checkpoints WHERE meeting_id = ?1",
+            [meeting_id],
+        )?;
+        Ok(())
+    }
+
+    /// A meeting's per-segment voiceprints, by segment id.
+    pub fn segment_embeddings(&self, meeting_id: MeetingId) -> Result<Vec<SegmentEmbedding>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT segment_id, duration_ms, embedding FROM segment_embeddings
+             WHERE meeting_id = ?1 ORDER BY segment_id",
+        )?;
+        let rows = stmt.query_map([meeting_id], |r| {
+            Ok(SegmentEmbedding {
+                segment_id: r.get(0)?,
+                duration_ms: r.get(1)?,
+                embedding: decode_embedding(&r.get::<_, Vec<u8>>(2)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Replace a meeting's per-segment voiceprints with `embeddings`. A
+    /// meeting deleted meanwhile gets none (and this is no error).
+    pub fn replace_segment_embeddings(
+        &self,
+        meeting_id: MeetingId,
+        embeddings: &[SegmentEmbedding],
+    ) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM segment_embeddings WHERE meeting_id = ?1",
+                [meeting_id],
+            )?;
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO segment_embeddings
+                     (meeting_id, segment_id, duration_ms, embedding)
+                 SELECT id, ?2, ?3, ?4 FROM meetings WHERE id = ?1",
+            )?;
+            for e in embeddings {
+                stmt.execute(params![
+                    meeting_id,
+                    e.segment_id,
+                    e.duration_ms,
+                    encode_embedding(&e.embedding)
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Delete a meeting's per-segment voiceprints: those of `segment_ids`,
+    /// or all with `None`. Returns how many were deleted.
+    pub fn delete_segment_embeddings(
+        &self,
+        meeting_id: MeetingId,
+        segment_ids: Option<&std::collections::HashSet<i64>>,
+    ) -> Result<usize> {
+        let Some(ids) = segment_ids else {
+            return Ok(self.conn.lock().execute(
+                "DELETE FROM segment_embeddings WHERE meeting_id = ?1",
+                [meeting_id],
+            )?);
+        };
+        self.with_tx(|tx| {
+            let mut stmt = tx.prepare(
+                "DELETE FROM segment_embeddings WHERE meeting_id = ?1 AND segment_id = ?2",
+            )?;
+            let mut n = 0;
+            for id in ids {
+                n += stmt.execute(params![meeting_id, id])?;
+            }
+            Ok(n)
+        })
+    }
 
     /// Replace the user's recorded voiceprints with `prints`.
     pub fn replace_user_voiceprints(&self, prints: &[Vec<f32>]) -> Result<()> {
@@ -1889,8 +2040,9 @@ fn ensure_not_created(tx: &Transaction<'_>, id: ActionItemId) -> Result<()> {
     }
 }
 
-/// Apply the SQLCipher key as a raw 256-bit key (`x'<64 hex>'`).
-fn apply_key(conn: &Connection, key: &[u8; 32]) -> Result<()> {
+/// Apply a SQLCipher key as a raw 256-bit key (`x'<64 hex>'`): only to read
+/// a database encrypted by an earlier version ([`crate::meetings::legacy`]).
+pub(crate) fn apply_key(conn: &Connection, key: &[u8; 32]) -> Result<()> {
     let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
     conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
         .context("set the meetings.db key")?;
@@ -1905,13 +2057,11 @@ fn expect_one(n: usize, what: &str, id: i64) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    const KEY: [u8; 32] = [7u8; 32];
-
     fn store() -> MeetingsStore {
-        MeetingsStore::open_in_memory(&KEY).unwrap()
+        MeetingsStore::open_in_memory().unwrap()
     }
 
     fn meeting(title: &str, started_at: i64) -> Meeting {
@@ -2993,7 +3143,6 @@ mod tests {
         let path = dir.path().join(MEETINGS_DB_FILE);
         {
             let mut conn = Connection::open(&path).unwrap();
-            apply_key(&conn, &KEY).unwrap();
             Migrations::new(MIGRATIONS[..4].to_vec())
                 .to_latest(&mut conn)
                 .unwrap();
@@ -3010,7 +3159,7 @@ mod tests {
             )
             .unwrap();
         }
-        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let s = MeetingsStore::open(&path).unwrap();
         let id = s.action_items(1).unwrap()[0].id;
         let draft = TicketDraft {
             title: "Now".into(),
@@ -3032,7 +3181,6 @@ mod tests {
         let path = dir.path().join(MEETINGS_DB_FILE);
         {
             let mut conn = Connection::open(&path).unwrap();
-            apply_key(&conn, &KEY).unwrap();
             Migrations::new(MIGRATIONS[..8].to_vec())
                 .to_latest(&mut conn)
                 .unwrap();
@@ -3047,16 +3195,85 @@ mod tests {
             )
             .unwrap();
         }
-        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let s = MeetingsStore::open(&path).unwrap();
         assert_eq!(
             s.segment_pins(1).unwrap(),
             [SegmentPin {
                 track: Track::System,
                 t0_ms: 0,
                 t1_ms: 1000,
-                person_id: 1
+                person_id: 1,
+                by_hand: false
             }]
         );
+    }
+
+    /// Migration 10 marks a pin tagged by hand when its line sits on the
+    /// speaker the tag made (labelled with the person's name); pins from
+    /// naming a speaker can be overruled by a line's voice.
+    #[test]
+    fn a_version_9_database_marks_the_lines_tagged_by_hand() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MEETINGS_DB_FILE);
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            Migrations::new(MIGRATIONS[..9].to_vec())
+                .to_latest(&mut conn)
+                .unwrap();
+            conn.execute_batch(
+                "INSERT INTO people (id, display_name, created_at) VALUES (1, 'Ada', 0), (2, 'Bo', 0);
+                 INSERT INTO meetings (id, title, started_at, status) VALUES (1, 'm', 0, 'processed');
+                 INSERT INTO meeting_speakers (id, meeting_id, cluster_label, person_id,
+                     match_confidence, confirmed, is_user)
+                 VALUES (1, 1, 'Speaker 1', 1, NULL, 1, 0), (2, 1, 'Bo', 2, NULL, 1, 0);
+                 INSERT INTO meeting_segments (meeting_id, track, t0_ms, t1_ms, text, speaker_id)
+                 VALUES (1, 'system', 0, 1000, 'named', 1), (1, 'system', 2000, 3000, 'tagged', 2);
+                 INSERT INTO segment_pins (meeting_id, track, t0_ms, t1_ms, person_id)
+                 VALUES (1, 'system', 0, 1000, 1), (1, 'system', 2000, 3000, 2);",
+            )
+            .unwrap();
+        }
+        let s = MeetingsStore::open(&path).unwrap();
+        let by_hand: Vec<(i64, bool)> = s
+            .segment_pins(1)
+            .unwrap()
+            .iter()
+            .map(|p| (p.t0_ms, p.by_hand))
+            .collect();
+        assert_eq!(by_hand, [(0, false), (2000, true)]);
+    }
+
+    /// Naming a speaker keeps a line's tag to the same person; to someone
+    /// else, the name wins.
+    #[test]
+    fn naming_a_speaker_keeps_a_tag_to_the_same_person() {
+        let s = MeetingsStore::open_in_memory().unwrap();
+        let m = s.insert_meeting(&meeting("m", 0)).unwrap();
+        let (ada, bo) = (
+            s.insert_person("Ada", None).unwrap().id,
+            s.insert_person("Bo", None).unwrap().id,
+        );
+        let line = |t0_ms: i64| Segment {
+            id: 0,
+            meeting_id: m,
+            track: Track::System,
+            t0_ms,
+            t1_ms: t0_ms + 1_000,
+            text: String::new(),
+            words: Vec::new(),
+            speaker_id: None,
+        };
+        s.pin_segments(m, &[line(0), line(2_000)], ada, true)
+            .unwrap();
+        s.pin_segments(m, &[line(0)], ada, false).unwrap();
+        s.pin_segments(m, &[line(2_000)], bo, false).unwrap();
+        let pins: Vec<(PersonId, bool)> = s
+            .segment_pins(m)
+            .unwrap()
+            .iter()
+            .map(|p| (p.person_id, p.by_hand))
+            .collect();
+        assert_eq!(pins, [(ada, true), (bo, false)]);
     }
 
     /// A database created when migration 3 was the last one gets the stage
@@ -3067,7 +3284,6 @@ mod tests {
         let path = dir.path().join(MEETINGS_DB_FILE);
         {
             let mut conn = Connection::open(&path).unwrap();
-            apply_key(&conn, &KEY).unwrap();
             Migrations::new(MIGRATIONS[..3].to_vec())
                 .to_latest(&mut conn)
                 .unwrap();
@@ -3082,7 +3298,7 @@ mod tests {
             )
             .unwrap();
         }
-        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let s = MeetingsStore::open(&path).unwrap();
         let id = s.list_meetings().unwrap()[0].id;
         assert!(s.mark_processing(id, false).unwrap());
         s.set_processing_stage(id, Some(ProcessingStage::Vad))
@@ -3093,28 +3309,37 @@ mod tests {
         assert_eq!(got.processing_stage.as_deref(), Some("done"));
     }
 
+    /// A database an earlier version encrypted, at `path`.
+    pub(crate) fn encrypted_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        apply_key(&conn, &[9u8; 32]).unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES ('secret-title');")
+            .unwrap();
+    }
+
     #[test]
-    fn only_a_wrong_key_is_reported_as_undecryptable() {
+    fn only_an_encrypted_file_is_reported_as_undecryptable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(MEETINGS_DB_FILE);
-        drop(MeetingsStore::open(&path, &KEY).unwrap());
-        let e = MeetingsStore::open(&path, &[8u8; 32]).err().unwrap();
+        encrypted_db(&path);
+        let e = MeetingsStore::open(&path).err().unwrap();
         assert!(
             e.downcast_ref::<MeetingsDbUndecryptable>().is_some(),
             "{e:#}"
         );
 
-        // Locked by another connection: an error, but not a key problem.
+        // Locked by another connection: an error, but not this.
+        let path = dir.path().join("plain.db");
+        drop(MeetingsStore::open(&path).unwrap());
         let other = Connection::open(&path).unwrap();
-        apply_key(&other, &KEY).unwrap();
         other.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let e = MeetingsStore::open(&path, &KEY).err().unwrap();
+        let e = MeetingsStore::open(&path).err().unwrap();
         assert!(
             e.downcast_ref::<MeetingsDbUndecryptable>().is_none(),
             "{e:#}"
         );
         other.execute_batch("ROLLBACK").unwrap();
-        assert!(MeetingsStore::open(&path, &KEY).is_ok());
+        assert!(MeetingsStore::open(&path).is_ok());
     }
 
     #[test]
@@ -3157,7 +3382,7 @@ mod tests {
         // Even a pre-existing world-readable file is tightened.
         std::fs::write(&path, b"").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let s = MeetingsStore::open(&path, &KEY).unwrap();
+        let s = MeetingsStore::open(&path).unwrap();
         s.insert_meeting(&meeting("x", 0)).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
@@ -3166,30 +3391,21 @@ mod tests {
     // ----- Risk 5.4: SQLCipher build with plain + keyed databases ----------
 
     #[test]
-    fn keyed_file_cannot_be_read_without_the_right_key() {
+    fn the_database_is_plain_sqlite() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(MEETINGS_DB_FILE);
         {
-            let s = MeetingsStore::open(&path, &KEY).unwrap();
-            s.insert_meeting(&meeting("secret-title", 0)).unwrap();
+            let s = MeetingsStore::open(&path).unwrap();
+            s.insert_meeting(&meeting("plain-title", 0)).unwrap();
         }
-        // Reopen with the right key.
-        let s = MeetingsStore::open(&path, &KEY).unwrap();
-        assert_eq!(s.list_meetings().unwrap()[0].title, "secret-title");
-        drop(s);
-
-        // The file is not plain SQLite and doesn't contain the plaintext.
         let bytes = std::fs::read(&path).unwrap();
-        assert!(!bytes.starts_with(b"SQLite format 3\0"));
-        assert!(!bytes.windows(12).any(|w| w == b"secret-title"));
-
-        // Wrong key.
-        assert!(MeetingsStore::open(&path, &[8u8; 32]).is_err());
-        // No key at all (plain SQLite connection).
+        assert!(bytes.starts_with(b"SQLite format 3\0"));
+        // Any SQLite reads it, no key needed.
         let plain = Connection::open(&path).unwrap();
-        assert!(plain
-            .query_row("SELECT COUNT(*) FROM meetings", [], |r| r.get::<_, i64>(0))
-            .is_err());
+        let title: String = plain
+            .query_row("SELECT title FROM meetings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "plain-title");
     }
 
     #[test]

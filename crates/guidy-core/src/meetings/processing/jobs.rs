@@ -413,8 +413,7 @@ impl Processor {
             meeting.system_audio_path.is_some(),
             meeting.duration_ms().unwrap_or(0),
         );
-        let key = crate::secrets::meetings_data_key()?;
-        super::sidecar::write_cache(&self.inner.meetings_dir, id, &key, &cache)?;
+        super::sidecar::write_cache(store, id, &cache)?;
         store.set_processing_stage_if_processing(id, Some(ProcessingStage::Transcribe))?;
         Ok(())
     }
@@ -429,7 +428,7 @@ impl Processor {
         self.inner
             .store
             .set_processing_stage_if_processing(id, None)?;
-        if let Err(e) = super::sidecar::delete_cache(&self.inner.meetings_dir, id) {
+        if let Err(e) = super::sidecar::delete_cache(&self.inner.store, id) {
             log::warn!("meeting {id}: {e:#}");
         }
         Ok(())
@@ -453,7 +452,7 @@ impl Processor {
             .get_meeting(id)?
             .is_some_and(|m| m.processing_stage.as_deref() == Some(ProcessingStage::Done.as_str()));
         if done {
-            super::sidecar::delete_cache(&self.inner.meetings_dir, id)?;
+            super::sidecar::delete_cache(&self.inner.store, id)?;
         }
         Ok(true)
     }
@@ -624,7 +623,9 @@ impl Processor {
             // an outcome.
             if matches!(store.get_meeting(id), Ok(None)) {
                 log::info!("meeting {id}: deleted during processing; removing its files");
-                if let Err(e) = super::sidecar::delete_sidecars(&self.inner.meetings_dir, id) {
+                if let Err(e) =
+                    super::sidecar::delete_sidecars(&self.inner.meetings_dir, &self.inner.store, id)
+                {
                     log::warn!("meeting {id}: {e:#}");
                 }
                 return;
@@ -686,7 +687,6 @@ impl Processor {
         }
         self.emit_changed(id);
 
-        let key = crate::secrets::meetings_data_key()?;
         let settings = get_settings(&inner.app);
         let audio_dir =
             audio_store::audio_dir(inner.meetings_dir.parent().unwrap_or(&inner.meetings_dir));
@@ -697,7 +697,7 @@ impl Processor {
                 log::warn!("meeting {id}: track {} is missing", path.display());
                 return Ok(None);
             }
-            Ok(Some(Box::new(TrackReader::open(&path, &key)?)))
+            Ok(Some(Box::new(TrackReader::open(&path)?)))
         };
         let mic = open(&meeting.mic_audio_path)?;
         let system = open(&meeting.system_audio_path)?;
@@ -795,7 +795,6 @@ impl Processor {
             meeting_id: id,
             store: &inner.store,
             meetings_dir: &inner.meetings_dir,
-            key,
             config: PipelineConfig {
                 preferred_language: Some(settings.app_language.clone()),
                 ..PipelineConfig::from_settings(&settings.meetings)
@@ -1053,7 +1052,7 @@ mod tests {
     #[test]
     fn a_job_runs_in_the_background_and_records_its_outcome() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
         let id = store
@@ -1087,7 +1086,7 @@ mod tests {
     #[test]
     fn recording_or_unknown_meetings_are_refused() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let id = store
             .insert_meeting(&meeting(MeetingStatus::Recording))
@@ -1102,7 +1101,7 @@ mod tests {
     #[test]
     fn meetings_whose_audio_was_deleted_are_refused_untouched() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         // Retention cleared the paths of a processed meeting.
         let id = store
@@ -1127,7 +1126,7 @@ mod tests {
     #[test]
     fn cancelling_a_queued_meeting_unqueues_it() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let id = store
             .insert_meeting(&meeting(MeetingStatus::Recorded))
@@ -1155,7 +1154,7 @@ mod tests {
     #[test]
     fn cancelling_a_queued_retry_restores_the_failure() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let id = store
             .insert_meeting(&Meeting {
@@ -1180,7 +1179,7 @@ mod tests {
         use crate::meetings::recorder::adapters::StoreRepo;
         const DAY: i64 = 24 * 60 * 60 * 1000;
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
         let audio_dir = dir.path().join("audio");
@@ -1236,7 +1235,7 @@ mod tests {
     #[test]
     fn cancelling_a_queued_interrupted_meeting_resets_it_to_recorded() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let id = store
             .insert_meeting(&meeting(MeetingStatus::Processing))
@@ -1265,7 +1264,7 @@ mod tests {
     #[test]
     fn resume_marks_unqueueable_meetings_failed_and_continues() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let bad = store
             .insert_meeting(&meeting(MeetingStatus::Processing))
@@ -1294,7 +1293,7 @@ mod tests {
     #[test]
     fn resume_restores_meetings_waiting_for_a_model() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let before = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let recorded = store
             .insert_meeting(&meeting(MeetingStatus::Recorded))
@@ -1319,7 +1318,7 @@ mod tests {
     #[test]
     fn the_status_before_queueing_survives_a_restart() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let before = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let done = store
             .insert_meeting(&meeting(MeetingStatus::Processed))
@@ -1370,7 +1369,7 @@ mod tests {
     #[test]
     fn cancelling_a_running_job_restores_the_status_before_queueing() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         p.inner.state.lock().running = true;
         let cancelled = || anyhow::Error::new(super::super::Cancelled);
@@ -1445,11 +1444,10 @@ mod tests {
     #[test]
     fn processing_again_while_a_cancelled_run_stops_queues_a_fresh_run() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
         p.inner.state.lock().running = true;
-        let key = [3u8; 32];
         let cache = super::super::sidecar::ProcessingCache::new();
         // However the cancelled run ends, it doesn't record a failure.
         for stopped_with in [
@@ -1476,7 +1474,7 @@ mod tests {
             assert!(store
                 .set_processing_stage_if_processing(id, Some(ProcessingStage::Vad))
                 .unwrap());
-            super::super::sidecar::write_cache(dir.path(), id, &key, &cache).unwrap();
+            super::super::sidecar::write_cache(&store, id, &cache).unwrap();
             p.finish(id, Err(stopped_with));
             queueing.join().unwrap().unwrap();
 
@@ -1486,7 +1484,7 @@ mod tests {
             let queued = p.progress(id).unwrap();
             assert_eq!(queued.message.as_deref(), Some("queued"));
             assert_eq!(queued.stage, ProcessingStage::Decode);
-            assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
+            assert!(!super::super::sidecar::has_cache(&store, id).unwrap());
             let m = store.get_meeting(id).unwrap().unwrap();
             assert_eq!((m.status, m.error), (MeetingStatus::Processing, None));
             assert_eq!(m.processing_stage.as_deref(), Some("done"));
@@ -1517,7 +1515,7 @@ mod tests {
     #[test]
     fn processing_again_gives_up_if_the_cancelled_run_never_stops() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         p.inner.state.lock().running = true;
         let id = store
@@ -1539,7 +1537,7 @@ mod tests {
     #[test]
     fn a_cancelled_runs_progress_is_dropped() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         p.inner.state.lock().running = true;
         let id = store
@@ -1578,7 +1576,7 @@ mod tests {
     #[test]
     fn store_work_runs_outside_the_state_lock() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         let id = store
             .insert_meeting(&meeting(MeetingStatus::Recorded))
@@ -1599,7 +1597,7 @@ mod tests {
     #[test]
     fn a_late_cancel_keeps_a_finished_runs_notes() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store.clone(), std::env::temp_dir());
         p.inner.state.lock().running = true;
         let id = store
@@ -1629,7 +1627,7 @@ mod tests {
     #[test]
     fn cancelling_a_reprocess_restores_its_done_stage() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
         p.inner.state.lock().running = true;
@@ -1646,15 +1644,14 @@ mod tests {
         store
             .set_processing_stage(id, Some(ProcessingStage::Vad))
             .unwrap();
-        let key = [3u8; 32];
         let cache = super::super::sidecar::ProcessingCache::new();
-        super::super::sidecar::write_cache(dir.path(), id, &key, &cache).unwrap();
+        super::super::sidecar::write_cache(&store, id, &cache).unwrap();
         p.cancel(id).unwrap();
         p.finish(id, Err(anyhow::Error::new(super::super::Cancelled)));
         let m = store.get_meeting(id).unwrap().unwrap();
         assert_eq!(m.status, MeetingStatus::Processed);
         assert_eq!(m.processing_stage.as_deref(), Some("done"));
-        assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
+        assert!(!super::super::sidecar::has_cache(&store, id).unwrap());
 
         // A first run, cancelled, keeps its checkpoint to resume from.
         let new = store
@@ -1665,18 +1662,18 @@ mod tests {
         store
             .set_processing_stage(new, Some(ProcessingStage::Vad))
             .unwrap();
-        super::super::sidecar::write_cache(dir.path(), new, &key, &cache).unwrap();
+        super::super::sidecar::write_cache(&store, new, &cache).unwrap();
         p.finish(new, Err(anyhow::Error::new(super::super::Cancelled)));
         let m = store.get_meeting(new).unwrap().unwrap();
         assert_eq!(m.status, MeetingStatus::Recorded);
         assert_eq!(m.processing_stage.as_deref(), Some("vad"));
-        assert!(super::super::sidecar::cache_path(dir.path(), new).exists());
+        assert!(super::super::sidecar::has_cache(&store, new).unwrap());
     }
 
     #[test]
     fn cancel_and_wait_waits_for_the_running_job() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let p = Processor::new(&app.app, store, std::env::temp_dir());
         let flag = Arc::new(AtomicBool::new(false));
         p.inner.state.lock().current = Some((7, flag.clone()));
@@ -1701,25 +1698,32 @@ mod tests {
     #[test]
     fn finishing_a_deleted_meeting_removes_its_sidecars() {
         let app = TestApp::new();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
         let id = store
             .insert_meeting(&meeting(MeetingStatus::Processing))
             .unwrap();
-        let key = [3u8; 32];
-        super::super::sidecar::write_embeddings(dir.path(), id, &key, &[]).unwrap();
-        super::super::sidecar::write_cache(
-            dir.path(),
+        super::super::sidecar::write_embeddings(
+            &store,
             id,
-            &key,
+            &[crate::meetings::types::SegmentEmbedding {
+                segment_id: 1,
+                duration_ms: 1,
+                embedding: vec![1.0],
+            }],
+        )
+        .unwrap();
+        super::super::sidecar::write_cache(
+            &store,
+            id,
             &super::super::sidecar::ProcessingCache::new(),
         )
         .unwrap();
         store.delete_meeting(id).unwrap();
         p.finish(id, Ok(()));
-        assert!(!super::super::sidecar::embeddings_path(dir.path(), id).exists());
-        assert!(!super::super::sidecar::cache_path(dir.path(), id).exists());
+        assert!(!super::super::sidecar::has_embeddings(&store, id).unwrap());
+        assert!(!super::super::sidecar::has_cache(&store, id).unwrap());
     }
 
     #[test]
@@ -1758,7 +1762,7 @@ mod tests {
             .unwrap()
             .set_len(super::super::SPEAKER_MODEL_SIZE)
             .unwrap();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
         p.inner.state.lock().running = true;
@@ -1803,8 +1807,7 @@ mod tests {
         let m = store.get_meeting(id).unwrap().unwrap();
         assert_eq!(m.status, MeetingStatus::Processing);
         assert_eq!(m.processing_stage.as_deref(), Some("transcribe"));
-        let key = crate::secrets::meetings_data_key().unwrap();
-        let cache = super::super::sidecar::read_cache(dir.path(), id, &key)
+        let cache = super::super::sidecar::read_cache(&store, id)
             .unwrap()
             .unwrap();
         let texts: Vec<_> = cache
@@ -1848,7 +1851,7 @@ mod tests {
             .set_len(super::super::SPEAKER_MODEL_SIZE)
             .unwrap();
         crate::settings::set_provider_api_key("groq", "gsk-test").unwrap();
-        let store = Arc::new(MeetingsStore::open_in_memory(&[3u8; 32]).unwrap());
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let p = Processor::new(&app.app, store.clone(), dir.path().to_path_buf());
         p.inner.state.lock().running = true;
@@ -1896,7 +1899,7 @@ mod tests {
             })
             .unwrap();
         let cache = super::super::sidecar::ProcessingCache::new();
-        super::super::sidecar::write_cache(dir.path(), failed, &[3u8; 32], &cache).unwrap();
+        super::super::sidecar::write_cache(&store, failed, &cache).unwrap();
         let openai = TranscriptionEngine::Cloud {
             provider_id: "openai".into(),
             model: "whisper-1".into(),
@@ -1923,6 +1926,6 @@ mod tests {
             (m.status, m.processing_stage),
             (MeetingStatus::Processing, None)
         );
-        assert!(!super::super::sidecar::cache_path(dir.path(), failed).exists());
+        assert!(!super::super::sidecar::has_cache(&store, failed).unwrap());
     }
 }

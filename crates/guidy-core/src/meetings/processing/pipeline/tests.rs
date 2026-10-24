@@ -16,7 +16,6 @@ use crate::meetings::processing::naming;
 use crate::meetings::processing::{PcmSource, SAMPLE_RATE};
 use crate::meetings::settings::{MeetingSettings, UserEmail};
 
-const KEY: [u8; 32] = [42u8; 32];
 const USER: usize = 8;
 
 struct FakeVad;
@@ -154,7 +153,7 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let store = MeetingsStore::open_in_memory(&KEY).unwrap();
+    let store = MeetingsStore::open_in_memory().unwrap();
     let id = store
         .insert_meeting(&Meeting {
             id: 0,
@@ -244,7 +243,6 @@ fn run_accented(
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig {
             user_label: "Imran".into(),
             preferred_language: Some("en".into()),
@@ -352,7 +350,7 @@ fn processes_a_meeting_end_to_end() {
     assert_eq!(r.transcribe_calls, 8);
     assert_eq!(r.embed_calls, 6);
     assert_eq!(stage(&f), Some(ProcessingStage::Done));
-    assert!(!sidecar::cache_path(f.dir.path(), f.id).exists());
+    assert!(!sidecar::has_cache(&f.store, f.id).unwrap());
 
     let speakers = f.store.speakers(f.id).unwrap();
     let labels: Vec<&str> = speakers.iter().map(|s| s.cluster_label.as_str()).collect();
@@ -388,9 +386,7 @@ fn processes_a_meeting_end_to_end() {
     }
     // Centroids on the cluster speakers; per-segment voiceprints sidecar.
     assert!(f.store.speaker_embedding(speakers[1].id).unwrap().is_some());
-    let prints: Vec<SegmentEmbedding> = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
-        .unwrap()
-        .unwrap();
+    let prints: Vec<SegmentEmbedding> = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
     assert_eq!(prints.len(), 6);
 
     // Progress is monotone and ends at 1.0.
@@ -411,9 +407,7 @@ fn cancel_then_resume_skips_finished_work() {
     assert_eq!(r.transcribe_calls, 3);
     // VAD done, transcription part-way (checkpointed).
     assert_eq!(stage(&f), Some(ProcessingStage::Vad));
-    let cache: ProcessingCache = sidecar::read_cache(f.dir.path(), f.id, &KEY)
-        .unwrap()
-        .unwrap();
+    let cache: ProcessingCache = sidecar::read_cache(&f.store, f.id).unwrap().unwrap();
     assert_eq!(cache.transcripts.iter().filter(|t| t.is_some()).count(), 3);
 
     let r = run(&f, None);
@@ -537,8 +531,6 @@ fn known_voices_are_matched_in_the_next_meeting() {
     // Name Speaker 1 (remote speaker 0) as Alice.
     let alice = naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         speaker1.id,
         PersonRef::New {
             display_name: "Alice".into(),
@@ -552,14 +544,7 @@ fn known_voices_are_matched_in_the_next_meeting() {
     // Her two turns' voiceprints were stored.
     assert_eq!(f.store.voiceprints_for_person(alice).unwrap().len(), 2);
     // Naming again doesn't duplicate them.
-    naming::assign(
-        &f.store,
-        f.dir.path(),
-        &KEY,
-        speaker1.id,
-        PersonRef::Existing(alice),
-    )
-    .unwrap();
+    naming::assign(&f.store, speaker1.id, PersonRef::Existing(alice)).unwrap();
     assert_eq!(f.store.voiceprints_for_person(alice).unwrap().len(), 2);
 
     // Reprocessing (like the next meeting with her) recognizes her.
@@ -598,7 +583,6 @@ fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) ->
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
         system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
@@ -619,8 +603,6 @@ fn named_alice(f: &Fixture) -> PersonId {
     let speaker1 = f.store.speakers(f.id).unwrap()[1].clone();
     let alice = naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         speaker1.id,
         PersonRef::New {
             display_name: "Alice".into(),
@@ -715,8 +697,6 @@ fn reassigning_moves_the_voiceprints() {
     let s = f.store.speakers(f.id).unwrap()[2].clone();
     let wrong = naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         s.id,
         PersonRef::New {
             display_name: "Carol".into(),
@@ -727,8 +707,6 @@ fn reassigning_moves_the_voiceprints() {
     assert_eq!(f.store.voiceprints_for_person(wrong).unwrap().len(), 2);
     let right = naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         s.id,
         PersonRef::New {
             display_name: "Bob".into(),
@@ -741,8 +719,6 @@ fn reassigning_moves_the_voiceprints() {
     assert_eq!(f.store.voiceprints_for_person(right).unwrap().len(), 2);
     assert!(naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         s.id,
         PersonRef::New {
             display_name: "  ".into(),
@@ -760,8 +736,6 @@ fn tagging_one_line_moves_it_and_its_voiceprint() {
     let s = f.store.speakers(f.id).unwrap()[2].clone();
     let wrong = naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         s.id,
         PersonRef::New {
             display_name: "Prashanth".into(),
@@ -771,7 +745,7 @@ fn tagging_one_line_moves_it_and_its_voiceprint() {
     .unwrap();
     let prints_before = f.store.voiceprints_for_person(wrong).unwrap().len();
     // A line of theirs that has its own voiceprint.
-    let printed: Vec<i64> = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
+    let printed: Vec<i64> = sidecar::read_embeddings(&f.store, f.id)
         .unwrap()
         .unwrap_or_default()
         .into_iter()
@@ -788,8 +762,6 @@ fn tagging_one_line_moves_it_and_its_voiceprint() {
 
     let right = naming::assign_segment(
         &f.store,
-        f.dir.path(),
-        &KEY,
         line.id,
         PersonRef::New {
             display_name: "Mageshwari".into(),
@@ -822,31 +794,19 @@ fn tagging_one_line_moves_it_and_its_voiceprint() {
         .into_iter()
         .find(|seg| seg.speaker_id == Some(s.id));
     if let Some(other) = other {
-        naming::assign_segment(
-            &f.store,
-            f.dir.path(),
-            &KEY,
-            other.id,
-            PersonRef::Existing(right),
-        )
-        .unwrap();
+        naming::assign_segment(&f.store, other.id, PersonRef::Existing(right)).unwrap();
         assert_eq!(
             f.store.get_segment(other.id).unwrap().unwrap().speaker_id,
             moved.speaker_id
         );
     }
     // Suggestions for a line include people already in the meeting.
-    let names: Vec<String> = naming::segment_suggestions(
-        &f.store,
-        f.dir.path(),
-        &KEY,
-        line.id,
-        &MeetingSettings::default(),
-    )
-    .unwrap()
-    .into_iter()
-    .map(|s| s.display_name)
-    .collect();
+    let names: Vec<String> =
+        naming::segment_suggestions(&f.store, line.id, &MeetingSettings::default())
+            .unwrap()
+            .into_iter()
+            .map(|s| s.display_name)
+            .collect();
     assert!(names.contains(&"Prashanth".to_string()), "{names:?}");
 }
 
@@ -855,12 +815,12 @@ fn confirm_stores_voiceprints_and_needs_a_person() {
     let f = fixture();
     run(&f, None).result.unwrap();
     let mut s = f.store.speakers(f.id).unwrap()[1].clone();
-    assert!(naming::confirm(&f.store, f.dir.path(), &KEY, s.id).is_err());
+    assert!(naming::confirm(&f.store, s.id).is_err());
     let p = f.store.insert_person("Alice", None).unwrap();
     s.person_id = Some(p.id);
     s.confirmed = false;
     f.store.update_speaker(&s).unwrap();
-    naming::confirm(&f.store, f.dir.path(), &KEY, s.id).unwrap();
+    naming::confirm(&f.store, s.id).unwrap();
     assert!(f.store.get_speaker(s.id).unwrap().unwrap().confirmed);
     assert_eq!(f.store.voiceprints_for_person(p.id).unwrap().len(), 2);
 }
@@ -874,8 +834,6 @@ fn suggestions_list_unassigned_attendees_then_people_by_voice() {
     // sounding like Speaker 1.
     naming::assign(
         &f.store,
-        f.dir.path(),
-        &KEY,
         speakers[2].id,
         PersonRef::New {
             display_name: "Bob".into(),
@@ -952,7 +910,6 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
         meeting_id: id,
         store,
         meetings_dir: dir,
-        key: KEY,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
         system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
@@ -964,14 +921,14 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
         on_progress: Box::new(move |p| {
             // The user deletes the meeting (and its sidecars) while it runs.
             if p.stage == ProcessingStage::Transcribe && store.delete_meeting(id).unwrap() {
-                sidecar::delete_sidecars(dir, id).unwrap();
+                sidecar::delete_sidecars(dir, store, id).unwrap();
             }
         }),
     }
     .run();
     assert!(result.is_err());
-    assert!(!sidecar::cache_path(dir, id).exists());
-    assert!(!sidecar::embeddings_path(dir, id).exists());
+    assert!(!sidecar::has_cache(store, id).unwrap());
+    assert!(!sidecar::has_embeddings(store, id).unwrap());
 }
 
 /// A cancelled run whose status was already put back (a reprocess:
@@ -998,7 +955,6 @@ fn a_run_no_longer_processing_saves_nothing() {
         meeting_id: id,
         store,
         meetings_dir: dir,
-        key: KEY,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
         system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
@@ -1016,14 +972,14 @@ fn a_run_no_longer_processing_saves_nothing() {
                 store
                     .set_processing_stage(id, Some(ProcessingStage::Done))
                     .unwrap();
-                sidecar::delete_cache(dir, id).unwrap();
+                sidecar::delete_cache(store, id).unwrap();
             }
         }),
     }
     .run();
     assert!(super::super::is_cancelled(&result.unwrap_err()));
     assert_eq!(stage(&f), Some(ProcessingStage::Done));
-    assert!(!sidecar::cache_path(dir, id).exists());
+    assert!(!sidecar::has_cache(store, id).unwrap());
 }
 
 #[test]
@@ -1043,7 +999,6 @@ fn mic_only_meeting_has_just_the_user() {
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(render(
             10_000,
@@ -1081,7 +1036,6 @@ fn no_audio_is_an_error() {
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig::default(),
         mic: None,
         system: None,
@@ -1116,7 +1070,6 @@ fn a_cancel_during_the_merge_lets_it_complete() {
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(render(30_000, &mic_turns())))),
         system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
@@ -1141,9 +1094,7 @@ fn a_cancel_during_the_merge_lets_it_complete() {
         .iter()
         .map(|s| s.id)
         .collect();
-    let embeddings = sidecar::read_embeddings(f.dir.path(), f.id, &KEY)
-        .unwrap()
-        .unwrap();
+    let embeddings = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
     assert!(!embeddings.is_empty());
     assert!(embeddings.iter().all(|e| ids.contains(&e.segment_id)));
 }
@@ -1167,7 +1118,7 @@ fn a_merge_failing_after_the_transcript_drops_the_old_sidecar() {
         duration_ms: 1000,
         embedding: vec![1.0],
     };
-    sidecar::write_embeddings(f.dir.path(), f.id, &KEY, &[stale]).unwrap();
+    sidecar::write_embeddings(&f.store, f.id, &[stale]).unwrap();
     f.store
         .set_meeting_status(f.id, MeetingStatus::Processing, None)
         .unwrap();
@@ -1184,7 +1135,7 @@ fn a_merge_failing_after_the_transcript_drops_the_old_sidecar() {
         7,
         "transcript stored"
     );
-    assert!(!sidecar::embeddings_path(f.dir.path(), f.id).exists());
+    assert!(!sidecar::has_embeddings(&f.store, f.id).unwrap());
 }
 
 #[test]
@@ -1351,7 +1302,6 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
         meeting_id: f.id,
         store: &f.store,
         meetings_dir: f.dir.path(),
-        key: KEY,
         config: PipelineConfig {
             user_label: "Imran".into(),
             preferred_language: Some("en".into()),
@@ -1503,8 +1453,6 @@ fn a_rerun_keeps_the_names_and_tags_the_user_gave() {
         .unwrap();
     let bob = naming::assign_segment(
         &f.store,
-        f.dir.path(),
-        &KEY,
         line.id,
         PersonRef::New {
             display_name: "Bob".into(),
@@ -1577,6 +1525,7 @@ fn pins_override_the_model_and_steer_its_guesses() {
         t0_ms,
         t1_ms,
         person_id,
+        by_hand: false,
     };
     let mut built = (
         vec![
@@ -1635,7 +1584,7 @@ fn each_voiceprint_leads_back_to_the_line_it_was_taken_from() {
     let f = fixture();
     let alice = named_alice(&f);
     let speaker = speaker_1(&f);
-    let samples = naming::voice_samples(&f.store, f.dir.path(), &KEY, alice).unwrap();
+    let samples = naming::voice_samples(&f.store, alice).unwrap();
     assert_eq!(
         samples.len(),
         f.store.voiceprints_for_person(alice).unwrap().len()
@@ -1646,4 +1595,215 @@ fn each_voiceprint_leads_back_to_the_line_it_was_taken_from() {
         let seg = s.segment.as_ref().expect("its line");
         assert_eq!(seg.speaker_id, Some(speaker.id));
     }
+}
+
+/// Two people whose voices the clustering can't tell apart (their lines
+/// are closer than its merge cut) but their voiceprints can.
+fn two_close_voices_cache() -> ProcessingCache {
+    let mut cache = one_voice_cache();
+    let a = vec![1.0, 0.0, 0.0];
+    let b = vec![0.8, 0.6, 0.0];
+    cache.embeddings = [&a, &b, &a, &b]
+        .iter()
+        .map(|v| Some(Some((*v).clone())))
+        .collect();
+    cache
+}
+
+#[test]
+fn the_voiceprints_of_people_named_split_a_merged_cluster() {
+    let cache = two_close_voices_cache();
+    let config = PipelineConfig::default();
+    // On their own, the four lines are one speaker.
+    let c = cluster_units(&cache, &config, &[], &[]);
+    assert_eq!(c.labels, vec![Some(0); 4]);
+    assert_eq!(c.voices, vec![None; 4]);
+
+    let known = [
+        KnownVoice {
+            person_id: 7,
+            prints: vec![vec![1.0, 0.1, 0.0], vec![1.0, -0.1, 0.05]],
+        },
+        KnownVoice {
+            person_id: 9,
+            prints: vec![vec![0.8, 0.6, 0.1], vec![0.75, 0.65, -0.05]],
+        },
+    ];
+    let c = cluster_units(&cache, &config, &known, &[]);
+    assert_eq!(c.voices, vec![Some(7), Some(9), Some(7), Some(9)]);
+    assert_eq!(c.labels[0], c.labels[2]);
+    assert_eq!(c.labels[1], c.labels[3]);
+    assert_ne!(c.labels[0], c.labels[1]);
+    let person = |i: usize| c.matches[c.labels[i].unwrap()];
+    assert_eq!((person(0).person_id, person(0).confirmed), (Some(7), true));
+    assert_eq!((person(1).person_id, person(1).confirmed), (Some(9), true));
+
+    // A line a stored print was taken from doesn't vouch for itself: with
+    // 9's only print being line 1's own, line 1 is too close to 7's to say.
+    let known = [
+        known[0].clone(),
+        KnownVoice {
+            person_id: 9,
+            prints: vec![vec![0.8, 0.6, 0.0]],
+        },
+    ];
+    let c = cluster_units(&cache, &config, &known, &[]);
+    assert_eq!(c.voices[1], None);
+}
+
+/// A line's turn is `secs` long: the fake voiceprint of each length is a
+/// little different, so the two turns of a speaker aren't the same print.
+fn turns_of_two_voices() -> Vec<(usize, i64, i64)> {
+    vec![
+        (0, 1_000, 4_000),
+        (1, 5_000, 8_000),
+        (0, 13_000, 16_250),
+        (1, 18_000, 21_250),
+    ]
+}
+
+/// The system line spoken at `ms`.
+fn line_at(f: &Fixture, ms: i64) -> Segment {
+    f.store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.track == Track::System && s.t0_ms <= ms && ms < s.t1_ms)
+        .unwrap()
+}
+
+fn person_at(f: &Fixture, t0_ms: i64) -> (Option<PersonId>, bool) {
+    let line = line_at(f, t0_ms);
+    let speaker = f
+        .store
+        .get_speaker(line.speaker_id.unwrap())
+        .unwrap()
+        .unwrap();
+    (speaker.person_id, speaker.confirmed)
+}
+
+/// Naming a speaker that held two voices pins all its lines to one person;
+/// once the other has voiceprints (a line tagged by hand), redoing the
+/// speakers gives them the rest of their lines and takes their voice out
+/// of the first person's voiceprints. Tagged lines stay as tagged.
+#[test]
+fn redoing_the_speakers_moves_a_named_speakers_lines_to_their_voice() {
+    let f = fixture();
+    let mic = [(USER, 26_000, 29_000)];
+    run_tracks(&f, None, &mic, &turns_of_two_voices())
+        .result
+        .unwrap();
+    let speaker = |t0_ms: i64| {
+        let id = line_at(&f, t0_ms).speaker_id.unwrap();
+        f.store.get_speaker(id).unwrap().unwrap()
+    };
+    let (first, second) = (speaker(1_000), speaker(5_000));
+    assert_ne!(first.id, second.id);
+
+    // As if both voices had been one speaker named Alice: every line is
+    // pinned to her and she has both voices' prints.
+    let alice = naming::assign(
+        &f.store,
+        first.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    let theirs: Vec<Segment> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(second.id))
+        .collect();
+    f.store.pin_segments(f.id, &theirs, alice, false).unwrap();
+    for p in naming::speaker_prints(&f.store, &second).unwrap() {
+        f.store.add_voiceprint(alice, &p, Some(f.id)).unwrap();
+    }
+    assert_eq!(f.store.voiceprints_for_person(alice).unwrap().len(), 4);
+    // One of the other voice's lines is tagged as Bob.
+    let bob = naming::assign_segment(
+        &f.store,
+        line_at(&f, 18_000).id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    let wrong_print = naming::speaker_prints(&f.store, &speaker(5_000))
+        .unwrap()
+        .remove(0);
+
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Done))
+        .unwrap();
+    run_tracks(&f, None, &mic, &turns_of_two_voices())
+        .result
+        .unwrap();
+
+    assert_eq!(person_at(&f, 1_000), (Some(alice), true));
+    assert_eq!(person_at(&f, 13_000), (Some(alice), true));
+    assert_eq!(person_at(&f, 5_000), (Some(bob), true));
+    assert_eq!(person_at(&f, 18_000), (Some(bob), true));
+    assert_eq!(
+        line_at(&f, 5_000).speaker_id,
+        line_at(&f, 18_000).speaker_id
+    );
+    // Bob's other line was Alice's only by her speaker's name: its pin is
+    // gone (the voice decides it now), and so is its print from hers.
+    let pins = f.store.segment_pins(f.id).unwrap();
+    let pin_at = |ms: i64| pins.iter().find(|p| p.t0_ms <= ms && ms < p.t1_ms);
+    assert!(pin_at(5_000).is_none());
+    let tagged = pin_at(18_000).unwrap();
+    assert_eq!((tagged.person_id, tagged.by_hand), (bob, true));
+    let prints = f.store.voiceprints_for_person(alice).unwrap();
+    assert_eq!(prints.len(), 2);
+    assert!(prints
+        .iter()
+        .all(|p| cluster::cosine(&p.embedding, &wrong_print) < cluster::SAME_PRINT_SIMILARITY));
+}
+
+/// A line tagged by hand keeps its person whatever its voice sounds like.
+#[test]
+fn a_line_tagged_by_hand_is_never_overruled_by_its_voice() {
+    let f = fixture();
+    let mic = [(USER, 26_000, 29_000)];
+    run_tracks(&f, None, &mic, &turns_of_two_voices())
+        .result
+        .unwrap();
+    let first = f
+        .store
+        .get_speaker(line_at(&f, 1_000).speaker_id.unwrap())
+        .unwrap()
+        .unwrap();
+    let alice = naming::assign(
+        &f.store,
+        first.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    // Alice's voice, tagged as Bob (the user knows better).
+    let bob = naming::assign_segment(
+        &f.store,
+        line_at(&f, 1_000).id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    f.store
+        .set_processing_stage(f.id, Some(ProcessingStage::Done))
+        .unwrap();
+    run_tracks(&f, None, &mic, &turns_of_two_voices())
+        .result
+        .unwrap();
+    assert_eq!(person_at(&f, 1_000), (Some(bob), true));
+    assert_eq!(person_at(&f, 13_000).0, Some(alice));
 }

@@ -159,8 +159,7 @@ fn full_pipeline_on_the_fixture() {
         mic[at(1_000) + i] = s * 0.5;
     }
 
-    let key = [1u8; 32];
-    let store = MeetingsStore::open_in_memory(&key).unwrap();
+    let store = MeetingsStore::open_in_memory().unwrap();
     let id = store
         .insert_meeting(&Meeting {
             id: 0,
@@ -185,7 +184,6 @@ fn full_pipeline_on_the_fixture() {
         meeting_id: id,
         store: &store,
         meetings_dir: dir.path(),
-        key,
         config: PipelineConfig::default(),
         mic: Some(Box::new(PcmSource::new(mic))),
         system: Some(Box::new(PcmSource::new(system))),

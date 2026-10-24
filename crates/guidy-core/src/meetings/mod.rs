@@ -4,8 +4,9 @@
 //! Layout (see `docs/MEETING_NOTES_ARCH.md` for ownership and contracts):
 //! - [`types`]: shared data types used by every layer and the UI.
 //! - [`settings`]: the nested `meetings` settings object.
-//! - [`store`]: encrypted SQLCipher `meetings.db`.
-//! - [`audio_store`]: encrypted Opus track files + retention.
+//! - [`store`]: plain SQLite `meetings.db`.
+//! - [`audio_store`]: Opus track files + retention.
+//! - [`legacy`]: one-time conversion of data earlier versions encrypted.
 //! - [`native`]: macOS bridges (EventKit, VPIO mic, process tap, notifications).
 //! - [`recorder`]: recording sessions, tray state, reminders, calendar prompts.
 //! - [`live`]: live transcription of the recording in progress.
@@ -14,6 +15,7 @@
 //! - [`manager`]: [`manager::MeetingsManager`], the facade the app calls.
 
 pub mod audio_store;
+pub mod legacy;
 pub mod live;
 pub mod manager;
 pub mod native;

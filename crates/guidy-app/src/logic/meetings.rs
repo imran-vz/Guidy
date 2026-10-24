@@ -382,6 +382,26 @@ pub fn talk_time(segments: &[Segment], duration_ms: Option<i64>) -> TalkTime {
     }
 }
 
+/// The speaker's line closest to `t_ms` (a click on their talk-time lane),
+/// if one is within `slack_ms` of it.
+pub fn line_near(
+    segments: &[Segment],
+    speaker_id: Option<SpeakerId>,
+    t_ms: i64,
+    slack_ms: i64,
+) -> Option<i64> {
+    segments
+        .iter()
+        .filter(|s| s.speaker_id == speaker_id)
+        .map(|s| {
+            let gap = (s.t0_ms - t_ms).max(t_ms - s.t1_ms.max(s.t0_ms)).max(0);
+            (gap, s.t0_ms, s.id)
+        })
+        .filter(|(gap, ..)| *gap <= slack_ms)
+        .min()
+        .map(|(.., id)| id)
+}
+
 /// Offset in the recording: `m:ss`, or `h:mm:ss` past an hour.
 pub fn format_offset(ms: i64) -> String {
     let s = ms.max(0) / 1000;
@@ -1690,5 +1710,23 @@ mod tests {
         assert_eq!(tt.total_ms, 9_000);
         assert_eq!(tt.speakers[0].share, 1.0);
         assert_eq!(talk_time(&[], None).speakers.len(), 0);
+    }
+
+    #[test]
+    fn a_lane_click_finds_the_speakers_nearest_line() {
+        let segments = vec![
+            spoken(1, 0, 4_000, Some(1), "a"),
+            spoken(2, 4_000, 9_000, Some(2), "b"),
+            spoken(3, 10_000, 12_000, Some(1), "c"),
+            spoken(4, 20_000, 21_000, None, "d"),
+        ];
+        // Inside a line, or just past one.
+        assert_eq!(line_near(&segments, Some(1), 11_000, 0), Some(3));
+        assert_eq!(line_near(&segments, Some(1), 5_000, 2_000), Some(1));
+        // Another speaker's line is skipped.
+        assert_eq!(line_near(&segments, Some(1), 6_000, 5_000), Some(1));
+        assert_eq!(line_near(&segments, None, 19_500, 1_000), Some(4));
+        // Nothing close enough.
+        assert_eq!(line_near(&segments, Some(2), 15_000, 1_000), None);
     }
 }

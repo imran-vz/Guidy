@@ -1895,7 +1895,7 @@ mod tests {
 
     #[test]
     fn persist_replaces_unlinked_items_and_keeps_linear_ones() {
-        let store = MeetingsStore::open_in_memory(&[7u8; 32]).unwrap();
+        let store = MeetingsStore::open_in_memory().unwrap();
         let meeting_id = store
             .insert_meeting(&Meeting {
                 id: 0,

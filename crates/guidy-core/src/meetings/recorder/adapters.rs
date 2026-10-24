@@ -1,4 +1,4 @@
-//! Real implementations of the recorder ports: the encrypted store (A), the
+//! Real implementations of the recorder ports: the meetings store (A), the
 //! macOS bridges (B), and the app (events, tray, settings, translations).
 
 use std::sync::{Arc, OnceLock};
@@ -212,7 +212,6 @@ pub fn app_recorder(
         capture: Arc::new(NativeCapture),
         calendar: Arc::new(NativeCalendar),
         notifier: Arc::new(NativeNotifier),
-        data_key: Arc::new(crate::secrets::meetings_data_key),
         audio_dir,
         settings: Arc::new(move || crate::settings::get_settings(&settings_app).meetings),
         strings: Arc::new(move || {

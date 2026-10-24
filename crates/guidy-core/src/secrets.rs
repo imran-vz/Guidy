@@ -1,10 +1,15 @@
-//! Secrets (API keys, the meetings data key), stored in the OS credential
+//! Secrets (API keys), stored in the OS credential
 //! store: the macOS Keychain, Windows Credential Manager, or the Linux kernel
 //! keyring, through the `keyring` crate. See docs/MEETING_NOTES_ARCH.md.
 //!
 //! Every secret is a string under one key name, in the service
 //! [`SERVICE`]. Use the key-name helpers ([`provider_api_key`],
-//! [`LINEAR_API_KEY`], [`MEETINGS_DATA_KEY`]) rather than raw strings.
+//! [`LINEAR_API_KEY`]) rather than raw strings.
+//!
+//! [`MEETINGS_DATA_KEY`] is read only to convert meeting data an earlier
+//! version encrypted with it ([`crate::meetings::legacy`]); once converted,
+//! [`retire_meetings_data_key`] keeps it under a backup name and nothing
+//! creates a new one.
 //!
 //! Unit tests (`cfg(test)` or the `test-support` feature) use an in-memory
 //! backend, so they never touch the real Keychain. Debug builds also honour
@@ -29,8 +34,8 @@ pub const SERVICE: &str = "dev.guidy.app";
 /// Key of the Linear personal API key.
 pub const LINEAR_API_KEY: &str = "linear_api_key";
 
-/// Key of the 32-byte meetings data key (base64), used for `meetings.db` and
-/// the encrypted meeting audio.
+/// Key of the 32-byte meetings data key (base64) earlier versions encrypted
+/// `meetings.db`, the meeting audio and the processing sidecars with.
 pub const MEETINGS_DATA_KEY: &str = "meetings_data_key";
 
 /// Env var that selects the backend: `memory` forces the in-memory one.
@@ -252,13 +257,7 @@ fn slot() -> &'static RwLock<Arc<dyn SecretsBackend>> {
     BACKEND.get_or_init(|| {
         let backend: Arc<dyn SecretsBackend> = if use_memory_by_default() {
             log::debug!("secrets: using the in-memory backend");
-            let memory = MemoryBackend::new();
-            // Test builds start like an installed app after first use: with a
-            // meetings data key, so code that reads it needs no setup.
-            if cfg!(any(test, feature = "test-support")) {
-                let _ = generate_data_key(&memory);
-            }
-            Arc::new(memory)
+            Arc::new(MemoryBackend::new())
         } else {
             Arc::new(Cached::new(KeychainBackend::new(keychain_service())))
         };
@@ -295,13 +294,8 @@ pub fn delete(key: &str) -> Result<()> {
     backend().delete(key)
 }
 
-fn data_key_cache() -> &'static Mutex<Option<[u8; 32]>> {
-    static KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
-    KEY.get_or_init(|| Mutex::new(None))
-}
-
-/// No meetings data key is stored, but encrypted meeting data exists, so a
-/// new key would leave that data unreadable. Nothing is generated: the user
+/// Meeting data encrypted by an earlier version exists, but no meetings
+/// data key is stored to convert it with. Nothing is changed: the user
 /// either restores the key (Retry) or moves the old data aside
 /// (`reset_meetings_data`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,7 +305,7 @@ impl std::fmt::Display for MeetingsDataKeyMissing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
             "the meetings data key is missing from the Keychain, \
-             so existing meeting notes can't be decrypted",
+             so meeting notes encrypted by an earlier version can't be converted",
         )
     }
 }
@@ -326,50 +320,24 @@ fn decode_data_key(encoded: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("meetings data key has {} bytes, not 32", bytes.len()))
 }
 
-fn generate_data_key(backend: &dyn SecretsBackend) -> Result<[u8; 32]> {
-    let mut k = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::rng(), &mut k);
-    backend.set(
-        MEETINGS_DATA_KEY,
-        &base64::engine::general_purpose::STANDARD.encode(k),
-    )?;
-    Ok(k)
+fn data_key_cache() -> &'static Mutex<Option<[u8; 32]>> {
+    static KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+    KEY.get_or_init(|| Mutex::new(None))
 }
 
-/// The stored key; a missing one is generated only when `may_create`.
-fn load_data_key(backend: &dyn SecretsBackend, may_create: bool) -> Result<[u8; 32]> {
-    match backend.get(MEETINGS_DATA_KEY)? {
-        Some(encoded) => decode_data_key(&encoded),
-        None if may_create => {
-            let k = generate_data_key(backend)?;
-            log::info!("secrets: generated a new meetings data key");
-            Ok(k)
-        }
-        None => Err(MeetingsDataKeyMissing.into()),
-    }
-}
-
-/// Keep the current key (if any) under a backup name, then store a new one.
-fn replace_data_key(backend: &dyn SecretsBackend, backup_suffix: &str) -> Result<[u8; 32]> {
-    if let Some(old) = backend.get(MEETINGS_DATA_KEY)? {
-        backend.set(&format!("{MEETINGS_DATA_KEY}.{backup_suffix}"), &old)?;
-    }
-    let k = generate_data_key(backend)?;
-    log::info!("secrets: replaced the meetings data key (old one kept as .{backup_suffix})");
-    Ok(k)
-}
-
-/// The key in `cache`, else the stored one (see [`load_data_key`]), cached.
+/// The key in `cache`, else the stored one, cached. Never generates one.
 fn cached_data_key(
     cache: &Mutex<Option<[u8; 32]>>,
     backend: &dyn SecretsBackend,
-    may_create: bool,
 ) -> Result<[u8; 32]> {
     let mut cache = cache.lock();
     if let Some(k) = *cache {
         return Ok(k);
     }
-    let key = load_data_key(backend, may_create)?;
+    let key = match backend.get(MEETINGS_DATA_KEY)? {
+        Some(encoded) => decode_data_key(&encoded)?,
+        None => return Err(MeetingsDataKeyMissing.into()),
+    };
     *cache = Some(key);
     Ok(key)
 }
@@ -380,18 +348,22 @@ fn forget_data_key(cache: &Mutex<Option<[u8; 32]>>, backend: &dyn SecretsBackend
     backend.invalidate(MEETINGS_DATA_KEY);
 }
 
-/// The 32-byte meetings data key, cached in-process. Never generates one:
-/// [`MeetingsDataKeyMissing`] when none is stored (only
-/// [`open_meetings_data_key`] creates it). A read error is returned as is.
-pub fn meetings_data_key() -> Result<[u8; 32]> {
-    cached_data_key(data_key_cache(), backend().as_ref(), false)
+/// Keep the key (if any) under a backup name, then delete it. A read error
+/// changes nothing.
+fn retire_data_key(backend: &dyn SecretsBackend, backup_suffix: &str) -> Result<bool> {
+    let Some(old) = backend.get(MEETINGS_DATA_KEY)? else {
+        return Ok(false);
+    };
+    backend.set(&format!("{MEETINGS_DATA_KEY}.{backup_suffix}"), &old)?;
+    backend.delete(MEETINGS_DATA_KEY)?;
+    Ok(true)
 }
 
-/// [`meetings_data_key`], generating and storing a key when none exists, but
-/// only if `has_encrypted_data` is false. With existing data a missing key is
-/// [`MeetingsDataKeyMissing`]: a fresh key would make that data unreadable.
-pub fn open_meetings_data_key(has_encrypted_data: bool) -> Result<[u8; 32]> {
-    cached_data_key(data_key_cache(), backend().as_ref(), !has_encrypted_data)
+/// The meetings data key an earlier version encrypted meeting data with,
+/// cached in-process: [`MeetingsDataKeyMissing`] when none is stored. A read
+/// error is returned as is.
+pub fn legacy_meetings_data_key() -> Result<[u8; 32]> {
+    cached_data_key(data_key_cache(), backend().as_ref())
 }
 
 /// Forget the cached meetings data key (in-process and the Keychain read
@@ -402,15 +374,15 @@ pub fn forget_meetings_data_key() {
     forget_data_key(data_key_cache(), backend().as_ref());
 }
 
-/// Store a new meetings data key. Call only once the data encrypted with the
-/// old key has been moved aside. The old key, if readable, is kept under
-/// `meetings_data_key.<backup_suffix>` so that data stays recoverable; a
-/// Keychain read error aborts without changing anything.
-pub fn replace_meetings_data_key(backup_suffix: &str) -> Result<[u8; 32]> {
+/// Once nothing is encrypted with it any more: keep the meetings data key
+/// under `meetings_data_key.<backup_suffix>` (so a backup of the encrypted
+/// data stays readable) and delete it. Returns whether there was one.
+pub fn retire_meetings_data_key(backup_suffix: &str) -> Result<bool> {
     let mut cache = data_key_cache().lock();
-    let key = replace_data_key(backend().as_ref(), backup_suffix)?;
-    *cache = Some(key);
-    Ok(key)
+    let retired = retire_data_key(backend().as_ref(), backup_suffix)?;
+    *cache = None;
+    backend().invalidate(MEETINGS_DATA_KEY);
+    Ok(retired)
 }
 
 #[cfg(test)]
@@ -617,57 +589,49 @@ mod tests {
         }
     }
 
+    fn store_key(backend: &dyn SecretsBackend, k: [u8; 32]) {
+        backend
+            .set(
+                MEETINGS_DATA_KEY,
+                &base64::engine::general_purpose::STANDARD.encode(k),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn forgetting_the_data_key_rereads_the_keychain() {
         let backend = Cached::new(MemoryBackend::new());
         let cache = Mutex::new(None);
-        // Missing (with encrypted data): nothing generated.
-        let e = cached_data_key(&cache, &backend, false).unwrap_err();
+        // Missing: nothing generated.
+        let e = cached_data_key(&cache, &backend).unwrap_err();
         assert!(e.downcast_ref::<MeetingsDataKeyMissing>().is_some(), "{e}");
+        assert_eq!(backend.inner.get(MEETINGS_DATA_KEY).unwrap(), None);
         // The user restores the key in the Keychain: Retry sees it.
-        let restored = generate_data_key(&backend.inner).unwrap();
-        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), restored);
+        store_key(&backend.inner, [1u8; 32]);
+        assert_eq!(cached_data_key(&cache, &backend).unwrap(), [1u8; 32]);
 
         // A key that turns out not to decrypt the data is reused until
         // forgotten, then the Keychain is read again.
-        let right = [7u8; 32];
-        backend
-            .inner
-            .set(
-                MEETINGS_DATA_KEY,
-                &base64::engine::general_purpose::STANDARD.encode(right),
-            )
-            .unwrap();
-        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), restored);
+        store_key(&backend.inner, [7u8; 32]);
+        assert_eq!(cached_data_key(&cache, &backend).unwrap(), [1u8; 32]);
         forget_data_key(&cache, &backend);
-        assert_eq!(cached_data_key(&cache, &backend, false).unwrap(), right);
+        assert_eq!(cached_data_key(&cache, &backend).unwrap(), [7u8; 32]);
     }
 
     #[test]
-    fn meetings_data_key_is_stable() {
-        let a = meetings_data_key().unwrap();
-        let b = open_meetings_data_key(true).unwrap();
-        assert_eq!(a, b);
-        assert_ne!(a, [0u8; 32]);
-        let stored = get(MEETINGS_DATA_KEY).unwrap().unwrap();
-        assert_eq!(decode_data_key(&stored).unwrap(), a);
-    }
-
-    #[test]
-    fn a_missing_data_key_is_created_only_without_existing_data() {
+    fn retiring_the_data_key_keeps_it_under_a_backup_name() {
         let b = MemoryBackend::new();
-        let e = load_data_key(&b, false).unwrap_err();
-        assert!(e.downcast_ref::<MeetingsDataKeyMissing>().is_some(), "{e}");
-        assert_eq!(b.get(MEETINGS_DATA_KEY).unwrap(), None, "nothing written");
-
-        let k = load_data_key(&b, true).unwrap();
-        // Once stored it is read back, whatever `may_create` says.
-        assert_eq!(load_data_key(&b, false).unwrap(), k);
-        assert_eq!(load_data_key(&b, true).unwrap(), k);
+        assert!(!retire_data_key(&b, "bak1").unwrap());
+        assert_eq!(b.get("meetings_data_key.bak1").unwrap(), None);
+        store_key(&b, [9u8; 32]);
+        assert!(retire_data_key(&b, "bak2").unwrap());
+        assert_eq!(b.get(MEETINGS_DATA_KEY).unwrap(), None);
+        let backup = b.get("meetings_data_key.bak2").unwrap().unwrap();
+        assert_eq!(decode_data_key(&backup).unwrap(), [9u8; 32]);
     }
 
     #[test]
-    fn a_read_error_never_creates_a_key() {
+    fn a_read_error_retires_nothing() {
         struct Broken(MemoryBackend);
         impl SecretsBackend for Broken {
             fn get(&self, _: &str) -> Result<Option<String>> {
@@ -681,21 +645,8 @@ mod tests {
             }
         }
         let b = Broken(MemoryBackend::new());
-        assert!(load_data_key(&b, true).is_err());
-        assert!(replace_data_key(&b, "x").is_err());
-        assert_eq!(b.0.get(MEETINGS_DATA_KEY).unwrap(), None);
-    }
-
-    #[test]
-    fn replacing_the_data_key_keeps_the_old_one() {
-        let b = MemoryBackend::new();
-        // No old key: nothing to back up.
-        let first = replace_data_key(&b, "bak1").unwrap();
-        assert_eq!(b.get("meetings_data_key.bak1").unwrap(), None);
-        let second = replace_data_key(&b, "bak2").unwrap();
-        assert_ne!(first, second);
-        assert_eq!(load_data_key(&b, false).unwrap(), second);
-        let backup = b.get("meetings_data_key.bak2").unwrap().unwrap();
-        assert_eq!(decode_data_key(&backup).unwrap(), first);
+        store_key(&b.0, [9u8; 32]);
+        assert!(retire_data_key(&b, "x").is_err());
+        assert!(b.0.get(MEETINGS_DATA_KEY).unwrap().is_some());
     }
 }

@@ -86,7 +86,7 @@ pub fn not_ready(what: &str) -> anyhow::Error {
 
 pub struct MeetingsManager {
     app: AppHandle,
-    /// The encrypted `meetings.db` (owner: store/A).
+    /// `meetings.db` (owner: store/A).
     store: Arc<MeetingsStore>,
     /// `<app_data_dir>/meetings`.
     meetings_dir: std::path::PathBuf,
@@ -115,12 +115,16 @@ impl MeetingsManager {
     pub fn new(app: &AppHandle) -> Result<Arc<Self>> {
         let data_dir =
             crate::portable::app_data_dir(app).map_err(|e| anyhow::anyhow!("app data dir: {e}"))?;
-        // A key is generated only on first use: with data already there, a
-        // missing key is `MeetingsDataKeyMissing` (the UI offers a reset).
-        let key = crate::secrets::open_meetings_data_key(has_meeting_data(&data_dir))?;
+        // Data an earlier version encrypted is converted first (with the
+        // key from the Keychain, then retired): a missing or wrong key is a
+        // key problem (the UI offers Retry or a reset).
+        crate::meetings::legacy::convert_if_needed(
+            &data_dir,
+            crate::secrets::legacy_meetings_data_key,
+            crate::secrets::retire_meetings_data_key,
+        )?;
         let store = Arc::new(MeetingsStore::open(
             &data_dir.join(crate::meetings::store::MEETINGS_DB_FILE),
-            &key,
         )?);
         let meetings_dir = data_dir.join("meetings");
         let processing =
@@ -428,15 +432,6 @@ impl MeetingsManager {
                             if let Err(e) = m.apply_retention() {
                                 log::error!("meetings: retention failed: {e:#}");
                             }
-                            // Temp files a crash left mid-write.
-                            if let Err(e) =
-                                crate::meetings::processing::sidecar::sweep_stale_temp_files(
-                                    &m.meetings_dir,
-                                    std::time::Duration::from_secs(60 * 60),
-                                )
-                            {
-                                log::warn!("meetings: sweeping sidecar temp files: {e:#}");
-                            }
                         }
                         None => return,
                     }
@@ -578,13 +573,7 @@ impl MeetingsManager {
     /// `id`'s voiceprints with the lines they came from, to listen to
     /// before a merge (see [`crate::meetings::processing::naming::voice_samples`]).
     pub fn voice_samples(&self, id: PersonId) -> Result<Vec<VoiceSample>> {
-        let key = crate::secrets::meetings_data_key()?;
-        crate::meetings::processing::naming::voice_samples(
-            &self.store,
-            &self.meetings_dir,
-            &key,
-            id,
-        )
+        crate::meetings::processing::naming::voice_samples(&self.store, id)
     }
 
     /// Move everything (voiceprints, speaker links, action-item owners,
@@ -596,10 +585,10 @@ impl MeetingsManager {
     }
 
     /// Deletes the person and their voiceprints, including the speaker
-    /// centroids linked to them and their per-segment voiceprints in the
-    /// meetings' embeddings sidecars (found through the segments' speakers).
+    /// centroids linked to them and their per-segment voiceprints (found
+    /// through the segments' speakers).
     ///
-    /// The sidecars are rewritten under their [`EmbeddingsLock`]s, taken
+    /// The per-segment voiceprints are dropped under their [`EmbeddingsLock`]s, taken
     /// for every meeting the person is in before the person is deleted; the
     /// check that no other meeting has their segments and the deletion are
     /// one transaction ([`MeetingsStore::delete_person_within`]), retried
@@ -633,29 +622,21 @@ impl MeetingsManager {
             }
         };
         if !segments.is_empty() {
-            match crate::secrets::meetings_data_key() {
-                Ok(key) => {
-                    for (meeting_id, ids) in &segments {
-                        // Under its lock: a meeting deleted meanwhile has (or
-                        // will have) its sidecars deleted; never recreate them.
-                        if !matches!(self.store.get_meeting(*meeting_id), Ok(Some(_))) {
-                            continue;
-                        }
-                        let ids: std::collections::HashSet<i64> = ids.iter().copied().collect();
-                        if let Err(e) = sidecar::drop_segment_embeddings(
-                            &locks[meeting_id],
-                            &self.meetings_dir,
-                            *meeting_id,
-                            &key,
-                            &ids,
-                        ) {
-                            log::warn!(
-                                "meetings: dropping voiceprints from meeting {meeting_id}: {e:#}"
-                            );
-                        }
-                    }
+            for (meeting_id, ids) in &segments {
+                // Under its lock: a meeting deleted meanwhile has (or will
+                // have) its voiceprints deleted; never recreate them.
+                if !matches!(self.store.get_meeting(*meeting_id), Ok(Some(_))) {
+                    continue;
                 }
-                Err(e) => log::warn!("meetings: voiceprint sidecars not cleaned: {e:#}"),
+                let ids: std::collections::HashSet<i64> = ids.iter().copied().collect();
+                if let Err(e) = sidecar::drop_segment_embeddings(
+                    &locks[meeting_id],
+                    &self.store,
+                    *meeting_id,
+                    &ids,
+                ) {
+                    log::warn!("meetings: dropping voiceprints from meeting {meeting_id}: {e:#}");
+                }
             }
             for meeting_id in segments.keys() {
                 self.emit_meeting_changed(*meeting_id);
@@ -763,9 +744,11 @@ impl MeetingsManager {
 
     /// Redo only a processed meeting's speakers with `engine`, keeping its
     /// transcript (see [`crate::meetings::processing::Processor::enqueue_speakers`]).
-    /// The model decides only the lines nobody pinned: lines tagged by hand
-    /// and speakers named or confirmed keep their person (see
-    /// [`SegmentPin`]); the rest are matched again by voice.
+    /// Lines tagged by hand keep their person; every other line whose own
+    /// voiceprint clearly sounds like someone named goes to them, also out
+    /// of a speaker named as someone else (it held two voices); the rest
+    /// keep their speaker's name, or are matched again by voice (see
+    /// [`SegmentPin`]).
     pub fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> Result<()> {
         let Some(meeting) = self.store.get_meeting(id)? else {
             anyhow::bail!("meeting {id} not found");
@@ -888,14 +871,8 @@ impl MeetingsManager {
     /// Name a speaker. Stores that speaker's voiceprints under the person and
     /// marks the speaker confirmed. Returns the person id.
     pub fn assign_speaker(&self, speaker_id: SpeakerId, person: PersonRef) -> Result<PersonId> {
-        let key = crate::secrets::meetings_data_key()?;
-        let person_id = crate::meetings::processing::naming::assign(
-            &self.store,
-            &self.meetings_dir,
-            &key,
-            speaker_id,
-            person,
-        )?;
+        let person_id =
+            crate::meetings::processing::naming::assign(&self.store, speaker_id, person)?;
         self.emit_speaker_changed(speaker_id);
         Ok(person_id)
     }
@@ -904,32 +881,19 @@ impl MeetingsManager {
     /// [`crate::meetings::processing::naming::segment_suggestions`]).
     pub fn segment_suggestions(&self, segment_id: i64) -> Result<Vec<NameSuggestion>> {
         let settings = crate::settings::get_settings(&self.app).meetings;
-        let key = crate::secrets::meetings_data_key()?;
-        crate::meetings::processing::naming::segment_suggestions(
-            &self.store,
-            &self.meetings_dir,
-            &key,
-            segment_id,
-            &settings,
-        )
+        crate::meetings::processing::naming::segment_suggestions(&self.store, segment_id, &settings)
     }
 
     /// Say who spoke one line (one the diarization left unknown or got
     /// wrong); its voiceprint moves with it. Returns the person id.
     pub fn assign_segment(&self, segment_id: i64, person: PersonRef) -> Result<PersonId> {
-        let key = crate::secrets::meetings_data_key()?;
         let meeting_id = self
             .store
             .get_segment(segment_id)?
             .map(|s| s.meeting_id)
             .ok_or_else(|| anyhow::anyhow!("segment {segment_id} not found"))?;
-        let person_id = crate::meetings::processing::naming::assign_segment(
-            &self.store,
-            &self.meetings_dir,
-            &key,
-            segment_id,
-            person,
-        )?;
+        let person_id =
+            crate::meetings::processing::naming::assign_segment(&self.store, segment_id, person)?;
         self.emit_meeting_changed(meeting_id);
         self.emit_people_changed();
         Ok(person_id)
@@ -937,13 +901,7 @@ impl MeetingsManager {
 
     /// Accept an uncertain automatic match ("Confirm?").
     pub fn confirm_speaker(&self, speaker_id: SpeakerId) -> Result<()> {
-        let key = crate::secrets::meetings_data_key()?;
-        crate::meetings::processing::naming::confirm(
-            &self.store,
-            &self.meetings_dir,
-            &key,
-            speaker_id,
-        )?;
+        crate::meetings::processing::naming::confirm(&self.store, speaker_id)?;
         self.emit_speaker_changed(speaker_id);
         Ok(())
     }
@@ -971,7 +929,7 @@ impl MeetingsManager {
     /// it finishes and finds the meeting gone. The same lock keeps a
     /// concurrent [`Self::delete_person`] from writing the voiceprints back.
     pub fn forget_processing(&self, id: MeetingId) -> Result<()> {
-        crate::meetings::processing::delete_sidecars(&self.meetings_dir, id)
+        crate::meetings::processing::delete_sidecars(&self.meetings_dir, &self.store, id)
     }
 
     /// Wait (up to `timeout`) for no summary of `id` to be running.
@@ -1334,11 +1292,10 @@ impl MeetingsManager {
     }
 }
 
-/// Encrypted meeting data exists under `data_dir`: `meetings.db`, a
-/// recorded track (`meetings/audio/*.gopus`) or a processing sidecar
+/// Meeting data exists under `data_dir`: `meetings.db`, a recorded track
+/// (`meetings/audio/*.gopus`) or a legacy processing sidecar
 /// (`meetings/{processing,embeddings}/*.bin`). Anything else (`.DS_Store`,
-/// temp files, stray SQLite side files without a database) is not data a
-/// new key would orphan.
+/// temp files, stray SQLite side files without a database) is not.
 pub fn has_meeting_data(data_dir: &std::path::Path) -> bool {
     fn any_file_with_extension(dir: &std::path::Path, extension: &str) -> bool {
         std::fs::read_dir(dir).is_ok_and(|entries| {
@@ -1857,19 +1814,15 @@ mod store_section_tests {
         mgr.store()
             .set_speaker_embedding(speakers[0].id, Some(&[1.0]))
             .unwrap();
-        let key = crate::secrets::meetings_data_key().unwrap();
         let e = |id| SegmentEmbedding {
             segment_id: id,
             duration_ms: 1000,
             embedding: vec![1.0],
         };
-        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[e(segs[0].id), e(segs[1].id)])
-            .unwrap();
+        sidecar::write_embeddings(mgr.store(), m, &[e(segs[0].id), e(segs[1].id)]).unwrap();
 
         mgr.delete_person(ann.id).unwrap();
-        let left = sidecar::read_embeddings(mgr.meetings_dir(), m, &key)
-            .unwrap()
-            .unwrap();
+        let left = sidecar::read_embeddings(mgr.store(), m).unwrap().unwrap();
         assert_eq!(left, vec![e(segs[1].id)]);
         assert_eq!(mgr.store().speaker_embedding(speakers[0].id).unwrap(), None);
     }
@@ -1904,7 +1857,6 @@ mod store_section_tests {
             words: vec![],
             speaker_id: Some(speaker),
         };
-        let key = crate::secrets::meetings_data_key().unwrap();
         let e = |id| SegmentEmbedding {
             segment_id: id,
             duration_ms: 1000,
@@ -1914,7 +1866,7 @@ mod store_section_tests {
             .store()
             .replace_transcript(m, &[sp(1, Some(ann.id))], &[seg(0, 1)])
             .unwrap();
-        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[e(old[0].id)]).unwrap();
+        sidecar::write_embeddings(mgr.store(), m, &[e(old[0].id)]).unwrap();
 
         // The run is merging (it holds the lock) when the deletion starts.
         let merging = sidecar::lock_embeddings(mgr.meetings_dir(), m);
@@ -1931,14 +1883,12 @@ mod store_section_tests {
                 )
                 .unwrap();
             let prints: Vec<_> = new.iter().map(|g| e(g.id)).collect();
-            sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &prints).unwrap();
+            sidecar::write_embeddings(mgr.store(), m, &prints).unwrap();
             drop(merging);
             deletion.join().unwrap().unwrap();
             new
         });
-        let left = sidecar::read_embeddings(mgr.meetings_dir(), m, &key)
-            .unwrap()
-            .unwrap();
+        let left = sidecar::read_embeddings(mgr.store(), m).unwrap().unwrap();
         assert_eq!(left, vec![e(new[1].id), e(new[2].id)]);
         assert!(mgr.list_people().unwrap().is_empty());
     }
@@ -1952,18 +1902,35 @@ mod store_section_tests {
         let t = TestApp::new();
         let mgr = MeetingsManager::new(&t.app).unwrap();
         let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
-        let key = crate::secrets::meetings_data_key().unwrap();
-        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+        sidecar::write_embeddings(
+            mgr.store(),
+            m,
+            &[SegmentEmbedding {
+                segment_id: 1,
+                duration_ms: 1,
+                embedding: vec![1.0],
+            }],
+        )
+        .unwrap();
         let rewriting = sidecar::lock_embeddings(mgr.meetings_dir(), m);
         std::thread::scope(|s| {
             let deletion = s.spawn(|| mgr.delete_meeting(m));
             std::thread::sleep(std::time::Duration::from_millis(100));
             assert!(!deletion.is_finished(), "the deletion waits for the lock");
-            sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+            sidecar::write_embeddings(
+                mgr.store(),
+                m,
+                &[SegmentEmbedding {
+                    segment_id: 1,
+                    duration_ms: 1,
+                    embedding: vec![1.0],
+                }],
+            )
+            .unwrap();
             drop(rewriting);
             deletion.join().unwrap().unwrap();
         });
-        assert!(!sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
+        assert!(!sidecar::has_embeddings(mgr.store(), m).unwrap());
         assert!(mgr.get_meeting(m).unwrap().is_none());
     }
 
@@ -1975,8 +1942,16 @@ mod store_section_tests {
         let t = TestApp::new();
         let mgr = MeetingsManager::new(&t.app).unwrap();
         let m = mgr.store().insert_meeting(&meeting(None)).unwrap();
-        let key = crate::secrets::meetings_data_key().unwrap();
-        sidecar::write_embeddings(mgr.meetings_dir(), m, &key, &[]).unwrap();
+        sidecar::write_embeddings(
+            mgr.store(),
+            m,
+            &[SegmentEmbedding {
+                segment_id: 1,
+                duration_ms: 1,
+                embedding: vec![1.0],
+            }],
+        )
+        .unwrap();
         mgr.store()
             .execute_batch_for_tests(
                 "CREATE TEMP TRIGGER keep_meetings BEFORE DELETE ON meetings
@@ -1985,14 +1960,14 @@ mod store_section_tests {
             .unwrap();
         assert!(mgr.delete_meeting(m).is_err());
         assert!(mgr.get_meeting(m).unwrap().is_some());
-        assert!(sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
+        assert!(sidecar::has_embeddings(mgr.store(), m).unwrap());
 
         mgr.store()
             .execute_batch_for_tests("DROP TRIGGER temp.keep_meetings")
             .unwrap();
         mgr.delete_meeting(m).unwrap();
         assert!(mgr.get_meeting(m).unwrap().is_none());
-        assert!(!sidecar::embeddings_path(mgr.meetings_dir(), m).exists());
+        assert!(!sidecar::has_embeddings(mgr.store(), m).unwrap());
     }
 
     #[test]

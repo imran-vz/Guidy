@@ -310,13 +310,46 @@ pub struct KnownVoice {
 /// cosine similarities against their prints. Between "max" (one lucky print
 /// decides) and "mean" (old or noisy prints drag it down).
 pub fn person_similarity(centroid: &[f32], prints: &[Vec<f32>]) -> Option<f32> {
-    let mut sims: Vec<f32> = prints.iter().map(|p| cosine(centroid, p)).collect();
+    top_mean(prints.iter().map(|p| cosine(centroid, p)).collect())
+}
+
+/// Mean of the best (up to 3) of `sims` (`None` when empty).
+fn top_mean(mut sims: Vec<f32>) -> Option<f32> {
     if sims.is_empty() {
         return None;
     }
     sims.sort_by(|a, b| b.total_cmp(a));
     let top = &sims[..sims.len().min(3)];
     Some(top.iter().sum::<f32>() / top.len() as f32)
+}
+
+/// A stored print this close to a line's voiceprint was taken from that
+/// line (naming or tagging stores them), so it doesn't vouch for it.
+pub const SAME_PRINT_SIMILARITY: f32 = 0.999;
+
+/// How far a line's best match must lead the next person's.
+pub const LINE_MATCH_MARGIN: f32 = 0.1;
+
+/// The known person one line clearly sounds like: at least `threshold`
+/// similar (see [`person_similarity`]), and [`LINE_MATCH_MARGIN`] ahead of
+/// everyone else. The line's own prints (see [`SAME_PRINT_SIMILARITY`])
+/// are left out; `None` when they are all someone has (nothing then says
+/// how much the line sounds like them).
+pub fn match_line(voice: &[f32], people: &[KnownVoice], threshold: f32) -> Option<(PersonId, f32)> {
+    let mut ranked: Vec<(PersonId, f32)> = Vec::with_capacity(people.len());
+    for p in people.iter().filter(|p| !p.prints.is_empty()) {
+        let sims = p
+            .prints
+            .iter()
+            .map(|q| cosine(voice, q))
+            .filter(|s| *s < SAME_PRINT_SIMILARITY)
+            .collect();
+        ranked.push((p.person_id, top_mean(sims)?));
+    }
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let (person, best) = *ranked.first()?;
+    let next = ranked.get(1).map_or(f32::NEG_INFINITY, |r| r.1);
+    (best >= threshold && best - next >= LINE_MATCH_MARGIN).then_some((person, best))
 }
 
 /// People ranked by voice similarity to `centroid`, best first.
@@ -405,6 +438,32 @@ pub(crate) mod tests {
                 .map(|(x, y)| x + noise * y)
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn a_line_matches_the_person_it_clearly_sounds_like() {
+        let people = [
+            KnownVoice {
+                person_id: 1,
+                prints: vec![vec![1.0, 0.0], vec![0.95, 0.31]],
+            },
+            KnownVoice {
+                person_id: 2,
+                prints: vec![vec![0.0, 1.0]],
+            },
+        ];
+        let line = normalized(&[1.0, 0.1]);
+        assert_eq!(match_line(&line, &people, 0.65).map(|m| m.0), Some(1));
+        // Not similar enough to anyone.
+        assert_eq!(match_line(&line, &people, 0.999), None);
+        // Halfway between the two: neither leads by the margin.
+        let between = normalized(&[1.0, 1.0]);
+        assert_eq!(match_line(&between, &people, 0.5), None);
+        // Its own print (the same vector) doesn't count.
+        let own = vec![1.0, 0.0];
+        let m = match_line(&own, &people, 0.65).unwrap();
+        assert_eq!(m.0, 1);
+        assert!(m.1 < SAME_PRINT_SIMILARITY);
     }
 
     #[test]

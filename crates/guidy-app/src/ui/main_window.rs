@@ -102,6 +102,11 @@ impl Section {
 struct LastSection(Section);
 impl Global for LastSection {}
 
+/// The page well's scroll, for pages that scroll to something of theirs
+/// (the meeting transcript, from its talk-time chart).
+pub struct PageScroll(pub ScrollHandle);
+impl Global for PageScroll {}
+
 #[derive(Default)]
 struct Pages {
     general: Option<Entity<GeneralPage>>,
@@ -207,6 +212,7 @@ impl MainWindow {
             pending_meetings_settings: false,
             _subs: subs,
         };
+        cx.set_global(PageScroll(this.scroll.clone()));
         // Window-level shortcuts (debug toggle, close) need a focused node.
         window.focus(&this.focus, cx);
         // No-op once it has run for this session (normally from startup).

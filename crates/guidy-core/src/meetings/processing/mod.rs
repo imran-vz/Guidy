@@ -8,7 +8,7 @@
 //! - [`jobs`]: the background queue (one meeting at a time) and cancel.
 //! - [`cloud`]: transcription through a cloud speech-to-text API instead.
 //! - [`speaker_model`]: the sherpa-onnx speaker model download + extractor.
-//! - [`sidecar`]: encrypted checkpoint / per-segment voiceprint files.
+//! - [`sidecar`]: checkpoint / per-segment voiceprints (in `meetings.db`).
 //! - [`naming`]: speaker suggestions and naming (stores voiceprints).
 //! - [`user_voice`]: voiceprints of the user's recorded voice sample.
 //!
