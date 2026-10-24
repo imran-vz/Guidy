@@ -885,7 +885,8 @@
       "modelUnknown": "The meeting model {{name}} isn't installed. Choose another meeting model in Settings.",
       "speakerModelMissing": "Download the speaker recognition model in Meetings > Settings, then process the meeting.",
       "noLinearKey": "Add a Linear API key in Settings first.",
-      "linearUnauthorized": "Linear rejected the API key. Check it in Settings."
+      "linearUnauthorized": "Linear rejected the API key. Check it in Settings.",
+      "titleNeedsSummary": "Generate the meeting's summary first: the title is written from it."
     },
     "model": {
       "download": "Download meeting model",
@@ -965,7 +966,8 @@
       "talkTime": "Talk time",
       "share": "Share",
       "youSpoke": "You spoke",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} to name"
     },
     "speaker": {
       "rename": "Name this speaker",
@@ -1174,7 +1176,37 @@
           "title": "Suggestion threshold",
           "description": "Voice similarity below which a known person is not suggested at all."
         }
+      },
+      "calendarTitles": {
+        "title": "Keep calendar names as titles",
+        "description": "When titles are generated, meetings from a calendar event keep the event's name and only get a description."
       }
+    },
+    "search": {
+      "placeholder": "Search titles, summaries and transcripts",
+      "searching": "Searching...",
+      "empty": "No meetings match “{{query}}”.",
+      "count_one": "1 meeting",
+      "count_other": "{{count}} meetings",
+      "corrected": "Showing results for {{words}}",
+      "partial": "No meeting has every word: showing the closest matches.",
+      "mentions_one": "1 mention",
+      "mentions_other": "{{count}} mentions",
+      "inSummary": "Summary",
+      "inDescription": "About",
+      "inTitle": "Title",
+      "error": "Couldn't search meetings"
+    },
+    "titles": {
+      "generate": "Generate title and description",
+      "needsSummary": "Generate the summary first, then the title",
+      "generateAll": "Generate titles ({{count}})",
+      "generateAllHint": "Title and describe every summarized meeting that still needs it, with the summary model. Calendar names and titles you typed are kept.",
+      "starting": "Getting ready...",
+      "progress": "Titling {{done}} of {{total}}",
+      "done_one": "Titled 1 meeting",
+      "done_other": "Titled {{count}} meetings",
+      "error": "Couldn't generate the title"
     }
   },
   "meetingsAi": {

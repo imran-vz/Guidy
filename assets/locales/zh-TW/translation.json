@@ -885,7 +885,8 @@
       "modelUnknown": "未安裝會議模型 {{name}}。請在設定中選擇其他會議模型。",
       "speakerModelMissing": "請在「會議 > 設定」中下載說話者辨識模型，然後處理會議。",
       "noLinearKey": "請先在設定中新增 Linear API 金鑰。",
-      "linearUnauthorized": "Linear 拒絕了此 API 金鑰。請在設定中檢查。"
+      "linearUnauthorized": "Linear 拒絕了此 API 金鑰。請在設定中檢查。",
+      "titleNeedsSummary": "請先產生會議摘要：標題會根據摘要撰寫。"
     },
     "model": {
       "download": "下載會議模型",
@@ -965,7 +966,8 @@
       "talkTime": "發言時間",
       "share": "占比",
       "youSpoke": "您的發言",
-      "minutes": "分鐘"
+      "minutes": "分鐘",
+      "speakersToName": "{{count}} 位待命名"
     },
     "speaker": {
       "rename": "為此說話者命名",
@@ -1174,7 +1176,37 @@
           "title": "建議閾值",
           "description": "聲音相似度低於此值時，完全不會建議已知人員。"
         }
+      },
+      "calendarTitles": {
+        "title": "保留行事曆名稱作為標題",
+        "description": "產生標題時，來自行事曆活動的會議會保留活動名稱，只會加上描述。"
       }
+    },
+    "search": {
+      "placeholder": "搜尋標題、摘要和逐字稿",
+      "searching": "正在搜尋...",
+      "empty": "沒有符合「{{query}}」的會議。",
+      "count_one": "1 場會議",
+      "count_other": "{{count}} 場會議",
+      "corrected": "顯示 {{words}} 的結果",
+      "partial": "沒有會議包含所有字詞：顯示最接近的結果。",
+      "mentions_one": "提及 1 次",
+      "mentions_other": "提及 {{count}} 次",
+      "inSummary": "摘要",
+      "inDescription": "描述",
+      "inTitle": "標題",
+      "error": "無法搜尋會議"
+    },
+    "titles": {
+      "generate": "產生標題和描述",
+      "needsSummary": "請先產生摘要，再產生標題",
+      "generateAll": "產生標題（{{count}}）",
+      "generateAllHint": "使用摘要模型，為每場仍需要標題和描述的已摘要會議加上標題和描述。行事曆名稱和您輸入的標題會保留。",
+      "starting": "正在準備...",
+      "progress": "正在產生標題（{{done}} / {{total}}）",
+      "done_one": "已為 1 場會議產生標題",
+      "done_other": "已為 {{count}} 場會議產生標題",
+      "error": "無法產生標題"
     }
   },
   "meetingsAi": {

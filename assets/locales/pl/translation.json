@@ -885,7 +885,8 @@
       "modelUnknown": "Model spotkań {{name}} nie jest zainstalowany. Wybierz inny model spotkań w Ustawieniach.",
       "speakerModelMissing": "Pobierz model rozpoznawania mówców w Spotkania > Ustawienia, a następnie przetwórz spotkanie.",
       "noLinearKey": "Najpierw dodaj klucz API Linear w Ustawieniach.",
-      "linearUnauthorized": "Linear odrzucił klucz API. Sprawdź go w Ustawieniach."
+      "linearUnauthorized": "Linear odrzucił klucz API. Sprawdź go w Ustawieniach.",
+      "titleNeedsSummary": "Najpierw wygeneruj podsumowanie spotkania: tytuł powstaje na jego podstawie."
     },
     "model": {
       "download": "Pobierz model spotkań",
@@ -965,7 +966,8 @@
       "talkTime": "Czas mówienia",
       "share": "Udział",
       "youSpoke": "Twój czas mówienia",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "Do nazwania: {{count}}"
     },
     "speaker": {
       "rename": "Nazwij tego mówcę",
@@ -1174,7 +1176,37 @@
           "title": "Próg sugestii",
           "description": "Podobieństwo głosu, poniżej którego znana osoba w ogóle nie jest sugerowana."
         }
+      },
+      "calendarTitles": {
+        "title": "Zachowaj nazwy z kalendarza jako tytuły",
+        "description": "Podczas generowania tytułów spotkania z wydarzenia w kalendarzu zachowują nazwę wydarzenia i dostają tylko opis."
       }
+    },
+    "search": {
+      "placeholder": "Szukaj w tytułach, podsumowaniach i transkrypcjach",
+      "searching": "Wyszukiwanie...",
+      "empty": "Brak spotkań pasujących do „{{query}}”.",
+      "count_one": "1 spotkanie",
+      "count_other": "Spotkania: {{count}}",
+      "corrected": "Wyniki dla {{words}}",
+      "partial": "Żadne spotkanie nie zawiera wszystkich słów: pokazano najbliższe dopasowania.",
+      "mentions_one": "1 wzmianka",
+      "mentions_other": "Wzmianki: {{count}}",
+      "inSummary": "Podsumowanie",
+      "inDescription": "Opis",
+      "inTitle": "Tytuł",
+      "error": "Nie udało się przeszukać spotkań"
+    },
+    "titles": {
+      "generate": "Generuj tytuł i opis",
+      "needsSummary": "Najpierw wygeneruj podsumowanie, potem tytuł",
+      "generateAll": "Generuj tytuły ({{count}})",
+      "generateAllHint": "Nadaje tytuł i opis każdemu podsumowanemu spotkaniu, które ich jeszcze potrzebuje, za pomocą modelu podsumowań. Nazwy z kalendarza i wpisane przez ciebie tytuły zostają zachowane.",
+      "starting": "Przygotowywanie...",
+      "progress": "Nadawanie tytułu {{done}} z {{total}}",
+      "done_one": "Nadano tytuł 1 spotkaniu",
+      "done_other": "Spotkania z nadanym tytułem: {{count}}",
+      "error": "Nie udało się wygenerować tytułu"
     }
   },
   "meetingsAi": {

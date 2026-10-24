@@ -885,7 +885,8 @@
       "modelUnknown": "Il modello per le riunioni {{name}} non è installato. Scegline un altro nelle Impostazioni.",
       "speakerModelMissing": "Scarica il modello di riconoscimento degli interlocutori in Riunioni > Impostazioni, poi elabora la riunione.",
       "noLinearKey": "Aggiungi prima una chiave API di Linear nelle Impostazioni.",
-      "linearUnauthorized": "Linear ha rifiutato la chiave API. Controllala nelle Impostazioni."
+      "linearUnauthorized": "Linear ha rifiutato la chiave API. Controllala nelle Impostazioni.",
+      "titleNeedsSummary": "Genera prima il riepilogo della riunione: il titolo viene scritto a partire da esso."
     },
     "model": {
       "download": "Scarica modello per le riunioni",
@@ -965,7 +966,8 @@
       "talkTime": "Tempo di parola",
       "share": "Quota",
       "youSpoke": "Hai parlato",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} da nominare"
     },
     "speaker": {
       "rename": "Dai un nome a questo interlocutore",
@@ -1174,7 +1176,37 @@
           "title": "Soglia dei suggerimenti",
           "description": "Somiglianza vocale al di sotto della quale una persona nota non viene proprio suggerita."
         }
+      },
+      "calendarTitles": {
+        "title": "Mantieni i nomi del calendario come titoli",
+        "description": "Quando vengono generati i titoli, le riunioni di un evento del calendario mantengono il nome dell'evento e ricevono solo una descrizione."
       }
+    },
+    "search": {
+      "placeholder": "Cerca in titoli, riepiloghi e trascrizioni",
+      "searching": "Ricerca in corso...",
+      "empty": "Nessuna riunione corrisponde a \"{{query}}\".",
+      "count_one": "1 riunione",
+      "count_other": "{{count}} riunioni",
+      "corrected": "Risultati per {{words}}",
+      "partial": "Nessuna riunione contiene tutte le parole: vengono mostrate le corrispondenze più vicine.",
+      "mentions_one": "1 menzione",
+      "mentions_other": "{{count}} menzioni",
+      "inSummary": "Riepilogo",
+      "inDescription": "Descrizione",
+      "inTitle": "Titolo",
+      "error": "Impossibile cercare nelle riunioni"
+    },
+    "titles": {
+      "generate": "Genera titolo e descrizione",
+      "needsSummary": "Genera prima il riepilogo, poi il titolo",
+      "generateAll": "Genera titoli ({{count}})",
+      "generateAllHint": "Assegna titolo e descrizione a ogni riunione riepilogata che ne ha ancora bisogno, con il modello dei riepiloghi. I nomi del calendario e i titoli che hai scritto vengono mantenuti.",
+      "starting": "Preparazione...",
+      "progress": "Titolo {{done}} di {{total}}",
+      "done_one": "1 riunione titolata",
+      "done_other": "{{count}} riunioni titolate",
+      "error": "Impossibile generare il titolo"
     }
   },
   "meetingsAi": {

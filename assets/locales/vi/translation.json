@@ -885,7 +885,8 @@
       "modelUnknown": "Mô hình cuộc họp {{name}} chưa được cài đặt. Hãy chọn mô hình cuộc họp khác trong Cài đặt.",
       "speakerModelMissing": "Hãy tải mô hình nhận dạng người nói trong Cuộc họp > Cài đặt, rồi xử lý cuộc họp.",
       "noLinearKey": "Hãy thêm khóa API Linear trong Cài đặt trước.",
-      "linearUnauthorized": "Linear đã từ chối khóa API. Hãy kiểm tra lại trong Cài đặt."
+      "linearUnauthorized": "Linear đã từ chối khóa API. Hãy kiểm tra lại trong Cài đặt.",
+      "titleNeedsSummary": "Hãy tạo bản tóm tắt cuộc họp trước: tiêu đề được viết dựa trên bản tóm tắt."
     },
     "model": {
       "download": "Tải mô hình cuộc họp",
@@ -965,7 +966,8 @@
       "talkTime": "Thời gian nói",
       "share": "Tỷ lệ",
       "youSpoke": "Bạn đã nói",
-      "minutes": "Phút"
+      "minutes": "Phút",
+      "speakersToName": "{{count}} cần đặt tên"
     },
     "speaker": {
       "rename": "Đặt tên người nói này",
@@ -1174,7 +1176,37 @@
           "title": "Ngưỡng gợi ý",
           "description": "Độ tương đồng giọng nói dưới mức này thì người đã biết sẽ không được gợi ý."
         }
+      },
+      "calendarTitles": {
+        "title": "Giữ tên trong lịch làm tiêu đề",
+        "description": "Khi tạo tiêu đề, các cuộc họp từ sự kiện lịch giữ tên sự kiện và chỉ được thêm mô tả."
       }
+    },
+    "search": {
+      "placeholder": "Tìm trong tiêu đề, bản tóm tắt và bản chép lời",
+      "searching": "Đang tìm...",
+      "empty": "Không có cuộc họp nào khớp với \"{{query}}\".",
+      "count_one": "1 cuộc họp",
+      "count_other": "{{count}} cuộc họp",
+      "corrected": "Đang hiển thị kết quả cho {{words}}",
+      "partial": "Không cuộc họp nào có đủ mọi từ: đang hiển thị các kết quả gần nhất.",
+      "mentions_one": "1 lần nhắc đến",
+      "mentions_other": "{{count}} lần nhắc đến",
+      "inSummary": "Tóm tắt",
+      "inDescription": "Mô tả",
+      "inTitle": "Tiêu đề",
+      "error": "Không thể tìm kiếm cuộc họp"
+    },
+    "titles": {
+      "generate": "Tạo tiêu đề và mô tả",
+      "needsSummary": "Hãy tạo bản tóm tắt trước, rồi đến tiêu đề",
+      "generateAll": "Tạo tiêu đề ({{count}})",
+      "generateAllHint": "Đặt tiêu đề và mô tả cho mọi cuộc họp đã tóm tắt còn thiếu, bằng mô hình tóm tắt. Tên trong lịch và tiêu đề bạn đã nhập được giữ nguyên.",
+      "starting": "Đang chuẩn bị...",
+      "progress": "Đang đặt tiêu đề {{done}}/{{total}}",
+      "done_one": "Đã đặt tiêu đề cho 1 cuộc họp",
+      "done_other": "Đã đặt tiêu đề cho {{count}} cuộc họp",
+      "error": "Không thể tạo tiêu đề"
     }
   },
   "meetingsAi": {

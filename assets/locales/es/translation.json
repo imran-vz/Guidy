@@ -885,7 +885,8 @@
       "modelUnknown": "El modelo de reuniones {{name}} no está instalado. Elige otro modelo de reuniones en Configuración.",
       "speakerModelMissing": "Descarga el modelo de reconocimiento de hablantes en Reuniones > Configuración y luego procesa la reunión.",
       "noLinearKey": "Primero añade una clave API de Linear en Configuración.",
-      "linearUnauthorized": "Linear rechazó la clave API. Revísala en Configuración."
+      "linearUnauthorized": "Linear rechazó la clave API. Revísala en Configuración.",
+      "titleNeedsSummary": "Genera primero el resumen de la reunión: el título se escribe a partir de él."
     },
     "model": {
       "download": "Descargar modelo de reuniones",
@@ -965,7 +966,8 @@
       "talkTime": "Tiempo hablado",
       "share": "Proporción",
       "youSpoke": "Hablaste",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} por nombrar"
     },
     "speaker": {
       "rename": "Nombrar a este hablante",
@@ -1174,7 +1176,37 @@
           "title": "Umbral de sugerencia",
           "description": "Similitud de voz por debajo de la cual no se sugiere a una persona conocida."
         }
+      },
+      "calendarTitles": {
+        "title": "Mantener los nombres del calendario como títulos",
+        "description": "Al generar títulos, las reuniones de un evento del calendario mantienen el nombre del evento y solo reciben una descripción."
       }
+    },
+    "search": {
+      "placeholder": "Buscar en títulos, resúmenes y transcripciones",
+      "searching": "Buscando...",
+      "empty": "Ninguna reunión coincide con \"{{query}}\".",
+      "count_one": "1 reunión",
+      "count_other": "{{count}} reuniones",
+      "corrected": "Mostrando resultados de {{words}}",
+      "partial": "Ninguna reunión contiene todas las palabras: se muestran las coincidencias más cercanas.",
+      "mentions_one": "1 mención",
+      "mentions_other": "{{count}} menciones",
+      "inSummary": "Resumen",
+      "inDescription": "Descripción",
+      "inTitle": "Título",
+      "error": "No se pudieron buscar las reuniones"
+    },
+    "titles": {
+      "generate": "Generar título y descripción",
+      "needsSummary": "Genera primero el resumen y después el título",
+      "generateAll": "Generar títulos ({{count}})",
+      "generateAllHint": "Pone título y descripción a cada reunión resumida que aún los necesite, con el modelo de resúmenes. Se conservan los nombres del calendario y los títulos que escribiste.",
+      "starting": "Preparando...",
+      "progress": "Titulando {{done}} de {{total}}",
+      "done_one": "1 reunión titulada",
+      "done_other": "{{count}} reuniones tituladas",
+      "error": "No se pudo generar el título"
     }
   },
   "meetingsAi": {

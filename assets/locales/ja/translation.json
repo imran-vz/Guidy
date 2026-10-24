@@ -885,7 +885,8 @@
       "modelUnknown": "会議モデル {{name}} はインストールされていません。設定で別の会議モデルを選択してください。",
       "speakerModelMissing": "会議 > 設定 で話者認識モデルをダウンロードしてから、会議を処理してください。",
       "noLinearKey": "先に設定で Linear の API キーを追加してください。",
-      "linearUnauthorized": "Linear に API キーが拒否されました。設定で確認してください。"
+      "linearUnauthorized": "Linear に API キーが拒否されました。設定で確認してください。",
+      "titleNeedsSummary": "先に会議の要約を生成してください。タイトルは要約をもとに作成されます。"
     },
     "model": {
       "download": "会議モデルをダウンロード",
@@ -965,7 +966,8 @@
       "talkTime": "発話時間",
       "share": "割合",
       "youSpoke": "あなたの発話",
-      "minutes": "分"
+      "minutes": "分",
+      "speakersToName": "{{count}} 人が未命名"
     },
     "speaker": {
       "rename": "この話者に名前を付ける",
@@ -1174,7 +1176,37 @@
           "title": "候補表示のしきい値",
           "description": "声の類似度がこの値を下回る場合、登録済みの人物は候補に表示されません。"
         }
+      },
+      "calendarTitles": {
+        "title": "カレンダーの名前をタイトルとして維持",
+        "description": "タイトルを生成するとき、カレンダーの予定から作られた会議は予定の名前を維持し、説明だけが追加されます。"
       }
+    },
+    "search": {
+      "placeholder": "タイトル、要約、文字起こしを検索",
+      "searching": "検索中…",
+      "empty": "「{{query}}」に一致する会議はありません。",
+      "count_one": "1 件の会議",
+      "count_other": "{{count}} 件の会議",
+      "corrected": "{{words}} の検索結果を表示しています",
+      "partial": "すべての語を含む会議がないため、近い結果を表示しています。",
+      "mentions_one": "1 件の言及",
+      "mentions_other": "{{count}} 件の言及",
+      "inSummary": "要約",
+      "inDescription": "説明",
+      "inTitle": "タイトル",
+      "error": "会議を検索できませんでした"
+    },
+    "titles": {
+      "generate": "タイトルと説明を生成",
+      "needsSummary": "先に要約を生成してから、タイトルを生成してください",
+      "generateAll": "タイトルを生成 ({{count}})",
+      "generateAllHint": "まだタイトルと説明がない要約済みの会議すべてに、要約モデルでタイトルと説明を付けます。カレンダーの名前と手入力したタイトルは維持されます。",
+      "starting": "準備中…",
+      "progress": "タイトルを作成中 ({{done}}/{{total}})",
+      "done_one": "1 件の会議にタイトルを付けました",
+      "done_other": "{{count}} 件の会議にタイトルを付けました",
+      "error": "タイトルを生成できませんでした"
     }
   },
   "meetingsAi": {

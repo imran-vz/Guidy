@@ -885,7 +885,8 @@
       "modelUnknown": "Model rapat {{name}} tidak terinstal. Pilih model rapat lain di Pengaturan.",
       "speakerModelMissing": "Unduh model pengenalan pembicara di Rapat > Pengaturan, lalu proses rapat.",
       "noLinearKey": "Tambahkan kunci API Linear di Pengaturan terlebih dahulu.",
-      "linearUnauthorized": "Linear menolak kunci API. Periksa di Pengaturan."
+      "linearUnauthorized": "Linear menolak kunci API. Periksa di Pengaturan.",
+      "titleNeedsSummary": "Buat ringkasan rapat terlebih dahulu: judul ditulis berdasarkan ringkasan itu."
     },
     "model": {
       "download": "Unduh model rapat",
@@ -965,7 +966,8 @@
       "talkTime": "Waktu bicara",
       "share": "Porsi",
       "youSpoke": "Anda berbicara",
-      "minutes": "Mnt"
+      "minutes": "Mnt",
+      "speakersToName": "{{count}} perlu diberi nama"
     },
     "speaker": {
       "rename": "Beri nama pembicara ini",
@@ -1174,7 +1176,37 @@
           "title": "Ambang saran",
           "description": "Kemiripan suara yang di bawah nilai ini membuat orang yang dikenal sama sekali tidak disarankan."
         }
+      },
+      "calendarTitles": {
+        "title": "Pertahankan nama kalender sebagai judul",
+        "description": "Saat judul dibuat, rapat dari acara kalender tetap memakai nama acara dan hanya mendapat deskripsi."
       }
+    },
+    "search": {
+      "placeholder": "Cari judul, ringkasan, dan transkrip",
+      "searching": "Mencari...",
+      "empty": "Tidak ada rapat yang cocok dengan \"{{query}}\".",
+      "count_one": "1 rapat",
+      "count_other": "{{count}} rapat",
+      "corrected": "Menampilkan hasil untuk {{words}}",
+      "partial": "Tidak ada rapat yang memuat semua kata: menampilkan hasil yang paling mendekati.",
+      "mentions_one": "1 sebutan",
+      "mentions_other": "{{count}} sebutan",
+      "inSummary": "Ringkasan",
+      "inDescription": "Deskripsi",
+      "inTitle": "Judul",
+      "error": "Gagal mencari rapat"
+    },
+    "titles": {
+      "generate": "Buat judul dan deskripsi",
+      "needsSummary": "Buat ringkasan dulu, lalu judul",
+      "generateAll": "Buat judul ({{count}})",
+      "generateAllHint": "Beri judul dan deskripsi untuk setiap rapat yang sudah diringkas dan masih membutuhkannya, dengan model ringkasan. Nama kalender dan judul yang Anda ketik tetap disimpan.",
+      "starting": "Bersiap...",
+      "progress": "Memberi judul {{done}} dari {{total}}",
+      "done_one": "1 rapat diberi judul",
+      "done_other": "{{count}} rapat diberi judul",
+      "error": "Gagal membuat judul"
     }
   },
   "meetingsAi": {

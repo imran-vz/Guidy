@@ -885,7 +885,8 @@
       "modelUnknown": "Model pro schůzky {{name}} není nainstalovaný. V Nastavení zvolte jiný model pro schůzky.",
       "speakerModelMissing": "Stáhněte model rozpoznávání mluvčích v Schůzky > Nastavení a poté schůzku zpracujte.",
       "noLinearKey": "Nejprve přidejte API klíč Linear v Nastavení.",
-      "linearUnauthorized": "Linear API klíč odmítl. Zkontrolujte jej v Nastavení."
+      "linearUnauthorized": "Linear API klíč odmítl. Zkontrolujte jej v Nastavení.",
+      "titleNeedsSummary": "Nejprve vytvořte shrnutí schůzky: název se píše podle něj."
     },
     "model": {
       "download": "Stáhnout model pro schůzky",
@@ -965,7 +966,8 @@
       "talkTime": "Doba mluvení",
       "share": "Podíl",
       "youSpoke": "Vy jste mluvili",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} k pojmenování"
     },
     "speaker": {
       "rename": "Pojmenovat mluvčího",
@@ -1174,7 +1176,37 @@
           "title": "Práh návrhů",
           "description": "Podobnost hlasu, pod kterou se známá osoba vůbec nenavrhne."
         }
+      },
+      "calendarTitles": {
+        "title": "Ponechat názvy z kalendáře",
+        "description": "Při vytváření názvů si schůzky z události v kalendáři ponechají název události a dostanou jen popis."
       }
+    },
+    "search": {
+      "placeholder": "Hledat v názvech, shrnutích a přepisech",
+      "searching": "Hledání...",
+      "empty": "Hledání „{{query}}“ neodpovídá žádná schůzka.",
+      "count_one": "1 schůzka",
+      "count_other": "Schůzky: {{count}}",
+      "corrected": "Zobrazeny výsledky pro {{words}}",
+      "partial": "Žádná schůzka neobsahuje všechna slova: zobrazují se nejbližší shody.",
+      "mentions_one": "1 zmínka",
+      "mentions_other": "Zmínky: {{count}}",
+      "inSummary": "Shrnutí",
+      "inDescription": "Popis",
+      "inTitle": "Název",
+      "error": "Schůzky se nepodařilo prohledat"
+    },
+    "titles": {
+      "generate": "Vytvořit název a popis",
+      "needsSummary": "Nejprve vytvořte shrnutí, potom název",
+      "generateAll": "Vytvořit názvy ({{count}})",
+      "generateAllHint": "Doplní název a popis každé shrnuté schůzce, která je ještě nemá, pomocí modelu pro shrnutí. Názvy z kalendáře a názvy, které jste napsali, zůstanou.",
+      "starting": "Příprava...",
+      "progress": "Pojmenování {{done}} z {{total}}",
+      "done_one": "Pojmenována 1 schůzka",
+      "done_other": "Pojmenované schůzky: {{count}}",
+      "error": "Název se nepodařilo vytvořit"
     }
   },
   "meetingsAi": {

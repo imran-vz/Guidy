@@ -885,7 +885,8 @@
       "modelUnknown": "El model de reunions {{name}} no està instal·lat. Trieu-ne un altre a la configuració.",
       "speakerModelMissing": "Baixeu el model de reconeixement de parlants a Reunions > Configuració i després processeu la reunió.",
       "noLinearKey": "Primer afegiu una clau de l'API de Linear a la configuració.",
-      "linearUnauthorized": "Linear ha rebutjat la clau de l'API. Comproveu-la a la configuració."
+      "linearUnauthorized": "Linear ha rebutjat la clau de l'API. Comproveu-la a la configuració.",
+      "titleNeedsSummary": "Primer genereu el resum de la reunió: el títol s'escriu a partir d'aquest."
     },
     "model": {
       "download": "Baixa el model de reunions",
@@ -965,7 +966,8 @@
       "talkTime": "Temps parlat",
       "share": "Proporció",
       "youSpoke": "Heu parlat",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} per anomenar"
     },
     "speaker": {
       "rename": "Anomena aquest parlant",
@@ -1174,7 +1176,37 @@
           "title": "Llindar de suggeriment",
           "description": "Similitud de veu per sota de la qual no se suggereix cap persona coneguda."
         }
+      },
+      "calendarTitles": {
+        "title": "Conserva els noms del calendari com a títols",
+        "description": "Quan es generen títols, les reunions d'un esdeveniment del calendari conserven el nom de l'esdeveniment i només reben una descripció."
       }
+    },
+    "search": {
+      "placeholder": "Cerca títols, resums i transcripcions",
+      "searching": "S'està cercant...",
+      "empty": "Cap reunió coincideix amb «{{query}}».",
+      "count_one": "1 reunió",
+      "count_other": "{{count}} reunions",
+      "corrected": "Es mostren resultats per a {{words}}",
+      "partial": "Cap reunió té totes les paraules: es mostren les coincidències més properes.",
+      "mentions_one": "1 menció",
+      "mentions_other": "{{count}} mencions",
+      "inSummary": "Resum",
+      "inDescription": "Descripció",
+      "inTitle": "Títol",
+      "error": "No s'han pogut cercar les reunions"
+    },
+    "titles": {
+      "generate": "Genera el títol i la descripció",
+      "needsSummary": "Genereu primer el resum i després el títol",
+      "generateAll": "Genera els títols ({{count}})",
+      "generateAllHint": "Posa títol i descripció a cada reunió resumida que encara en necessiti, amb el model de resums. Es conserven els noms del calendari i els títols que heu escrit.",
+      "starting": "S'està preparant...",
+      "progress": "S'està titulant {{done}} de {{total}}",
+      "done_one": "S'ha titulat 1 reunió",
+      "done_other": "S'han titulat {{count}} reunions",
+      "error": "No s'ha pogut generar el títol"
     }
   },
   "meetingsAi": {

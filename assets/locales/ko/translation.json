@@ -885,7 +885,8 @@
       "modelUnknown": "회의 모델 {{name}}이(가) 설치되어 있지 않습니다. 설정에서 다른 회의 모델을 선택하세요.",
       "speakerModelMissing": "회의 > 설정에서 화자 인식 모델을 다운로드한 후 회의를 처리하세요.",
       "noLinearKey": "먼저 설정에서 Linear API 키를 추가하세요.",
-      "linearUnauthorized": "Linear에서 API 키를 거부했습니다. 설정에서 확인하세요."
+      "linearUnauthorized": "Linear에서 API 키를 거부했습니다. 설정에서 확인하세요.",
+      "titleNeedsSummary": "먼저 회의 요약을 생성하세요. 제목은 요약을 바탕으로 작성됩니다."
     },
     "model": {
       "download": "회의 모델 다운로드",
@@ -965,7 +966,8 @@
       "talkTime": "발언 시간",
       "share": "비율",
       "youSpoke": "내 발언",
-      "minutes": "분"
+      "minutes": "분",
+      "speakersToName": "{{count}}명 이름 지정 필요"
     },
     "speaker": {
       "rename": "이 화자 이름 지정",
@@ -1174,7 +1176,37 @@
           "title": "추천 임계값",
           "description": "목소리 유사도가 이 값보다 낮으면 아는 사람을 전혀 추천하지 않습니다."
         }
+      },
+      "calendarTitles": {
+        "title": "캘린더 이름을 제목으로 유지",
+        "description": "제목을 생성할 때 캘린더 일정에서 만든 회의는 일정 이름을 유지하고 설명만 추가됩니다."
       }
+    },
+    "search": {
+      "placeholder": "제목, 요약 및 전사 내용 검색",
+      "searching": "검색 중...",
+      "empty": "\"{{query}}\"와(과) 일치하는 회의가 없습니다.",
+      "count_one": "회의 1개",
+      "count_other": "회의 {{count}}개",
+      "corrected": "{{words}}에 대한 결과 표시 중",
+      "partial": "모든 단어가 포함된 회의가 없어 가장 비슷한 결과를 표시합니다.",
+      "mentions_one": "1회 언급",
+      "mentions_other": "{{count}}회 언급",
+      "inSummary": "요약",
+      "inDescription": "설명",
+      "inTitle": "제목",
+      "error": "회의를 검색하지 못했습니다"
+    },
+    "titles": {
+      "generate": "제목 및 설명 생성",
+      "needsSummary": "요약을 먼저 생성한 후 제목을 생성하세요",
+      "generateAll": "제목 생성 ({{count}})",
+      "generateAllHint": "아직 제목과 설명이 필요한 요약된 모든 회의에 요약 모델로 제목과 설명을 붙입니다. 캘린더 이름과 직접 입력한 제목은 유지됩니다.",
+      "starting": "준비 중...",
+      "progress": "제목 생성 중 ({{total}}개 중 {{done}}개)",
+      "done_one": "회의 1개에 제목을 붙였습니다",
+      "done_other": "회의 {{count}}개에 제목을 붙였습니다",
+      "error": "제목을 생성하지 못했습니다"
     }
   },
   "meetingsAi": {

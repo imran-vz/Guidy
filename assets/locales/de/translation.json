@@ -885,7 +885,8 @@
       "modelUnknown": "Das Meeting-Modell {{name}} ist nicht installiert. Wähle in den Einstellungen ein anderes Meeting-Modell.",
       "speakerModelMissing": "Lade das Sprechererkennungsmodell unter Meetings > Einstellungen herunter und verarbeite dann das Meeting.",
       "noLinearKey": "Füge zuerst in den Einstellungen einen Linear-API-Schlüssel hinzu.",
-      "linearUnauthorized": "Linear hat den API-Schlüssel abgelehnt. Prüfe ihn in den Einstellungen."
+      "linearUnauthorized": "Linear hat den API-Schlüssel abgelehnt. Prüfe ihn in den Einstellungen.",
+      "titleNeedsSummary": "Erstelle zuerst die Zusammenfassung des Meetings: Der Titel wird daraus geschrieben."
     },
     "model": {
       "download": "Meeting-Modell herunterladen",
@@ -965,7 +966,8 @@
       "talkTime": "Sprechzeit",
       "share": "Anteil",
       "youSpoke": "Dein Anteil",
-      "minutes": "Min."
+      "minutes": "Min.",
+      "speakersToName": "{{count}} zu benennen"
     },
     "speaker": {
       "rename": "Diesen Sprecher benennen",
@@ -1174,7 +1176,37 @@
           "title": "Vorschlagsschwelle",
           "description": "Stimmähnlichkeit, unterhalb derer eine bekannte Person gar nicht vorgeschlagen wird."
         }
+      },
+      "calendarTitles": {
+        "title": "Kalendernamen als Titel behalten",
+        "description": "Beim Erstellen von Titeln behalten Meetings aus einem Kalendertermin den Namen des Termins und erhalten nur eine Beschreibung."
       }
+    },
+    "search": {
+      "placeholder": "Titel, Zusammenfassungen und Transkripte durchsuchen",
+      "searching": "Wird gesucht...",
+      "empty": "Keine Meetings passen zu „{{query}}“.",
+      "count_one": "1 Meeting",
+      "count_other": "{{count}} Meetings",
+      "corrected": "Ergebnisse für {{words}}",
+      "partial": "Kein Meeting enthält alle Wörter: Die ähnlichsten Treffer werden angezeigt.",
+      "mentions_one": "1 Erwähnung",
+      "mentions_other": "{{count}} Erwähnungen",
+      "inSummary": "Zusammenfassung",
+      "inDescription": "Beschreibung",
+      "inTitle": "Titel",
+      "error": "Meetings konnten nicht durchsucht werden"
+    },
+    "titles": {
+      "generate": "Titel und Beschreibung erstellen",
+      "needsSummary": "Erst die Zusammenfassung erstellen, dann den Titel",
+      "generateAll": "Titel erstellen ({{count}})",
+      "generateAllHint": "Gibt jedem zusammengefassten Meeting, dem noch Titel und Beschreibung fehlen, beides mit dem Zusammenfassungsmodell. Kalendernamen und selbst eingegebene Titel bleiben erhalten.",
+      "starting": "Wird vorbereitet...",
+      "progress": "Titel {{done}} von {{total}}",
+      "done_one": "1 Meeting betitelt",
+      "done_other": "{{count}} Meetings betitelt",
+      "error": "Titel konnte nicht erstellt werden"
     }
   },
   "meetingsAi": {

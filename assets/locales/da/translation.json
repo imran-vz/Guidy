@@ -885,7 +885,8 @@
       "modelUnknown": "Mødemodellen {{name}} er ikke installeret. Vælg en anden mødemodel i Indstillinger.",
       "speakerModelMissing": "Download modellen til talergenkendelse under Møder > Indstillinger, og behandl derefter mødet.",
       "noLinearKey": "Tilføj først en Linear API-nøgle i Indstillinger.",
-      "linearUnauthorized": "Linear afviste API-nøglen. Tjek den i Indstillinger."
+      "linearUnauthorized": "Linear afviste API-nøglen. Tjek den i Indstillinger.",
+      "titleNeedsSummary": "Generér mødets referat først: titlen skrives ud fra det."
     },
     "model": {
       "download": "Download mødemodel",
@@ -965,7 +966,8 @@
       "talkTime": "Taletid",
       "share": "Andel",
       "youSpoke": "Du talte",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} skal navngives"
     },
     "speaker": {
       "rename": "Navngiv denne taler",
@@ -1174,7 +1176,37 @@
           "title": "Tærskel for forslag",
           "description": "Stemmelighed, under hvilken en kendt person slet ikke foreslås."
         }
+      },
+      "calendarTitles": {
+        "title": "Behold kalendernavne som titler",
+        "description": "Når der genereres titler, beholder møder fra en kalenderbegivenhed begivenhedens navn og får kun en beskrivelse."
       }
+    },
+    "search": {
+      "placeholder": "Søg i titler, referater og transskriptioner",
+      "searching": "Søger...",
+      "empty": "Ingen møder matcher \"{{query}}\".",
+      "count_one": "1 møde",
+      "count_other": "{{count}} møder",
+      "corrected": "Viser resultater for {{words}}",
+      "partial": "Intet møde indeholder alle ordene: viser de nærmeste resultater.",
+      "mentions_one": "1 omtale",
+      "mentions_other": "{{count}} omtaler",
+      "inSummary": "Referat",
+      "inDescription": "Beskrivelse",
+      "inTitle": "Titel",
+      "error": "Kunne ikke søge i møder"
+    },
+    "titles": {
+      "generate": "Generér titel og beskrivelse",
+      "needsSummary": "Generér referatet først, derefter titlen",
+      "generateAll": "Generér titler ({{count}})",
+      "generateAllHint": "Giv alle møder med referat, der stadig mangler det, en titel og beskrivelse med referatmodellen. Kalendernavne og titler, du selv har skrevet, beholdes.",
+      "starting": "Gør klar...",
+      "progress": "Giver titel {{done}} af {{total}}",
+      "done_one": "1 møde har fået titel",
+      "done_other": "{{count}} møder har fået titel",
+      "error": "Kunne ikke generere titlen"
     }
   },
   "meetingsAi": {

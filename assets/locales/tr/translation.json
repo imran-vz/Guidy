@@ -885,7 +885,8 @@
       "modelUnknown": "Toplantı modeli {{name}} yüklü değil. Ayarlar'dan başka bir toplantı modeli seçin.",
       "speakerModelMissing": "Toplantılar > Ayarlar'dan konuşmacı tanıma modelini indirin, ardından toplantıyı işleyin.",
       "noLinearKey": "Önce Ayarlar'dan bir Linear API anahtarı ekleyin.",
-      "linearUnauthorized": "Linear API anahtarını reddetti. Ayarlar'dan kontrol edin."
+      "linearUnauthorized": "Linear API anahtarını reddetti. Ayarlar'dan kontrol edin.",
+      "titleNeedsSummary": "Önce toplantının özetini oluşturun: başlık özetten yazılır."
     },
     "model": {
       "download": "Toplantı modelini indir",
@@ -965,7 +966,8 @@
       "talkTime": "Konuşma süresi",
       "share": "Pay",
       "youSpoke": "Konuştuğunuz",
-      "minutes": "Dk"
+      "minutes": "Dk",
+      "speakersToName": "{{count}} adlandırılacak"
     },
     "speaker": {
       "rename": "Bu konuşmacıyı adlandır",
@@ -1174,7 +1176,37 @@
           "title": "Öneri eşiği",
           "description": "Bunun altındaki ses benzerliğinde bilinen bir kişi hiç önerilmez."
         }
+      },
+      "calendarTitles": {
+        "title": "Takvim adlarını başlık olarak koru",
+        "description": "Başlıklar oluşturulurken, bir takvim etkinliğinden gelen toplantılar etkinliğin adını korur ve yalnızca bir açıklama alır."
       }
+    },
+    "search": {
+      "placeholder": "Başlıklarda, özetlerde ve transkriptlerde ara",
+      "searching": "Aranıyor...",
+      "empty": "\"{{query}}\" ile eşleşen toplantı yok.",
+      "count_one": "1 toplantı",
+      "count_other": "{{count}} toplantı",
+      "corrected": "{{words}} için sonuçlar gösteriliyor",
+      "partial": "Hiçbir toplantı tüm kelimeleri içermiyor: en yakın eşleşmeler gösteriliyor.",
+      "mentions_one": "1 kez geçiyor",
+      "mentions_other": "{{count}} kez geçiyor",
+      "inSummary": "Özet",
+      "inDescription": "Açıklama",
+      "inTitle": "Başlık",
+      "error": "Toplantılarda arama yapılamadı"
+    },
+    "titles": {
+      "generate": "Başlık ve açıklama oluştur",
+      "needsSummary": "Önce özeti, ardından başlığı oluşturun",
+      "generateAll": "Başlıkları oluştur ({{count}})",
+      "generateAllHint": "Hâlâ ihtiyaç duyan her özetlenmiş toplantıya özet modeliyle başlık ve açıklama ekler. Takvim adları ve yazdığınız başlıklar korunur.",
+      "starting": "Hazırlanıyor...",
+      "progress": "Başlık oluşturuluyor: {{done}}/{{total}}",
+      "done_one": "1 toplantıya başlık verildi",
+      "done_other": "{{count}} toplantıya başlık verildi",
+      "error": "Başlık oluşturulamadı"
     }
   },
   "meetingsAi": {

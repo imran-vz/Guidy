@@ -885,7 +885,8 @@
       "modelUnknown": "会议模型 {{name}} 未安装。请在设置中选择其他会议模型。",
       "speakerModelMissing": "请在 会议 > 设置 中下载说话人识别模型，然后处理该会议。",
       "noLinearKey": "请先在设置中添加 Linear API 密钥。",
-      "linearUnauthorized": "Linear 拒绝了该 API 密钥。请在设置中检查。"
+      "linearUnauthorized": "Linear 拒绝了该 API 密钥。请在设置中检查。",
+      "titleNeedsSummary": "请先生成会议摘要：标题会根据摘要撰写。"
     },
     "model": {
       "download": "下载会议模型",
@@ -965,7 +966,8 @@
       "talkTime": "发言时长",
       "share": "占比",
       "youSpoke": "您的发言",
-      "minutes": "分钟"
+      "minutes": "分钟",
+      "speakersToName": "{{count}} 位待命名"
     },
     "speaker": {
       "rename": "为此说话人命名",
@@ -1174,7 +1176,37 @@
           "title": "建议阈值",
           "description": "声音相似度低于此值时，完全不会建议已知人员。"
         }
+      },
+      "calendarTitles": {
+        "title": "保留日历名称作为标题",
+        "description": "生成标题时，来自日历事件的会议会保留事件名称，只添加描述。"
       }
+    },
+    "search": {
+      "placeholder": "搜索标题、摘要和转录文本",
+      "searching": "正在搜索...",
+      "empty": "没有与“{{query}}”匹配的会议。",
+      "count_one": "1 场会议",
+      "count_other": "{{count}} 场会议",
+      "corrected": "显示 {{words}} 的结果",
+      "partial": "没有会议包含所有词语：显示最接近的结果。",
+      "mentions_one": "提及 1 次",
+      "mentions_other": "提及 {{count}} 次",
+      "inSummary": "摘要",
+      "inDescription": "描述",
+      "inTitle": "标题",
+      "error": "无法搜索会议"
+    },
+    "titles": {
+      "generate": "生成标题和描述",
+      "needsSummary": "请先生成摘要，再生成标题",
+      "generateAll": "生成标题（{{count}}）",
+      "generateAllHint": "使用摘要模型，为每个仍需要标题和描述的已摘要会议添加标题和描述。日历名称和您输入的标题会保留。",
+      "starting": "正在准备...",
+      "progress": "正在生成标题（{{done}}/{{total}}）",
+      "done_one": "已为 1 场会议生成标题",
+      "done_other": "已为 {{count}} 场会议生成标题",
+      "error": "无法生成标题"
     }
   },
   "meetingsAi": {

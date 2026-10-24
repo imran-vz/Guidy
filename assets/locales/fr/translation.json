@@ -885,7 +885,8 @@
       "modelUnknown": "Le modèle de réunion {{name}} n'est pas installé. Choisissez un autre modèle de réunion dans les Paramètres.",
       "speakerModelMissing": "Téléchargez le modèle de reconnaissance des intervenants dans Réunions > Paramètres, puis traitez la réunion.",
       "noLinearKey": "Ajoutez d'abord une clé API Linear dans les Paramètres.",
-      "linearUnauthorized": "Linear a refusé la clé API. Vérifiez-la dans les Paramètres."
+      "linearUnauthorized": "Linear a refusé la clé API. Vérifiez-la dans les Paramètres.",
+      "titleNeedsSummary": "Générez d'abord le résumé de la réunion : le titre est rédigé à partir de celui-ci."
     },
     "model": {
       "download": "Télécharger le modèle de réunion",
@@ -965,7 +966,8 @@
       "talkTime": "Temps de parole",
       "share": "Part",
       "youSpoke": "Votre temps de parole",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} à nommer"
     },
     "speaker": {
       "rename": "Nommer cet intervenant",
@@ -1174,7 +1176,37 @@
           "title": "Seuil de suggestion",
           "description": "Similarité vocale en dessous de laquelle une personne connue n'est pas du tout suggérée."
         }
+      },
+      "calendarTitles": {
+        "title": "Conserver les noms du calendrier comme titres",
+        "description": "Lors de la génération des titres, les réunions issues d'un événement du calendrier conservent le nom de l'événement et reçoivent seulement une description."
       }
+    },
+    "search": {
+      "placeholder": "Rechercher dans les titres, résumés et transcriptions",
+      "searching": "Recherche...",
+      "empty": "Aucune réunion ne correspond à « {{query}} ».",
+      "count_one": "{{count}} réunion",
+      "count_other": "{{count}} réunions",
+      "corrected": "Résultats pour {{words}}",
+      "partial": "Aucune réunion ne contient tous les mots : affichage des correspondances les plus proches.",
+      "mentions_one": "{{count}} mention",
+      "mentions_other": "{{count}} mentions",
+      "inSummary": "Résumé",
+      "inDescription": "Description",
+      "inTitle": "Titre",
+      "error": "Impossible de rechercher dans les réunions"
+    },
+    "titles": {
+      "generate": "Générer le titre et la description",
+      "needsSummary": "Générez d'abord le résumé, puis le titre",
+      "generateAll": "Générer les titres ({{count}})",
+      "generateAllHint": "Donne un titre et une description à chaque réunion résumée qui n'en a pas encore, avec le modèle de résumé. Les noms du calendrier et les titres que vous avez saisis sont conservés.",
+      "starting": "Préparation...",
+      "progress": "Titrage {{done}} sur {{total}}",
+      "done_one": "{{count}} réunion titrée",
+      "done_other": "{{count}} réunions titrées",
+      "error": "Impossible de générer le titre"
     }
   },
   "meetingsAi": {

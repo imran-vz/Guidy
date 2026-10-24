@@ -885,7 +885,8 @@
       "modelUnknown": "Mötesmodellen {{name}} är inte installerad. Välj en annan mötesmodell i Inställningar.",
       "speakerModelMissing": "Ladda ner modellen för talarigenkänning i Möten > Inställningar och bearbeta sedan mötet.",
       "noLinearKey": "Lägg till en Linear-API-nyckel i Inställningar först.",
-      "linearUnauthorized": "Linear avvisade API-nyckeln. Kontrollera den i Inställningar."
+      "linearUnauthorized": "Linear avvisade API-nyckeln. Kontrollera den i Inställningar.",
+      "titleNeedsSummary": "Skapa mötets sammanfattning först: rubriken skrivs utifrån den."
     },
     "model": {
       "download": "Ladda ner mötesmodell",
@@ -965,7 +966,8 @@
       "talkTime": "Taltid",
       "share": "Andel",
       "youSpoke": "Du pratade",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} att namnge"
     },
     "speaker": {
       "rename": "Namnge talaren",
@@ -1174,7 +1176,37 @@
           "title": "Tröskel för förslag",
           "description": "Röstlikhet under vilken en känd person inte föreslås alls."
         }
+      },
+      "calendarTitles": {
+        "title": "Behåll kalendernamn som rubriker",
+        "description": "När rubriker skapas behåller möten från en kalenderhändelse händelsens namn och får bara en beskrivning."
       }
+    },
+    "search": {
+      "placeholder": "Sök i rubriker, sammanfattningar och transkriptioner",
+      "searching": "Söker...",
+      "empty": "Inga möten matchar ”{{query}}”.",
+      "count_one": "1 möte",
+      "count_other": "{{count}} möten",
+      "corrected": "Visar resultat för {{words}}",
+      "partial": "Inget möte innehåller alla ord: visar de närmaste träffarna.",
+      "mentions_one": "1 omnämnande",
+      "mentions_other": "{{count}} omnämnanden",
+      "inSummary": "Sammanfattning",
+      "inDescription": "Beskrivning",
+      "inTitle": "Rubrik",
+      "error": "Det gick inte att söka i möten"
+    },
+    "titles": {
+      "generate": "Skapa rubrik och beskrivning",
+      "needsSummary": "Skapa sammanfattningen först, sedan rubriken",
+      "generateAll": "Skapa rubriker ({{count}})",
+      "generateAllHint": "Ge varje sammanfattat möte som fortfarande behöver det en rubrik och beskrivning, med sammanfattningsmodellen. Kalendernamn och rubriker du har skrivit behålls.",
+      "starting": "Förbereder...",
+      "progress": "Skapar rubrik {{done}} av {{total}}",
+      "done_one": "1 möte har fått rubrik",
+      "done_other": "{{count}} möten har fått rubrik",
+      "error": "Det gick inte att skapa rubriken"
     }
   },
   "meetingsAi": {

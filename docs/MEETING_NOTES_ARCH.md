@@ -26,6 +26,16 @@ contracts between the workstreams.
 - **Audio at rest:** Opus (`opus` crate) at 16 kHz mono, in a chunked file
   (`.gopus` version 2) with a CRC-32 per chunk. Chunks are flushed as
   recording happens, so a crash loses at most the last chunk.
+- **Search:** FTS5 indexes in `meetings.db` (store migration 12) over
+  titles and descriptions, summaries and transcript lines: external-content
+  tables kept in step by triggers. `meetings::search` adds prefix matching,
+  typo correction from the index vocabulary, every-term-per-meeting
+  matching and BM25 ranking weighted by field.
+- **Titles:** `meetings::titles` writes a title and a one-line description
+  from the summary (not the transcript) with the meetings model. The
+  calendar event's name is kept by default
+  (`meetings.prefer_calendar_titles`), and a title the user typed is kept
+  when titling in bulk (`Meeting::title_source`).
 - **Earlier encrypted data:** on start, `meetings::legacy` converts an
   encrypted `meetings.db`, the encrypted sidecar files and version 1
   (encrypted) tracks, checking each copy, and moves the originals into

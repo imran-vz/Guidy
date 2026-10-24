@@ -885,7 +885,8 @@
       "modelUnknown": "Het vergadermodel {{name}} is niet geïnstalleerd. Kies een ander vergadermodel in Instellingen.",
       "speakerModelMissing": "Download het sprekerherkenningsmodel in Vergaderingen > Instellingen en verwerk daarna de vergadering.",
       "noLinearKey": "Voeg eerst een Linear-API-sleutel toe in Instellingen.",
-      "linearUnauthorized": "Linear heeft de API-sleutel geweigerd. Controleer deze in Instellingen."
+      "linearUnauthorized": "Linear heeft de API-sleutel geweigerd. Controleer deze in Instellingen.",
+      "titleNeedsSummary": "Genereer eerst de samenvatting van de vergadering: de titel wordt daaruit geschreven."
     },
     "model": {
       "download": "Vergadermodel downloaden",
@@ -965,7 +966,8 @@
       "talkTime": "Spreektijd",
       "share": "Aandeel",
       "youSpoke": "Jij sprak",
-      "minutes": "Min"
+      "minutes": "Min",
+      "speakersToName": "{{count}} nog te benoemen"
     },
     "speaker": {
       "rename": "Deze spreker een naam geven",
@@ -1174,7 +1176,37 @@
           "title": "Suggestiedrempel",
           "description": "Stemovereenkomst waaronder een bekende persoon helemaal niet wordt voorgesteld."
         }
+      },
+      "calendarTitles": {
+        "title": "Agendanamen als titel behouden",
+        "description": "Bij het genereren van titels behouden vergaderingen uit een agenda-afspraak de naam van de afspraak en krijgen ze alleen een beschrijving."
       }
+    },
+    "search": {
+      "placeholder": "Zoek in titels, samenvattingen en transcripten",
+      "searching": "Zoeken...",
+      "empty": "Geen vergaderingen gevonden voor \"{{query}}\".",
+      "count_one": "1 vergadering",
+      "count_other": "{{count}} vergaderingen",
+      "corrected": "Resultaten voor {{words}}",
+      "partial": "Geen vergadering bevat alle woorden: de beste overeenkomsten worden getoond.",
+      "mentions_one": "1 vermelding",
+      "mentions_other": "{{count}} vermeldingen",
+      "inSummary": "Samenvatting",
+      "inDescription": "Beschrijving",
+      "inTitle": "Titel",
+      "error": "Zoeken in vergaderingen mislukt"
+    },
+    "titles": {
+      "generate": "Titel en beschrijving genereren",
+      "needsSummary": "Genereer eerst de samenvatting, daarna de titel",
+      "generateAll": "Titels genereren ({{count}})",
+      "generateAllHint": "Geef elke samengevatte vergadering die het nog nodig heeft een titel en beschrijving, met het samenvattingsmodel. Agendanamen en titels die je zelf hebt getypt blijven behouden.",
+      "starting": "Voorbereiden...",
+      "progress": "Titel {{done}} van {{total}}",
+      "done_one": "1 vergadering van een titel voorzien",
+      "done_other": "{{count}} vergaderingen van een titel voorzien",
+      "error": "Titel genereren mislukt"
     }
   },
   "meetingsAi": {
