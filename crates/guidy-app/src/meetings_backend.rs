@@ -19,6 +19,8 @@ use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult, UserVoice,
 };
 use guidy_core::meetings::processing::SpeakerModelStatus;
+use guidy_core::meetings::search::SearchResults;
+use guidy_core::meetings::titles::TitleOutcome;
 use guidy_core::meetings::types::*;
 use guidy_core::AppHandle;
 use std::sync::Arc;
@@ -56,6 +58,8 @@ pub enum MeetingsError {
     },
     NoLinearKey,
     LinearUnauthorized,
+    /// A title is generated from the summary: there is none yet.
+    TitleNeedsSummary,
     /// The job was cancelled ([`guidy_core::llm::CANCELLED`]): not an error
     /// to show.
     Cancelled,
@@ -80,6 +84,12 @@ impl MeetingsError {
             }
             if cause.downcast_ref::<SpeakerModelMissing>().is_some() {
                 return Self::SpeakerModelMissing;
+            }
+            if cause
+                .downcast_ref::<guidy_core::meetings::titles::TitleNeedsSummary>()
+                .is_some()
+            {
+                return Self::TitleNeedsSummary;
             }
             if let Some(m) = cause.downcast_ref::<CloudKeyMissing>() {
                 return Self::CloudKeyMissing {
@@ -111,6 +121,7 @@ impl MeetingsError {
             }
             Self::NoLinearKey => format!("{TAG}no-linear-key"),
             Self::LinearUnauthorized => format!("{TAG}linear-unauthorized"),
+            Self::TitleNeedsSummary => format!("{TAG}title-needs-summary"),
             Self::Cancelled => format!("{TAG}cancelled"),
             Self::Other(s) => s.clone(),
         }
@@ -137,6 +148,7 @@ impl MeetingsError {
             },
             ["no-linear-key"] => Self::NoLinearKey,
             ["linear-unauthorized"] => Self::LinearUnauthorized,
+            ["title-needs-summary"] => Self::TitleNeedsSummary,
             ["cancelled"] => Self::Cancelled,
             _ => Self::Other(s.to_string()),
         }
@@ -157,6 +169,7 @@ impl MeetingsError {
             Self::SpeakerModelMissing => t("meetings.errors.speakerModelMissing"),
             Self::NoLinearKey => t("meetings.errors.noLinearKey"),
             Self::LinearUnauthorized => t("meetings.errors.linearUnauthorized"),
+            Self::TitleNeedsSummary => t("meetings.errors.titleNeedsSummary"),
             // No translation yet: `message` falls back to English.
             Self::CloudKeyMissing { .. } | Self::Cancelled | Self::Other(_) => return None,
         })
@@ -357,6 +370,22 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     }
     fn is_summarizing(&self, _id: MeetingId) -> bool {
         false
+    }
+
+    // Titles & search.
+    /// Generate the description (and the title unless it is kept) from the
+    /// summary. `bulk`: one of many (a typed title is kept).
+    fn generate_title(&self, _id: MeetingId, _bulk: bool) -> MeetingsResult<TitleOutcome> {
+        Err(unavailable())
+    }
+    /// Meetings "Generate titles" would change, newest first.
+    fn title_candidates(&self) -> MeetingsResult<Vec<MeetingId>> {
+        Ok(Vec::new())
+    }
+    /// Stop the title generations running now.
+    fn cancel_title_generation(&self) {}
+    fn search_meetings(&self, _query: &str, _limit: usize) -> MeetingsResult<SearchResults> {
+        Ok(SearchResults::default())
     }
 
     // Linear.
@@ -693,6 +722,20 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
         self.m()?.update_summary(summary).map_err(err)
     }
+    fn generate_title(&self, id: MeetingId, bulk: bool) -> MeetingsResult<TitleOutcome> {
+        self.m()?.generate_title(id, bulk).map_err(err)
+    }
+    fn title_candidates(&self) -> MeetingsResult<Vec<MeetingId>> {
+        self.m()?.title_candidates().map_err(err)
+    }
+    fn cancel_title_generation(&self) {
+        if let Some(m) = self.manager() {
+            m.cancel_title_generation();
+        }
+    }
+    fn search_meetings(&self, query: &str, limit: usize) -> MeetingsResult<SearchResults> {
+        self.m()?.search_meetings(query, limit).map_err(err)
+    }
     fn action_items(&self, id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
         self.m()?.action_items(id).map_err(err)
     }
@@ -964,6 +1007,12 @@ mod error_tests {
             MeetingsError::parse(&err(speaker)),
             MeetingsError::SpeakerModelMissing
         );
+        let no_summary = anyhow::Error::new(guidy_core::meetings::titles::TitleNeedsSummary)
+            .context("title meeting 4");
+        assert_eq!(
+            MeetingsError::parse(&err(no_summary)),
+            MeetingsError::TitleNeedsSummary
+        );
         let linear = anyhow::Error::new(guidy_core::linear::LinearError::MissingApiKey);
         assert_eq!(
             MeetingsError::parse(&err(linear)),
@@ -1079,6 +1128,14 @@ pub mod fake {
                 diarization: Default::default(),
                 ai: FakeAiData::default(),
             }
+        }
+    }
+
+    impl FakeMeetingsData {
+        /// `has_summary` as the store fills it.
+        fn with_summary_flag(&self, mut m: Meeting) -> Meeting {
+            m.has_summary = self.ai.summaries.contains_key(&m.id);
+            m
         }
     }
 
@@ -1205,16 +1262,18 @@ pub mod fake {
         }
         fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>> {
             self.rec("list_meetings");
-            Ok(self.data.lock().meetings.clone())
+            let d = self.data.lock();
+            Ok(d.meetings
+                .iter()
+                .map(|m| d.with_summary_flag(m.clone()))
+                .collect())
         }
         fn get_meeting(&self, id: MeetingId) -> MeetingsResult<Option<Meeting>> {
-            Ok(self
-                .data
-                .lock()
-                .meetings
+            let d = self.data.lock();
+            Ok(d.meetings
                 .iter()
                 .find(|m| m.id == id)
-                .cloned())
+                .map(|m| d.with_summary_flag(m.clone())))
         }
         fn rename_meeting(&self, id: MeetingId, title: &str) -> MeetingsResult<()> {
             self.rec(format!("rename_meeting {id} {title}"));
@@ -1524,6 +1583,60 @@ pub mod fake {
             d.ai.summaries.insert(id, s.clone());
             Ok(s)
         }
+        fn generate_title(&self, id: MeetingId, bulk: bool) -> MeetingsResult<TitleOutcome> {
+            self.rec(format!("generate_title {id} bulk={bulk}"));
+            let mut d = self.data.lock();
+            if !d.ai.summaries.contains_key(&id) {
+                return Err(MeetingsError::TitleNeedsSummary.encode());
+            }
+            if let Some(e) = d.ai.fail_title.clone() {
+                return Err(e);
+            }
+            let m = d
+                .meetings
+                .iter_mut()
+                .find(|m| m.id == id)
+                .ok_or_else(|| format!("meeting {id} not found"))?;
+            let keep = guidy_core::meetings::titles::keep_title(m, true, bulk);
+            if !keep {
+                m.title = format!("Generated title {id}");
+                m.title_source = TitleSource::Generated;
+            }
+            m.description = Some(format!("Generated description {id}"));
+            let meeting = m.clone();
+            Ok(TitleOutcome {
+                meeting: d.with_summary_flag(meeting),
+                title_changed: !keep,
+                generated: true,
+            })
+        }
+        fn title_candidates(&self) -> MeetingsResult<Vec<MeetingId>> {
+            let d = self.data.lock();
+            Ok(d.meetings
+                .iter()
+                .filter(|m| d.ai.summaries.contains_key(&m.id))
+                .filter(|m| m.description.is_none() || m.title_source == TitleSource::Default)
+                .map(|m| m.id)
+                .collect())
+        }
+        fn cancel_title_generation(&self) {
+            self.rec("cancel_title_generation");
+        }
+        fn search_meetings(&self, query: &str, limit: usize) -> MeetingsResult<SearchResults> {
+            self.rec(format!("search_meetings {query}"));
+            Ok(self
+                .data
+                .lock()
+                .ai
+                .search
+                .get(query)
+                .cloned()
+                .map(|mut r| {
+                    r.hits.truncate(limit);
+                    r
+                })
+                .unwrap_or_default())
+        }
         fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
             self.rec(format!(
                 "update_summary {} {} decisions={}",
@@ -1734,6 +1847,10 @@ pub mod fake {
         #[allow(clippy::type_complexity)]
         pub llm_test: Option<Arc<dyn Fn(&str) -> MeetingsResult<String> + Send + Sync>>,
         pub local_models: Vec<LocalLlmModel>,
+        /// `generate_title` fails with this message.
+        pub fail_title: Option<String>,
+        /// What `search_meetings` returns, by query.
+        pub search: HashMap<String, SearchResults>,
     }
 
     pub fn action_item_fixture(id: ActionItemId, meeting_id: MeetingId, text: &str) -> ActionItem {
@@ -1770,6 +1887,9 @@ pub mod fake {
             status,
             error: None,
             processing_stage: None,
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         }
     }
 

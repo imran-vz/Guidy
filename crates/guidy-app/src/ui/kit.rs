@@ -61,6 +61,56 @@ pub fn group(title: Option<SharedString>, rows: Vec<AnyElement>, cx: &App) -> Di
         )
 }
 
+/// The heading of a foldable section: a chevron and `title (count)`;
+/// clicking it calls `on_toggle`.
+pub fn foldable_heading(
+    id: impl Into<ElementId>,
+    title: SharedString,
+    count: usize,
+    open: bool,
+    on_toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .id(id)
+        .gap(dp(6.))
+        .px(dp(2.))
+        .py(dp(4.))
+        .cursor_pointer()
+        .text_color(design::tone(cx).text_muted)
+        .hover(|s| s.text_color(design::tone(cx).text))
+        .child(
+            icon(if open {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            })
+            .xsmall(),
+        )
+        .child(design::eyebrow(format!("{title} ({count})"), cx))
+        .on_click(on_toggle)
+        .test_support()
+}
+
+/// A [`group`] whose heading folds it: a chevron and `count` stay
+/// visible while the panel is hidden.
+pub fn foldable_group(
+    id: impl Into<ElementId>,
+    title: SharedString,
+    count: usize,
+    open: bool,
+    on_toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    rows: Vec<AnyElement>,
+    cx: &App,
+) -> Div {
+    let heading = foldable_heading(id, title, count, open, on_toggle, cx);
+    v_flex()
+        .w_full()
+        .gap(dp(8.))
+        .child(heading)
+        .when(open, |d| d.child(group(None, rows, cx)))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DescriptionMode {
     Inline,

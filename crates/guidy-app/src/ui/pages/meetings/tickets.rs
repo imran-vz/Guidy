@@ -14,7 +14,7 @@ use crate::logic::meetings::{is_linear_url, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsBackend, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption};
+use crate::ui::kit::{foldable_heading, group, icon, t, t_args, Dropdown, DropdownOption};
 use crate::ui::pages::meetings::ai_settings::error_box;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -110,6 +110,8 @@ pub struct TicketsView {
     creating: bool,
     error: Option<String>,
     on_open_settings: Option<Hook>,
+    /// The ticket list is shown (folded when a meeting opens).
+    open: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -154,6 +156,7 @@ impl TicketsView {
             creating: false,
             error: None,
             on_open_settings: None,
+            open: false,
             _subs: subs,
         };
         this.reload(cx);
@@ -958,16 +961,42 @@ impl Render for TicketsView {
                 });
             }
         }
-        let toolbar = (self.loaded && self.has_key).then(|| self.toolbar(cx));
+        let id = SharedString::from(format!("meeting-tickets-{}", self.meeting_id));
+        // Without Linear it is one line asking to connect it: not folded.
+        if !(self.loaded && self.has_key) {
+            return v_flex()
+                .id(id)
+                .w_full()
+                .gap_2()
+                .child(group(Some(t("meetingsAi.tickets.heading")), rows, cx))
+                .test_support();
+        }
+        let open = self.open;
+        let count = reviewable(&self.items).len();
         v_flex()
-            .id(SharedString::from(format!(
-                "meeting-tickets-{}",
-                self.meeting_id
-            )))
+            .id(id)
             .w_full()
             .gap_2()
-            .children(toolbar)
-            .child(group(Some(t("meetingsAi.tickets.heading")), rows, cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(foldable_heading(
+                        "tickets-fold",
+                        t("meetingsAi.tickets.heading"),
+                        count,
+                        open,
+                        cx.listener(|this, _, _, cx| {
+                            this.open = !this.open;
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .when(open, |d| d.child(div().flex_1().child(self.toolbar(cx)))),
+            )
+            .when(open, |d| d.child(group(None, rows, cx)))
             .test_support()
     }
 }
@@ -1024,7 +1053,8 @@ pub(crate) mod ui {
     use crate::ui_tests::{exists, open, with_window};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        div, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        div, AnyWindowHandle, Context, Entity, IntoElement, ParentElement, Render, Styled,
+        TestAppContext, Window,
     };
     use guidy_core::meetings::types::{ActionItem, MeetingId, TicketState};
     use std::sync::Arc;
@@ -1076,11 +1106,19 @@ pub(crate) mod ui {
         mb
     }
 
+    /// The list is folded when a meeting opens: unfold it.
+    fn unfold(cx: &mut TestAppContext, w: AnyWindowHandle) {
+        assert!(exists(cx, w, "tickets-fold"));
+        assert!(!exists(cx, w, "tickets-create"), "folded by default");
+        with_window(cx, w, |window, cx| window.click("tickets-fold", cx));
+    }
+
     #[gpui_kit::test]
     fn approve_then_create_sends_only_approved_ids(cx: &mut TestAppContext) {
         let mb = backend(vec![drafted(11), drafted(12), drafted(13), drafted(14)]);
         setup(cx, mb.clone());
         let (w, _) = open(cx, |_, _| Host(1));
+        unfold(cx, w);
         // Nothing approved yet: "Create approved" creates nothing.
         with_window(cx, w, |window, cx| window.click("tickets-create", cx));
         assert!(!mb.called("create_tickets"), "{:?}", mb.calls());
@@ -1120,6 +1158,7 @@ pub(crate) mod ui {
         let mb = backend(vec![created, drafted(22)]);
         setup(cx, mb.clone());
         let (w, _) = open(cx, |_, _| Host(1));
+        unfold(cx, w);
         assert!(exists(cx, w, "ticket-issue-21"));
         for id in [
             "ticket-approve-21",
@@ -1147,6 +1186,7 @@ pub(crate) mod ui {
         let mb = backend(vec![action_item_fixture(31, 1, "write docs")]);
         setup(cx, mb.clone());
         let (w, _) = open(cx, |_, _| Host(1));
+        unfold(cx, w);
         assert!(exists(cx, w, "tickets-empty"));
         with_window(cx, w, |window, cx| window.click("tickets-draft", cx));
         assert!(mb.called("draft_tickets 1"));

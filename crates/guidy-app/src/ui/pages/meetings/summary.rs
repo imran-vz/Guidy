@@ -7,7 +7,9 @@ use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{group, icon, t, t_args, Dropdown, DropdownOption, SettingRow};
+use crate::ui::kit::{
+    foldable_group, group, icon, t, t_args, Dropdown, DropdownOption, SettingRow,
+};
 use crate::ui::pages::meetings::ai_settings::{
     error_box, model_label, provider_options, summary_choices, MeetingsLlmChoice, SummaryChoice,
 };
@@ -227,6 +229,8 @@ pub struct SummaryView {
     item_resync: HashSet<ActionItemId>,
     new_item: Entity<InputState>,
     clear_new_item: bool,
+    /// The action items panel is folded.
+    items_folded: bool,
     on_seek: Option<SeekHandler>,
     _subs: Vec<Subscription>,
 }
@@ -313,6 +317,7 @@ impl SummaryView {
             item_resync: HashSet::new(),
             new_item,
             clear_new_item: false,
+            items_folded: true,
             on_seek: None,
             _subs: subs,
         };
@@ -403,6 +408,7 @@ impl SummaryView {
         self.item_resync.clear();
         self.editing = false;
         self.picker_open = false;
+        self.items_folded = true;
         self.error = None;
         // The previous meeting's job keeps running in the backend, but its
         // state is not this meeting's: `reload` asks `is_summarizing` and
@@ -1513,8 +1519,15 @@ impl Render for SummaryView {
                 summary_rows,
                 cx,
             ))
-            .child(group(
-                Some(t("meetingsAi.summary.actionItems")),
+            .child(foldable_group(
+                "action-items-fold",
+                t("meetingsAi.summary.actionItems"),
+                self.items.len(),
+                !self.items_folded,
+                cx.listener(|this, _, _, cx| {
+                    this.items_folded = !this.items_folded;
+                    cx.notify();
+                }),
                 item_rows,
                 cx,
             ))
@@ -1686,6 +1699,9 @@ mod ui {
             v.set_on_seek(move |t, _, _| s2.lock().push(t));
             v
         });
+        // Folded when the meeting opens.
+        assert!(!exists(cx, w, "action-item-7"));
+        with_window(cx, w, |window, cx| window.click("action-items-fold", cx));
         assert!(exists(cx, w, "action-item-7"));
         with_window(cx, w, |window, cx| window.click("item-seek-7", cx));
         assert_eq!(*seeks.lock(), vec![65_000]);

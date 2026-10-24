@@ -281,6 +281,9 @@ fn demo_meeting(app: &AppHandle, cx: &mut App) {
                 status: MeetingStatus::Processed,
                 error: None,
                 processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                description: None,
+                title_source: Default::default(),
+                has_summary: false,
             })?;
             let speaker = |id: SpeakerId, label: &str, is_user: bool| MeetingSpeaker {
                 id,

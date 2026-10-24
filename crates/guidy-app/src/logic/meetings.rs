@@ -1439,6 +1439,9 @@ mod tests {
             status: MeetingStatus::Processed,
             error: None,
             processing_stage: Some("done".into()),
+            description: None,
+            title_source: Default::default(),
+            has_summary: false,
         };
         assert!(can_process(&m));
         // Retention deleted the audio.

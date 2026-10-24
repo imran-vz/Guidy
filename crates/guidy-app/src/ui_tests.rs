@@ -1749,6 +1749,11 @@ mod meetings_page {
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        // The speakers are folded when the meeting opens.
+        assert!(!exists(cx, w, "speaker-5"));
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-speakers-fold", cx)
+        });
         for id in [
             "meeting-detail",
             "segment-1",
@@ -2017,6 +2022,152 @@ mod meetings_page {
         let (w, _) = open(cx, MainWindow::new);
         cx.run_until_parked();
         assert!(!exists(cx, w, "nav-meetings"));
+    }
+
+    fn summarized(meetings: &FakeMeetingsBackend, id: i64) {
+        meetings.data.lock().ai.summaries.insert(
+            id,
+            guidy_core::meetings::types::StoredSummary {
+                meeting_id: id,
+                title: "Sync".into(),
+                short_summary: "Talked.".into(),
+                decisions: vec![],
+                topics: vec![],
+                generated_by: "x/y".into(),
+                generated_at: 1,
+                usage: None,
+            },
+        );
+    }
+
+    #[gpui_kit::test]
+    fn search_shows_highlighted_hits_and_opens_the_line(cx: &mut TestAppContext) {
+        use guidy_core::meetings::search::{MatchField, SearchHit, SearchResults, Snippet};
+        let (backend, meetings) = fixture();
+        meetings.data.lock().ai.search.insert(
+            "start".into(),
+            SearchResults {
+                hits: vec![SearchHit {
+                    meeting_id: 1,
+                    score: 1.0,
+                    title: None,
+                    snippets: vec![Snippet {
+                        field: MatchField::Transcript,
+                        text: "Let's start".into(),
+                        highlights: std::iter::once(6..11).collect(),
+                        segment_id: Some(2),
+                        t_ms: Some(2_000),
+                    }],
+                    transcript_hits: 1,
+                }],
+                corrections: vec![],
+                partial: false,
+            },
+        );
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        let list = page.read_with(cx, |p, _| p.list().clone());
+        cx.update_window(w, |_, window, cx| {
+            list.update(cx, |l, cx| l.type_search("start", window, cx))
+        })
+        .unwrap();
+        // Searched after a short typing pause.
+        assert!(!meetings.called("search_meetings"));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        assert!(
+            meetings.called("search_meetings start"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(exists(cx, w, "meetings-search-results"));
+        assert!(exists(cx, w, "search-hit-1"));
+        assert!(!exists(cx, w, "search-hit-2"));
+        // The list is replaced by the results.
+        assert!(!exists(cx, w, "meeting-2"));
+        // A transcript line opens the meeting there.
+        with_window(cx, w, |window, cx| window.click("search-hit-1-0", cx));
+        let detail = page.read_with(cx, |p, _| p.detail().cloned()).unwrap();
+        assert_eq!(detail.read_with(cx, |d, _| d.meeting_id), 1);
+
+        // Nothing found.
+        page.update(cx, |p, cx| p.close_meeting(cx));
+        cx.update_window(w, |_, window, cx| {
+            list.update(cx, |l, cx| l.type_search("zebra", window, cx))
+        })
+        .unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "meetings-search-empty"));
+        // Clearing the box brings the list back.
+        cx.update_window(w, |_, window, cx| {
+            list.update(cx, |l, cx| l.type_search("", window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(exists(cx, w, "meeting-2"));
+        assert!(list.read_with(cx, |l, _| l.results().is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn titles_are_generated_once_summarized(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        summarized(&meetings, 1);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        // Meeting 2 has no summary: its title can't be generated yet.
+        with_window(cx, w, |window, cx| window.click("meeting-title-2", cx));
+        assert!(!meetings.called("generate_title 2"));
+        with_window(cx, w, |window, cx| window.click("meeting-title-1", cx));
+        assert!(
+            meetings.called("generate_title 1 bulk=false"),
+            "{:?}",
+            meetings.calls()
+        );
+        assert!(exists(cx, w, "meeting-description-1"));
+    }
+
+    #[gpui_kit::test]
+    fn generate_titles_titles_every_candidate(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        summarized(&meetings, 1);
+        summarized(&meetings, 2);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meetings-titles-generate"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-titles-generate", cx)
+        });
+        cx.run_until_parked();
+        assert!(meetings.called("generate_title 1 bulk=true"));
+        assert!(meetings.called("generate_title 2 bulk=true"));
+        let list = page.read_with(cx, |p, _| p.list().clone());
+        assert!(list.read_with(cx, |l, _| l.bulk().is_none()));
+        // Both have descriptions now: nothing left to title.
+        assert!(!exists(cx, w, "meetings-titles-generate"));
+    }
+
+    #[gpui_kit::test]
+    fn detail_generates_the_title_and_shows_the_description(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        // No summary yet: disabled.
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-detail-generate-title", cx)
+        });
+        assert!(!meetings.called("generate_title"));
+        assert!(!exists(cx, w, "meeting-detail-description"));
+        summarized(&meetings, 1);
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        with_window(cx, w, |window, cx| {
+            window.click("meeting-detail-generate-title", cx)
+        });
+        assert!(meetings.called("generate_title 1 bulk=false"));
+        assert!(exists(cx, w, "meeting-detail-description"));
     }
 }
 
@@ -2461,6 +2612,7 @@ mod meetings_fixes {
         }
         let state = setup_meetings(cx, backend, meetings.clone());
         let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        with_window(cx, w, |window, cx| window.click("action-items-fold", cx));
         assert!(exists(cx, w, "action-item-7"));
         assert!(!exists(cx, w, "action-item-8"));
         // Changed elsewhere (e.g. regenerated in another window).
@@ -2638,6 +2790,8 @@ mod meetings_fixes {
         });
         cx.run_until_parked();
         assert!(!exists(cx, w, "tickets-no-key"));
+        assert!(!exists(cx, w, "ticket-approve-31"), "folded");
+        with_window(cx, w, |window, cx| window.click("tickets-fold", cx));
         assert!(exists(cx, w, "ticket-approve-31"));
         // A created ticket arrives through a meeting change.
         {

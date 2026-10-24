@@ -272,9 +272,18 @@ impl MeetingsPage {
             cx.subscribe_in(
                 &list,
                 window,
-                |this, _, ev: &MeetingListEvent, window, cx| {
-                    let MeetingListEvent::Open(id) = ev;
-                    this.open_meeting(*id, window, cx);
+                |this, _, ev: &MeetingListEvent, window, cx| match ev {
+                    MeetingListEvent::Open(id) => this.open_meeting(*id, window, cx),
+                    MeetingListEvent::OpenLine {
+                        meeting_id,
+                        segment_id,
+                    } => {
+                        this.open_meeting(*meeting_id, window, cx);
+                        if let Some(detail) = &this.detail {
+                            let line = *segment_id;
+                            detail.update(cx, |d, cx| d.reveal_when_loaded(line, cx));
+                        }
+                    }
                 },
             ),
         ];

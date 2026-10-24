@@ -12,7 +12,7 @@ use crate::logic::meetings::{
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Pill, Stat};
-use crate::ui::kit::{crumb_title, group, icon, t, t_args};
+use crate::ui::kit::{crumb_title, foldable_heading, group, icon, t, t_args};
 use crate::ui::main_window::PageScroll;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
@@ -81,6 +81,8 @@ pub struct MeetingDetail {
     cancelling: bool,
     /// Deep link: seek and play here once the transcript has loaded.
     pending_seek: Option<i64>,
+    /// A search hit: scroll to this line once the transcript has loaded.
+    pending_reveal: Option<i64>,
     /// A talk-time click: scroll the page to this line on the next paint.
     reveal: Option<i64>,
     /// The line just revealed, highlighted for a moment.
@@ -91,6 +93,12 @@ pub struct MeetingDetail {
     diarization: DiarizationOptions,
     /// "Copy transcript" just copied (shows a check for a moment).
     transcript_copied: bool,
+    /// The header shows every attendee, not one truncated line.
+    attendees_open: bool,
+    /// The speakers list is shown (folded when a meeting opens).
+    speakers_open: bool,
+    /// The title and description are being generated.
+    titling: bool,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -156,11 +164,15 @@ impl MeetingDetail {
             processing_busy: false,
             cancelling: false,
             pending_seek: None,
+            pending_reveal: None,
             reveal: None,
             flash: None,
             cloud_options: Vec::new(),
             diarization: DiarizationOptions::default(),
             transcript_copied: false,
+            attendees_open: false,
+            speakers_open: false,
+            titling: false,
             ticking: false,
             _subs: subs,
         };
@@ -229,6 +241,11 @@ impl MeetingDetail {
                             if let Some(t_ms) = this.pending_seek.take() {
                                 this.seek_to(t_ms, cx);
                             }
+                            if let Some(line) = this.pending_reveal.take() {
+                                if this.segments.iter().any(|s| s.id == line) {
+                                    this.reveal_line(line, cx);
+                                }
+                            }
                         }
                     }
                     Err(e) => toast_error("meetings.detail.loadError", &e, cx),
@@ -244,6 +261,38 @@ impl MeetingDetail {
         } else {
             self.seek_to(t_ms, cx);
         }
+    }
+
+    /// Scroll to (and flash) a transcript line now, or once it has loaded.
+    pub fn reveal_when_loaded(&mut self, segment_id: i64, cx: &mut Context<Self>) {
+        if self.segments.iter().any(|s| s.id == segment_id) {
+            self.reveal_line(segment_id, cx);
+        } else {
+            self.pending_reveal = Some(segment_id);
+        }
+    }
+
+    fn generate_title(&mut self, cx: &mut Context<Self>) {
+        if self.titling {
+            return;
+        }
+        let id = self.meeting_id;
+        self.titling = true;
+        cx.notify();
+        run(
+            cx,
+            move |b| b.generate_title(id, false),
+            |this: &mut Self, r, cx| {
+                this.titling = false;
+                match r {
+                    Ok(outcome) => this.meeting = Some(outcome.meeting),
+                    Err(e)
+                        if crate::meetings_backend::MeetingsError::parse(&e)
+                            == crate::meetings_backend::MeetingsError::Cancelled => {}
+                    Err(e) => toast_error("meetings.titles.error", &e, cx),
+                }
+            },
+        );
     }
 
     fn cancel_processing(&mut self, cx: &mut Context<Self>) {
@@ -278,6 +327,8 @@ impl MeetingDetail {
     ) {
         self.picker = Some(PickTarget::Speaker(speaker_id));
         self.picker_at = None;
+        // The picker opens under the speaker's row.
+        self.speakers_open = true;
         self.suggestions.clear();
         self.suggestions_loading = true;
         self.name_input
@@ -1280,93 +1331,158 @@ impl MeetingDetail {
                 )
             });
 
-        let panel = design::panel(cx)
-            .child(
-                design::section(false, cx)
-                    .gap(dp(6.))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_3()
-                            .justify_between()
-                            .child(
+        let panel =
+            design::panel(cx)
+                .child(
+                    design::section(false, cx)
+                        .gap(dp(6.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_3()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .id("meeting-detail-title")
+                                        .min_w_0()
+                                        .child(crumb_title(
+                                            m.title.clone().into(),
+                                            Some(date.into()),
+                                            design::TEXT_TITLE,
+                                            cx,
+                                        ))
+                                        .test_support(),
+                                )
+                                .child(
+                                    h_flex()
+                                        .flex_none()
+                                        .gap(dp(6.))
+                                        .items_center()
+                                        .child(
+                                            Button::new("meeting-detail-generate-title")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(icon("sparkles"))
+                                                .tooltip(if m.has_summary {
+                                                    t("meetings.titles.generate")
+                                                } else {
+                                                    t("meetings.titles.needsSummary")
+                                                })
+                                                .loading(self.titling)
+                                                .disabled(self.titling || !m.has_summary)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.generate_title(cx)
+                                                })),
+                                        )
+                                        .child(
+                                            design::chip(t(status_key(m.status)), processing, cx)
+                                                .when(failed, |d| {
+                                                    d.bg(theme.danger.opacity(0.12))
+                                                        .text_color(theme.danger)
+                                                }),
+                                        ),
+                                ),
+                        )
+                        .when_some(m.description.clone(), |d, text| {
+                            d.child(
                                 div()
-                                    .id("meeting-detail-title")
-                                    .min_w_0()
-                                    .child(crumb_title(
-                                        m.title.clone().into(),
-                                        Some(date.into()),
-                                        design::TEXT_TITLE,
-                                        cx,
-                                    ))
+                                    .id("meeting-detail-description")
+                                    .text_size(design::TEXT_BODY)
+                                    .text_color(tone.text_muted)
+                                    .child(text)
                                     .test_support(),
                             )
+                        })
+                        .when(!attendees.is_empty(), |d| {
+                            let open = self.attendees_open;
+                            d.child(
+                                h_flex()
+                                    .id("meeting-detail-attendees")
+                                    .w_full()
+                                    .items_start()
+                                    .gap(dp(4.))
+                                    .cursor_pointer()
+                                    .text_size(dp(12.))
+                                    .text_color(tone.text_muted)
+                                    .child(
+                                        div().flex_none().pt(dp(2.)).child(
+                                            icon(if open {
+                                                "chevron-down"
+                                            } else {
+                                                "chevron-right"
+                                            })
+                                            .xsmall(),
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .when(!open, |d| d.truncate())
+                                            .child(format!(
+                                                "{} ({}): {}",
+                                                t("meetings.detail.attendees"),
+                                                attendees.len(),
+                                                attendees.join(", ")
+                                            )),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.attendees_open = !this.attendees_open;
+                                        cx.notify();
+                                    }))
+                                    .test_support(),
+                            )
+                        })
+                        .when_some(m.error.clone().filter(|_| failed), |d, e| {
+                            d.child(div().text_size(dp(12.)).text_color(theme.danger).child(e))
+                        }),
+                )
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(tone.hairline)
+                        .child(design::stat_grid(stats, columns, cx)),
+                )
+                .children(self.render_talk_time(cx))
+                .when(processing, |d| {
+                    let stage = self
+                        .progress
+                        .as_ref()
+                        .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
+                        .unwrap_or_else(|| t("meetings.status.processing"));
+                    d.child(
+                        v_flex()
+                            .w_full()
+                            .gap(dp(8.))
+                            .px(design::SECTION_X)
+                            .py(design::SECTION_Y)
+                            .border_t_1()
+                            .border_color(tone.hairline)
                             .child(
-                                design::chip(t(status_key(m.status)), processing, cx)
-                                    .when(failed, |d| {
-                                        d.bg(theme.danger.opacity(0.12)).text_color(theme.danger)
-                                    }),
-                            ),
+                                div()
+                                    .font_family(crate::theme::MONO_FONT)
+                                    .text_size(design::TEXT_MONO)
+                                    .child(design::shimmer_text(
+                                        "meeting-detail-stage",
+                                        format!("{stage} · {:.0}%", fraction * 100.0),
+                                        cx,
+                                    )),
+                            )
+                            .child(design::track("meeting-detail-progress", Some(fraction), cx)),
                     )
-                    .when(!attendees.is_empty(), |d| {
-                        d.child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
-                            format!(
-                                "{}: {}",
-                                t("meetings.detail.attendees"),
-                                attendees.join(", ")
-                            ),
-                        ))
-                    })
-                    .when_some(m.error.clone().filter(|_| failed), |d, e| {
-                        d.child(div().text_size(dp(12.)).text_color(theme.danger).child(e))
-                    }),
-            )
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(tone.hairline)
-                    .child(design::stat_grid(stats, columns, cx)),
-            )
-            .children(self.render_talk_time(cx))
-            .when(processing, |d| {
-                let stage = self
-                    .progress
-                    .as_ref()
-                    .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
-                    .unwrap_or_else(|| t("meetings.status.processing"));
-                d.child(
-                    v_flex()
-                        .w_full()
-                        .gap(dp(8.))
-                        .px(design::SECTION_X)
-                        .py(design::SECTION_Y)
-                        .border_t_1()
-                        .border_color(tone.hairline)
-                        .child(
-                            div()
-                                .font_family(crate::theme::MONO_FONT)
-                                .text_size(design::TEXT_MONO)
-                                .child(design::shimmer_text(
-                                    "meeting-detail-stage",
-                                    format!("{stage} · {:.0}%", fraction * 100.0),
-                                    cx,
-                                )),
-                        )
-                        .child(design::track("meeting-detail-progress", Some(fraction), cx)),
-                )
-            })
-            .when(show_process || processing || self.can_redo(), |d| {
-                d.child(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .px(design::SECTION_X)
-                        .py(dp(10.))
-                        .border_t_1()
-                        .border_color(tone.hairline)
-                        .child(actions),
-                )
-            });
+                })
+                .when(show_process || processing || self.can_redo(), |d| {
+                    d.child(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .px(design::SECTION_X)
+                            .py(dp(10.))
+                            .border_t_1()
+                            .border_color(tone.hairline)
+                            .child(actions),
+                    )
+                });
 
         v_flex()
             .gap(dp(10.))
@@ -1591,6 +1707,13 @@ impl MeetingDetail {
             .as_ref()
             .is_some_and(|m| m.status == MeetingStatus::Processed && can_process(m))
             .then(|| self.speakers_button(cx));
+        let open = self.speakers_open;
+        // A speaker waiting for a name or a confirmation is shown anyway.
+        let pending = self
+            .speakers
+            .iter()
+            .filter(|s| !s.is_user && (s.person_id.is_none() || needs_confirmation(s)))
+            .count();
         Some(
             v_flex()
                 .w_full()
@@ -1598,13 +1721,37 @@ impl MeetingDetail {
                 .child(
                     h_flex()
                         .w_full()
-                        .px(dp(2.))
                         .items_center()
                         .justify_between()
-                        .child(design::eyebrow(t("meetings.detail.speakers"), cx))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(foldable_heading(
+                                    "meeting-speakers-fold",
+                                    t("meetings.detail.speakers"),
+                                    self.speakers.len(),
+                                    open,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.speakers_open = !this.speakers_open;
+                                        cx.notify();
+                                    }),
+                                    cx,
+                                ))
+                                .when(!open && pending > 0, |d| {
+                                    d.child(design::chip(
+                                        t_args(
+                                            "meetings.detail.speakersToName",
+                                            &[("count", &pending.to_string())],
+                                        ),
+                                        true,
+                                        cx,
+                                    ))
+                                }),
+                        )
                         .children(redo),
                 )
-                .child(group(None, rows, cx))
+                .when(open, |d| d.child(group(None, rows, cx)))
                 .into_any_element(),
         )
     }

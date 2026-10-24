@@ -1073,6 +1073,18 @@ impl Render for MeetingSettingsView {
             ))
             .into_any_element(),
             SettingRow::new(
+                "meetings-calendar-titles",
+                t("meetings.settings.calendarTitles.title"),
+            )
+            .description(t("meetings.settings.calendarTitles.description"))
+            .control(toggle(
+                "meetings-calendar-titles-toggle",
+                m.prefer_calendar_titles,
+                updating,
+                |v, _, cx| update_meetings(cx, |m| m.prefer_calendar_titles = v),
+            ))
+            .into_any_element(),
+            SettingRow::new(
                 "meetings-reminder-interval",
                 t("meetings.settings.reminderInterval.title"),
             )
