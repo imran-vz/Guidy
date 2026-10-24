@@ -3192,15 +3192,42 @@ mod recording_widget {
         }
     }
 
-    #[gpui_kit::test]
-    fn the_widget_follows_the_recording_and_its_controls_reach_the_backend(
+    /// The widget on a display the size of the test window, not animated.
+    fn widget_setup(
         cx: &mut TestAppContext,
+        docked: bool,
+    ) -> (
+        Arc<FakeMeetingsBackend>,
+        Entity<RecordingWidgetState>,
+        AnyWindowHandle,
     ) {
         let meetings = FakeMeetingsBackend::new();
         setup_meetings(cx, FakeBackend::new(), meetings.clone());
         let widget = cx.update(RecordingWidgetState::install);
+        cx.update(|cx| {
+            widget.update(cx, |s, _| {
+                s.animate = false;
+                s.docked = docked;
+                s.screen = Some(crate::logic::notch::ScreenInfo {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 900.0,
+                    height: 1000.0,
+                    notch: Some((380.0, 520.0)),
+                    top_inset: 38.0,
+                });
+            })
+        });
         let (w, _) = open(cx, RecordingWidgetView::new);
-        assert!(!exists(cx, w, "recording-widget-pill"), "hidden while idle");
+        (meetings, widget, w)
+    }
+
+    #[gpui_kit::test]
+    fn the_widget_follows_the_recording_and_its_controls_reach_the_backend(
+        cx: &mut TestAppContext,
+    ) {
+        let (meetings, widget, w) = widget_setup(cx, false);
+        assert!(!exists(cx, w, "recording-widget-blob"), "hidden while idle");
 
         cx.update(|cx| {
             widget.update(cx, |s, cx| {
@@ -3208,17 +3235,24 @@ mod recording_widget {
                 s.set_recorder(recording(4), cx);
             })
         });
-        assert!(exists(cx, w, "recording-widget-pill"));
+        // Free: the squircle with its stop button, no wings.
+        assert!(exists(cx, w, "recording-widget-blob"));
+        assert!(exists(cx, w, "recording-widget-stop-blob"));
+        assert!(!exists(cx, w, "recording-widget-wings"));
         assert!(!exists(cx, w, "recording-widget-panel"));
 
-        // Expanded (the window itself is reopened at the panel's size).
+        // A click on the squircle opens the panel.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-blob", cx)
+        });
+        assert!(widget.read_with(cx, |s, _| s.model.expanded));
         cx.update(|cx| {
             widget.update(cx, |s, cx| {
-                s.model.expanded = true;
                 s.apply_live(&line(1, Track::Mic, "Yes, go ahead", true), cx);
             })
         });
         assert!(exists(cx, w, "recording-widget-panel"));
+        assert!(!exists(cx, w, "recording-widget-blob"));
         assert!(exists(cx, w, "recording-widget-title"));
         assert!(exists(cx, w, "source-mic"));
         assert!(exists(cx, w, "source-system"));
@@ -3238,10 +3272,137 @@ mod recording_widget {
         );
         assert!(calls.contains(&"stop_recording".to_string()), "{calls:?}");
 
+        // Collapsed again: back to the floater, whose pause and stop work too.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-collapse", cx)
+        });
+        assert!(exists(cx, w, "recording-widget-blob"));
+        with_window(cx, w, |window, cx| {
+            window.hover("blob-wave", cx);
+            window.click("recording-widget-pause-blob", cx)
+        });
+        let pauses = meetings
+            .calls()
+            .iter()
+            .filter(|c| *c == "set_recording_paused true")
+            .count();
+        assert_eq!(pauses, 2);
+        assert!(!widget.read_with(cx, |s, _| s.model.expanded));
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-stop-blob", cx)
+        });
+        let stops = meetings
+            .calls()
+            .iter()
+            .filter(|c| *c == "stop_recording")
+            .count();
+        assert_eq!(stops, 2);
+        assert!(
+            !widget.read_with(cx, |s, _| s.model.expanded),
+            "the stop button doesn't open the panel"
+        );
+
         cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(RecorderState::Idle, cx)));
         assert!(
-            !exists(cx, w, "recording-widget-panel"),
+            !exists(cx, w, "recording-widget-blob"),
             "gone after the stop"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn docked_it_wraps_the_notch_and_grows_into_the_panel(cx: &mut TestAppContext) {
+        let (meetings, widget, w) = widget_setup(cx, true);
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recording(4), cx)));
+        assert!(exists(cx, w, "recording-widget-wings"));
+        assert!(exists(cx, w, "recording-widget-stop-wings"));
+        assert!(!exists(cx, w, "recording-widget-blob"));
+
+        // Pause over the waveform (shown on hover); it doesn't open the panel.
+        let visible = |cx: &mut TestAppContext| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("recording-widget-pause-wings").visible()
+            })
+            .unwrap()
+        };
+        assert!(!visible(cx), "hidden until hovered");
+        with_window(cx, w, |window, cx| window.hover("wings-wave", cx));
+        assert!(visible(cx), "shown on hover");
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-pause-wings", cx)
+        });
+        assert!(meetings.called("set_recording_paused true"));
+        assert!(!widget.read_with(cx, |s, _| s.model.expanded));
+
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-stop-wings", cx)
+        });
+        assert!(meetings.called("stop_recording"));
+        assert!(!widget.read_with(cx, |s, _| s.model.expanded));
+
+        // A click on the wings: the notch grows into the panel.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-wings", cx)
+        });
+        assert!(widget.read_with(cx, |s, _| s.model.expanded));
+        assert!(exists(cx, w, "recording-widget-panel"));
+        assert!(!exists(cx, w, "recording-widget-stop-wings"));
+        // Its timer and collapse sit beside the notch, not in a header row.
+        assert!(exists(cx, w, "recording-widget-collapse"));
+
+        // The setting changes mid-recording: it floats off.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-collapse", cx)
+        });
+        cx.update(|cx| {
+            widget.update(cx, |s, cx| {
+                s.docked = false;
+                cx.notify();
+            })
+        });
+        assert!(exists(cx, w, "recording-widget-blob"));
+        assert!(!exists(cx, w, "recording-widget-wings"));
+    }
+
+    #[gpui_kit::test]
+    fn dragged_to_the_notch_it_docks_and_pulled_away_it_floats(cx: &mut TestAppContext) {
+        let (_, widget, w) = widget_setup(cx, false);
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recording(4), cx)));
+        let center = |cx: &mut TestAppContext, id: &'static str| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id).bounds().center()
+            })
+            .unwrap()
+        };
+        // Into the notch (380..520 on this display): docked, remembered.
+        let from = center(cx, "recording-widget-blob");
+        with_window(cx, w, |window, cx| {
+            window.drag(from, gpui_kit::point(px(450.), px(60.)), cx)
+        });
+        assert!(exists(cx, w, "recording-widget-wings"));
+        assert!(!exists(cx, w, "recording-widget-blob"));
+        assert!(widget.read_with(cx, |s, _| s.docked));
+        assert!(
+            !widget.read_with(cx, |s, _| s.model.expanded),
+            "a drag isn't a click"
+        );
+
+        // Pulled well away: free again, where it was let go.
+        with_window(cx, w, |window, cx| {
+            window.drag(
+                gpui_kit::point(px(305.), px(19.)),
+                gpui_kit::point(px(300.), px(600.)),
+                cx,
+            )
+        });
+        assert!(exists(cx, w, "recording-widget-blob"));
+        assert!(!exists(cx, w, "recording-widget-wings"));
+        assert!(!widget.read_with(cx, |s, _| s.docked));
+        let at = center(cx, "recording-widget-blob");
+        assert!(
+            (at.x - px(300.)).abs() < px(2.) && (at.y - px(600.)).abs() < px(2.),
+            "{at:?}"
         );
     }
 }

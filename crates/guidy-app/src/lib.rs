@@ -172,7 +172,6 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         cx,
     );
     let overlay = OverlayState::install(cx);
-    crate::ui::notch::NotchState::install(cx);
     crate::ui::recording_widget::RecordingWidgetState::install(cx);
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
@@ -496,10 +495,6 @@ pub fn dispatch_event(
         if let Ok(recorder) = serde_json::from_value::<guidy_core::meetings::types::RecorderState>(
             event.payload.clone(),
         ) {
-            if let Some(notch) = crate::ui::notch::NotchState::global(cx) {
-                let recorder = recorder.clone();
-                notch.update(cx, |n, cx| n.set_recorder(recorder, cx));
-            }
             if let Some(widget) = crate::ui::recording_widget::RecordingWidgetState::global(cx) {
                 widget.update(cx, |w, cx| w.set_recorder(recorder, cx));
             }

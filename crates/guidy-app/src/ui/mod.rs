@@ -7,7 +7,6 @@ pub mod kit;
 pub mod language_selector;
 pub mod main_window;
 pub mod model_card;
-pub mod notch;
 pub mod onboarding;
 pub mod overlay;
 pub mod pages;

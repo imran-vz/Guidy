@@ -4,13 +4,11 @@
 //! GPUI has no per-window hide/show, so "hiding" closes the window and
 //! "showing" reopens it; all state lives in models outside the views.
 
-use crate::logic::notch::{notch_frame, NotchFrame, ScreenInfo};
-use crate::logic::recording_widget::{widget_frame, WidgetFrame};
+use crate::logic::notch::ScreenInfo;
 use crate::shell::{GpuiShell, ShellMsg};
 use crate::state::AppState;
 use crate::ui::design::dp;
 use crate::ui::main_window::MainWindow;
-use crate::ui::notch::{NotchState, NotchView};
 use crate::ui::overlay::OverlayView;
 use crate::ui::recording_widget::{RecordingWidgetState, RecordingWidgetView};
 use gpui_kit::component::TitleBar;
@@ -310,78 +308,27 @@ fn recording_controls(cx: &App) -> RecordingControls {
         .unwrap_or_default()
 }
 
-/// Show the controls the settings pick while a meeting records (the
-/// floating widget or the notch wings), and close them when it stops.
+/// Show the recording floater while a meeting records, docked at the notch
+/// or free as the settings say, and close it when it stops.
 pub fn sync_recording_controls(cx: &mut App) {
-    sync_notch(cx);
+    let docked = recording_controls(cx) == RecordingControls::Notch;
+    if let Some(state) = RecordingWidgetState::global(cx) {
+        state.update(cx, |s, cx| {
+            if s.docked != docked {
+                s.docked = docked;
+                cx.notify();
+            }
+        });
+    }
     sync_recording_widget(cx);
 }
 
-/// Show the meeting controls around the notch while a meeting records, and
-/// close them when it stops. macOS only.
-fn sync_notch(cx: &mut App) {
-    let visible = NotchState::global(cx).is_some_and(|n| n.read(cx).model.visible())
-        && recording_controls(cx) == RecordingControls::Notch;
-    if !visible {
-        if let Some(handle) = windows(cx).notch.take() {
-            let _ = cx.update_window(handle, |_, window, _| window.remove_window());
-        }
-        return;
-    }
-    if let Some(handle) = windows(cx).notch {
-        if cx
-            .update_window(handle, |_, window, _| window.refresh())
-            .is_ok()
-        {
-            return;
-        }
-        windows(cx).notch = None;
-    }
-    let Some(frame) = notch_target() else {
-        return;
-    };
-    if let Some(state) = NotchState::global(cx) {
-        state.update(cx, |s, cx| {
-            s.notch_width = frame.notch_width as f32;
-            cx.notify();
-        });
-    }
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds {
-            origin: point(px(0.), px(0.)),
-            size: size(px(frame.width as f32), px(frame.height as f32)),
-        })),
-        titlebar: None,
-        focus: false,
-        show: true,
-        kind: WindowKind::PopUp,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
-        window_background: WindowBackgroundAppearance::Transparent,
-        app_id: Some(format!("{}.notch", guidy_core::host::APP_IDENTIFIER)),
-        ..Default::default()
-    };
-    match cx.open_window(options, |window, cx| {
-        cx.new(|cx| NotchView::new(window, cx))
-    }) {
-        Ok(handle) => {
-            let any: AnyWindowHandle = handle.into();
-            let _ = cx.update_window(any, |_, window, _| {
-                configure_overlay_panel(window);
-                place_panel(window, notch_rect(&frame), MENU_BAR_LEVEL);
-            });
-            windows(cx).notch = Some(any);
-        }
-        Err(e) => log::error!("Failed to open the notch controls: {e}"),
-    }
-}
-
-/// Show the floating recording widget while a meeting records, and close it
-/// when it stops. macOS only.
+/// The floater's window: transparent, over the whole display with the
+/// notch (else the primary one), above the menu bar so it can dock into
+/// the notch. It lets the pointer through except over the floater
+/// ([`set_ignores_mouse`]). macOS only.
 fn sync_recording_widget(cx: &mut App) {
-    let visible = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.visible())
-        && recording_controls(cx) == RecordingControls::Floating;
+    let visible = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.visible());
     if !visible {
         if let Some(handle) = windows(cx).recording_widget.take() {
             let _ = cx.update_window(handle, |_, window, _| window.remove_window());
@@ -397,13 +344,19 @@ fn sync_recording_widget(cx: &mut App) {
         }
         windows(cx).recording_widget = None;
     }
-    let Some(frame) = recording_widget_frame(cx) else {
+    let Some(screen) = stage_screen() else {
         return;
     };
+    if let Some(state) = RecordingWidgetState::global(cx) {
+        state.update(cx, |s, cx| {
+            s.screen = Some(screen);
+            cx.notify();
+        });
+    }
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.), px(0.)),
-            size: size(px(frame.width as f32), px(frame.height as f32)),
+            size: size(px(screen.width as f32), px(screen.height as f32)),
         })),
         titlebar: None,
         focus: false,
@@ -426,7 +379,11 @@ fn sync_recording_widget(cx: &mut App) {
             let any: AnyWindowHandle = handle.into();
             let _ = cx.update_window(any, |_, window, _| {
                 configure_overlay_panel(window);
-                place_panel(window, widget_rect(&frame), FLOATING_LEVEL);
+                place_panel(
+                    window,
+                    (screen.x, screen.y, screen.width, screen.height),
+                    MENU_BAR_LEVEL,
+                );
             });
             windows(cx).recording_widget = Some(any);
         }
@@ -434,65 +391,88 @@ fn sync_recording_widget(cx: &mut App) {
     }
 }
 
-/// Show the recording widget at the size of its state (pill or panel).
-/// GPUI doesn't follow a native resize of these borderless panels, so the
-/// window is reopened at the new size. Call it outside the widget's own
-/// event handlers (it closes that window).
-pub fn place_recording_widget(cx: &mut App) {
-    if let Some(handle) = windows(cx).recording_widget.take() {
-        let _ = cx.update_window(handle, |_, window, _| window.remove_window());
-    }
-    sync_recording_widget(cx);
-}
-
-/// The recording widget's frame on the primary display.
-#[cfg(target_os = "macos")]
-fn recording_widget_frame(cx: &App) -> Option<WidgetFrame> {
-    let expanded = RecordingWidgetState::global(cx).is_some_and(|s| s.read(cx).model.expanded);
-    let screens = macos_screens();
-    Some(widget_frame(
-        screens.first()?,
-        expanded,
-        crate::ui::design::SCALE as f64,
-    ))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn recording_widget_frame(_cx: &App) -> Option<WidgetFrame> {
-    None
-}
-
 /// A panel frame in Cocoa coordinates: x, y, width, height.
 type Rect = (f64, f64, f64, f64);
 
-fn notch_rect(f: &NotchFrame) -> Rect {
-    (f.x, f.y, f.width, f.height)
-}
-
-fn widget_rect(f: &WidgetFrame) -> Rect {
-    (f.x, f.y, f.width, f.height)
-}
-
 /// NSMainMenuWindowLevel (24) + 2: above the menu bar.
 const MENU_BAR_LEVEL: isize = 26;
-/// NSFloatingWindowLevel: above other apps' windows, below menus.
-const FLOATING_LEVEL: isize = 3;
 
-/// The display with a notch (else the primary one) and where the controls
-/// go on it.
+/// The display the floater lives on: the one with a notch, else the
+/// primary one.
 #[cfg(target_os = "macos")]
-fn notch_target() -> Option<NotchFrame> {
+fn stage_screen() -> Option<ScreenInfo> {
     let screens = macos_screens();
-    let screen = screens
+    screens
         .iter()
         .find(|s| s.notch.is_some())
-        .or_else(|| screens.first())?;
-    Some(notch_frame(screen))
+        .or_else(|| screens.first())
+        .copied()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn notch_target() -> Option<NotchFrame> {
+fn stage_screen() -> Option<ScreenInfo> {
     None
+}
+
+/// The pointer, in Cocoa coordinates (points, origin bottom-left of the
+/// primary display).
+#[cfg(target_os = "macos")]
+pub fn pointer_location() -> Option<(f64, f64)> {
+    use cocoa::CGPoint;
+    use objc2::msg_send;
+    use objc2::runtime::AnyClass;
+    let class = AnyClass::get(c"NSEvent")?;
+    // SAFETY: a class method returning a plain struct, on the main thread.
+    let p: CGPoint = unsafe { msg_send![class, mouseLocation] };
+    Some((p.x, p.y))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pointer_location() -> Option<(f64, f64)> {
+    None
+}
+
+/// The native window behind `window`, for [`set_ignores_mouse`]. Only
+/// valid while the window is open.
+pub fn native_window(window: &Window) -> Option<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let handle = HasWindowHandle::window_handle(window).ok()?;
+        if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+            let view = h.ns_view.as_ptr() as *mut AnyObject;
+            // SAFETY: a live NSView owned by this window, on the main thread.
+            let ns_window: *mut AnyObject = unsafe { msg_send![view, window] };
+            return (!ns_window.is_null()).then_some(ns_window as usize);
+        }
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        None
+    }
+}
+
+/// Let the pointer through the native window (from [`native_window`]) to
+/// what is beneath (`ignore`), or take it again. Call it outside GPUI's
+/// window updates: AppKit answers with pointer events at once, which GPUI
+/// can't take while it is updating that window.
+pub fn set_ignores_mouse(ns_window: usize, ignore: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyObject, Bool};
+        let ns_window = ns_window as *mut AnyObject;
+        // SAFETY: an NSWindow the caller holds open, on the main thread.
+        unsafe {
+            let _: () = msg_send![ns_window, setIgnoresMouseEvents: Bool::new(ignore)];
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (ns_window, ignore);
 }
 
 #[cfg(target_os = "macos")]

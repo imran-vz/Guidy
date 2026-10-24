@@ -1,6 +1,7 @@
 //! UI logic with no GPUI dependency (helpers and stores), kept pure so it
 //! is unit-testable.
 
+pub mod floater;
 pub mod flows;
 pub mod history;
 pub mod keyboard;

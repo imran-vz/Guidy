@@ -1,8 +1,5 @@
-//! The meeting controls around the notch: what they show and where they go.
-//! Pure: driven by recorder states, polled input levels and a clock.
-
-use guidy_core::meetings::types::{format_elapsed, RecorderState};
-use std::collections::VecDeque;
+//! Where the notch is, for the recording floater's wings around it
+//! (see [`crate::logic::floater`]).
 
 /// Width of each wing beside the notch, in points.
 pub const WING: f64 = 84.0;
@@ -10,9 +7,6 @@ pub const WING: f64 = 84.0;
 pub const NO_NOTCH_GAP: f64 = 12.0;
 /// Height used when the display reports no menu-bar inset.
 pub const FALLBACK_HEIGHT: f64 = 32.0;
-/// Bars in the waveform (newest on the right).
-pub const BARS: usize = 11;
-
 /// A display, in Cocoa coordinates (points, origin bottom-left of the
 /// primary display).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,67 +55,6 @@ pub fn notch_frame(s: &ScreenInfo) -> NotchFrame {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct NotchModel {
-    pub recorder: RecorderState,
-    levels: VecDeque<f32>,
-}
-
-impl Default for NotchModel {
-    fn default() -> Self {
-        Self {
-            recorder: RecorderState::Idle,
-            levels: VecDeque::from(vec![0.0; BARS]),
-        }
-    }
-}
-
-impl NotchModel {
-    pub fn visible(&self) -> bool {
-        self.recorder.is_recording()
-    }
-
-    pub fn paused(&self) -> bool {
-        self.recorder.is_paused()
-    }
-
-    /// A new recording starts with a flat waveform.
-    pub fn set_recorder(&mut self, state: RecorderState) {
-        let started = match (&self.recorder, &state) {
-            (
-                RecorderState::Recording { meeting_id: a, .. },
-                RecorderState::Recording { meeting_id: b, .. },
-            ) => a != b,
-            (RecorderState::Idle, RecorderState::Recording { .. }) => true,
-            _ => false,
-        };
-        if started {
-            self.levels.iter_mut().for_each(|l| *l = 0.0);
-        }
-        self.recorder = state;
-    }
-
-    /// Scroll in one level sample (flat while paused).
-    pub fn push_level(&mut self, level: f32) {
-        let level = if self.paused() {
-            0.0
-        } else {
-            level.clamp(0.0, 1.0)
-        };
-        self.levels.pop_front();
-        self.levels.push_back(level);
-    }
-
-    pub fn levels(&self) -> impl Iterator<Item = f32> + '_ {
-        self.levels.iter().copied()
-    }
-
-    /// Capture time so far (pauses excluded), e.g. `12:34`.
-    pub fn timer(&self, now_ms: i64) -> String {
-        format_elapsed(self.recorder.elapsed_ms(now_ms).unwrap_or(0))
-    }
-}
-
 /// Bar height in px for a level: 3 px at silence up to `max`.
 pub fn bar_height(level: f32, max: f32) -> f32 {
     (3.0 + level.max(0.0).powf(0.6) * (max - 3.0)).clamp(3.0, max)
@@ -130,17 +63,6 @@ pub fn bar_height(level: f32, max: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn recording(id: i64, paused_at: Option<i64>) -> RecorderState {
-        RecorderState::Recording {
-            meeting_id: id,
-            title: "Sync".into(),
-            started_at: 0,
-            scheduled_end_at: None,
-            paused_at,
-            paused_ms: 0,
-        }
-    }
 
     #[test]
     fn wings_flank_the_notch() {
@@ -176,28 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn levels_scroll_and_flatten_while_paused() {
-        let mut m = NotchModel::default();
-        assert!(!m.visible());
-        m.set_recorder(recording(1, None));
-        assert!(m.visible());
-        m.push_level(0.8);
-        assert_eq!(m.levels().last(), Some(0.8));
-        assert_eq!(m.levels().count(), BARS);
-        m.set_recorder(recording(1, Some(10)));
-        m.push_level(0.8);
-        assert_eq!(m.levels().last(), Some(0.0));
-        // Same meeting: history kept. A new one starts flat.
-        assert!(m.levels().any(|l| l > 0.0));
-        m.set_recorder(recording(2, None));
-        assert!(m.levels().all(|l| l == 0.0));
-    }
-
-    #[test]
-    fn timer_and_bars() {
-        let mut m = NotchModel::default();
-        m.set_recorder(recording(1, Some(65_000)));
-        assert_eq!(m.timer(500_000), "1:05");
+    fn bars() {
         assert_eq!(bar_height(0.0, 16.0), 3.0);
         assert_eq!(bar_height(1.0, 16.0), 16.0);
     }

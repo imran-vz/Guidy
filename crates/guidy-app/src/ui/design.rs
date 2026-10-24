@@ -124,6 +124,30 @@ pub fn tone(cx: &App) -> Tone {
     }
 }
 
+/// Tones for content drawn on black whatever the mode: the recording
+/// floater, which reads as part of the notch.
+pub fn tone_on_black() -> Tone {
+    Tone {
+        dark: true,
+        ink: c(0x000000ff),
+        frame: c(0x000000ff),
+        surface: c(0x000000ff),
+        raised: c(0xffffff1f),
+        hairline: c(0xffffff1a),
+        grid: c(0xffffff0d),
+        mark: c(0xffffff2e),
+        line_art: c(0x8a8a8aff),
+        text: c(0xffffffeb),
+        text_muted: c(0xffffff94),
+        text_faint: c(0xffffff5c),
+        accent: c(0xffc72cff),
+        accent_text: c(0xffc72cff),
+        accent_soft: c(0xffc72c1f),
+        rim: c(0xffffff1f),
+        sheen: c(0xffffff1a),
+    }
+}
+
 /// Extra space between eyebrow letters (≈ 0.1em at 10.5 px).
 const EYEBROW_TRACKING: Pixels = px(1.);
 /// Geist Mono's advance at the eyebrow size, for spaces.
