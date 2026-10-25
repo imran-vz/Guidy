@@ -12,8 +12,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Enable SAND_RUNNERS_ENABLED only after the SSD-backed slot is online.
 # Jobs run on the self-hosted mac-mini runner: an ephemeral Tart VM
-# (macos-tahoe-xcode) that sand boots per job, labelled `guidy`. Pull requests
+# (macos-tahoe-xcode) that sand boots per job, labelled `guidy` and `sand`.
+# VM images, disks and runner workspaces live on the host's /Volumes/SN770 SSD.
+# Pull requests
 # from forks and Dependabot (PR author or triggering actor) run on GitHub's
 # macos-latest instead, so code from outside the repo and dependency bumps
 # never run on the mac-mini. macOS only for now: Windows and Linux come
@@ -23,7 +26,8 @@ jobs:
   # fmt, clippy, tests and the parity check in one VM, so the dependency
   # build is shared.
   check:
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","guidy"]') || 'macos-latest' }}
+    timeout-minutes: 60
+    runs-on: ${{ vars.SAND_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","ARM64","guidy","sand"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -42,7 +46,8 @@ jobs:
 
   package:
     needs: check
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","guidy"]') || 'macos-latest' }}
+    timeout-minutes: 60
+    runs-on: ${{ vars.SAND_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')) && github.actor != 'dependabot[bot]' && fromJSON('["self-hosted","macOS","ARM64","guidy","sand"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
