@@ -1225,6 +1225,12 @@
       "done_other": "Titled {{count}} meetings",
       "error": "Couldn't generate the title"
     },
+    "checklist": {
+      "title": "Setup",
+      "models": "Models",
+      "note": "You can record before the models finish downloading. Processing waits until they are ready.",
+      "downloading": "Downloading"
+    },
     "downloads": {
       "activity": "Downloading {{name}} · {{percent}}%",
       "activityFailed": "Download failed · {{name}}",

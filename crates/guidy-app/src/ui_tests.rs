@@ -2543,6 +2543,34 @@ mod meetings_fixes {
     }
 
     #[gpui_kit::test]
+    fn the_setup_checklist_shows_what_is_missing_and_recording_stays_available(
+        cx: &mut TestAppContext,
+    ) {
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meetings-checklist"));
+        assert!(exists(cx, w, "meetings-check-microphone"));
+        assert!(exists(cx, w, "meetings-check-system-audio"));
+        assert!(exists(cx, w, "meetings-check-calendar"));
+        assert!(exists(cx, w, "meetings-check-needed-microphone"));
+        assert!(exists(cx, w, "meeting-record-toggle"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-check-allow-microphone", cx)
+        });
+        assert!(meetings.called("request_permissions"));
+
+        meetings.data.lock().permissions = guidy_core::meetings::manager::PermissionReport {
+            calendar_granted: true,
+            system_audio_granted: true,
+            microphone_granted: true,
+            notifications_granted: true,
+        };
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(!exists(cx, w, "meetings-checklist"));
+    }
+
+    #[gpui_kit::test]
     fn speaker_turn_models_ask_before_downloading(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         meetings.data.lock().turn_models_installed = false;

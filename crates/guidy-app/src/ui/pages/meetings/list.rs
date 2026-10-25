@@ -22,6 +22,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::meetings::manager::PermissionReport;
 use guidy_core::meetings::processing::{SpeakerModelStatus, SPEAKER_MODEL_SIZE};
 use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::search::{MatchField, SearchHit, SearchResults, Snippet};
@@ -76,6 +77,9 @@ pub struct MeetingList {
     title_candidates: usize,
     /// "Not now" on the speaker-turn download prompt, for this visit.
     turn_prompt_dismissed: bool,
+    permissions: Option<PermissionReport>,
+    /// A model download is in progress (the status bar has the detail).
+    downloads_active: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -123,9 +127,12 @@ impl MeetingList {
             bulk: None,
             title_candidates: 0,
             turn_prompt_dismissed: false,
+            permissions: None,
+            downloads_active: false,
             _subs: subs,
         };
         this.reload(cx);
+        this.load_permissions(cx);
         run(
             cx,
             |b| b.speaker_model_status(),
@@ -151,15 +158,153 @@ impl MeetingList {
             // Bulk titling changes one meeting after another: it updates
             // their rows itself and reloads once it's done.
             MeetingsEvent::MeetingChanged(_) if self.bulk.is_some() => {}
-            MeetingsEvent::MeetingChanged(_)
-            | MeetingsEvent::RecorderState(_)
-            | MeetingsEvent::Ready => self.reload(cx),
+            MeetingsEvent::MeetingChanged(_) | MeetingsEvent::RecorderState(_) => self.reload(cx),
+            MeetingsEvent::Ready => {
+                self.reload(cx);
+                self.load_permissions(cx);
+            }
             MeetingsEvent::SpeakerModelStatus(s) => {
                 self.speaker_model = Some(s.clone());
                 cx.notify();
             }
+            MeetingsEvent::DownloadsChanged(items) => {
+                self.downloads_active = items.iter().any(|d| d.state.is_active());
+                cx.notify();
+            }
             _ => {}
         }
+    }
+
+    fn load_permissions(&mut self, cx: &mut Context<Self>) {
+        run(
+            cx,
+            |b| b.permission_status(),
+            |this: &mut Self, p, cx| {
+                this.permissions = Some(p);
+                cx.notify();
+            },
+        );
+    }
+
+    fn allow_permissions(&mut self, cx: &mut Context<Self>) {
+        run(
+            cx,
+            |b| b.request_permissions().map_err(|e| e.to_string()),
+            |this: &mut Self, r, cx| match r {
+                Ok(p) => {
+                    this.permissions = Some(p);
+                    cx.notify();
+                }
+                Err(e) => toast_error("meetings.settings.permissions.error", &e, cx),
+            },
+        );
+    }
+
+    /// Mic, system audio, calendar, and models. Hidden once all are ready.
+    /// Recording stays available either way; processing waits on the models.
+    fn render_checklist(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let report = self.permissions.as_ref()?;
+        let models_ready = meeting_model_missing(cx).is_none()
+            && meetings_backend(cx).speaker_turn_models_installed();
+        let rows = [
+            (
+                "microphone",
+                t("meetings.settings.permissions.microphone"),
+                report.microphone_granted,
+            ),
+            (
+                "system-audio",
+                t("meetings.settings.permissions.systemAudio"),
+                report.system_audio_granted,
+            ),
+            (
+                "calendar",
+                t("meetings.settings.permissions.calendar"),
+                report.calendar_granted,
+            ),
+        ];
+        if rows.iter().all(|(_, _, ok)| *ok) && models_ready {
+            return None;
+        }
+        let tone = design::tone(cx);
+        let row = |id: &str, label: SharedString, ok: bool, allow: bool| {
+            let state = if ok {
+                t("meetings.settings.permissions.granted")
+            } else if id == "models" && self.downloads_active {
+                t("meetings.checklist.downloading")
+            } else {
+                t("meetings.settings.permissions.denied")
+            };
+            h_flex()
+                .id(SharedString::from(format!("meetings-check-{id}")))
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(design::TEXT_BODY)
+                        .text_color(tone.text)
+                        .child(label),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "meetings-check-{}-{id}",
+                                    if ok { "ready" } else { "needed" }
+                                )))
+                                .text_size(dp(12.))
+                                .text_color(if ok { tone.text_muted } else { tone.text })
+                                .child(state)
+                                .test_support(),
+                        )
+                        .when(!ok && allow, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!(
+                                    "meetings-check-allow-{id}"
+                                )))
+                                .ghost()
+                                .xsmall()
+                                .label(t("meetings.settings.permissions.requestAgain"))
+                                .on_click(cx.listener(|this, _, _, cx| this.allow_permissions(cx))),
+                            )
+                        }),
+                )
+                .test_support()
+        };
+        Some(
+            design::panel(cx)
+                .id("meetings-checklist")
+                .child(
+                    design::section(false, cx).child(
+                        v_flex()
+                            .w_full()
+                            .gap(dp(8.))
+                            .child(design::eyebrow(t("meetings.checklist.title"), cx))
+                            .child(row("microphone", rows[0].1.clone(), rows[0].2, true))
+                            .child(row("system-audio", rows[1].1.clone(), rows[1].2, true))
+                            .child(row("calendar", rows[2].1.clone(), rows[2].2, true))
+                            .child(row(
+                                "models",
+                                t("meetings.checklist.models"),
+                                models_ready && !self.downloads_active,
+                                false,
+                            ))
+                            .child(
+                                div()
+                                    .text_size(dp(12.))
+                                    .text_color(tone.text_muted)
+                                    .child(t("meetings.checklist.note")),
+                            ),
+                    ),
+                )
+                .test_support()
+                .into_any_element(),
+        )
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -1238,6 +1383,7 @@ impl Render for MeetingList {
                     .prefix(icon("search").small().text_color(tone.text_muted))
                     .cleanable(true),
             )
+            .children(self.render_checklist(cx))
             .children(model_banner)
             .children(speaker_banner)
             .children(self.render_turn_consent(cx))
