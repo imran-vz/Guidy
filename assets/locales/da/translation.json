@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Indstillinger...",
-    "checkUpdates": "Tjek for opdateringer...",
-    "copyLastTranscript": "Kopiér seneste transskription",
     "unloadModel": "Frigør model",
     "model": "Model",
     "quit": "Afslut",

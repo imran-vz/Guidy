@@ -214,6 +214,15 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool) {
         tray::update_tray_menu(&app_handle_for_listener);
     });
 
+    // Refresh the tray's recent transcripts when history changes
+    let app_handle_for_history = app_handle.clone();
+    app_handle.listen(
+        <managers::history::HistoryUpdatePayload as host::TypedEvent>::NAME,
+        move |_| {
+            tray::update_tray_menu(&app_handle_for_history);
+        },
+    );
+
     // Cloud model names, context windows and prices (models.dev).
     llm::registry::load_and_refresh_if_stale(app_handle);
     // What cloud LLM calls cost (the Usage page).

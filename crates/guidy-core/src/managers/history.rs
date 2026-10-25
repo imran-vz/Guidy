@@ -535,6 +535,22 @@ impl HistoryManager {
     }
 
     fn get_latest_completed_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
+        Ok(Self::get_recent_completed_entries_with_conn(conn, 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// The newest `limit` entries with non-empty transcription text, newest
+    /// first.
+    pub fn get_recent_completed_entries(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        Self::get_recent_completed_entries_with_conn(&conn, limit)
+    }
+
+    fn get_recent_completed_entries_with_conn(
+        conn: &Connection,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>> {
         let mut stmt = conn.prepare(
             "SELECT
                 id,
@@ -548,12 +564,14 @@ impl HistoryManager {
                 post_process_requested
              FROM transcription_history
              WHERE transcription_text != ''
-             ORDER BY timestamp DESC
-             LIMIT 1",
+             ORDER BY timestamp DESC, id DESC
+             LIMIT ?1",
         )?;
 
-        let entry = stmt.query_row([], Self::map_history_entry).optional()?;
-        Ok(entry)
+        let entries = stmt
+            .query_map([limit as i64], Self::map_history_entry)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(entries)
     }
 
     pub async fn toggle_saved_status(&self, id: i64) -> Result<()> {
@@ -735,6 +753,24 @@ mod tests {
 
         assert_eq!(entry.timestamp, 100);
         assert_eq!(entry.transcription_text, "completed");
+    }
+
+    #[test]
+    fn get_recent_completed_entries_is_newest_first_and_limited() {
+        let conn = setup_conn();
+        insert_entry(&conn, 100, "one", None);
+        insert_entry(&conn, 200, "two", None);
+        insert_entry(&conn, 300, "", None);
+        insert_entry(&conn, 400, "three", None);
+        insert_entry(&conn, 500, "four", None);
+
+        let entries = HistoryManager::get_recent_completed_entries_with_conn(&conn, 3)
+            .expect("fetch recent completed entries");
+        let texts: Vec<_> = entries
+            .iter()
+            .map(|e| e.transcription_text.as_str())
+            .collect();
+        assert_eq!(texts, ["four", "three", "two"]);
     }
 }
 

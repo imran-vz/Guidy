@@ -72,7 +72,9 @@ struct MenuInputs {
     /// `(id, name)` of downloaded models, sorted by name.
     downloaded_models: Vec<(String, String)>,
     locale: String,
-    update_checks_enabled: bool,
+    /// `(history id, menu label)` of the newest completed transcripts,
+    /// newest first.
+    recent_transcripts: Vec<(i64, String)>,
     meeting: MeetingMenu,
 }
 
@@ -709,6 +711,10 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
     let meeting = meeting_menu(app, &settings);
+    let recent_transcripts = recent_transcripts(app)
+        .iter()
+        .map(|entry| (entry.id, transcript_label(last_transcript_text(entry))))
+        .collect();
 
     desired_from(
         icon_state,
@@ -721,7 +727,7 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -
             selected_model: settings.selected_model,
             downloaded_models,
             locale: settings.app_language,
-            update_checks_enabled: settings.update_checks_enabled,
+            recent_transcripts,
             meeting,
         },
     )
@@ -958,8 +964,7 @@ pub struct MenuModel {
 }
 
 /// Builds the tray menu and tooltip for the given inputs. Pure: everything it
-/// depends on is in `inputs`, plus the process-constant updater-disable env
-/// flag behind `update_checks_forced_disabled()`.
+/// depends on is in `inputs`.
 fn build_menu(inputs: &MenuInputs) -> MenuModel {
     build_menu_at(inputs, crate::meetings::recorder::now_ms())
 }
@@ -990,30 +995,33 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
     let (settings_accelerator, quit_accelerator) = (Some("Ctrl+,"), Some("Ctrl+Q"));
 
     let settings_i = MenuEntry::item("settings", &strings.settings, true, settings_accelerator);
-    // When update checks are forced off the item is dropped rather than shown
-    // disabled — it can never do anything in that case. A manually-disabled
-    // toggle keeps the greyed-out behavior via the enabled flag.
-    let check_updates_i = (!settings::update_checks_forced_disabled()).then(|| {
-        MenuEntry::item(
-            "check_updates",
-            &strings.check_updates,
-            inputs.update_checks_enabled,
+    let en = get_tray_translations(Some("en".to_string()));
+    let recent_items = if inputs.recent_transcripts.is_empty() {
+        vec![MenuEntry::item(
+            "no_transcripts",
+            &or_en(&strings.no_transcripts, &en.no_transcripts),
+            false,
             None,
-        )
-    });
-    let copy_last_transcript_i = MenuEntry::item(
-        "copy_last_transcript",
-        &strings.copy_last_transcript,
-        true,
-        None,
-    );
+        )]
+    } else {
+        inputs
+            .recent_transcripts
+            .iter()
+            .map(|(id, label)| MenuEntry::item(&format!("copy_transcript:{id}"), label, true, None))
+            .collect()
+    };
+    let recent_transcripts_i = MenuEntry::Submenu {
+        id: "recent_transcripts".to_string(),
+        label: or_en(&strings.recent_transcripts, &en.recent_transcripts),
+        items: recent_items,
+    };
     let quit_i = MenuEntry::item("quit", &strings.quit, true, quit_accelerator);
 
     let mut entries = Vec::new();
     if inputs.busy {
         entries.push(MenuEntry::item("cancel", &strings.cancel, true, None));
         entries.push(MenuEntry::Separator);
-        entries.push(copy_last_transcript_i);
+        entries.push(recent_transcripts_i);
         entries.push(MenuEntry::Separator);
     } else {
         // Build model submenu — label is the active model name
@@ -1032,7 +1040,7 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
                 checked: *id == inputs.selected_model,
             })
             .collect();
-        entries.push(copy_last_transcript_i);
+        entries.push(recent_transcripts_i);
         entries.push(MenuEntry::Separator);
         entries.push(MenuEntry::Submenu {
             id: "model_submenu".to_string(),
@@ -1048,15 +1056,11 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
         entries.push(MenuEntry::Separator);
     }
     entries.push(settings_i);
-    if let Some(item) = check_updates_i {
-        entries.push(item);
-    }
     entries.push(MenuEntry::Separator);
     entries.push(quit_i);
 
     // Meeting notes go first.
     if inputs.meeting.available {
-        let en = get_tray_translations(Some("en".to_string()));
         let mut items = Vec::new();
         if inputs.meeting.recording {
             items.push(MenuEntry::item(
@@ -1167,6 +1171,37 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
         .unwrap_or(&entry.transcription_text)
 }
 
+/// How many recent transcripts the tray offers to copy.
+const RECENT_TRANSCRIPTS: usize = 3;
+/// Longest transcript preview shown in the tray, in characters.
+const TRANSCRIPT_LABEL_CHARS: usize = 40;
+
+fn recent_transcripts(app: &AppHandle) -> Vec<HistoryEntry> {
+    let Some(history) = app.try_state::<Arc<HistoryManager>>() else {
+        return Vec::new();
+    };
+    match history.get_recent_completed_entries(RECENT_TRANSCRIPTS) {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|entry| !last_transcript_text(entry).trim().is_empty())
+            .collect(),
+        Err(err) => {
+            error!("Failed to fetch recent transcripts for the tray: {}", err);
+            Vec::new()
+        }
+    }
+}
+
+/// A one-line preview of a transcript for its tray item.
+fn transcript_label(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= TRANSCRIPT_LABEL_CHARS {
+        return line;
+    }
+    let cut: String = line.chars().take(TRANSCRIPT_LABEL_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
     let _ = on_tray_thread(app, move || {
         NATIVE.with(|native| {
@@ -1209,35 +1244,20 @@ pub fn recreate_tray_icon(app: &AppHandle) {
     });
 }
 
-pub fn copy_last_transcript(app: &AppHandle) {
-    let history_manager = app.state::<Arc<HistoryManager>>();
-    let entry = match history_manager.get_latest_completed_entry() {
-        Ok(Some(entry)) => entry,
-        Ok(None) => {
-            warn!("No completed transcription history entries available for tray copy.");
-            return;
-        }
-        Err(err) => {
-            error!(
-                "Failed to fetch last completed transcription entry: {}",
-                err
-            );
-            return;
-        }
+/// Copies the recent transcript with history id `id` to the clipboard.
+pub fn copy_transcript(app: &AppHandle, id: i64) {
+    let Some(entry) = recent_transcripts(app).into_iter().find(|e| e.id == id) else {
+        warn!("Transcript {} is no longer available for tray copy.", id);
+        return;
     };
 
     let text = last_transcript_text(&entry);
-    if text.trim().is_empty() {
-        warn!("Last completed transcription is empty; skipping tray copy.");
-        return;
-    }
-
     if let Err(err) = app.clipboard().write_text(text.to_string()) {
-        error!("Failed to copy last transcript to clipboard: {}", err);
+        error!("Failed to copy transcript to clipboard: {}", err);
         return;
     }
 
-    info!("Copied last transcript to clipboard via tray.");
+    info!("Copied transcript {} to clipboard via tray.", id);
 }
 
 /// Build the native tray icon. Must run on the main thread, after the
@@ -1342,16 +1362,6 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
             // warning banner explains the situation.
             app.shell().show_main_window();
         }
-        "check_updates" => {
-            let settings = settings::get_settings(app);
-            if settings::update_checks_effectively_enabled(&settings) {
-                app.shell().show_main_window();
-                let _ = app.emit("check-for-updates", ());
-            }
-        }
-        "copy_last_transcript" => {
-            copy_last_transcript(app);
-        }
         "unload_model" => {
             let transcription_manager = app.state::<Arc<TranscriptionManager>>();
             if !transcription_manager.is_model_loaded() {
@@ -1397,6 +1407,11 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "quit" => {
             app.exit(0);
         }
+        id if id.starts_with("copy_transcript:") => {
+            if let Ok(entry_id) = id["copy_transcript:".len()..].parse::<i64>() {
+                copy_transcript(app, entry_id);
+            }
+        }
         id if id.starts_with("model_select:") => {
             let model_id = id.strip_prefix("model_select:").unwrap().to_string();
             let current_model = settings::get_settings(app).selected_model;
@@ -1420,8 +1435,8 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 mod tests {
     use super::{
         build_menu, build_menu_at, desired_from, effective_icon_state, get_icon_path,
-        last_transcript_text, load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry,
-        MenuInputs, TrayDesired, TrayIconState, ANIMATION_FRAMES,
+        last_transcript_text, load_tray_icon, transcript_label, waveform_frame, AppTheme,
+        MeetingMenu, MenuEntry, MenuInputs, TrayDesired, TrayIconState, ANIMATION_FRAMES,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -1447,7 +1462,7 @@ mod tests {
             selected_model: "small".to_string(),
             downloaded_models: vec![("small".to_string(), "Small".to_string())],
             locale: "en".to_string(),
-            update_checks_enabled: true,
+            recent_transcripts: vec![(7, "Hello world".to_string())],
             meeting: MeetingMenu::default(),
         }
     }
@@ -1512,7 +1527,8 @@ mod tests {
     fn idle_menu_has_model_submenu_and_unload() {
         let menu = build_menu(&inputs(false));
         let ids = ids(&menu.entries);
-        assert_eq!(ids[0], "copy_last_transcript");
+        assert_eq!(ids[0], "recent_transcripts");
+        assert!(!ids.contains(&"check_updates".to_string()));
         assert!(!ids.contains(&"version".to_string()));
         assert!(ids.contains(&"model_submenu".to_string()));
         assert!(ids.contains(&"unload_model".to_string()));
@@ -1522,7 +1538,9 @@ mod tests {
             .entries
             .iter()
             .find_map(|e| match e {
-                MenuEntry::Submenu { label, items, .. } => Some((label.clone(), items.clone())),
+                MenuEntry::Submenu {
+                    id, label, items, ..
+                } if id == "model_submenu" => Some((label.clone(), items.clone())),
                 _ => None,
             })
             .unwrap();
@@ -1555,18 +1573,72 @@ mod tests {
     }
 
     #[test]
-    fn unload_disabled_when_no_model_loaded_and_updates_disabled() {
+    fn unload_disabled_when_no_model_loaded() {
         let mut i = inputs(false);
         i.model_loaded = false;
-        i.update_checks_enabled = false;
         let menu = build_menu(&i);
-        for e in &menu.entries {
-            if let MenuEntry::Item { id, enabled, .. } = e {
-                if id == "unload_model" || id == "check_updates" {
-                    assert!(!enabled, "{id} should be disabled");
+        assert!(menu.entries.iter().any(|e| matches!(
+            e,
+            MenuEntry::Item { id, enabled: false, .. } if id == "unload_model"
+        )));
+    }
+
+    fn recent_submenu(menu: &super::MenuModel) -> Vec<MenuEntry> {
+        menu.entries
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Submenu { id, items, .. } if id == "recent_transcripts" => {
+                    Some(items.clone())
                 }
-            }
+                _ => None,
+            })
+            .expect("recent transcripts submenu")
+    }
+
+    #[test]
+    fn recent_transcripts_submenu_lists_copyable_items() {
+        for busy in [false, true] {
+            let mut i = inputs(busy);
+            i.recent_transcripts = vec![(9, "newest".into()), (4, "older".into())];
+            let items = recent_submenu(&build_menu(&i));
+            assert_eq!(
+                items,
+                vec![
+                    MenuEntry::Item {
+                        id: "copy_transcript:9".into(),
+                        label: "newest".into(),
+                        enabled: true,
+                        accelerator: None,
+                    },
+                    MenuEntry::Item {
+                        id: "copy_transcript:4".into(),
+                        label: "older".into(),
+                        enabled: true,
+                        accelerator: None,
+                    },
+                ]
+            );
         }
+    }
+
+    #[test]
+    fn recent_transcripts_submenu_says_when_empty() {
+        let mut i = inputs(false);
+        i.recent_transcripts.clear();
+        let items = recent_submenu(&build_menu(&i));
+        assert!(matches!(
+            items.as_slice(),
+            [MenuEntry::Item { id, enabled: false, .. }] if id == "no_transcripts"
+        ));
+    }
+
+    #[test]
+    fn transcript_labels_are_one_short_line() {
+        assert_eq!(transcript_label("  hello\n  world "), "hello world");
+        let long = "word ".repeat(20);
+        let label = transcript_label(&long);
+        assert_eq!(label.chars().count(), 40);
+        assert!(label.ends_with('…'));
     }
 
     #[test]

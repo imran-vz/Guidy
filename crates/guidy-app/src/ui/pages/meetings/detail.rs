@@ -21,7 +21,6 @@ use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -2855,22 +2854,29 @@ impl MeetingDetail {
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = match self.detail_tab {
-            DetailTab::Notes => 0,
-            DetailTab::Transcript => 1,
-        };
-        TabBar::new("meeting-detail-tabs")
-            .selected_index(selected)
-            .on_click(cx.listener(|this, ix, _, cx| {
-                this.detail_tab = if *ix == 0 {
-                    DetailTab::Notes
-                } else {
-                    DetailTab::Transcript
-                };
-                cx.notify();
-            }))
-            .child(Tab::new().label(t("meetings.detail.notesTab")))
-            .child(Tab::new().label(t("meetings.detail.transcript")))
+        let tabs = [
+            (DetailTab::Notes, "notes", t("meetings.detail.notesTab")),
+            (
+                DetailTab::Transcript,
+                "transcript",
+                t("meetings.detail.transcript"),
+            ),
+        ];
+        h_flex().child(
+            design::segmented(cx).children(tabs.into_iter().map(|(tab, id, label)| {
+                design::segment(
+                    SharedString::from(format!("meeting-detail-tab-{id}")),
+                    label,
+                    self.detail_tab == tab,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.detail_tab = tab;
+                    cx.notify();
+                }))
+                .test_support()
+            })),
+        )
     }
 
     /// Copy the transcript as `[mm:ss] Speaker: text` lines under the

@@ -956,27 +956,39 @@ impl SummaryView {
         );
     }
 
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let has_summary = self.summary.is_some();
-        // Regenerate lives on the meeting header's Redo menu. This button
-        // is only the empty state, before a summary exists.
+    /// "Generate summary", the empty state before a summary exists.
+    /// Regenerate lives on the meeting header's Redo menu.
+    fn header(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        (self.summary.is_none()).then(|| {
+            h_flex()
+                .w_full()
+                .justify_end()
+                .child(self.generate_button(cx))
+                .into_any_element()
+        })
+    }
+
+    /// The summary panel's heading row: the eyebrow, and Edit on the
+    /// right while a summary is shown and not being edited.
+    fn summary_heading(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .w_full()
-            .gap_2()
-            .justify_end()
-            .when(has_summary && !self.editing, |d| {
+            .px(dp(2.))
+            .justify_between()
+            .items_center()
+            .child(design::eyebrow(t("meetingsAi.summary.heading"), cx))
+            .when(self.summary.is_some() && !self.editing, |d| {
                 d.child(
                     Button::new("summary-edit")
                         .ghost()
                         .pill()
-                        .small()
+                        .xsmall()
                         .icon(icon("pencil"))
                         .label(t("meetingsAi.summary.edit"))
                         .disabled(self.generating)
                         .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
                 )
             })
-            .when(!has_summary, |d| d.child(self.generate_button(cx)))
             .into_any_element()
     }
 
@@ -1621,6 +1633,7 @@ impl Render for SummaryView {
         }
         self.ensure_item_inputs(window, cx);
         let header = self.header(cx);
+        let heading = self.summary_heading(cx);
         let progress = self.progress_row(cx);
         let picker = self.picker(cx);
         let summary_rows = self.summary_rows(cx);
@@ -1629,17 +1642,17 @@ impl Render for SummaryView {
             .id("meeting-summary")
             .w_full()
             .gap_4()
-            .child(header)
+            .children(header)
             .children(progress)
             .children(picker.map(|p| group(None, vec![p], cx)))
             .when_some(self.error.clone(), |d, e| {
                 d.child(error_box("summary-error", e, cx).m_0().test_support())
             })
-            .child(group(
-                Some(t("meetingsAi.summary.heading")),
+            .child(v_flex().w_full().gap(dp(8.)).child(heading).child(group(
+                None,
                 summary_rows,
                 cx,
-            ))
+            )))
             .child(foldable_group(
                 "action-items-fold",
                 t("meetingsAi.summary.actionItems"),

@@ -48,7 +48,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | E-11 | theme-changed | Main window and overlay re-theme | test: theme_change_emits_theme_changed |
 | E-12 | secure-input-changed | Banner | test: secure_input_banner_follows_events_and_dismisses_per_episode |
 | E-13 | native-keys-event | Shortcut recorder | test: native_keys_recording_commits_on_key_release |
-| E-14 | check-for-updates (from the tray) | Manual update check | test: tray_update_check_event_runs_a_manual_check |
+| E-14 | check-for-updates | Manual update check | test: tray_update_check_event_runs_a_manual_check |
 | E-15 | log stream | Debug live log viewer | test: live_logs_buffer_and_clear, test: level_numbers_match_the_log_viewer |
 
 ## S. Startup, CLI, process
@@ -74,7 +74,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 
 | ID | Behavior | Cover |
 |---|---|---|
-| T-01 | Menu items: settings, check updates, copy last transcript, unload model, cancel (only while busy), model submenu `model_select:<id>`, quit; secure-input warning item | test: idle_menu_has_model_submenu_and_unload, test: busy_menu_offers_cancel_instead_of_models, test: secure_input_warning_is_slotted_below_version, manual: HW-04 |
+| T-01 | Menu items: settings, recent transcripts submenu (last 3, `copy_transcript:<id>`), unload model, cancel (only while busy), model submenu `model_select:<id>`, quit; secure-input warning item | test: idle_menu_has_model_submenu_and_unload, test: recent_transcripts_submenu_lists_copyable_items, test: busy_menu_offers_cancel_instead_of_models, test: secure_input_warning_is_slotted_below_version, manual: HW-04 |
 | T-02 | Icon states: idle / recording / transcribing / warning, each with light and dark variants; updates on OS theme change | test: recording_and_transcribing_share_a_menu, test: tray_icon_returns_err_when_file_does_not_exist, manual: HW-04 |
 | T-03 | Localized labels from the locale (exact → Chinese script → base → en) | test: localized_labels_follow_the_locale, test: resolves_locale_fallbacks |
 | T-04 | `show_tray_icon` toggle; refresh on model-state-changed and on OS light/dark changes (also with no window open); Linux tray runs on its own GTK thread | test: unload_disabled_when_no_model_loaded_and_updates_disabled, test: app_group_rows_and_overlay_position_visibility, manual: HW-04 |
