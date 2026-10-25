@@ -805,11 +805,7 @@ fn transcript_notice(status: &LiveStatus, tone: Tone, cx: &App) -> AnyElement {
 
 impl RecordingWidgetView {
     /// Presses on the floater (outside its buttons) start a drag or a click.
-    fn press_handler(
-        &self,
-        avoid: Vec<R>,
-        cx: &mut Context<Self>,
-    ) -> PressHandler {
+    fn press_handler(&self, avoid: Vec<R>, cx: &mut Context<Self>) -> PressHandler {
         Box::new(cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
             let at = P::new(ev.position.x.into(), ev.position.y.into());
             if avoid.iter().any(|r| r.inflate(2.).contains(at)) {

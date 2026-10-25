@@ -498,8 +498,10 @@ impl Render for StatusBar {
                     .pr(dp(6.))
                     .text_size(dp(12.))
                     .text_color(tone.text_muted)
-                    .child(self.render_update_checker(cx))
-                    .child(div().text_color(tone.text_faint).child("·"))
+                    .when(self.update.enabled, |d| {
+                        d.child(self.render_update_checker(cx))
+                            .child(div().text_color(tone.text_faint).child("·"))
+                    })
                     .child(
                         div()
                             .id("app-version")

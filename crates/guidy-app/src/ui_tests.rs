@@ -3,6 +3,7 @@
 
 use crate::state::AppState;
 use crate::testing::FakeBackend;
+use guidy_core::commands::audio::AudioDevice;
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
 use gpui_kit::{
     px, size, AnyWindowHandle, AppContext as _, Bounds, Context, Entity, Point, Render,
@@ -364,6 +365,23 @@ mod main_window {
         cx.run_until_parked();
         assert!(exists(cx, w, "model-selector"));
         assert!(exists(cx, w, "update-status"));
+        assert!(exists(cx, w, "app-version"));
+    }
+
+    #[gpui_kit::test]
+    fn status_bar_hides_update_text_when_checks_disabled(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend
+            .data
+            .lock()
+            .settings
+            .as_mut()
+            .unwrap()
+            .update_checks_enabled = false;
+        setup(cx, backend.clone());
+        let (w, _) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "update-status"));
         assert!(exists(cx, w, "app-version"));
     }
 
@@ -1553,6 +1571,29 @@ mod gap_regressions {
             s.audio_devices.iter().map(|d| d.name.clone()).collect()
         });
         assert_eq!(names, vec!["Default".to_string()]);
+    }
+
+    /// The core command already prepends "Default"; the list must not repeat it.
+    #[gpui_kit::test]
+    fn device_list_keeps_single_default(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().microphones = vec![
+            AudioDevice {
+                index: "default".into(),
+                name: "Default".into(),
+                is_default: true,
+            },
+            AudioDevice {
+                index: "0".into(),
+                name: "Studio Mic".into(),
+                is_default: false,
+            },
+        ];
+        let state = setup(cx, backend.clone());
+        let names: Vec<String> = state.read_with(cx, |s, _| {
+            s.audio_devices.iter().map(|d| d.name.clone()).collect()
+        });
+        assert_eq!(names, vec!["Default".to_string(), "Studio Mic".to_string()]);
     }
 }
 

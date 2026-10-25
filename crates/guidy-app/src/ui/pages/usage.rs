@@ -135,6 +135,7 @@ fn feature_key(f: UsageFeature) -> &'static str {
         UsageFeature::Dictation => "usage.feature.dictation",
         UsageFeature::MeetingTranscription => "usage.feature.meetingTranscription",
         UsageFeature::MeetingSummary => "usage.feature.meetingSummary",
+        UsageFeature::MeetingTitle => "usage.feature.meetingTitle",
         UsageFeature::Other => "usage.feature.other",
     }
 }

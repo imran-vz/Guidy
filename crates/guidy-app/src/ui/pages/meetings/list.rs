@@ -144,6 +144,9 @@ impl MeetingList {
                 }
                 cx.notify();
             }
+            // Bulk titling changes one meeting after another: it updates
+            // their rows itself and reloads once it's done.
+            MeetingsEvent::MeetingChanged(_) if self.bulk.is_some() => {}
             MeetingsEvent::MeetingChanged(_)
             | MeetingsEvent::RecorderState(_)
             | MeetingsEvent::Ready => self.reload(cx),

@@ -32,7 +32,6 @@ pub struct Windows {
     pub main: Option<AnyWindowHandle>,
     pub main_view: Option<WeakEntity<MainWindow>>,
     pub overlay: Option<(AnyWindowHandle, OverlayPlacement)>,
-    pub notch: Option<AnyWindowHandle>,
     /// The recording floater's windows, one per display.
     pub recording_widget: Vec<AnyWindowHandle>,
 }
@@ -783,6 +782,13 @@ pub fn sync_system_appearance(cx: &mut App) {
 
 /// Follow OS theme changes even with every window hidden; GPUI only reports
 /// appearance per open window, so watch it app-wide.
+/// Rebuild the recording floater's windows when a display is connected,
+/// disconnected or changes size (they cover the displays one each).
+pub fn watch_displays(cx: &mut App) {
+    cx.observe_displays(|_, cx| cx.defer(sync_recording_controls))
+        .detach();
+}
+
 pub fn spawn_appearance_watch(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last = cx.update(|cx| cx.window_appearance());

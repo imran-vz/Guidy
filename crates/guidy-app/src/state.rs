@@ -97,7 +97,12 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Ensures the list starts with the "Default" entry. The core commands
+/// already prepend it, so only add it when missing (e.g. on load failure).
 fn device_with_default(mut devices: Vec<AudioDevice>) -> Vec<AudioDevice> {
+    if devices.iter().any(|d| d.index == "default") {
+        return devices;
+    }
     devices.insert(
         0,
         AudioDevice {

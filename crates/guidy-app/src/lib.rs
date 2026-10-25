@@ -149,6 +149,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     });
     windows::spawn_shell_loop(shell, shell_rx, cx);
     windows::spawn_appearance_watch(cx);
+    windows::watch_displays(cx);
 
     // Queue backend events from now on; consumed once state exists.
     let (event_tx, event_rx) = smol::channel::unbounded::<CoreEvent>();
