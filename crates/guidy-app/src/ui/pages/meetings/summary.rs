@@ -899,7 +899,7 @@ impl SummaryView {
     }
 
     /// Copy the summary and action items as Markdown.
-    fn copy(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn copy(&mut self, cx: &mut Context<Self>) {
         let id = self.meeting_id;
         super::run(
             cx,
@@ -945,19 +945,6 @@ impl SummaryView {
             .justify_end()
             .when(has_summary && !self.editing, |d| {
                 d.child(
-                    Button::new("summary-copy")
-                        .ghost()
-                        .pill()
-                        .small()
-                        .icon(icon(if self.copied { "check" } else { "copy" }))
-                        .label(if self.copied {
-                            t("meetings.copy.copied")
-                        } else {
-                            t("meetings.copy.summary")
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.copy(cx))),
-                )
-                .child(
                     Button::new("summary-edit")
                         .ghost()
                         .pill()

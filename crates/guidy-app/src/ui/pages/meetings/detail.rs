@@ -16,8 +16,10 @@ use crate::ui::kit::{crumb_title, foldable_heading, group, icon, t, t_args};
 use crate::ui::main_window::PageScroll;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
+use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -38,6 +40,13 @@ pub enum DetailEvent {
     Back,
     /// The ticket list asked for settings (no Linear key yet).
     OpenSettings,
+}
+
+/// Notes is the meeting write-up. Transcript is the lines and speakers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DetailTab {
+    Notes,
+    Transcript,
 }
 
 /// What the name picker names: a whole speaker, or some lines (an unknown
@@ -93,12 +102,21 @@ pub struct MeetingDetail {
     diarization: DiarizationOptions,
     /// "Copy transcript" just copied (shows a check for a moment).
     transcript_copied: bool,
+    /// The header copy just copied the notes.
+    notes_copied: bool,
     /// The header shows every attendee, not one truncated line.
     attendees_open: bool,
+    /// Talk-time share, folded until the user opens it.
+    talk_open: bool,
+    /// Notes or the transcript.
+    detail_tab: DetailTab,
     /// The speakers list is shown (folded when a meeting opens).
     speakers_open: bool,
     /// The title and description are being generated.
     titling: bool,
+    /// The notes view, kept from the last time that tab rendered so copy
+    /// and regenerate can reach it from a click.
+    summary_view: Option<Entity<super::summary::SummaryView>>,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -170,9 +188,13 @@ impl MeetingDetail {
             cloud_options: Vec::new(),
             diarization: DiarizationOptions::default(),
             transcript_copied: false,
+            notes_copied: false,
             attendees_open: false,
+            talk_open: false,
+            detail_tab: DetailTab::Notes,
             speakers_open: false,
             titling: false,
+            summary_view: None,
             ticking: false,
             _subs: subs,
         };
@@ -620,6 +642,11 @@ impl MeetingDetail {
         );
     }
 
+    pub fn select_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        self.detail_tab = tab;
+        cx.notify();
+    }
+
     /// Whether the transcript can be redone: the meeting is done (or failed)
     /// and its audio is still there.
     fn can_redo(&self) -> bool {
@@ -786,59 +813,9 @@ impl MeetingDetail {
         });
     }
 
-    /// "Redo speakers" with the chosen (or most accurate) model, and a
-    /// menu of the others.
-    fn speakers_button(&self, cx: &mut Context<Self>) -> DropdownButton {
-        let choices = self.speaker_redo_choices();
-        let busy = self.processing_busy;
-        let main = choices[0].clone();
-        let button = Button::new("speakers-redo")
-            .ghost()
-            .small()
-            .pill()
-            .icon(icon("users"))
-            .label(t("meetings.speakersRedo.action"))
-            .tooltip(t_args(
-                "meetings.speakersRedo.tooltip",
-                &[("model", &main.label)],
-            ))
-            .disabled(busy)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.choose_speaker_redo(main.clone(), window, cx)
-            }));
-        let weak = cx.entity().downgrade();
-        DropdownButton::new("speakers-redo-split")
-            .button(button)
-            .disabled(busy)
-            .menu_accessibility_label(t("meetings.redo.more"))
-            .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu.label(t("meetings.redo.localTitle"));
-                for c in &choices {
-                    if c.cloud {
-                        menu = menu.separator().label(t("meetings.redo.cloudTitle"));
-                    }
-                    let choice = c.clone();
-                    let weak = weak.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(c.label.clone())
-                            .checked(c.current)
-                            .disabled(!c.enabled)
-                            .on_click(move |_, window, cx| {
-                                let choice = choice.clone();
-                                weak.update(cx, |this, cx| {
-                                    this.choose_speaker_redo(choice, window, cx)
-                                })
-                                .ok();
-                            }),
-                    );
-                }
-                menu
-            })
-    }
-
-    /// "Redo transcript" with the current meeting model, and a menu of the
-    /// other models and the cloud providers. `primary` styles it as the
-    /// suggested action.
+    /// "Redo" runs the transcript again with the current model. The menu
+    /// also offers the other transcript models, a speaker redo, and a new
+    /// summary. `primary` styles it as the suggested action.
     fn redo_button(
         &self,
         id: &'static str,
@@ -852,7 +829,7 @@ impl MeetingDetail {
             .small()
             .pill()
             .icon(icon("rotate-ccw"))
-            .label(t("meetings.redo.action"))
+            .label(t("meetings.redo.menu"))
             .map(|b| if primary { b.primary() } else { b.secondary() })
             .when_some(current.clone(), |b, c| {
                 b.tooltip(t_args("meetings.redo.tooltip", &[("model", &c.label)]))
@@ -864,12 +841,17 @@ impl MeetingDetail {
                 )
             });
         let weak = cx.entity().downgrade();
+        let speakers = self.speaker_redo_choices();
+        let offer_speakers = self
+            .meeting
+            .as_ref()
+            .is_some_and(|m| m.status == MeetingStatus::Processed && can_process(m));
         DropdownButton::new(SharedString::from(format!("{id}-split")))
             .button(main)
             .disabled(busy)
             .menu_accessibility_label(t("meetings.redo.more"))
-            .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu;
+            .dropdown_menu(move |menu, window, cx| {
+                let mut menu = menu.label(t("meetings.redo.action"));
                 let mut section = None;
                 for c in &choices {
                     if section != Some(c.cloud) {
@@ -896,18 +878,66 @@ impl MeetingDetail {
                             }),
                     );
                 }
-                menu
+                if offer_speakers {
+                    let speakers = speakers.clone();
+                    let weak = weak.clone();
+                    menu = menu.separator().submenu(
+                        t("meetings.speakersRedo.action"),
+                        window,
+                        cx,
+                        move |menu, _, _| {
+                            let mut menu = menu;
+                            for c in &speakers {
+                                if c.cloud {
+                                    menu = menu.separator().label(t("meetings.redo.cloudTitle"));
+                                }
+                                let choice = c.clone();
+                                let weak = weak.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::new(c.label.clone())
+                                        .checked(c.current)
+                                        .disabled(!c.enabled)
+                                        .on_click(move |_, window, cx| {
+                                            let choice = choice.clone();
+                                            weak.update(cx, |this, cx| {
+                                                this.choose_speaker_redo(choice, window, cx)
+                                            })
+                                            .ok();
+                                        }),
+                                );
+                            }
+                            menu
+                        },
+                    );
+                }
+                let weak = weak.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(t("meetingsAi.summary.regenerate")).on_click(
+                        move |_, _, cx| {
+                            weak.update(cx, |this, cx| {
+                                if let Some(v) = this.summary_view.clone() {
+                                    v.update(cx, |v, cx| v.generate(None, cx));
+                                }
+                            })
+                            .ok();
+                        },
+                    ),
+                )
             })
     }
 
     // -- G2 panes ---------------------------------------------------------------
 
-    fn render_summary(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_summary(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let weak = cx.entity().downgrade();
-        let on_seek: super::summary::SeekHandler = std::rc::Rc::new(move |t_ms, _, cx| {
-            let _ = weak.update(cx, |this, cx| this.seek_to(t_ms, cx));
+        let v = super::summary::view(self.meeting_id, window, cx);
+        v.update(cx, |v, _| {
+            v.set_on_seek(move |t_ms, _, cx| {
+                let _ = weak.update(cx, |this, cx| this.seek_to(t_ms, cx));
+            });
         });
-        super::summary::render_with_seek(self.meeting_id, on_seek, window, cx)
+        self.summary_view = Some(v.clone());
+        v.into_any_element()
     }
 
     fn render_tickets(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1061,6 +1091,43 @@ impl MeetingDetail {
         speaker_name(s, &self.people, Some(&settings), &t("meetings.detail.you"))
     }
 
+    /// Talk-time share, folded until opened.
+    fn render_talk_fold(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let chart = self.render_talk_time(cx)?;
+        let open = self.talk_open;
+        let count = self.talk.speakers.len().min(6);
+        let tone = design::tone(cx);
+        Some(
+            v_flex()
+                .w_full()
+                .border_t_1()
+                .border_color(tone.hairline)
+                .child(
+                    div()
+                        .px(design::SECTION_X)
+                        .py(dp(8.))
+                        .child(foldable_heading(
+                            "meeting-talk-time-fold",
+                            t("meetings.detail.talkTime"),
+                            count,
+                            open,
+                            cx.listener(|this, _, _, cx| {
+                                this.talk_open = !this.talk_open;
+                                cx.notify();
+                            }),
+                            cx,
+                        )),
+                )
+                .child(
+                    Collapsible::new()
+                        .open(open)
+                        .motion_id("meeting-talk-time-reveal")
+                        .content(chart),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Speakers along the meeting's timeline, longest talker first; the
     /// user is drawn in the accent.
     fn render_talk_time(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1177,8 +1244,6 @@ impl MeetingDetail {
         Some(
             v_flex()
                 .w_full()
-                .border_t_1()
-                .border_color(tone.hairline)
                 .child(
                     h_flex()
                         .px(design::SECTION_X)
@@ -1317,6 +1382,7 @@ impl MeetingDetail {
             .when(self.can_redo(), |d| {
                 d.child(self.redo_button("meeting-detail-redo", false, cx))
             })
+            .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
             .when(processing, |d| {
                 d.child(
                     Button::new("meeting-detail-cancel")
@@ -1443,7 +1509,7 @@ impl MeetingDetail {
                         .border_color(tone.hairline)
                         .child(design::stat_grid(stats, columns, cx)),
                 )
-                .children(self.render_talk_time(cx))
+                .children(self.render_talk_fold(cx))
                 .when(processing, |d| {
                     let stage = self
                         .progress
@@ -1471,18 +1537,21 @@ impl MeetingDetail {
                             .child(design::track("meeting-detail-progress", Some(fraction), cx)),
                     )
                 })
-                .when(show_process || processing || self.can_redo(), |d| {
-                    d.child(
-                        h_flex()
-                            .w_full()
-                            .justify_end()
-                            .px(design::SECTION_X)
-                            .py(dp(10.))
-                            .border_t_1()
-                            .border_color(tone.hairline)
-                            .child(actions),
-                    )
-                });
+                .when(
+                    show_process || processing || self.can_redo() || self.can_copy(),
+                    |d| {
+                        d.child(
+                            h_flex()
+                                .w_full()
+                                .justify_end()
+                                .px(design::SECTION_X)
+                                .py(dp(10.))
+                                .border_t_1()
+                                .border_color(tone.hairline)
+                                .child(actions),
+                        )
+                    },
+                );
 
         v_flex()
             .gap(dp(10.))
@@ -1702,11 +1771,6 @@ impl MeetingDetail {
                     .into_any_element()
             })
             .collect();
-        let redo = self
-            .meeting
-            .as_ref()
-            .is_some_and(|m| m.status == MeetingStatus::Processed && can_process(m))
-            .then(|| self.speakers_button(cx));
         let open = self.speakers_open;
         // A speaker waiting for a name or a confirmation is shown anyway.
         let pending = self
@@ -1719,37 +1783,32 @@ impl MeetingDetail {
                 .w_full()
                 .gap(dp(8.))
                 .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(foldable_heading(
-                                    "meeting-speakers-fold",
-                                    t("meetings.detail.speakers"),
-                                    self.speakers.len(),
-                                    open,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.speakers_open = !this.speakers_open;
-                                        cx.notify();
-                                    }),
+                    h_flex().w_full().items_center().justify_between().child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(foldable_heading(
+                                "meeting-speakers-fold",
+                                t("meetings.detail.speakers"),
+                                self.speakers.len(),
+                                open,
+                                cx.listener(|this, _, _, cx| {
+                                    this.speakers_open = !this.speakers_open;
+                                    cx.notify();
+                                }),
+                                cx,
+                            ))
+                            .when(!open && pending > 0, |d| {
+                                d.child(design::chip(
+                                    t_args(
+                                        "meetings.detail.speakersToName",
+                                        &[("count", &pending.to_string())],
+                                    ),
+                                    true,
                                     cx,
                                 ))
-                                .when(!open && pending > 0, |d| {
-                                    d.child(design::chip(
-                                        t_args(
-                                            "meetings.detail.speakersToName",
-                                            &[("count", &pending.to_string())],
-                                        ),
-                                        true,
-                                        cx,
-                                    ))
-                                }),
-                        )
-                        .children(redo),
+                            }),
+                    ),
                 )
                 .when(open, |d| d.child(group(None, rows, cx)))
                 .into_any_element(),
@@ -2205,15 +2264,10 @@ impl MeetingDetail {
                 .test_support()
                 .into_any_element()]
         } else {
-            let notice = self.render_quality_notice(cx);
-            notice
-                .into_iter()
-                .chain(
-                    group_by_speaker(&self.segments)
-                        .iter()
-                        .enumerate()
-                        .map(|(i, b)| self.render_block(i, b, cx)),
-                )
+            group_by_speaker(&self.segments)
+                .iter()
+                .enumerate()
+                .map(|(i, b)| self.render_block(i, b, cx))
                 .collect()
         };
         let copy = (!self.loading && !self.segments.is_empty()).then(|| {
@@ -2278,6 +2332,85 @@ impl MeetingDetail {
             .into_any_element()
     }
 
+    fn can_copy(&self) -> bool {
+        !self.segments.is_empty() || self.meeting.as_ref().is_some_and(|m| m.has_summary)
+    }
+
+    /// Notes (summary, and later the minutes) are the default copy.
+    fn copy_notes(&mut self, cx: &mut Context<Self>) {
+        let Some(v) = self.summary_view.clone() else {
+            return;
+        };
+        v.update(cx, |v, cx| v.copy(cx));
+        self.notes_copied = true;
+        cx.notify();
+        cx.spawn(async |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1_500))
+                .await;
+            this.update(cx, |this, cx| {
+                this.notes_copied = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn copy_button(&self, cx: &mut Context<Self>) -> DropdownButton {
+        let copied = self.notes_copied;
+        let main = Button::new("summary-copy")
+            .ghost()
+            .small()
+            .pill()
+            .icon(icon(if copied { "check" } else { "copy" }))
+            .label(if copied {
+                t("meetings.copy.copied")
+            } else {
+                t("meetings.copy.notes")
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.copy_notes(cx)));
+        let weak = cx.entity().downgrade();
+        DropdownButton::new("meeting-copy-split")
+            .button(main)
+            .menu_accessibility_label(t("meetings.copy.more"))
+            .dropdown_menu(move |menu, _, _| {
+                let weak_transcript = weak.clone();
+                let weak_summary = weak.clone();
+                menu.item(PopupMenuItem::new(t("meetings.copy.transcript")).on_click(
+                    move |_, _, cx| {
+                        weak_transcript
+                            .update(cx, |this, cx| this.copy_transcript(cx))
+                            .ok();
+                    },
+                ))
+                .item(
+                    PopupMenuItem::new(t("meetings.copy.summaryOnly")).on_click(move |_, _, cx| {
+                        weak_summary.update(cx, |this, cx| this.copy_notes(cx)).ok();
+                    }),
+                )
+            })
+    }
+
+    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = match self.detail_tab {
+            DetailTab::Notes => 0,
+            DetailTab::Transcript => 1,
+        };
+        TabBar::new("meeting-detail-tabs")
+            .selected_index(selected)
+            .on_click(cx.listener(|this, ix, _, cx| {
+                this.detail_tab = if *ix == 0 {
+                    DetailTab::Notes
+                } else {
+                    DetailTab::Transcript
+                };
+                cx.notify();
+            }))
+            .child(Tab::new().label(t("meetings.detail.notesTab")))
+            .child(Tab::new().label(t("meetings.detail.transcript")))
+    }
+
     /// Copy the transcript as `[mm:ss] Speaker: text` lines under the
     /// meeting's title and date.
     fn copy_transcript(&mut self, cx: &mut Context<Self>) {
@@ -2309,18 +2442,32 @@ impl MeetingDetail {
 
 impl Render for MeetingDetail {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keyed views stay mounted on either tab. Skipping them when the
+        // transcript is showing would change the hook order.
+        let summary = self.render_summary(window, cx);
+        let tickets = self.render_tickets(window, cx);
+        let body: AnyElement = match self.detail_tab {
+            DetailTab::Notes => v_flex()
+                .w_full()
+                .gap(dp(22.))
+                .child(summary)
+                .child(tickets)
+                .into_any_element(),
+            DetailTab::Transcript => v_flex()
+                .w_full()
+                .gap(dp(22.))
+                .children(self.render_speakers(cx))
+                .child(self.render_transcript(cx))
+                .into_any_element(),
+        };
         v_flex()
             .id("meeting-detail")
             .w_full()
             .gap(dp(22.))
             .child(self.render_header(cx))
-            // ---- G2 slot: summary + action items (summary.rs) -------------
-            .child(self.render_summary(window, cx))
-            // ---- G2 slot: Linear ticket review list (tickets.rs) ----------
-            .child(self.render_tickets(window, cx))
-            // ---------------------------------------------------------------
-            .children(self.render_speakers(cx))
-            .child(self.render_transcript(cx))
+            .children(self.render_quality_notice(cx))
+            .child(self.render_tabs(cx))
+            .child(body)
             .test_support()
     }
 }

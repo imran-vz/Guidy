@@ -1622,6 +1622,20 @@ mod gap_regressions {
     }
 }
 
+/// Open the Transcript tab of the meeting currently on `page`.
+fn show_transcript(
+    cx: &mut TestAppContext,
+    page: &Entity<crate::ui::pages::meetings::MeetingsPage>,
+) {
+    use crate::ui::pages::meetings::detail::{DetailTab, MeetingDetail};
+    let detail = page
+        .read_with(cx, |p, _| p.detail().cloned())
+        .expect("a meeting is open");
+    detail.update(cx, |d: &mut MeetingDetail, cx| {
+        d.select_tab(DetailTab::Transcript, cx)
+    });
+}
+
 /// Like [`setup`], with a meetings fake installed next to the backend.
 pub fn setup_meetings(
     cx: &mut TestAppContext,
@@ -1817,6 +1831,7 @@ mod meetings_page {
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         // The speakers are folded when the meeting opens.
         assert!(!exists(cx, w, "speaker-5"));
         with_window(cx, w, |window, cx| {
@@ -3698,8 +3713,9 @@ mod redo_transcript {
             },
         );
         setup_meetings(cx, backend, meetings);
-        let (w, _) = open(cx, MeetingsPage::new);
+        let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         let clipboard = |cx: &mut TestAppContext| {
             cx.update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
                 .unwrap_or_default()
@@ -3888,17 +3904,28 @@ mod line_tagging {
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
-        // One click: the most accurate model (meetings use the standard one).
-        with_window(cx, w, |window, cx| window.click("speakers-redo", cx));
+        // The most accurate model (meetings use the standard one), from the Redo menu.
+        let d = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("a meeting is open");
+        let choice = cx.update(|cx| {
+            d.read(cx)
+                .speaker_redo_choices()
+                .into_iter()
+                .next()
+                .unwrap()
+        });
+        cx.update_window(w, |_, window, cx| {
+            d.update(cx, |d, cx| d.choose_speaker_redo(choice, window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
         assert!(
             meetings.called("redo_speakers 1 Model(Resnet293)"),
             "{:?}",
             meetings.calls()
         );
 
-        let d = page
-            .read_with(cx, |p, _| p.detail().cloned())
-            .expect("a meeting is open");
         let deepgram = |cx: &mut TestAppContext| {
             cx.update(|cx| d.read(cx).speaker_redo_choices())
                 .into_iter()
@@ -3939,8 +3966,9 @@ mod line_tagging {
     fn an_unknown_voice_is_highlighted_and_its_turn_can_be_named(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());
-        let (w, _) = open(cx, MeetingsPage::new);
+        let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         // Blocks: Prashanth, the unknown turn, Prashanth.
         assert!(!exists(cx, w, "block-0-tag"));
         assert!(exists(cx, w, "block-1-tag"), "unknown gets 'Who is this?'");
@@ -3973,6 +4001,7 @@ mod line_tagging {
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         let d = page
             .read_with(cx, |p, _| p.detail().cloned())
             .expect("a meeting is open");
@@ -4035,6 +4064,7 @@ mod line_tagging {
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         let d = page
             .read_with(cx, |p, _| p.detail().cloned())
             .expect("a meeting is open");
@@ -4070,8 +4100,9 @@ mod line_tagging {
     fn one_wrongly_named_line_can_be_renamed_without_playing_it(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());
-        let (w, _) = open(cx, MeetingsPage::new);
+        let (w, page) = open(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        show_transcript(cx, &page);
         with_window(cx, w, |window, cx| window.click("segment-4-tag", cx));
         assert!(meetings.called("segment_suggestions 4"));
         assert!(

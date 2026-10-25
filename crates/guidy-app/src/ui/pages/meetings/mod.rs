@@ -612,22 +612,10 @@ impl MeetingsPage {
                         .test_support(),
                 )
                 .into_any_element(),
-            RecorderState::Idle => v_flex()
-                .gap(dp(3.))
-                .child(
-                    div()
-                        .text_size(design::TEXT_TITLE)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(t("meetings.recorder.idle")),
-                )
-                .when(!enabled, |d| {
-                    d.child(
-                        div()
-                            .text_size(dp(12.))
-                            .text_color(tone.text_muted)
-                            .child(t("meetings.recorder.disabled")),
-                    )
-                })
+            RecorderState::Idle => div()
+                .text_size(design::TEXT_TITLE)
+                .font_weight(FontWeight::MEDIUM)
+                .child(t("meetings.recorder.idle"))
                 .into_any_element(),
         };
         let button = Button::new("meeting-record-toggle")
@@ -759,11 +747,7 @@ impl Render for MeetingsPage {
         if let Some(init) = self.render_init(cx) {
             return page()
                 .id("page-meetings")
-                .child(page_header(
-                    t("meetings.title"),
-                    Some(t("meetings.description")),
-                    cx,
-                ))
+                .child(page_header(t("meetings.title"), None, cx))
                 .child(init)
                 .test_support();
         }
@@ -782,11 +766,7 @@ impl Render for MeetingsPage {
         };
         page()
             .id("page-meetings")
-            .child(page_header(
-                t("meetings.title"),
-                Some(t("meetings.description")),
-                cx,
-            ))
+            .child(page_header(t("meetings.title"), None, cx))
             .child(self.render_recorder(cx))
             .child(self.render_tabs(cx))
             .child(body)

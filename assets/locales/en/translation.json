@@ -828,7 +828,10 @@
     "copy": {
       "summary": "Copy",
       "transcript": "Copy transcript",
-      "copied": "Copied"
+      "copied": "Copied",
+      "notes": "Copy notes",
+      "summaryOnly": "Copy summary only",
+      "more": "More ways to copy"
     },
     "redo": {
       "action": "Redo transcript",
@@ -843,7 +846,8 @@
       "noKeyShort": "needs an API key (Meetings › Settings › AI)",
       "confirmTitle": "Transcribe with {{provider}}?",
       "confirmCloud": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}, for about {{cost}}. The transcript and speakers are replaced.",
-      "confirmCloudUnpriced": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}. The transcript and speakers are replaced."
+      "confirmCloudUnpriced": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}. The transcript and speakers are replaced.",
+      "menu": "Redo"
     },
     "widget": {
       "recording": "Recording",
@@ -968,7 +972,8 @@
       "share": "Share",
       "youSpoke": "You spoke",
       "minutes": "Min",
-      "speakersToName": "{{count}} to name"
+      "speakersToName": "{{count}} to name",
+      "notesTab": "Notes"
     },
     "speaker": {
       "rename": "Name this speaker",
