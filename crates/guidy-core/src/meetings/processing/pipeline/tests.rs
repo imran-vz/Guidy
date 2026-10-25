@@ -1450,15 +1450,15 @@ fn batches_group_pending_units_of_one_track_up_to_the_limit() {
         unit(Track::System, 21000, 22000),
     ];
     let all = [true; 6];
-    // Start-time order interleaves the tracks: mic 0, system 0, system 3000,
-    // then the later mic units, then the last system unit.
+    // Storage order is mic, then system. Interleaved start times stay in
+    // the same per-track group, up to the limit.
     assert_eq!(
         batches(&units, &all, 7000),
-        vec![vec![0], vec![3], vec![4], vec![1, 2], vec![5]]
+        vec![vec![0, 1, 2], vec![3], vec![4], vec![5]]
     );
     assert_eq!(
         batches(&units, &all, 6000),
-        vec![vec![0], vec![3], vec![4], vec![1, 2], vec![5]]
+        vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5]]
     );
     // Done units are skipped (a resumed run).
     let pending = [false, true, true, false, false, true];
@@ -1541,10 +1541,10 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
     .unwrap();
 
     let calls = calls.borrow().clone();
-    // Time order, one track per call, 7000 ms cap. The mic turns sit inside
-    // the system turns, so the groups are not "all mic, then all system".
+    // Storage order, one track per call, 7000 ms cap: all of the mic, then
+    // all of the system, even though the turns interleave on the clock.
     let units: Vec<usize> = calls.iter().map(Vec::len).collect();
-    assert_eq!(units, vec![1, 1, 2, 2, 1, 1], "{calls:?}");
+    assert_eq!(units, vec![2, 2, 2, 2], "{calls:?}");
     for call in &calls {
         let total: i64 = call.iter().sum();
         assert!(total <= limit_ms, "{call:?}");

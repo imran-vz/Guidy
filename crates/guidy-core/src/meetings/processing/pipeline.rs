@@ -680,7 +680,9 @@ impl<'a> Pipeline<'a> {
 
     /// [`Self::transcribe`] for a batching transcriber: the pending units in
     /// groups (see [`batches`]), one call each, progress and checkpoints per
-    /// group.
+    /// group. Groups follow storage order (a whole track, then the next), so
+    /// streamed lines can arrive out of time order. The detail view inserts
+    /// them by start time.
     fn transcribe_batched(&mut self, cache: &mut ProcessingCache, limit_ms: i64) -> Result<()> {
         let n = cache.units.len();
         let pending: Vec<bool> = cache.transcripts.iter().map(Option::is_none).collect();
@@ -1203,21 +1205,21 @@ pub fn main_language(
 }
 
 /// Groups of units (indices) for a batching transcriber: the `pending`
-/// ones, in start-time order, each group on one track and holding at most
+/// ones, in unit order, each group on one track and holding at most
 /// `limit_ms` of speech (a longer unit is a group of its own).
 ///
-/// Storage order (mic, then system) is not the walk order. Callers keep
-/// `units` as stored; only the indices move.
+/// Unit order is storage order (mic, then system), so a track's speech stays
+/// in one request even when the other track talks in between. Walking by
+/// start time would split every interleave into its own billed request.
+/// The one-segment path orders by time itself; this function does not.
 pub fn batches(units: &[Unit], pending: &[bool], limit_ms: i64) -> Vec<Vec<usize>> {
-    let mut order: Vec<usize> = (0..units.len())
-        .filter(|&i| pending.get(i).copied().unwrap_or(false))
-        .collect();
-    order.sort_by_key(|&i| (units[i].span.t0_ms, i));
     let mut out: Vec<Vec<usize>> = Vec::new();
     let mut current: Vec<usize> = Vec::new();
     let mut current_ms = 0;
-    for i in order {
-        let unit = &units[i];
+    for (i, unit) in units.iter().enumerate() {
+        if !pending.get(i).copied().unwrap_or(false) {
+            continue;
+        }
         let len = unit.span.len_ms();
         let same_track = current
             .first()
