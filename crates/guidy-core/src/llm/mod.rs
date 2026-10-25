@@ -115,6 +115,39 @@ pub fn is_cancelled_error(e: &anyhow::Error) -> bool {
     e.to_string() == CANCELLED
 }
 
+/// The provider's final reply was not JSON matching the schema, after its
+/// own retries. A reply cut off at the output token limit counts: the text
+/// never became valid JSON. Find it with [`is_invalid_json_reply`].
+#[derive(Debug)]
+pub struct InvalidJsonReply {
+    message: String,
+}
+
+impl InvalidJsonReply {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for InvalidJsonReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for InvalidJsonReply {}
+
+/// Whether `e` (or anything it wraps) is an [`InvalidJsonReply`].
+pub fn is_invalid_json_reply(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| cause.is::<InvalidJsonReply>())
+}
+
+fn invalid_json(error: anyhow::Error) -> anyhow::Error {
+    InvalidJsonReply::new(error.to_string()).into()
+}
+
 /// A chat model behind one interface.
 pub trait LlmProvider: Send + Sync {
     /// `"<provider_id>/<model>"`, stored as `StoredSummary::generated_by`.
@@ -129,6 +162,7 @@ pub trait LlmProvider: Send + Sync {
 
     /// Chat with the reply constrained to `json_schema`. The default asks for
     /// JSON in the prompt, then validates and retries once with the error.
+    /// A reply that still isn't valid JSON is an [`InvalidJsonReply`].
     fn chat_json(
         &self,
         messages: &[ChatMessage],
@@ -569,6 +603,8 @@ pub fn json_instruction(json_schema: &Value) -> String {
 
 /// `chat_json` for providers without native structured output: ask for JSON
 /// in the system prompt, validate, and retry once with the validation error.
+/// The final failure is an [`InvalidJsonReply`]. A `chat` error (auth,
+/// network, cancel) is returned as-is and is not retried.
 pub fn json_via_prompt<P: LlmProvider + ?Sized>(
     provider: &P,
     messages: &[ChatMessage],
@@ -594,7 +630,9 @@ pub fn json_via_prompt<P: LlmProvider + ?Sized>(
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("no valid JSON reply")))
+    Err(invalid_json(
+        last_err.unwrap_or_else(|| anyhow!("no valid JSON reply")),
+    ))
 }
 
 /// Append the JSON instruction to the system message (or add one).
@@ -796,6 +834,59 @@ mod tests {
         assert_eq!(seen[0][0].role, Role::System);
         assert!(seen[0][0].content.contains("JSON schema"));
         assert!(seen[1].last().unwrap().content.contains("not valid"));
+    }
+
+    #[test]
+    fn json_via_prompt_returns_invalid_json_reply_after_retrying() {
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        let unparseable = Scripted {
+            replies: Mutex::new(vec!["not json".into(), "still no".into()]),
+            seen: Mutex::new(vec![]),
+        };
+        let err = unparseable
+            .chat_json(&[ChatMessage::user("hi")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(is_invalid_json_reply(&err), "{err:#}");
+        assert!(err.to_string().contains("no JSON"), "{err}");
+        assert_eq!(unparseable.seen.lock().len(), 2);
+        // The same words, wrapped later, still count. A plain error with
+        // that text does not.
+        let wrapped = anyhow::Error::from(InvalidJsonReply::new(err.to_string())).context("later");
+        assert!(is_invalid_json_reply(&wrapped));
+        assert!(!is_invalid_json_reply(&anyhow!(err.to_string())));
+
+        let invalid = Scripted {
+            replies: Mutex::new(vec![r#"{"a":1}"#.into(), r#"{"a":false}"#.into()]),
+            seen: Mutex::new(vec![]),
+        };
+        let err = invalid
+            .chat_json(&[ChatMessage::user("hi")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(is_invalid_json_reply(&err), "{err:#}");
+        assert!(err.to_string().contains("expected string"), "{err}");
+        assert_eq!(invalid.seen.lock().len(), 2);
+    }
+
+    #[test]
+    fn json_via_prompt_does_not_wrap_a_chat_failure() {
+        struct Down;
+        impl LlmProvider for Down {
+            fn name(&self) -> String {
+                "fake/down".into()
+            }
+            fn context_tokens(&self) -> usize {
+                1024
+            }
+            fn chat(&self, _: &[ChatMessage], _: &ChatOptions) -> Result<String> {
+                bail!("401 unauthorized")
+            }
+        }
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        let err = Down
+            .chat_json(&[ChatMessage::user("hi")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(!is_invalid_json_reply(&err), "{err:#}");
+        assert!(err.to_string().contains("401"), "{err}");
     }
 
     #[test]

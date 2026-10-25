@@ -444,6 +444,9 @@ impl LlmProvider for HttpProvider {
                 Err(e) => return Err(e),
             }
         }
+        // Prompt-only JSON retries once. A reply that still isn't valid JSON
+        // is an `InvalidJsonReply`; auth, network and truncation errors from
+        // `send` are returned unchanged.
         json_via_prompt(self, messages, json_schema, opts)
     }
 }
@@ -764,6 +767,45 @@ mod tests {
     }
 
     #[test]
+    fn chat_json_reports_an_unparseable_or_invalid_reply_as_invalid_json() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        // No structured output: json_via_prompt retries once, then the typed error.
+        let prompt_only = rt.block_on(serve(vec![
+            ("200 OK", completion("not json")),
+            ("200 OK", completion(r#"{"a":1}"#)),
+        ]));
+        let p = HttpProvider::new(
+            provider("custom", &prompt_only, false),
+            String::new(),
+            "m".into(),
+        );
+        let err = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(super::super::is_invalid_json_reply(&err), "{err:#}");
+        assert!(err.to_string().contains("expected string"), "{err}");
+
+        // Structured output accepts the call but doesn't return JSON. The
+        // prompt-only fallback then fails both attempts.
+        let structured = rt.block_on(serve(vec![
+            ("200 OK", completion("not json")),
+            ("200 OK", completion("still not")),
+            ("200 OK", completion("nope")),
+        ]));
+        let p = HttpProvider::new(
+            provider("openai", &structured, true),
+            "k".into(),
+            "m".into(),
+        );
+        let err = p
+            .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+            .unwrap_err();
+        assert!(super::super::is_invalid_json_reply(&err), "{err:#}");
+        assert!(err.to_string().contains("no JSON"), "{err}");
+    }
+
+    #[test]
     fn chat_json_propagates_failures_other_than_a_schema_rejection() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
@@ -812,6 +854,10 @@ mod tests {
                 .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
                 .unwrap_err();
             assert!(err.to_string().contains(expected), "{status}: {err}");
+            assert!(
+                !super::super::is_invalid_json_reply(&err),
+                "{status}: {err:#}"
+            );
         }
         let truncated_base = rt.block_on(serve(vec![(
             "200 OK",
@@ -826,6 +872,7 @@ mod tests {
             .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
             .unwrap_err();
         assert!(err.downcast_ref::<ReplyCutShort>().is_some(), "{err}");
+        assert!(!super::super::is_invalid_json_reply(&err), "{err:#}");
 
         // Network failure: nothing listens on the port.
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

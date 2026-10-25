@@ -2753,15 +2753,19 @@ impl MeetingDetail {
                             .text_color(tone.text)
                             .child(label),
                     )
-                    .when_some(rank, |row, rank| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .text_size(dp(11.))
-                                .text_color(tone.text_muted)
-                                .child(rank),
-                        )
-                    })
+                    // Same slot on every row, empty when the rank didn't move,
+                    // so the bars start at the same x.
+                    .child(
+                        div()
+                            .w(dp(32.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(dp(11.))
+                            .text_right()
+                            .text_color(tone.text_muted)
+                            .child(rank.unwrap_or_default()),
+                    )
                     .child(
                         div()
                             .relative()

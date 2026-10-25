@@ -256,6 +256,26 @@ impl std::fmt::Display for GrammarError {
 
 impl std::error::Error for GrammarError {}
 
+/// The worker stopped because the output token budget ran out. `chat`
+/// returns this as-is; `chat_json` reports it as an invalid JSON reply
+/// (the text never became valid JSON) and does not ask again.
+#[derive(Debug)]
+struct ReplyCutOff {
+    max_tokens: u32,
+}
+
+impl std::fmt::Display for ReplyCutOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the reply was cut off at {} tokens", self.max_tokens)
+    }
+}
+
+impl std::error::Error for ReplyCutOff {}
+
+fn is_cut_off(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| cause.is::<ReplyCutOff>())
+}
+
 /// Whether the helper's error message is about the JSON schema grammar (see
 /// `build_sampler` in crates/guidy-llm/src/main.rs).
 fn is_grammar_message(message: &str) -> bool {
@@ -806,9 +826,10 @@ impl BuiltinLlm {
                         ..stats
                     },
                 )),
-                FinishReason::Length => {
-                    bail!("the reply was cut off at {} tokens", req.max_tokens)
+                FinishReason::Length => Err(ReplyCutOff {
+                    max_tokens: req.max_tokens,
                 }
+                .into()),
                 FinishReason::Cancelled => bail!(CANCELLED),
             },
             Response::Error { message, .. }
@@ -952,8 +973,10 @@ impl LlmProvider for BuiltinProvider {
     /// so the reply is valid JSON by construction; prompt-and-retry
     /// ([`json_via_prompt`], up to two requests) only if the grammar couldn't
     /// be built or the reply is invalid anyway, so at most three requests.
-    /// Other failures (cut off, cancelled, timed out, busy, the helper died)
-    /// are returned: a retry would hit them again.
+    /// A reply cut off at the token limit is an [`crate::llm::InvalidJsonReply`]
+    /// and is not retried here (the same budget would cut it off again).
+    /// Other failures (cancelled, timed out, busy, the helper died) are
+    /// returned as-is: a retry would hit them again.
     fn chat_json(
         &self,
         messages: &[ChatMessage],
@@ -970,13 +993,18 @@ impl LlmProvider for BuiltinProvider {
                 }
             }
             Err(e) if e.chain().any(|c| c.is::<GrammarError>()) => e,
+            Err(e) if is_cut_off(&e) => return Err(super::invalid_json(e)),
             Err(e) => return Err(e),
         };
         log::warn!(
             "{}: grammar-constrained JSON failed ({error}); retrying",
             self.name()
         );
-        json_via_prompt(self, messages, json_schema, opts)
+        match json_via_prompt(self, messages, json_schema, opts) {
+            // The prompt-only retry can hit the same token budget.
+            Err(e) if is_cut_off(&e) => Err(super::invalid_json(e)),
+            other => other,
+        }
     }
 }
 
@@ -1530,6 +1558,7 @@ done"#
             )
             .unwrap_err();
         assert!(err.to_string().contains("cut off"), "{err:#}");
+        assert!(super::super::is_invalid_json_reply(&err), "{err:#}");
         assert_eq!(chats(&count), 1);
         provider.llm.shutdown();
     }
@@ -1546,6 +1575,7 @@ done"#
             )
             .unwrap_err();
         assert!(err.to_string().contains("exited"), "{err:#}");
+        assert!(!super::super::is_invalid_json_reply(&err), "{err:#}");
         assert_eq!(chats(&count), 1);
     }
 
@@ -1593,13 +1623,14 @@ done"#
             r#"if printf '%s' "$line" | grep -q '"json_schema":null'; then {}; else echo "{{\"type\":\"error\",\"id\":$id,\"message\":\"unsupported JSON schema: bad\"}}"; fi"#,
             done("nope", "stop")
         ));
-        assert!(provider
+        let err = provider
             .chat_json(
                 &[ChatMessage::user("x")],
                 &schema(),
                 &ChatOptions::default(),
             )
-            .is_err());
+            .unwrap_err();
+        assert!(super::super::is_invalid_json_reply(&err), "{err:#}");
         assert_eq!(chats(&count), 3);
         provider.llm.shutdown();
     }

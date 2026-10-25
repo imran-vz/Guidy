@@ -999,10 +999,13 @@ fn group_for_combine(
     groups
 }
 
-/// A chunk reply that parsed, or one the model rejected as too long.
+/// A chunk reply that parsed, one the model rejected as too long, or one
+/// that never became valid JSON.
 enum ChunkAttempt {
     Value(Value),
     Overflow(anyhow::Error),
+    /// [`crate::llm::InvalidJsonReply`] twice. This chunk contributes no minutes.
+    Empty,
 }
 
 /// JSON for a chunk whose reply never became valid. The rest of the meeting
@@ -1019,10 +1022,13 @@ fn empty_chunk_summary() -> Value {
     })
 }
 
-/// Ask for one chunk. A reply that fails to parse is retried once, asking
-/// for fewer and shorter minutes. A second failure becomes empty minutes
-/// rather than failing the whole summary. A context overflow is returned
-/// so the caller can split the chunk; cancellation is returned as-is.
+/// Ask for one chunk. A reply that isn't valid JSON
+/// ([`crate::llm::is_invalid_json_reply`]) is retried once, asking for fewer
+/// and shorter minutes. A second invalid reply becomes empty minutes for
+/// this chunk rather than failing the whole summary. Any other error (auth,
+/// network, a dead local worker) is returned as-is, with no retry. A context
+/// overflow is returned so the caller can split the chunk; cancellation is
+/// returned as-is.
 fn request_chunk(
     provider: &dyn LlmProvider,
     messages: &[ChatMessage],
@@ -1033,8 +1039,10 @@ fn request_chunk(
         Ok(v) => Ok(ChunkAttempt::Value(v)),
         Err(e) if is_context_overflow(&e) => Ok(ChunkAttempt::Overflow(e)),
         Err(e) if crate::llm::is_cancelled_error(&e) => Err(e),
-        Err(e) => {
-            log::warn!("meeting summary chunk failed ({e:#}); retrying with shorter minutes");
+        Err(e) if crate::llm::is_invalid_json_reply(&e) => {
+            log::warn!(
+                "meeting summary chunk was not valid JSON ({e:#}); retrying with shorter minutes"
+            );
             let mut retry = messages.to_vec();
             retry.push(ChatMessage::user(
                 "The last reply was cut off or was not valid JSON. Reply again with valid JSON. \
@@ -1047,14 +1055,16 @@ decisions and action items."
                 Ok(v) => Ok(ChunkAttempt::Value(v)),
                 Err(e) if is_context_overflow(&e) => Ok(ChunkAttempt::Overflow(e)),
                 Err(e) if crate::llm::is_cancelled_error(&e) => Err(e),
-                Err(e) => {
+                Err(e) if crate::llm::is_invalid_json_reply(&e) => {
                     log::warn!(
-                        "meeting summary chunk failed again ({e:#}); continuing without this part's minutes"
+                        "meeting summary chunk was not valid JSON again ({e:#}); continuing without this part's minutes"
                     );
-                    Ok(ChunkAttempt::Value(empty_chunk_summary()))
+                    Ok(ChunkAttempt::Empty)
                 }
+                Err(e) => Err(e),
             }
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -1118,6 +1128,7 @@ pub fn summarize_meeting(
     let mut total = chunks.len() + usize::from(chunks.len() > 1);
     let mut done = 0usize;
     let mut partials = Vec::with_capacity(chunks.len());
+    let mut emptied = 0usize;
     // The ~4 chars/token estimate can undershoot (e.g. non-Latin scripts): a
     // chunk the model rejects as too long is split in half and retried.
     let mut queue: std::collections::VecDeque<String> = chunks.into_iter().collect();
@@ -1126,6 +1137,10 @@ pub fn summarize_meeting(
         let messages = chunk_messages(&chunk, &ctx, done + 1, parts.max(1));
         let value = match request_chunk(provider, &messages, &schema, &call_opts) {
             Ok(ChunkAttempt::Value(v)) => v,
+            Ok(ChunkAttempt::Empty) => {
+                emptied += 1;
+                empty_chunk_summary()
+            }
             Ok(ChunkAttempt::Overflow(e)) => {
                 let halves = if chunk.lines().count() > 1 {
                     let lines: Vec<&str> = chunk.lines().collect();
@@ -1150,6 +1165,12 @@ pub fn summarize_meeting(
         partials.push(parse_summary(&value));
         done += 1;
         progress(done, total);
+    }
+
+    // Every chunk fell back to empty minutes. Persisting that would wipe an
+    // existing summary, so fail the job instead.
+    if !partials.is_empty() && emptied == partials.len() {
+        bail!("the model did not return valid minutes for any part of this meeting");
     }
 
     let drafts: Vec<ActionItemDraft> = partials
@@ -1833,11 +1854,15 @@ mod tests {
             let mut left = self.fails_left.lock();
             if *left > 0 && !retrying {
                 *left -= 1;
-                bail!("response was not valid JSON");
+                return Err(
+                    crate::llm::InvalidJsonReply::new("response was not valid JSON").into(),
+                );
             }
             if *left > 0 && retrying {
                 *left -= 1;
-                bail!("response was not valid JSON");
+                return Err(
+                    crate::llm::InvalidJsonReply::new("response was not valid JSON").into(),
+                );
             }
             drop(left);
             if schema["properties"].get("action_items").is_none() {
@@ -1869,15 +1894,118 @@ mod tests {
         assert_eq!(out.summary.notes.len(), 1);
         assert_eq!(out.summary.notes[0].heading, "Beta");
 
+        // One chunk, and every reply is invalid JSON: don't persist empty minutes.
         let always = Flaky {
             fails_left: Mutex::new(10),
             calls: Mutex::new(0),
         };
-        let out =
-            summarize_meeting(&always, &input(&f), &ChatOptions::default(), &|_, _| {}).unwrap();
-        assert_eq!(*always.calls.lock(), 2, "one retry, then empty minutes");
-        assert!(out.summary.notes.is_empty());
-        assert_eq!(out.summary.title, "Weekly sync");
+        let err = summarize_meeting(&always, &input(&f), &ChatOptions::default(), &|_, _| {})
+            .unwrap_err();
+        assert_eq!(*always.calls.lock(), 2, "one retry, then the summary fails");
+        assert!(err.to_string().contains("valid minutes"), "{err:#}");
+    }
+
+    /// Auth-style failures are not bad JSON: no retry, and the summary errors.
+    struct HardFail {
+        calls: Mutex<usize>,
+    }
+
+    impl LlmProvider for HardFail {
+        fn name(&self) -> String {
+            "fake/hard".into()
+        }
+        fn context_tokens(&self) -> usize {
+            128_000
+        }
+        fn chat(&self, _: &[ChatMessage], _: &ChatOptions) -> Result<String> {
+            unreachable!()
+        }
+        fn chat_json(&self, _: &[ChatMessage], _: &Value, _: &ChatOptions) -> Result<Value> {
+            *self.calls.lock() += 1;
+            bail!("401 unauthorized: invalid api key")
+        }
+    }
+
+    #[test]
+    fn an_auth_or_network_error_fails_the_summary_without_a_retry() {
+        let f = fixture();
+        let p = HardFail {
+            calls: Mutex::new(0),
+        };
+        let err =
+            summarize_meeting(&p, &input(&f), &ChatOptions::default(), &|_, _| {}).unwrap_err();
+        assert_eq!(*p.calls.lock(), 1);
+        assert!(err.to_string().contains("401"), "{err:#}");
+        assert!(!crate::llm::is_invalid_json_reply(&err), "{err:#}");
+    }
+
+    /// Small context, so the meeting is several chunks. The chunk that
+    /// contains "release notes" never returns valid JSON.
+    struct OneChunkUnparseable {
+        calls: Mutex<usize>,
+        bad_calls: Mutex<usize>,
+    }
+
+    impl LlmProvider for OneChunkUnparseable {
+        fn name(&self) -> String {
+            "fake/partial".into()
+        }
+        fn context_tokens(&self) -> usize {
+            4096
+        }
+        fn chat(&self, _: &[ChatMessage], _: &ChatOptions) -> Result<String> {
+            unreachable!()
+        }
+        fn chat_json(
+            &self,
+            messages: &[ChatMessage],
+            schema: &Value,
+            _: &ChatOptions,
+        ) -> Result<Value> {
+            *self.calls.lock() += 1;
+            let bad = messages.iter().any(|m| m.content.contains("release notes"));
+            if bad {
+                *self.bad_calls.lock() += 1;
+                return Err(
+                    crate::llm::InvalidJsonReply::new("response was not valid JSON").into(),
+                );
+            }
+            let v = if schema["properties"].get("action_items").is_none() {
+                json!({"title": "Combined", "short_summary": "Combined.",
+                    "decisions": ["Ship Friday"], "topics": []})
+            } else {
+                json!({
+                    "title": "Part",
+                    "short_summary": "Part summary.",
+                    "decisions": [],
+                    "topics": [],
+                    "action_items": [],
+                    "notes": [{"heading": "Kept", "start": "00:10", "points": ["Still here"], "outcome": null}],
+                    "open_questions": []
+                })
+            };
+            validate_json(&v, schema)?;
+            Ok(v)
+        }
+    }
+
+    #[test]
+    fn one_unparseable_chunk_is_dropped_and_the_rest_are_kept() {
+        let f = padded_fixture();
+        let p = OneChunkUnparseable {
+            calls: Mutex::new(0),
+            bad_calls: Mutex::new(0),
+        };
+        let out = summarize_meeting(&p, &input(&f), &ChatOptions::default(), &|_, _| {}).unwrap();
+        assert_eq!(*p.bad_calls.lock(), 2, "the bad chunk is retried once");
+        assert!(*p.calls.lock() > *p.bad_calls.lock());
+        assert!(!out.summary.notes.is_empty());
+        assert!(out.summary.notes.iter().all(|n| n.heading == "Kept"));
+        assert!(out
+            .items
+            .iter()
+            .all(|i| i.text != "Write the release notes"));
+        assert_eq!(out.summary.short_summary, "Combined.");
     }
 
     #[test]
