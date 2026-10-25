@@ -90,6 +90,9 @@ pub struct WidgetModel {
     /// "Take notes" was clicked and the recording hasn't started yet
     /// (loading the live transcriber takes seconds).
     starting: bool,
+    /// The last start from the hint failed (said in the hint until the
+    /// next try or the next call).
+    start_failed: bool,
     /// The waveform (both sources together).
     wave: VecDeque<f32>,
     /// Recent levels per source: mic, system.
@@ -105,6 +108,7 @@ impl Default for WidgetModel {
             call: None,
             dismissed: None,
             starting: false,
+            start_failed: false,
             wave: VecDeque::from(vec![0.0; BARS]),
             sources: [
                 VecDeque::from(vec![0.0; SOURCE_SAMPLES]),
@@ -130,6 +134,9 @@ impl WidgetModel {
     }
 
     pub fn set_call(&mut self, call: Option<Call>) {
+        if call.map(|c| c.since) != self.call.map(|c| c.since) {
+            self.start_failed = false;
+        }
         self.call = call;
     }
 
@@ -148,13 +155,21 @@ impl WidgetModel {
     /// "Take notes" clicked: show it starting. False when it already is
     /// (a second click starts nothing).
     pub fn begin_start(&mut self) -> bool {
+        self.start_failed = false;
         !std::mem::replace(&mut self.starting, true)
     }
 
     /// The start finished (the recording reports in through
-    /// [`Self::set_recorder`]) or failed: back to offering notes.
-    pub fn end_start(&mut self) {
+    /// [`Self::set_recorder`]) or failed: back to offering notes, saying
+    /// it failed.
+    pub fn end_start(&mut self, ok: bool) {
         self.starting = false;
+        self.start_failed = !ok;
+    }
+
+    /// The last start from the hint failed.
+    pub fn start_failed(&self) -> bool {
+        self.start_failed && !self.starting()
     }
 
     pub fn paused(&self) -> bool {
@@ -382,7 +397,7 @@ mod tests {
         assert!(!m.begin_start());
         m.set_recorder(recording(1));
         assert!(!m.starting());
-        m.end_start();
+        m.end_start(true);
         m.set_recorder(RecorderState::Idle);
         m.set_call(Some(call(30)));
         assert!(!m.starting());
@@ -393,9 +408,15 @@ mod tests {
         let mut m = WidgetModel::default();
         m.set_call(Some(call(10)));
         assert!(m.begin_start());
-        m.end_start();
-        assert!(!m.starting() && m.hinting());
+        m.end_start(false);
+        assert!(!m.starting() && m.hinting() && m.start_failed());
+        // Trying again clears it.
         assert!(m.begin_start());
+        assert!(!m.start_failed());
+        m.end_start(false);
+        // So does the next call.
+        m.set_call(Some(call(20)));
+        assert!(!m.start_failed());
     }
 
     #[test]

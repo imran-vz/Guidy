@@ -872,6 +872,7 @@
       "callPrompt": "Vergadernotities maken?",
       "start": "Notities maken",
       "starting": "Starten…",
+      "startFailed": "Starten mislukt. Opnieuw proberen?",
       "dismiss": "Niet nu"
     },
     "description": "Neem een vergadering op deze Mac op en lees daarna het transcript met benoemde sprekers.",

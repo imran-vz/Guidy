@@ -872,6 +872,7 @@
       "callPrompt": "要做會議筆記嗎？",
       "start": "做筆記",
       "starting": "正在開始…",
+      "startFailed": "無法開始。要重試嗎？",
       "dismiss": "稍後再說"
     },
     "description": "在這台 Mac 上錄製會議，然後閱讀標有說話者名稱的逐字稿。",

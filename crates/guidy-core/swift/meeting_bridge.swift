@@ -454,7 +454,7 @@ private final class MicCapture {
             sink.event(GUIDY_MB_STREAM_MIC, note)
         }
         if !plan.voiceProcessing {
-            try installTapAndStart()
+            try startPlain()
         } else {
             do {
                 try startVoiceProcessing()
@@ -464,7 +464,7 @@ private final class MicCapture {
                 // plain mic rather than nothing, and say so. The failed
                 // attempt already replaced the engine.
                 voiceProcessingFailedOn = currentDevices()
-                try installTapAndStart()
+                try startPlain()
                 sink.event(
                     GUIDY_MB_STREAM_MIC,
                     "echo cancellation unavailable, recording the plain microphone: \(error)")
@@ -473,6 +473,26 @@ private final class MicCapture {
 
         observeConfigurationChanges()
         startSilenceTimer()
+    }
+
+    /// Start the plain microphone, retrying briefly on a fresh engine. Right
+    /// after a failed echo cancellation attempt (or while a call app
+    /// reconfigures the device) the input can refuse its format for a
+    /// moment (-10868); giving up then failed the whole recording.
+    private func startPlain() throws {
+        let delays: [Double] = [0.25, 0.5, 1.0]
+        var attempt = 0
+        while true {
+            do {
+                try installTapAndStart()
+                return
+            } catch {
+                guard attempt < delays.count else { throw error }
+                Thread.sleep(forTimeInterval: delays[attempt])
+                attempt += 1
+                replaceEngine()
+            }
+        }
     }
 
     private func currentDevices() -> (input: AudioObjectID?, output: AudioObjectID?) {

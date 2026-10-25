@@ -872,6 +872,7 @@
       "callPrompt": "要做会议记录吗？",
       "start": "做记录",
       "starting": "正在开始…",
+      "startFailed": "无法开始。要重试吗？",
       "dismiss": "以后再说"
     },
     "description": "在这台 Mac 上录制会议，然后阅读标有说话人姓名的转录文本。",

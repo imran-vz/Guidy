@@ -872,6 +872,7 @@
       "callPrompt": "Prendere note della riunione?",
       "start": "Prendi note",
       "starting": "Avvio…",
+      "startFailed": "Avvio non riuscito. Riprovare?",
       "dismiss": "Non ora"
     },
     "description": "Registra una riunione su questo Mac, poi leggi la trascrizione con gli interlocutori identificati per nome.",

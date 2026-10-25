@@ -872,6 +872,7 @@
       "callPrompt": "Tag mødenoter?",
       "start": "Tag noter",
       "starting": "Starter…",
+      "startFailed": "Kunne ikke starte. Prøv igen?",
       "dismiss": "Ikke nu"
     },
     "description": "Optag et møde på denne Mac, og læs derefter transskriptionen med navngivne talere.",

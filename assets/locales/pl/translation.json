@@ -872,6 +872,7 @@
       "callPrompt": "Robić notatki ze spotkania?",
       "start": "Rób notatki",
       "starting": "Uruchamianie…",
+      "startFailed": "Nie udało się uruchomić. Spróbować ponownie?",
       "dismiss": "Nie teraz"
     },
     "description": "Nagraj spotkanie na tym Macu, a potem przeczytaj transkrypcję z nazwanymi mówcami.",

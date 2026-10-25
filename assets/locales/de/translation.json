@@ -872,6 +872,7 @@
       "callPrompt": "Meeting-Notizen erstellen?",
       "start": "Notizen erstellen",
       "starting": "Wird gestartet…",
+      "startFailed": "Start fehlgeschlagen. Erneut versuchen?",
       "dismiss": "Nicht jetzt"
     },
     "description": "Nimm ein Meeting auf diesem Mac auf und lies dann das Transkript mit benannten Sprechern.",

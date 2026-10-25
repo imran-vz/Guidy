@@ -281,7 +281,10 @@ fn dismiss_call(cx: &mut App) {
             cx.notify();
         });
     }
-    crate::windows::sync_recording_controls(cx);
+    // Deferred: this runs in the floater window's click handler, and that
+    // window can't be closed while it handles the click (it was left open,
+    // invisible, taking every click on its display).
+    cx.defer(crate::windows::sync_recording_controls);
 }
 
 /// Take notes for the call the hint is about. The recording links to the
@@ -310,7 +313,7 @@ fn start(cx: &mut App) {
         }
         cx.update(|cx| {
             state.update(cx, |s, cx| {
-                s.model.end_start();
+                s.model.end_start(started.is_ok());
                 cx.notify();
             })
         });
@@ -404,12 +407,18 @@ impl RecordingWidgetView {
             let change = this.update(cx, |this, cx| {
                 let state = this.state.clone()?;
                 let s = state.read(cx);
-                let floater = s.floater.as_ref()?;
-                let (gx, gy) = crate::windows::pointer_location()?;
-                let p = s.desk.from_cocoa(gx, gy);
-                let hint = s.model.hinting().then(|| floater.hint(&s.desk)).flatten();
-                let hit = s.desk.screen_rect(this.screen).contains(p)
-                    && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)));
+                // Nothing shown (the window is on its way out): never take
+                // the pointer.
+                let hit = match s.floater.as_ref().filter(|_| s.model.visible()) {
+                    Some(floater) => {
+                        let (gx, gy) = crate::windows::pointer_location()?;
+                        let p = s.desk.from_cocoa(gx, gy);
+                        let hint = s.model.hinting().then(|| floater.hint(&s.desk)).flatten();
+                        s.desk.screen_rect(this.screen).contains(p)
+                            && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)))
+                    }
+                    None => false,
+                };
                 (hit != this.accepting).then(|| {
                     this.accepting = hit;
                     !hit
@@ -1304,8 +1313,14 @@ impl RecordingWidgetView {
                 div()
                     .truncate()
                     .text_size(dp(12.))
-                    .text_color(tone.text_muted)
-                    .child(t("meetings.widget.callPrompt")),
+                    .map(|d| {
+                        if m.start_failed() {
+                            d.text_color(rgb(RED)).child(t("meetings.widget.startFailed"))
+                        } else {
+                            d.text_color(tone.text_muted)
+                                .child(t("meetings.widget.callPrompt"))
+                        }
+                    }),
             );
         let starting = m.starting();
         let label = if starting {

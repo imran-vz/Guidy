@@ -1055,11 +1055,9 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
         ));
         entries.push(MenuEntry::Separator);
     }
-    entries.push(settings_i);
-    entries.push(MenuEntry::Separator);
     entries.push(quit_i);
 
-    // Meeting notes go first.
+    // Meeting notes precede transcripts and model controls.
     if inputs.meeting.available {
         let mut items = Vec::new();
         if inputs.meeting.recording {
@@ -1100,6 +1098,9 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
         items.push(MenuEntry::Separator);
         entries.splice(0..0, items);
     }
+
+    entries.insert(0, MenuEntry::Separator);
+    entries.insert(0, settings_i);
 
     // The warning goes on top so it's the first actionable thing seen.
     let mut tooltip = version_label();
@@ -1527,7 +1528,7 @@ mod tests {
     fn idle_menu_has_model_submenu_and_unload() {
         let menu = build_menu(&inputs(false));
         let ids = ids(&menu.entries);
-        assert_eq!(ids[0], "recent_transcripts");
+        assert_eq!(ids[0], "settings");
         assert!(!ids.contains(&"check_updates".to_string()));
         assert!(!ids.contains(&"version".to_string()));
         assert!(ids.contains(&"model_submenu".to_string()));
@@ -1558,7 +1559,8 @@ mod tests {
     #[test]
     fn busy_menu_offers_cancel_instead_of_models() {
         let ids = ids(&build_menu(&inputs(true)).entries);
-        assert_eq!(ids[0], "cancel");
+        assert_eq!(ids[0], "settings");
+        assert_eq!(ids[2], "cancel");
         assert!(!ids.contains(&"model_submenu".to_string()));
     }
 
@@ -1661,14 +1663,27 @@ mod tests {
         let mut i = inputs(false);
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert_eq!(menu.entries[0].id(), Some("meeting_start"));
-        assert_eq!(menu.entries[1], MenuEntry::Separator);
+        assert_eq!(menu.entries[2].id(), Some("meeting_start"));
+        assert_eq!(menu.entries[3], MenuEntry::Separator);
         assert!(matches!(
-            &menu.entries[0],
+            &menu.entries[2],
             MenuEntry::Item { label, enabled: true, .. } if label == "Start Meeting Notes"
         ));
-        // The rest of the idle menu is unchanged.
-        assert!(ids(&menu.entries).contains(&"model_submenu".to_string()));
+        assert_eq!(
+            ids(&menu.entries),
+            [
+                "settings",
+                "---",
+                "meeting_start",
+                "---",
+                "recent_transcripts",
+                "---",
+                "model_submenu",
+                "unload_model",
+                "---",
+                "quit",
+            ]
+        );
     }
 
     #[test]
@@ -1684,7 +1699,7 @@ mod tests {
             };
             let menu = build_menu_at(&i, 1_000 + 754_000);
             assert_eq!(
-                menu.entries[0],
+                menu.entries[2],
                 MenuEntry::Item {
                     id: "meeting_title".into(),
                     label: "● Weekly sync · 12:34".into(),
@@ -1692,9 +1707,9 @@ mod tests {
                     accelerator: None,
                 }
             );
-            assert_eq!(menu.entries[1].id(), Some("meeting_pause"));
-            assert_eq!(menu.entries[2].id(), Some("meeting_stop"));
-            assert_eq!(menu.entries[3], MenuEntry::Separator);
+            assert_eq!(menu.entries[3].id(), Some("meeting_pause"));
+            assert_eq!(menu.entries[4].id(), Some("meeting_stop"));
+            assert_eq!(menu.entries[5], MenuEntry::Separator);
             assert!(!ids(&menu.entries).contains(&"meeting_start".to_string()));
         }
     }
@@ -1712,10 +1727,10 @@ mod tests {
         };
         let menu = build_menu_at(&i, 500_000);
         assert!(matches!(
-            &menu.entries[0],
+            &menu.entries[2],
             MenuEntry::Item { label, .. } if label == "❚❚ Paused · 1:05"
         ));
-        assert_eq!(menu.entries[1].id(), Some("meeting_resume"));
+        assert_eq!(menu.entries[3].id(), Some("meeting_resume"));
     }
 
     #[test]
@@ -1724,7 +1739,7 @@ mod tests {
         i.locale = "de".to_string();
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert!(matches!(&menu.entries[0], MenuEntry::Item { label, .. } if !label.is_empty()));
+        assert!(matches!(&menu.entries[2], MenuEntry::Item { label, .. } if !label.is_empty()));
     }
 
     #[test]

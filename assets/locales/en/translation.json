@@ -1,6 +1,6 @@
 {
   "tray": {
-    "settings": "Settings...",
+    "settings": "Open Dashboard",
     "recentTranscripts": "Recent Transcripts",
     "noTranscripts": "No transcripts yet",
     "unloadModel": "Unload Model",
@@ -872,6 +872,7 @@
       "callPrompt": "Take meeting notes?",
       "start": "Take notes",
       "starting": "Starting…",
+      "startFailed": "Couldn't start. Try again?",
       "dismiss": "Not now"
     },
     "description": "Record a meeting on this Mac, then read the transcript with named speakers.",

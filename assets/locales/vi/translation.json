@@ -872,6 +872,7 @@
       "callPrompt": "Ghi chú cuộc họp?",
       "start": "Ghi chú",
       "starting": "Đang bắt đầu…",
+      "startFailed": "Không thể bắt đầu. Thử lại?",
       "dismiss": "Để sau"
     },
     "description": "Ghi âm cuộc họp trên máy Mac này, rồi đọc bản chép lời với tên người nói.",

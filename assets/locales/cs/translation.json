@@ -872,6 +872,7 @@
       "callPrompt": "Psát poznámky ze schůzky?",
       "start": "Psát poznámky",
       "starting": "Spouštění…",
+      "startFailed": "Nepodařilo se spustit. Zkusit znovu?",
       "dismiss": "Teď ne"
     },
     "description": "Nahrajte schůzku na tomto Macu a pak si přečtěte přepis s pojmenovanými mluvčími.",

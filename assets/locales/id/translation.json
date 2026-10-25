@@ -872,6 +872,7 @@
       "callPrompt": "Buat catatan rapat?",
       "start": "Buat catatan",
       "starting": "Memulai…",
+      "startFailed": "Gagal memulai. Coba lagi?",
       "dismiss": "Jangan sekarang"
     },
     "description": "Rekam rapat di Mac ini, lalu baca transkrip dengan nama para pembicara.",

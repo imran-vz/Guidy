@@ -872,6 +872,7 @@
       "callPrompt": "Prendre des notes de réunion ?",
       "start": "Prendre des notes",
       "starting": "Démarrage…",
+      "startFailed": "Impossible de démarrer. Réessayer ?",
       "dismiss": "Pas maintenant"
     },
     "description": "Enregistrez une réunion sur ce Mac, puis lisez la transcription avec le nom des intervenants.",

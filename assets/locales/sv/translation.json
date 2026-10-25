@@ -872,6 +872,7 @@
       "callPrompt": "Föra mötesanteckningar?",
       "start": "För anteckningar",
       "starting": "Startar…",
+      "startFailed": "Kunde inte starta. Försöka igen?",
       "dismiss": "Inte nu"
     },
     "description": "Spela in ett möte på den här Macen och läs sedan transkriptionen med namngivna talare.",

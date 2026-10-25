@@ -872,6 +872,7 @@
       "callPrompt": "Voleu prendre notes de la reunió?",
       "start": "Pren notes",
       "starting": "S'està iniciant…",
+      "startFailed": "No s'ha pogut iniciar. Tornar-ho a provar?",
       "dismiss": "Ara no"
     },
     "description": "Enregistreu una reunió en aquest Mac i després llegiu-ne la transcripció amb els parlants identificats.",

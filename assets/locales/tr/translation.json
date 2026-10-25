@@ -872,6 +872,7 @@
       "callPrompt": "Toplantı notu alınsın mı?",
       "start": "Not al",
       "starting": "Başlatılıyor…",
+      "startFailed": "Başlatılamadı. Tekrar denensin mi?",
       "dismiss": "Şimdi değil"
     },
     "description": "Bu Mac'te bir toplantıyı kaydedin, ardından transkripti adlandırılmış konuşmacılarla okuyun.",

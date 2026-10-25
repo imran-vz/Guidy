@@ -872,6 +872,7 @@
       "callPrompt": "会議のメモを取りますか？",
       "start": "メモを取る",
       "starting": "開始中…",
+      "startFailed": "開始できませんでした。もう一度試しますか？",
       "dismiss": "後で"
     },
     "description": "この Mac で会議を録音し、話者名付きの文字起こしを読めます。",

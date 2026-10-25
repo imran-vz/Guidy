@@ -872,6 +872,7 @@
       "callPrompt": "회의 노트를 작성할까요?",
       "start": "노트 작성",
       "starting": "시작하는 중…",
+      "startFailed": "시작하지 못했습니다. 다시 시도할까요?",
       "dismiss": "나중에"
     },
     "description": "이 Mac에서 회의를 녹음하고, 화자 이름이 표시된 전사 내용을 읽어 보세요.",
