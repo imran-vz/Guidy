@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guidy meeting notes: signal path explorer</title>
+<style>
+:root{
+  --paper:#f4f1e8; --paper-2:#ebe6d8; --ink:#1d2433; --ink-2:#4a5266; --ink-3:#7c8396;
+  --rule:#cfc8b4; --mic:#c4581c; --mic-soft:#f6dcc9; --sys:#13777a; --sys-soft:#cdeae8;
+  --both:#4b3f8f; --both-soft:#e1dcf3; --llm:#8a6d00; --llm-soft:#f3e7b8;
+  --store:#2f5b8a; --store-soft:#d8e3f0; --ephem:#9a3f6b;
+  --focus:#d6336c; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans)}
+body{background-image:radial-gradient(var(--rule) .8px,transparent .8px);background-size:22px 22px}
+header{padding:22px 28px 6px;max-width:1500px;margin:0 auto}
+h1{font:600 22px/1.2 var(--sans);margin:0 0 4px;letter-spacing:-.01em}
+h1 span{font-family:var(--mono);font-weight:500;font-size:13px;color:var(--ink-3);margin-left:8px}
+.lede{margin:0;color:var(--ink-2);max-width:900px}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0 0;font-size:12.5px;color:var(--ink-2)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;border:1.5px solid}
+.stage-wrap{max-width:1500px;margin:0 auto;padding:6px 16px 30px;overflow-x:auto}
+#map{display:block;width:100%;min-width:1120px;height:auto}
+.band-label{font:600 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;fill:var(--ink-3)}
+.band-note{font:12px var(--sans);fill:var(--ink-3)}
+.band{fill:none;stroke:var(--rule);stroke-width:1.2;stroke-dasharray:4 5}
+.node{cursor:pointer}
+.node rect.box,.node path.box{stroke-width:1.6;transition:transform .15s}
+.node .t{font:600 14px var(--sans);fill:var(--ink)}
+.node .s{font:10.5px var(--mono);fill:var(--ink-2)}
+.node .k{font:600 9.5px var(--mono);letter-spacing:.08em;fill:var(--ink-3)}
+.node:hover rect.box,.node:hover path.box{stroke-width:2.6}
+.node:focus{outline:none}
+.node:focus-visible rect.box,.node:focus-visible path.box{stroke:var(--focus);stroke-width:3}
+.node.sel rect.box,.node.sel path.box{stroke:var(--focus);stroke-width:3}
+.node .more{font:600 10px var(--mono);fill:var(--focus);opacity:0;transition:opacity .15s}
+.node:hover .more,.node:focus-visible .more{opacity:1}
+.edge{fill:none;stroke:var(--ink-2);stroke-width:1.5}
+.edge.mic{stroke:var(--mic)} .edge.sys{stroke:var(--sys)} .edge.fb{stroke:var(--ink-3);stroke-dasharray:5 4}
+.edge.eph{stroke:var(--ephem);stroke-dasharray:2 4}
+.elabel{font:11px var(--mono);fill:var(--ink-3)}
+.pulse{fill:var(--focus)}
+.controls{display:flex;gap:10px;align-items:center;margin:10px 0 0;flex-wrap:wrap}
+button{font:600 13px var(--sans);color:var(--ink);background:#fffdf6;border:1.5px solid var(--ink);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{background:var(--paper-2)}
+button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.hint{font-size:12.5px;color:var(--ink-3)}
+
+/* drawer */
+#drawer{position:fixed;top:0;right:0;height:100vh;width:min(620px,100vw);background:#fffdf7;border-left:2px solid var(--ink);
+  box-shadow:-12px 0 30px rgba(29,36,51,.12);transform:translateX(105%);transition:transform .22s ease;display:flex;flex-direction:column;z-index:10}
+#drawer.open{transform:none}
+.dh{padding:18px 22px 12px;border-bottom:1px solid var(--rule);display:flex;gap:12px;align-items:flex-start}
+.dh .grow{flex:1;min-width:0}
+.dh h2{margin:0;font:600 20px/1.25 var(--sans)}
+.dh .crumb{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:4px}
+.close{border:none;background:none;font-size:22px;line-height:1;padding:4px 8px}
+.db{overflow-y:auto;padding:16px 22px 30px;flex:1}
+.callit{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.chip{font:12px var(--mono);background:var(--paper-2);border:1px solid var(--rule);border-radius:4px;padding:2px 7px}
+.chip b{font-weight:600}
+.db h3{font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin:20px 0 6px}
+.db p{margin:0 0 10px}
+.db ol,.db ul{margin:0 0 10px;padding-left:20px}
+.db li{margin:0 0 5px}
+.db code{font:12.5px var(--mono);background:var(--paper-2);padding:1px 4px;border-radius:3px}
+.fig{background:var(--paper);border:1px solid var(--rule);border-radius:8px;padding:10px;margin:6px 0 4px}
+.fig svg{display:block;width:100%;height:auto}
+.fig svg text{font-family:var(--sans)}
+.figcap{font-size:12.5px;color:var(--ink-3);margin:4px 2px 0}
+table.nums{border-collapse:collapse;width:100%;font-size:13px}
+table.nums td{border-bottom:1px solid var(--paper-2);padding:5px 6px;vertical-align:top}
+table.nums td:first-child{color:var(--ink-2);width:52%}
+table.nums td:last-child{font-family:var(--mono);font-size:12.5px}
+.files{font:12.5px var(--mono);color:var(--store);list-style:none;padding:0}
+.dnav{display:flex;justify-content:space-between;gap:10px;padding:12px 22px;border-top:1px solid var(--rule)}
+.slider{display:grid;grid-template-columns:150px 1fr 48px;gap:8px;align-items:center;font-size:13px;margin:4px 0}
+.slider output{font-family:var(--mono);font-size:12.5px}
+input[type=range]{accent-color:var(--both)}
+@media (prefers-reduced-motion:reduce){#drawer{transition:none}.pulse{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Meeting notes, from microphone to summary <span>guidy-core / meetings</span></h1>
+  <p class="lede">The whole meeting-notes path as one signal chain. Two audio tracks are recorded side by side. After you press Stop, a background job turns them into a transcript with named speakers. Click any block to see how it works inside, the numbers it uses, and what to call it in code.</p>
+  <div class="legend" aria-label="Legend">
+    <span><i style="background:var(--mic-soft);border-color:var(--mic)"></i>Mic track (you, people in the room)</span>
+    <span><i style="background:var(--sys-soft);border-color:var(--sys)"></i>System track (remote people)</span>
+    <span><i style="background:var(--both-soft);border-color:var(--both)"></i>Works on both tracks</span>
+    <span><i style="background:var(--store-soft);border-color:var(--store)"></i>Stored on disk</span>
+    <span><i style="background:var(--llm-soft);border-color:var(--llm)"></i>LLM step</span>
+    <span><i style="background:#fff;border-color:var(--ephem);border-style:dashed"></i>In memory only</span>
+  </div>
+  <div class="controls">
+    <button id="trace" type="button">▶ Trace one sentence through it</button>
+    <span class="hint">Or press Tab to move between blocks and Enter to open one. Esc closes the panel, ← → step through.</span>
+  </div>
+</header>
+
+<div class="stage-wrap"><svg id="map" viewBox="0 0 1500 800" role="group" aria-label="Meeting notes pipeline diagram"></svg></div>
+
+<aside id="drawer" aria-hidden="true" aria-labelledby="dTitle">
+  <div class="dh"><div class="grow"><div class="crumb" id="dCrumb"></div><h2 id="dTitle"></h2></div>
+    <button class="close" id="dClose" type="button" aria-label="Close panel">×</button></div>
+  <div class="db" id="dBody"></div>
+  <div class="dnav"><button id="dPrev" type="button">← Previous</button><button id="dNext" type="button">Next →</button></div>
+</aside>
+
+<script>
+/* ------------------------------------------------------------------ helpers */
+const NS = 'http://www.w3.org/2000/svg';
+const C = {mic:'#c4581c',micS:'#f6dcc9',sys:'#13777a',sysS:'#cdeae8',both:'#4b3f8f',bothS:'#e1dcf3',
+  llm:'#8a6d00',llmS:'#f3e7b8',store:'#2f5b8a',storeS:'#d8e3f0',ink:'#1d2433',ink2:'#4a5266',ink3:'#7c8396',
+  rule:'#cfc8b4',paper2:'#ebe6d8',eph:'#9a3f6b',red:'#c0392b',green:'#2e7d4f'};
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const svg = (w,h,body) => `<svg viewBox="0 0 ${w} ${h}" xmlns="${NS}" role="img">${body}</svg>`;
+const T = (x,y,s,o={}) => `<text x="${x}" y="${y}" font-size="${o.size||12}" fill="${o.fill||C.ink}" text-anchor="${o.anchor||'start'}" font-weight="${o.w||400}" ${o.mono?'font-family="ui-monospace,Menlo,monospace"':''}>${esc(s)}</text>`;
+const R = (x,y,w,h,f,s,o={}) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${o.rx??4}" fill="${f}" stroke="${s||'none'}" stroke-width="${o.sw||1.3}" ${o.dash?`stroke-dasharray="${o.dash}"`:''}/>`;
+const L = (x1,y1,x2,y2,s,o={}) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${s||C.ink2}" stroke-width="${o.sw||1.3}" ${o.dash?`stroke-dasharray="${o.dash}"`:''} ${o.arrow?'marker-end="url(#ma)"':''}/>`;
+const ARROWDEF = `<defs><marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="${C.ink2}"/></marker></defs>`;
+const box = (x,y,w,h,label,f,s,o={}) => R(x,y,w,h,f,s,o) + T(x+w/2,y+h/2+4,label,{anchor:'middle',size:o.size||11.5,w:o.w||500,mono:o.mono});
+
+/* --------------------------------------------------------- mini diagrams */
+const FIG = {};
+
+FIG.capture = () => svg(560,200, ARROWDEF +
+  box(10,20,130,44,'Microphone',C.micS,C.mic,{w:600}) +
+  box(10,120,130,44,'Speakers / Meet tab',C.sysS,C.sys,{w:600}) +
+  box(185,12,150,60,'',C.micS,C.mic) + T(260,36,'AVAudioEngine',{anchor:'middle',w:600}) + T(260,54,'+ VPIO echo cancel*',{anchor:'middle',size:11,fill:C.ink2}) +
+  box(185,112,150,60,'',C.sysS,C.sys) + T(260,136,'Core Audio',{anchor:'middle',w:600}) + T(260,154,'process tap → aggregate',{anchor:'middle',size:11,fill:C.ink2}) +
+  box(375,62,80,60,'',C.bothS,C.both) + T(415,86,'AVAudio',{anchor:'middle',size:11,w:600}) + T(415,102,'Converter',{anchor:'middle',size:11,w:600}) +
+  T(415,140,'any rate → 16 kHz',{anchor:'middle',size:10.5,fill:C.ink2}) + T(415,154,'mono f32',{anchor:'middle',size:10.5,fill:C.ink2}) +
+  box(480,62,70,60,'Aligner',C.bothS,C.both,{w:600}) +
+  L(140,42,183,42,C.mic,{arrow:1}) + L(140,142,183,142,C.sys,{arrow:1}) +
+  L(335,42,373,80,C.mic,{arrow:1}) + L(335,142,373,104,C.sys,{arrow:1}) + L(455,92,478,92,C.ink2,{arrow:1}) +
+  T(10,195,'* VPIO is used only when the call plays through speakers. With headphones the plain mic is recorded.',{size:10.5,fill:C.ink3}));
+
+FIG.aligner = () => {
+  let b = ARROWDEF + T(10,18,'wall clock since capture start →',{size:11,fill:C.ink3});
+  b += L(10,28,550,28,C.rule);
+  for(let i=0;i<=10;i++) b += L(10+i*54,24,10+i*54,32,C.rule) + T(10+i*54,44,i+'s',{size:9.5,fill:C.ink3,anchor:'middle'});
+  // incoming chunks
+  b += T(10,70,'incoming',{size:11,w:600,fill:C.ink2});
+  b += R(80,58,120,18,C.sysS,C.sys) + R(300,58,90,18,C.sysS,C.sys) + R(370,82,70,18,'#fbe3e0',C.red);
+  b += T(405,95,'late/overlap',{size:9.5,anchor:'middle',fill:C.red});
+  b += T(10,140,'emitted',{size:11,w:600,fill:C.ink2});
+  b += R(10,128,70,18,'#fff',C.ink3,{dash:'3 3'}) + T(45,141,'silence',{size:9.5,anchor:'middle',fill:C.ink3});
+  b += R(80,128,120,18,C.sysS,C.sys) + R(200,128,100,18,'#fff',C.ink3,{dash:'3 3'}) + T(250,141,'pad silence (gap)',{size:9.5,anchor:'middle',fill:C.ink3});
+  b += R(300,128,90,18,C.sysS,C.sys) + R(390,128,50,18,C.sysS,C.sys) + T(415,160,'overlapping head dropped',{size:9.5,anchor:'middle',fill:C.red});
+  b += T(10,190,'Sample n always sits at n / 16 000 s after Start, so mic and system line up to the millisecond.',{size:10.5,fill:C.ink3});
+  return svg(560,200,b);
+};
+
+FIG.recorder = () => {
+  const st=(x,y,l,f,s)=>box(x,y,104,36,l,f,s,{w:600});
+  let b = ARROWDEF;
+  b += st(10,70,'Idle','#fff',C.ink3) + st(150,70,'Recording',C.micS,C.mic) + st(150,150,'Paused','#fff',C.mic) + st(290,70,'Recorded',C.storeS,C.store) + st(430,70,'Processing',C.bothS,C.both);
+  b += L(114,88,148,88,C.ink2,{arrow:1}) + T(131,80,'start',{size:10,anchor:'middle',fill:C.ink3});
+  b += L(254,88,288,88,C.ink2,{arrow:1}) + T(271,80,'stop',{size:10,anchor:'middle',fill:C.ink3});
+  b += L(394,88,428,88,C.ink2,{arrow:1}) + T(411,80,'queue',{size:10,anchor:'middle',fill:C.ink3});
+  b += L(190,106,190,148,C.ink2,{arrow:1}) + L(214,148,214,108,C.ink2,{arrow:1}) + T(222,132,'pause / resume',{size:10,fill:C.ink3});
+  b += T(160,205,'paused = capture keeps running, sink writes silence',{size:10.5,fill:C.ink3});
+  b += T(10,28,'tick (Scheduler thread): "still recording?" reminders, "Take notes for …?" calendar prompts',{size:10.5,fill:C.ink2});
+  b += T(10,46,'start: link the calendar event on now (EventKit), create meeting row, open two TrackWriters',{size:10.5,fill:C.ink2});
+  return svg(560,215,b);
+};
+
+FIG.gopus = () => {
+  let b = T(10,18,'<meeting_id>-mic.gopus   and   <meeting_id>-system.gopus',{size:11,mono:1,fill:C.store});
+  b += box(10,30,110,40,'header 20 B',C.storeS,C.store,{size:11});
+  for(let i=0;i<4;i++) b += box(124+i*92,30,88,40,i<3?`chunk ${i}`:'…',C.paper2,C.store,{size:11});
+  b += box(496,30,56,40,'end',C.storeS,C.store,{size:11});
+  b += T(14,90,'GDYOPUS · v2 · 16000 Hz · 320-sample frames · 50 packets/chunk',{size:10,mono:1,fill:C.ink2});
+  b += L(124,74,124,110,C.ink3,{dash:'2 3'}) + L(212,74,552,110,C.ink3,{dash:'2 3'});
+  b += R(124,110,428,44,'#fff',C.store);
+  b += box(128,116,60,32,'len u32',C.paper2,C.rule,{size:10.5}) + box(192,116,60,32,'crc32',C.paper2,C.rule,{size:10.5});
+  for(let i=0;i<6;i++) b += box(256+i*48,116,44,32,i<5?'20 ms':'…',C.storeS,C.rule,{size:10});
+  b += T(10,180,'1 chunk = 50 Opus packets × 20 ms = exactly 1 s, so chunk i starts at second i (seek without decoding).',{size:10.5,fill:C.ink3});
+  b += T(10,196,'fsync every few seconds; a crash loses only the unsynced tail. A damaged last record = end of file.',{size:10.5,fill:C.ink3});
+  return svg(560,205,b);
+};
+
+FIG.live = () => {
+  let b = ARROWDEF;
+  // speech energy
+  const pts=[]; for(let x=0;x<=540;x+=4){const t=x/540; let v=0;
+    if(t>.08&&t<.62) v=.55+.35*Math.sin(x*.23)*Math.sin(x*.05); if(t>.75&&t<.93) v=.5+.3*Math.sin(x*.3);
+    pts.push(`${10+x},${70-Math.max(0,v)*45}`);}
+  b += `<polyline points="${pts.join(' ')}" fill="none" stroke="${C.mic}" stroke-width="1.4"/>`;
+  b += L(10,70,550,70,C.rule) + T(12,84,'speech probability (Silero, Earshot fallback); speech ≥ 0.5',{size:10,fill:C.ink3});
+  const x0=10+.08*540-11, x1=10+.62*540;
+  b += R(x0,96,x1-x0,16,C.micS,C.mic) + T(x0,126,'← 200 ms pre-roll',{size:9.5,fill:C.ink3});
+  [1.2,2.4].forEach((s,i)=>{const x=x0+ (x1-x0)*(s/3.1); b+= L(x,112,x,132,C.eph,{dash:'2 2'})+T(x,144,'tentative',{size:9.5,anchor:'middle',fill:C.eph});});
+  b += R(x1,96,36,16,'#fff',C.ink3,{dash:'3 3'}) + T(x1+18,92,'600 ms',{size:9.5,anchor:'middle',fill:C.ink3});
+  b += L(x1+36,112,x1+36,132,C.green,{sw:2}) + T(x1+36,144,'final',{size:10,anchor:'middle',fill:C.green,w:600});
+  b += T(10,172,'Every 1.2 s the utterance so far is decoded (tentative). After 600 ms of silence the whole',{size:10.5,fill:C.ink2});
+  b += T(10,188,'utterance is decoded once more (final). Utterances are cut at 12 s so long monologues keep flowing.',{size:10.5,fill:C.ink2});
+  return svg(560,196,b);
+};
+
+FIG.jobs = () => {
+  const S=['Decode','Vad','Transcribe','Voiceprints','Cluster','Merge','Done'];
+  let b = ARROWDEF + T(10,18,'ProcessingStage, saved to meetings.processing_stage after each one',{size:11,fill:C.ink2});
+  S.forEach((s,i)=>{const x=10+i*78; b+= box(x,30,72,30,s,i<3?C.bothS:'#fff',C.both,{size:11,w:600,mono:1}); if(i<6) b+=L(x+72,45,x+78,45,C.ink2);});
+  b += T(10,84,'ProcessingCache checkpoint (meetings.db), also mid-stage every 15 s during transcribe/voiceprints',{size:10.5,fill:C.ink3});
+  b += `<path d="M 250 95 q 0 30 -40 30 h -110 q -40 0 -40 -30" fill="none" stroke="${C.red}" stroke-width="1.4" stroke-dasharray="4 3"/>`;
+  b += T(120,140,'crash / cancel during Transcribe → resume from the checkpoint, not from zero',{size:10.5,fill:C.red});
+  b += box(10,160,160,32,'queue: one meeting at a time','#fff',C.ink3,{size:10.5});
+  b += box(190,160,170,32,'transcribe worker (2nd process)',C.bothS,C.both,{size:10.5});
+  b += box(380,160,170,32,'cancel = kill the worker','#fff',C.red,{size:10.5});
+  return svg(560,200,b);
+};
+
+FIG.decode = () => svg(560,110, ARROWDEF +
+  box(10,20,150,36,'mic.gopus',C.storeS,C.store,{mono:1}) + box(10,64,150,36,'system.gopus',C.storeS,C.store,{mono:1}) +
+  box(210,40,150,40,'TrackReader',C.bothS,C.both,{w:600}) + L(160,38,208,54,C.ink2,{arrow:1}) + L(160,82,208,68,C.ink2,{arrow:1}) +
+  box(410,24,140,30,'mic_ms, system_ms',C.paper2,C.rule,{mono:1,size:11}) + box(410,62,140,30,'read_range(t0,t1)',C.paper2,C.rule,{mono:1,size:11}) +
+  L(360,60,408,40,C.ink2,{arrow:1}) + L(360,60,408,76,C.ink2,{arrow:1}));
+
+/* VAD: real port of speech_spans() so the sliders behave like the code */
+function speechSpans(probs, frameMs, p){
+  const n=probs.length, fr=ms=>Math.max(0,Math.round(ms/frameMs));
+  const minSpeech=Math.max(1,fr(p.min_speech_ms)), pad=fr(p.pad_ms), gap=fr(p.merge_gap_ms);
+  const maxLen=Math.max(1,Math.floor(p.max_segment_ms/frameMs));
+  const runs=[]; let s=null;
+  probs.forEach((v,i)=>{ if(s===null&&v>=p.onset) s=i; else if(s!==null&&v<p.offset){runs.push([s,i]); s=null;} });
+  if(s!==null) runs.push([s,n]);
+  const kept=runs.filter(([a,b])=>b-a>=minSpeech), dropped=runs.filter(([a,b])=>b-a<minSpeech);
+  const padded=kept.map(([a,b])=>[Math.max(0,a-pad),Math.min(n,b+pad)]);
+  const merged=[]; padded.forEach(([a,b])=>{const l=merged[merged.length-1];
+    if(l&&(a<=l[1]||(a-l[1]<=gap&&b-l[0]<=maxLen))){l[1]=Math.max(l[1],b);} else merged.push([a,b]);});
+  return {runs,kept,dropped,padded,merged};
+}
+const VADP = (()=>{ // synthetic 8.3 s of Silero output, 32 ms frames
+  const n=260, a=[]; let seed=7; const r=()=>(seed=(seed*16807)%2147483647)/2147483647;
+  for(let i=0;i<n;i++){ let v=.05+.08*r();
+    if(i>=12&&i<56) v=.75+.2*r()-(i>32&&i<36?.47:0);   // a dip that stays above offset: hysteresis keeps it
+    if(i>=72&&i<76) v=.62;                              // a cough: 4 frames, dropped
+    if(i>=104&&i<148) v=.7+.25*r();
+    if(i>=166&&i<200) v=.55+.35*r();                    // 0.58 s after the last run: merged
+    if(i>=232&&i<256) v=.6+.3*r();
+    a.push(Math.min(.99,Math.max(.01,v))); }
+  return a; })();
+const vadState = {onset:.45,offset:.3,min_speech_ms:250,pad_ms:150,merge_gap_ms:600,max_segment_ms:30000};
+function drawVad(){
+  const W=560,H=250, x0=34, w=W-x0-66, n=VADP.length, X=i=>x0+i*w/n, Y=v=>18+(1-v)*100;
+  const r=speechSpans(VADP,32,vadState);
+  let b='';
+  b+=R(x0,18,w,100,'#fff',C.rule,{rx:2});
+  b+=VADP.map((v,i)=>`<rect x="${X(i)}" y="${Y(v)}" width="${w/n-.4}" height="${118-Y(v)}" fill="${v>=vadState.onset?C.both:'#b9b4cf'}" opacity=".75"/>`).join('');
+  b+=L(x0,Y(vadState.onset),x0+w,Y(vadState.onset),C.green,{dash:'5 3',sw:1.4})+T(x0+w+4,Y(vadState.onset)+3,`onset ${vadState.onset.toFixed(2)}`,{size:10,fill:C.green,w:600});
+  b+=L(x0,Y(vadState.offset),x0+w,Y(vadState.offset),C.red,{dash:'5 3',sw:1.4})+T(x0+w+4,Y(vadState.offset)+3,`offset ${vadState.offset.toFixed(2)}`,{size:10,fill:C.red,w:600});
+  b+=T(4,24,'1.0',{size:9,fill:C.ink3})+T(4,121,'0',{size:9,fill:C.ink3});
+  const row=(y,label,spans,f,s,extra='')=>T(4,y+11,label,{size:9.5,fill:C.ink3})+spans.map(([a,c])=>R(X(a),y,X(c)-X(a),14,f,s,{rx:2})).join('')+extra;
+  b+=row(132,'1 runs',r.runs,'#fff',C.both);
+  b+=r.dropped.map(([a,c])=>R(X(a),132,X(c)-X(a),14,'#fbe3e0',C.red,{rx:2})+T((X(a)+X(c))/2,160,'dropped',{size:9,anchor:'middle',fill:C.red})).join('');
+  b+=row(166,'2 pad',r.padded,C.bothS,C.both);
+  b+=row(200,'3 out',r.merged,C.both,C.both);
+  b+=r.merged.map(([a,c],i)=>T((X(a)+X(c))/2,211,X(c)-X(a)>60?`segment ${i+1}`:`${i+1}`,{size:9.5,anchor:'middle',fill:'#fff',w:600})).join('');
+  for(let s=0;s<=8;s++) b+=T(X(s*1000/32),244,s+'s',{size:9,anchor:'middle',fill:C.ink3});
+  document.getElementById('vadfig').innerHTML=svg(W,H,b);
+}
+FIG.vad = () => `<div id="vadfig"></div>
+  <div class="slider"><label for="s_on">onset (start ≥)</label><input id="s_on" type="range" min="0.1" max="0.9" step="0.01" value="${vadState.onset}"><output id="o_on"></output></div>
+  <div class="slider"><label for="s_off">offset (end &lt;)</label><input id="s_off" type="range" min="0.05" max="0.8" step="0.01" value="${vadState.offset}"><output id="o_off"></output></div>
+  <div class="slider"><label for="s_min">min speech (ms)</label><input id="s_min" type="range" min="0" max="600" step="10" value="${vadState.min_speech_ms}"><output id="o_min"></output></div>
+  <div class="slider"><label for="s_pad">pad each side (ms)</label><input id="s_pad" type="range" min="0" max="500" step="10" value="${vadState.pad_ms}"><output id="o_pad"></output></div>
+  <div class="slider"><label for="s_gap">merge gap (ms)</label><input id="s_gap" type="range" min="0" max="1500" step="20" value="${vadState.merge_gap_ms}"><output id="o_gap"></output></div>`;
+function wireVad(){
+  const map=[['s_on','o_on','onset',v=>v.toFixed(2)],['s_off','o_off','offset',v=>v.toFixed(2)],['s_min','o_min','min_speech_ms',v=>v],['s_pad','o_pad','pad_ms',v=>v],['s_gap','o_gap','merge_gap_ms',v=>v]];
+  map.forEach(([s,o,k,f])=>{const el=document.getElementById(s), out=document.getElementById(o);
+    const up=()=>{vadState[k]=parseFloat(el.value); out.textContent=f(vadState[k]); drawVad();};
+    el.addEventListener('input',up); out.textContent=f(vadState[k]);});
+  drawVad();
+}
+
+FIG.silero = () => svg(560,170, ARROWDEF +
+  box(10,60,90,40,'16 kHz PCM',C.bothS,C.both,{size:11}) +
+  box(130,60,92,40,'512 samples',C.paper2,C.rule,{size:11}) + T(176,116,'= one 32 ms frame',{size:10,anchor:'middle',fill:C.ink3}) +
+  R(252,30,170,100,'#fff',C.both) + T(337,52,'Silero VAD v6.2',{anchor:'middle',w:600}) + T(337,70,'GGUF, run by transcribe.cpp',{anchor:'middle',size:10.5,fill:C.ink2}) +
+  T(337,88,'CPU only, 1 thread',{anchor:'middle',size:10.5,fill:C.ink2}) + T(337,108,'keeps recurrent state',{anchor:'middle',size:10.5,fill:C.ink2}) + T(337,122,'frame to frame',{anchor:'middle',size:10.5,fill:C.ink2}) +
+  box(452,60,98,40,'p(speech) 0–1',C.bothS,C.both,{size:11}) +
+  L(100,80,128,80,C.ink2,{arrow:1}) + L(222,80,250,80,C.ink2,{arrow:1}) + L(422,80,450,80,C.ink2,{arrow:1}) +
+  T(10,22,'The model only scores. Deciding where speech starts and ends is plain Rust (speech_spans).',{size:10.5,fill:C.ink3}) +
+  T(10,158,'The track is read in 60 s windows, so a 2-hour meeting is never decoded into memory at once.',{size:10.5,fill:C.ink3}));
+
+FIG.turns = () => {
+  let b=ARROWDEF;
+  const x0=20,w=520;
+  b+=T(10,16,'one VAD span on the system track (≥ 3 s), with no pause between two people',{size:10.5,fill:C.ink2});
+  b+=R(x0,24,w*.46,20,C.sysS,C.sys)+T(x0+8,38,'Alice',{size:11,w:600,fill:C.sys});
+  b+=R(x0+w*.46,24,w*.54,20,'#d9e8f6',C.store)+T(x0+w*.46+8,38,'Bob',{size:11,w:600,fill:C.store});
+  // similarity curve
+  const pts=[];for(let i=0;i<=52;i++){const t=i/52;const d=Math.abs(t-.46);let v=.75-.65*Math.exp(-(d*d)/.002)+.05*Math.sin(i*1.7);if(Math.abs(t-.22)<.025)v=.06;pts.push(`${x0+t*w},${60+(1-v)*60}`);}
+  b+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${C.both}" stroke-width="1.6"/>`;
+  b+=L(x0,60+(1-.1)*60,x0+w,60+(1-.1)*60,C.red,{dash:'4 3'})+T(x0+w,60+(1-.1)*60-3,'scan dip ≤ 0.10',{size:9.5,anchor:'end',fill:C.red});
+  b+=T(x0,132,'similarity of 1.5 s TitaNet voiceprints before vs after, every 0.5 s',{size:9.5,fill:C.ink3});
+  // candidates
+  b+=`<path d="M ${x0+w*.46-6} 148 l 6 10 l 6 -10 z" fill="${C.both}"/>`+T(x0+w*.46,172,'pyannote: change',{size:9.5,anchor:'middle',fill:C.both});
+  b+=`<circle cx="${x0+w*.22}" cy="153" r="5" fill="none" stroke="${C.ink3}" stroke-width="1.4"/>`+T(x0+w*.22,172,'scan only',{size:9.5,anchor:'middle',fill:C.ink3});
+  b+=R(x0+w*.46-70,180,66,16,'#fff',C.both,{dash:'3 2'})+R(x0+w*.46+4,180,66,16,'#fff',C.both,{dash:'3 2'})+T(x0+w*.46,210,'confirm: 3 s each side, similarity < 0.40 → keep',{size:9.5,anchor:'middle',fill:C.green,w:600});
+  b+=R(x0+w*.22-50,180,46,16,'#fff',C.ink3,{dash:'3 2'})+R(x0+w*.22+4,180,46,16,'#fff',C.ink3,{dash:'3 2'})+T(x0+w*.22,226,'needs < 0.25 → rejected',{size:9.5,anchor:'middle',fill:C.red});
+  b+=T(10,248,'Kept cuts snap to the quietest VAD frame within 300 ms, so they fall between words.',{size:10.5,fill:C.ink2});
+  return svg(560,256,b);
+};
+
+FIG.transcribe = () => {
+  let b=ARROWDEF;
+  b+=T(10,16,'Local (default): one call per segment, in time order across both tracks',{size:11,w:600,fill:C.ink2});
+  [[10,'mic'],[90,'sys'],[150,'sys'],[230,'mic'],[290,'sys']].forEach(([x,t],i)=>b+=box(x,24,54,22,`seg ${i+1}`,t==='mic'?C.micS:C.sysS,t==='mic'?C.mic:C.sys,{size:10}));
+  b+=L(350,35,380,35,C.ink2,{arrow:1})+box(382,22,170,28,'Parakeet TDT 0.6B v3',C.bothS,C.both,{size:10.5,w:600});
+  b+=T(382,64,'transcribe.cpp worker, Q8_0 GGUF',{size:10,fill:C.ink3});
+  b+=T(10,76,'→ text + word timestamps (offset back into meeting time)',{size:10.5,fill:C.ink2});
+  b+=T(10,108,'Cloud redo (Groq / OpenAI): one track at a time, packed into one WAV',{size:11,w:600,fill:C.ink2});
+  [0,1,2,3].forEach(i=>{b+=R(10+i*96,118,70,22,C.sysS,C.sys)+(i<3?R(80+i*96,118,26,22,'#fff',C.ink3,{dash:'2 2'}):'');});
+  b+=T(93,154,'1 s silence',{size:9.5,anchor:'middle',fill:C.ink3});
+  b+=L(400,129,430,129,C.ink2,{arrow:1})+box(432,116,120,28,'/audio/transcriptions',C.paper2,C.rule,{size:10,mono:1});
+  b+=T(10,176,'Reply words are mapped back to the segment each one falls in (distribute). An hour = a handful',{size:10.5,fill:C.ink3});
+  b+=T(10,191,'of requests instead of hundreds, which keeps free tiers (~20 requests/min) happy.',{size:10.5,fill:C.ink3});
+  return svg(560,200,b);
+};
+
+FIG.language = () => {
+  let b=ARROWDEF;
+  const segs=[['en',1],['en',1],['hi',0],['en',1],['en',1],['es',0],['en',1]];
+  segs.forEach(([l,ok],i)=>b+=box(10+i*62,24,56,26,l,ok?C.bothS:'#fbe3e0',ok?C.both:C.red,{mono:1,size:11}));
+  b+=T(10,16,'detected language per segment',{size:10.5,fill:C.ink3});
+  b+=T(10,78,'main language = ≥ 20 words and ≥ 60% share (else the app language if it has ≥ 1/3)',{size:10.5,fill:C.ink2});
+  b+=L(150,90,150,112,C.red,{arrow:1})+L(336,90,336,112,C.red,{arrow:1});
+  b+=T(10,130,'segments in another language are transcribed again, forced to "en"',{size:10.5,fill:C.ink2});
+  b+=T(10,150,'Why: short accented speech can come out in the wrong script (Indian English as Devanagari),',{size:10.5,fill:C.ink3});
+  b+=T(10,165,'which also hides its echo from the echo net later.',{size:10.5,fill:C.ink3});
+  return svg(560,175,b);
+};
+
+FIG.voiceprints = () => {
+  let b=ARROWDEF;
+  b+=box(10,40,110,40,'segment ≥ 1.5 s',C.sysS,C.sys,{size:11});
+  b+=R(150,24,160,72,'#fff',C.both)+T(230,46,'WeSpeaker ResNet34-LM',{anchor:'middle',size:11.5,w:600})+T(230,64,'sherpa-onnx, 26.5 MB',{anchor:'middle',size:10.5,fill:C.ink2})+T(230,80,'trained on VoxCeleb',{anchor:'middle',size:10.5,fill:C.ink2});
+  b+=L(120,60,148,60,C.ink2,{arrow:1})+L(310,60,338,60,C.ink2,{arrow:1});
+  let x=340; for(let i=0;i<32;i++){const v=Math.sin(i*2.3)*.5+.5; b+=`<rect x="${x+i*6.5}" y="${40+(1-v)*18}" width="5" height="${4+v*18}" fill="${C.both}" opacity="${.35+v*.6}"/>`;}
+  b+=T(444,98,'256 numbers, scaled to length 1',{size:10,anchor:'middle',fill:C.ink3});
+  b+=T(10,128,'A voiceprint ("embedding") describes how a voice sounds, not what it says. Two prints of',{size:10.5,fill:C.ink2});
+  b+=T(10,143,'the same person point in nearly the same direction: cosine similarity near 1.',{size:10.5,fill:C.ink2});
+  b+=T(10,168,'Embedded: system segments with text. Mic segments only if you recorded "Your voice".',{size:10.5,fill:C.ink3});
+  b+=T(10,183,'Shorter segments get none and borrow a speaker from their neighbours later.',{size:10.5,fill:C.ink3});
+  return svg(560,192,b);
+};
+
+FIG.cluster = () => {
+  let b=ARROWDEF;
+  // dendrogram
+  const leaves=['A1','A2','A3','B1','B2','C1'], lx=i=>40+i*56, base=170, Hh=h=>base-h*220;
+  leaves.forEach((l,i)=>b+=T(lx(i),base+14,l,{size:10,anchor:'middle',mono:1,fill:l[0]==='A'?C.sys:l[0]==='B'?C.store:C.mic}));
+  const seg=(x1,x2,h,h1,h2)=>`<path d="M${x1} ${Hh(h1)} V${Hh(h)} H${x2} V${Hh(h2)}" fill="none" stroke="${C.ink2}" stroke-width="1.4"/>`;
+  b+=seg(lx(0),lx(1),.12,0,0); b+=seg((lx(0)+lx(1))/2,lx(2),.18,.12,0);
+  b+=seg(lx(3),lx(4),.15,0,0);
+  b+=seg((lx(0)*2+lx(1))/3+12,(lx(3)+lx(4))/2,.58,.18,.15);
+  b+=seg(((lx(0)+lx(2))/2+(lx(3)+lx(4))/2)/2,lx(5),.66,.58,0);
+  b+=R(18,Hh(.65),330,Hh(.35)-Hh(.65),'rgba(75,63,143,.07)','none');
+  b+=T(352,Hh(.65)+4,'0.65 max',{size:9.5,fill:C.ink3})+T(352,Hh(.35)+4,'0.35 min',{size:9.5,fill:C.ink3});
+  b+=L(18,Hh(.38),348,Hh(.38),C.red,{dash:'5 3',sw:1.6})+T(352,Hh(.38)-6,'cut ≈ 0.38',{size:10,fill:C.red,w:600});
+  b+=T(10,14,'cosine distance ↑',{size:10,fill:C.ink3});
+  b+=T(440,40,'merge heights:',{size:10,fill:C.ink2,w:600})+T(440,56,'0.12 0.15 0.18 │ 0.58',{size:10,mono:1,fill:C.ink2});
+  b+=T(440,72,'largest jump = 0.18 → 0.58',{size:10,fill:C.ink2})+T(440,88,'cut at its midpoint',{size:10,fill:C.ink2});
+  b+=T(440,112,'→ 3 speakers',{size:11,w:600,fill:C.both})+T(440,128,'no speaker limit needed',{size:10,fill:C.ink3});
+  return svg(560,190,b);
+};
+
+FIG.match = () => {
+  let b='';
+  const x0=20,w=520,X=v=>x0+v*w;
+  b+=R(X(0),40,X(.45)-X(0),26,'#f1efe8',C.rule,{rx:0})+R(X(.45),40,X(.65)-X(.45),26,C.llmS,C.llm,{rx:0})+R(X(.65),40,X(1)-X(.65),26,'#d3ecdc',C.green,{rx:0});
+  b+=T((X(0)+X(.45))/2,57,'"Speaker N" (unnamed)',{size:10.5,anchor:'middle',fill:C.ink2});
+  b+=T((X(.45)+X(.65))/2,57,'suggested: Confirm?',{size:10.5,anchor:'middle',fill:C.llm,w:600});
+  b+=T((X(.65)+X(1))/2,57,'named automatically',{size:10.5,anchor:'middle',fill:C.green,w:600});
+  [0,.45,.65,1].forEach(v=>b+=T(X(v),82,v.toFixed(2),{size:10,anchor:'middle',mono:1,fill:C.ink3}));
+  b+=T(10,24,'similarity of a cluster centroid to a known person (mean of their best 3 prints)',{size:10.5,fill:C.ink2});
+  b+=T(10,110,'Each person goes to at most one cluster; the best-scoring pairs win.',{size:10.5,fill:C.ink2});
+  b+=T(10,126,'A single line that clearly sounds like a named person (≥ 0.1 ahead of the next) is theirs,',{size:10.5,fill:C.ink2});
+  b+=T(10,141,'even if its cluster says otherwise. Members unlike their cluster (< 0.4) become unknown.',{size:10.5,fill:C.ink2});
+  b+=T(10,163,'Thresholds are settings: speaker_match_threshold 0.65, speaker_suggest_threshold 0.45',{size:10,mono:1,fill:C.ink3});
+  return svg(560,172,b);
+};
+
+FIG.echo = () => {
+  let b=ARROWDEF;
+  b+=T(10,18,'system',{size:10.5,w:600,fill:C.sys})+R(70,8,330,22,C.sysS,C.sys)+T(78,23,'"let\'s ship the beta on friday"',{size:10.5,fill:C.sys});
+  b+=T(10,54,'mic',{size:10.5,w:600,fill:C.mic})+R(120,44,200,22,'#fbe3e0',C.red)+T(128,59,'"ship the beta on friday"',{size:10.5,fill:C.red});
+  b+=R(345,44,150,22,C.micS,C.mic)+T(353,59,'"sounds good"',{size:10.5,fill:C.mic});
+  b+=L(120,76,120,96,C.ink3,{dash:'2 2'})+L(320,76,320,96,C.ink3,{dash:'2 2'})+T(220,92,'overlaps in time (± 750 ms)',{size:9.5,anchor:'middle',fill:C.ink3});
+  b+=T(10,120,'similarity = max( share of mic words also heard on system , Levenshtein of the token strings )',{size:10.5,fill:C.ink2});
+  b+=T(10,138,'"ship the beta on friday" vs system words → 1.0 ≥ 0.6 → echo: dropped',{size:10.5,fill:C.red,w:600});
+  b+=T(10,156,'"sounds good" → not on system → kept as you',{size:10.5,fill:C.green,w:600});
+  b+=T(10,180,'Speaker leakage that VPIO missed would otherwise credit Alice\'s words to you.',{size:10.5,fill:C.ink3});
+  return svg(560,190,b);
+};
+
+FIG.merge = () => {
+  let b=ARROWDEF;
+  b+=box(10,20,120,30,'mic segments',C.micS,C.mic,{size:11})+box(10,60,120,30,'system segments',C.sysS,C.sys,{size:11});
+  b+=box(160,40,96,30,'echo net',C.bothS,C.both,{size:11,w:600})+L(130,35,158,50,C.ink2,{arrow:1})+L(130,75,158,60,C.ink2,{arrow:1});
+  b+=box(282,40,96,30,'apply pins',C.bothS,C.both,{size:11,w:600})+L(256,55,280,55,C.ink2,{arrow:1});
+  b+=box(404,40,146,30,'sort by start time',C.bothS,C.both,{size:11,w:600})+L(378,55,402,55,C.ink2,{arrow:1});
+  b+=L(477,70,477,98,C.ink2,{arrow:1})+box(360,100,190,30,'meetings.db: transcript',C.storeS,C.store,{size:11,w:600});
+  b+=box(360,140,190,30,'per-segment voiceprints',C.storeS,C.store,{size:11});
+  b+=T(10,120,'pin = "this line is Priya" from you.',{size:10.5,fill:C.ink2})+T(10,136,'Your word beats the model, except a',{size:10.5,fill:C.ink2})+T(10,152,'whole-speaker name gives way to a',{size:10.5,fill:C.ink2})+T(10,168,'line\'s own clear voice.',{size:10.5,fill:C.ink2});
+  return svg(560,180,b);
+};
+
+FIG.naming = () => {
+  let b=ARROWDEF;
+  b+=box(10,40,120,34,'Speaker 2',C.sysS,C.sys,{w:600})+L(130,57,170,57,C.ink2,{arrow:1})+T(150,48,'you: "Priya"',{size:10,anchor:'middle',fill:C.ink3});
+  b+=box(172,40,140,34,'Person: Priya',C.storeS,C.store,{w:600})+L(312,57,350,57,C.ink2,{arrow:1});
+  b+=box(352,30,198,54,'',C.storeS,C.store)+T(451,52,'voiceprints table',{anchor:'middle',w:600,size:11.5})+T(451,70,'her longest segments\' prints',{anchor:'middle',size:10.5,fill:C.ink2});
+  b+=`<path d="M 451 84 V 120 H 70 V 76" fill="none" stroke="${C.ink3}" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ma)"/>`;
+  b+=T(260,138,'next meeting: Cluster & match recognises Priya automatically',{size:10.5,anchor:'middle',fill:C.ink2});
+  b+=T(10,166,'D11: voiceprints are stored only for people you name. Unnamed voices are never kept.',{size:10.5,fill:C.ink3});
+  return svg(560,176,b);
+};
+
+FIG.uservoice = () => svg(560,150, ARROWDEF +
+  box(10,30,140,36,'People › Your voice',C.micS,C.mic,{size:11,w:600}) + L(150,48,178,48,C.ink2,{arrow:1}) +
+  box(180,30,140,36,'windows → prints',C.bothS,C.both,{size:11}) + L(320,48,348,48,C.ink2,{arrow:1}) +
+  box(350,30,200,36,'user_voiceprints',C.storeS,C.store,{mono:1,size:11}) +
+  T(10,94,'With a sample: mic segments are embedded too. Similarity to you ≥ 0.5 → you;',{size:10.5,fill:C.ink2}) +
+  T(10,110,'less → someone else in the room, who gets clustered and named like a remote speaker.',{size:10.5,fill:C.ink2}) +
+  T(10,134,'Without a sample: every mic line is you (label = your display name, else "me").',{size:10.5,fill:C.ink3}));
+
+FIG.summarize = () => {
+  let b=ARROWDEF;
+  b+=box(10,20,118,46,'',C.storeS,C.store)+T(69,38,'[mm:ss] Name:',{anchor:'middle',size:10.5,mono:1})+T(69,54,'text lines',{anchor:'middle',size:10.5});
+  b+=L(128,43,150,43,C.ink2,{arrow:1});
+  [0,1,2].forEach(i=>b+=box(152,8+i*26,70,22,`chunk ${i+1}`,C.paper2,C.rule,{size:10}));
+  b+=T(187,96,'~4 chars/token',{size:9.5,anchor:'middle',fill:C.ink3});
+  b+=L(222,43,246,43,C.ink2,{arrow:1});
+  [0,1,2].forEach(i=>b+=box(248,8+i*26,80,22,'JSON summary',C.llmS,C.llm,{size:9.5}));
+  b+=L(328,43,350,43,C.ink2,{arrow:1})+box(352,24,92,40,'combine',C.llmS,C.llm,{size:11,w:600});
+  b+=L(444,43,466,43,C.ink2,{arrow:1})+box(468,16,82,56,'',C.bothS,C.both)+T(509,38,'verify',{anchor:'middle',w:600,size:11})+T(509,54,'action items',{anchor:'middle',size:10});
+  b+=T(10,124,'Provider (meetings.llm_provider_id) sets the chunk size:',{size:10.5,w:600,fill:C.ink2});
+  b+=T(10,140,'• Apple Intelligence on-device, ~4k tokens → many small chunks',{size:10.5,fill:C.ink2});
+  b+=T(10,155,'• Built-in guidy-llm (llama.cpp + Metal, GGUF) → its n_ctx',{size:10.5,fill:C.ink2});
+  b+=T(10,170,'• Cloud / BYOK (OpenAI-compatible, Anthropic) → usually one pass',{size:10.5,fill:C.ink2});
+  b+=T(10,194,'An action item survives only if its source quote is found (fuzzy) in the transcript.',{size:10.5,fill:C.ink3});
+  return svg(560,202,b);
+};
+
+FIG.titles = () => svg(560,110, ARROWDEF +
+  box(10,30,130,36,'summary',C.llmS,C.llm,{w:600}) + L(140,48,168,48,C.ink2,{arrow:1}) +
+  box(170,30,130,36,'meetings model',C.llmS,C.llm,{size:11}) + L(300,48,328,48,C.ink2,{arrow:1}) +
+  box(330,22,220,24,'title',C.storeS,C.store,{size:11}) + box(330,50,220,24,'one-line description',C.storeS,C.store,{size:11}) +
+  T(10,100,'Kept as is: a calendar event name (prefer_calendar_titles) or a title you typed.',{size:10.5,fill:C.ink3}));
+
+FIG.tickets = () => svg(560,110, ARROWDEF +
+  box(10,30,130,36,'action items',C.llmS,C.llm,{w:600}) + L(140,48,168,48,C.ink2,{arrow:1}) +
+  box(170,30,150,36,'draft tickets (review)',C.paper2,C.rule,{size:11}) + L(320,48,348,48,C.ink2,{arrow:1}) +
+  box(350,30,200,36,'Linear GraphQL (idempotent)',C.bothS,C.both,{size:11}) +
+  T(10,100,'Items already linked to a Linear issue are never deleted when you re-summarize.',{size:10.5,fill:C.ink3}));
+
+FIG.search = () => svg(560,110, ARROWDEF +
+  box(10,30,150,36,'titles, summaries, lines',C.storeS,C.store,{size:11}) + L(160,48,188,48,C.ink2,{arrow:1}) +
+  box(190,30,150,36,'FTS5 (triggers)',C.storeS,C.store,{size:11,w:600}) + L(340,48,368,48,C.ink2,{arrow:1}) +
+  box(370,30,180,36,'prefix · typo fix · BM25',C.paper2,C.rule,{size:11}) +
+  T(10,100,'Every term must match within one meeting; title hits weigh more than transcript hits.',{size:10.5,fill:C.ink3}));
+
+FIG.store = () => svg(560,120,
+  box(10,20,170,40,'meetings',C.storeS,C.store,{mono:1}) + box(195,20,170,40,'segments + speakers',C.storeS,C.store,{mono:1,size:11}) +
+  box(380,20,170,40,'people + voiceprints',C.storeS,C.store,{mono:1,size:11}) +
+  box(10,70,170,40,'processing cache',C.paper2,C.rule,{mono:1,size:11}) + box(195,70,170,40,'summary + action items',C.paper2,C.rule,{mono:1,size:11}) + box(380,70,170,40,'FTS5 indexes',C.paper2,C.rule,{mono:1,size:11}));
+
+/* ------------------------------------------------------------ the nodes */
+// kind: mic | sys | both | store | llm | eph
+const N = [
+ // band 1: recording
+ {id:'mic',x:30,y:70,w:190,h:74,kind:'mic',band:'Recording',title:'Mic capture',tech:'AVAudioEngine + VPIO',
+  call:['Mic track','Track::Mic','VPIO = Voice Processing I/O'],fig:'capture',
+  body:`<p>Records your microphone. When the call plays through speakers, Apple's <b>Voice Processing I/O</b> (VPIO) unit cancels the remote voices bleeding back into the mic. With headphones it records the plain built-in mic instead, because VPIO grabs the output device and a Bluetooth headset mic drops to narrowband "hands-free" audio.</p>`,
+  steps:['Pick the device and decide if echo cancellation is worth it (speakers vs headphones).','Install a tap on the input bus; with VPIO the first channel is the processed voice.','Convert to 16 kHz mono float with <code>AVAudioConverter</code>.','Hand each chunk to the TimelineAligner, then to Rust over FFI.','If the device changes, rebuild the tap; after repeated VPIO failures, give up echo cancellation and record plain.'],
+  nums:[['Output rate','16 000 Hz mono f32'],['macOS API','AVAudioEngine, kAudioUnitSubType_VoiceProcessingIO']],
+  files:['swift/meeting_bridge.swift','src/meetings/native/mod.rs','src/meetings/native/macos.rs']},
+ {id:'sys',x:30,y:178,w:190,h:74,kind:'sys',band:'Recording',title:'System audio capture',tech:'Core Audio process tap',
+  call:['System track','Track::System','process tap'],fig:'capture',
+  body:`<p>Records what your Mac plays (the Meet / Zoom tab), so remote people come in clean on their own track. It uses a <b>Core Audio process tap</b> (macOS 14.2+) wrapped in a private aggregate device that holds only the tap.</p>`,
+  steps:['Create the process tap and a private aggregate device around it.','Start an IOProc on the aggregate; each buffer is copied to a channel (the audio thread never blocks).','Convert to 16 kHz mono, then through the TimelineAligner.','When the default output device changes (and maybe its sample rate), rebuild the aggregate and IOProc.'],
+  nums:[['Needs','macOS 14.2+, audio capture permission'],['Output rate','16 000 Hz mono f32']],
+  files:['swift/meeting_bridge.swift','src/meetings/native/mod.rs']},
+ {id:'align',x:262,y:124,w:170,h:74,kind:'both',band:'Recording',title:'Timeline aligner',tech:'one clock, two tracks',
+  call:['TimelineAligner','"track alignment"'],fig:'aligner',
+  body:`<p>Makes both tracks share one clock. Sample <i>n</i> of either track was captured <i>n</i>/16 000 seconds after you pressed Start. Without it, any hiccup (the tap delivering nothing while nothing plays, a VPIO restart) would slide one track against the other, and the echo net and speaker merge would compare the wrong moments.</p>`,
+  steps:['Each chunk\'s first sample belongs at target = (capture time − start) × 16 kHz.','Target ahead of what was emitted by more than the tolerance: pad silence up to it (a gap).','Target behind: drop the overlapping head; drop a chunk that overlaps entirely.','Within tolerance: emit as is (no click-inducing micro-corrections).','A timer pads silence while a stream delivers nothing, so a dead stream keeps pace.'],
+  nums:[['Origin','one startNanos shared by both aligners']],
+  files:['swift/meeting_bridge.swift (TimelineAligner)']},
+ {id:'rec',x:474,y:124,w:170,h:74,kind:'both',band:'Recording',title:'Recording session',tech:'MeetingRecorder',
+  call:['MeetingRecorder','recording session','TrackWriter'],fig:'recorder',
+  body:`<p>The state machine behind Start / Pause / Stop. Capture callbacks only push samples into a channel; a writer thread encodes and writes them, so the audio thread never waits on disk. It also links the calendar event, drives the tray icon, and sends "still recording?" reminders.</p>`,
+  steps:['Start: link a calendar event (the given one, else whatever is on now), create the meeting row as Recording, open two TrackWriters, start capture.','Pause: capture keeps running but writes silence, so both tracks stay on the wall clock.','Stop: stop capture, finish both files, set ended_at, status Recorded.','The manager then queues processing automatically.','Every buffer is also copied to the live transcriber.'],
+  nums:[['Statuses','Recording → Recorded → Processing → Done / Failed']],
+  files:['src/meetings/recorder/mod.rs','src/meetings/recorder/ports.rs','src/meetings/recorder/schedule.rs']},
+ {id:'gopus',x:690,y:124,w:170,h:74,kind:'store',band:'Recording',title:'Track files',tech:'.gopus · Opus 16 kHz',
+  call:['.gopus track file','audio_store','audio retention'],fig:'gopus',
+  body:`<p>Each track is saved as its own crash-safe Opus file. Audio is cut into 1-second chunks, each with a CRC-32, appended as soon as it fills. A crash loses at most the last few seconds. Because every chunk is exactly 1 s, later stages can read any time range without decoding from the start.</p>`,
+  steps:['Encode 20 ms frames (320 samples) with Opus.','Group 50 packets into a chunk record with length + CRC.','fsync every few seconds.','On Stop, write the end marker with the total sample count.','Audio retention may delete the files later; the transcript and voiceprints stay.'],
+  nums:[['Path','<app_data>/meetings/audio/<id>-{mic,system}.gopus'],['Format version','2 (v1 was encrypted, only converted)']],
+  files:['src/meetings/audio_store.rs']},
+ {id:'live',x:690,y:20,w:170,h:74,kind:'eph',band:'Recording',title:'Live transcript',tech:'partial → final lines',
+  call:['LiveTranscriber','live segmenter','partial / final'],fig:'live',
+  body:`<p>Shows words on screen while the meeting is happening. It has its own speech detector and its own transcribe worker. It is <b>only for following along</b>: kept in memory, never saved. The real transcript with speakers comes from processing after Stop. Mic lines are labelled you, system lines everyone else.</p>`,
+  steps:['Score each track frame by frame (Silero, Earshot if Silero fails).','Open an utterance on the first speech frame, with 200 ms pre-roll so the first word isn\'t clipped.','Every 1.2 s, decode the utterance so far: a tentative line.','After 600 ms of silence, decode the whole utterance: the final line.','Drop utterances with less than 250 ms of speech; cut at 12 s.'],
+  nums:[['speech_prob','0.5'],['end_silence_ms','600'],['pre_roll_ms','200'],['partial_every_ms','1 200'],['max_ms','12 000'],['min_speech_ms','250']],
+  files:['src/meetings/live/mod.rs','src/meetings/live/segmenter.rs']},
+
+ // band 2: processing
+ {id:'jobs',x:30,y:388,w:160,h:84,kind:'both',band:'Processing',title:'Job queue',tech:'resumable, 1 at a time',
+  call:['Processor / jobs','ProcessingStage','ProcessingCache (checkpoint)'],fig:'jobs',
+  body:`<p>After Stop, the meeting goes into a background queue that processes one meeting at a time. Transcription runs in a <b>separate worker process</b> (a second EngineSupervisor), so a model crash can't take the app down, cancel can kill it instantly, and your dictation model stays loaded.</p><p>Each finished stage is recorded, and its results are saved as a checkpoint, so a crash or cancel resumes where it left off.</p>`,
+  steps:['Check models are downloaded (meeting model, speaker model); fail fast with a typed error if not.','Mark the meeting Processing and queue it.','Worker thread runs the Pipeline stage by stage.','Save the checkpoint after every stage, and every 15 s inside Transcribe and Voiceprints.','When the queue drains, unload the meeting model.'],
+  nums:[['Redo transcript','starts at Decode (local model or cloud)'],['Redo speakers','starts at Voiceprints'],['Checkpoint every','15 s']],
+  files:['src/meetings/processing/jobs.rs','src/meetings/processing/sidecar.rs','src/managers/transcription/meeting.rs']},
+ {id:'decode',x:212,y:388,w:130,h:84,kind:'both',band:'Processing',title:'Decode',tech:'TrackReader',
+  call:['Decode stage','ProcessingStage::Decode'],fig:'decode',
+  body:`<p>Opens both track files and reads their lengths. Nothing is decoded in bulk; later stages read just the time ranges they need. It fails here if there is no audio, for example after retention deleted it.</p>`,
+  steps:['Open mic and system .gopus files (either may be missing).','Record mic_ms and system_ms.','Error if both are empty.'],nums:[],files:['src/meetings/processing/pipeline.rs (decode)','src/meetings/audio_store.rs (TrackReader)']},
+ {id:'vad',x:374,y:388,w:140,h:84,kind:'both',band:'Processing',title:'VAD',tech:'Silero v6.2 · 32 ms',
+  call:['VAD stage','voice activity detection','speech spans','speech_spans()'],fig:'vad',sub:'silero',
+  body:`<p><b>Voice activity detection</b> finds where people are speaking, so only speech is transcribed and each stretch of speech becomes a line. It has two halves: a small neural model (Silero) gives every 32 ms frame a speech probability, then a plain function turns those probabilities into segments.</p><p>The chart below runs the same algorithm as <code>speech_spans()</code> on sample data. Move the sliders to see what each parameter does.</p>`,
+  steps:['<b>Hysteresis:</b> speech starts at a frame ≥ onset and ends at the first frame below offset. Two thresholds stop flicker around one value.','<b>Drop blips:</b> runs shorter than 250 ms (clicks, coughs) go.','<b>Pad:</b> 150 ms is added each side so word edges aren\'t cut.','<b>Merge:</b> runs closer than 600 ms join, as long as the result stays ≤ 30 s.','<b>Split:</b> anything longer than 30 s is cut at its quietest frame, never leaving a piece shorter than 8 s.'],
+  nums:[['onset / offset','0.45 / 0.30'],['min_speech_ms','250'],['pad_ms','150'],['merge_gap_ms','600'],['max_segment_ms','30 000'],['min_split_ms','8 000'],['frame','512 samples = 32 ms']],
+  files:['src/meetings/processing/vad.rs','src/audio_toolkit/vad/silero.rs','assets/resources/models/silero-vad-v6.2-F32.gguf']},
+ {id:'turns',x:546,y:388,w:150,h:84,kind:'sys',band:'Processing',title:'Turn splitter',tech:'pyannote + TitaNet',
+  call:['turn detection','speaker-change split','TurnDetection','turns::find_changes'],fig:'turns',
+  body:`<p>This is the "voice splitter". VAD only cuts at pauses, but on a call one person often starts right as another stops. This step finds <b>changes of voice inside one VAD span</b> on the system track and cuts there, so each line has one speaker.</p><p>Two sources propose cuts, and a cut is kept only if voiceprints on both sides clearly differ, so neither source can split a line alone. It runs inside the VAD stage, only with your consent to download the models.</p>`,
+  steps:['Skip spans shorter than 3 s.','<b>Model proposals:</b> pyannote segmentation-3.0 reports speaker turns; a change between turns of different speakers (turns ≥ 1 s) is proposed.','<b>Scan proposals:</b> 1.5 s TitaNet voiceprints every 0.5 s; a dip in before/after similarity ≤ 0.10 is proposed.','Proposals within 1 s are one change (the model\'s time wins).','<b>Confirm:</b> compare up to 3 s each side (at least 1.5 s). Keep a model cut if similarity < 0.40, a scan-only cut if < 0.25.','Snap each kept cut to the quietest VAD frame within 300 ms.'],
+  nums:[['Segmentation model','pyannote segmentation-3.0 (ONNX, sherpa-onnx)'],['Scan/confirm model','NVIDIA TitaNet Large (101 MB)'],['Setting','meetings.speaker_turn_models_consent'],['Without models','TitaNet only: scan alone; neither: pauses only']],
+  files:['src/meetings/processing/turns.rs','src/meetings/processing/speaker_model.rs']},
+ {id:'transcribe',x:728,y:388,w:150,h:84,kind:'both',band:'Processing',title:'Transcribe',tech:'Parakeet TDT v3',
+  call:['Transcribe stage','SegmentTranscriber','meeting model','word timestamps'],fig:'transcribe',sub:'language',
+  body:`<p>Turns every speech segment into text with <b>word timestamps</b>. The default is the local meeting model, Parakeet TDT 0.6B v3, run by transcribe.cpp in its own worker process. You can redo a meeting with another local model or a cloud API (Groq, OpenAI).</p><p>Lines stream into the meeting page as they finish (provisional lines).</p>`,
+  steps:['Order segments by start time across both tracks.','Read each segment\'s audio range and transcribe it; word times are shifted into meeting time.','Emit each line to the UI right away.','Checkpoint every 15 s.','Language unification: segments in a language other than the meeting\'s main one are transcribed again in the main one.'],
+  nums:[['Default model','parakeet-tdt-0.6b-v3 Q8_0 GGUF (~0.7 GB)'],['Engine enum','TranscriptionEngine::{Local, LocalModel, Cloud}'],['Cloud endpoint','POST /audio/transcriptions']],
+  files:['src/meetings/processing/pipeline.rs (transcribe)','src/managers/transcription/meeting.rs','src/meetings/processing/cloud.rs']},
+ {id:'voiceprints',x:910,y:388,w:150,h:84,kind:'both',band:'Processing',title:'Voiceprints',tech:'ResNet34 · 256-d',
+  call:['Voiceprints stage','speaker embedding','Embedder'],fig:'voiceprints',sub:'uservoice',
+  body:`<p>Computes a <b>voiceprint</b> (speaker embedding) for each segment: 256 numbers describing how the voice sounds. Prints of the same person point the same way, which is what clustering and recognising people rely on.</p>`,
+  steps:['For each segment with text and ≥ 1.5 s long:','system track always; mic track only if you recorded "Your voice".','Run WeSpeaker ResNet34-LM through sherpa-onnx (CPU, in-process).','Normalise to unit length, store in the checkpoint.'],
+  nums:[['Model','WeSpeaker ResNet34-LM, VoxCeleb, 26.5 MB'],['min_embed_ms','1 500'],['Runs','in-process CPU, 2 threads']],
+  files:['src/meetings/processing/pipeline.rs (voiceprints)','src/meetings/processing/speaker_model.rs','src/meetings/processing/user_voice.rs']},
+ {id:'cluster',x:1092,y:388,w:160,h:84,kind:'both',band:'Processing',title:'Cluster & match',tech:'agglomerative',
+  call:['Cluster stage','diarization','clustering','matching','Diarizer'],fig:'cluster',sub:'match',
+  body:`<p>This is <b>diarization</b>: deciding who spoke when. Voiceprints are grouped so each group is one voice ("clusters"), then each group is compared with the people you have named before.</p><p>Clustering uses <b>average-linkage agglomerative clustering</b>: start with every segment alone, keep joining the two closest groups, and stop where the distances suddenly jump. That jump decides the number of speakers, so there is no fixed limit.</p>`,
+  steps:['Build a dendrogram of merges by cosine distance.','Cut at the midpoint of the largest jump between merge heights inside 0.35–0.65 (jump ≥ 0.1), else at 0.5.','Remove outliers: a member with < 0.4 similarity to the rest of its cluster becomes unknown.','Short or un-embedded segments join a cluster only if the nearest labelled lines before and after agree, within 2 s.','Match each cluster centroid to known people (confirm ≥ 0.65, suggest ≥ 0.45).','Alternatives (Redo speakers): a bigger speaker model (CAM++, ResNet152/293, TitaNet), or Deepgram cloud diarization.'],
+  nums:[['min / max / default cut','0.35 / 0.65 / 0.50'],['min_gap','0.10'],['OUTLIER_MIN_SIMILARITY','0.40'],['ATTACH_MAX_GAP_MS','2 000'],['LINE_MATCH_MARGIN','0.10']],
+  files:['src/meetings/processing/cluster.rs','src/meetings/processing/pipeline.rs (cluster_units_with)','src/meetings/processing/deepgram.rs']},
+ {id:'merge',x:1284,y:388,w:186,h:84,kind:'both',band:'Processing',title:'Merge + echo net',tech:'one timeline · D9',
+  call:['Merge stage','echo net (D9)','timeline merge','pins'],fig:'echo',sub:'merge',
+  body:`<p>Combines the mic and system tracks into one timeline and writes the transcript. Before that, the <b>echo net</b> removes mic lines that are just the remote speaker leaking through your speakers, so their words aren't credited to you.</p>`,
+  steps:['For each mic segment, collect system words within ±750 ms.','Similarity = the larger of the share of mic words heard on the system track and the Levenshtein similarity.','≥ 0.6: it\'s an echo, dropped.','Apply pins (lines you assigned by hand).','Sort by start time, replace the stored transcript, keep per-segment voiceprints, delete the checkpoint.'],
+  nums:[['slack_ms','750'],['echo threshold','0.6']],
+  files:['src/meetings/processing/timeline.rs','src/meetings/processing/pipeline.rs (merge, apply_pins, build_transcript)']},
+
+ // band 3: afterwards
+ {id:'db',x:30,y:640,w:180,h:84,kind:'store',band:'Afterwards',title:'meetings.db',tech:'SQLite · FTS5',
+  call:['MeetingsStore','meetings.db'],fig:'store',
+  body:`<p>One plain SQLite database holds meetings, transcript segments, speakers, people and their voiceprints, summaries and action items, the processing checkpoint, and the search indexes.</p>`,
+  steps:[],nums:[['Not encrypted','older encrypted DBs are converted once by meetings::legacy']],files:['src/meetings/store.rs','src/meetings/types.rs']},
+ {id:'naming',x:1100,y:640,w:180,h:84,kind:'both',band:'Afterwards',title:'Name speakers',tech:'voiceprints → People',
+  call:['naming','KnownVoice','pin'],fig:'naming',
+  body:`<p>When you name "Speaker 2" as Priya, her longest segments' voiceprints are stored under her in People. From the next meeting on, Cluster & match can recognise her automatically. This is the feedback loop shown by the dashed line.</p>`,
+  steps:['Picker suggestions are ranked by voice similarity.','Assigning a person copies the speaker\'s longest prints into voiceprints.','Confirming an automatic match does the same.','Tagging a single line creates a pin, which survives redoing speakers.'],
+  nums:[],files:['src/meetings/processing/naming.rs']},
+ {id:'summary',x:260,y:640,w:180,h:84,kind:'llm',band:'Afterwards',title:'Summarize',tech:'chunked LLM · JSON',
+  call:['summarize','MeetingSummary','action items','LlmProvider'],fig:'summarize',
+  body:`<p>Turns the named transcript into a summary, decisions, topics and action items. You trigger it from the meeting page. Long transcripts are split to fit the model's context, summarised per chunk as strict JSON, then combined.</p>`,
+  steps:['transcript_lines: segments + speakers → "[mm:ss] Name: text".','chunk_lines: split by the provider\'s context (~4 characters per token).','Each chunk → JSON in the summary schema.','Several chunks: one more call combines them; action items merge deterministically.','resolve_action_items: drop items whose quote isn\'t in the transcript, set their time, match owners to people.','persist: replace the summary and unlinked action items.'],
+  nums:[['Setting','meetings.llm_provider_id / llm_models'],['Providers','Apple Intelligence · guidy-llm (llama.cpp) · HTTP BYOK']],
+  files:['src/meetings/summarize.rs','src/llm/mod.rs','crates/guidy-llm/']},
+ {id:'titles',x:480,y:640,w:160,h:84,kind:'llm',band:'Afterwards',title:'Titles',tech:'from the summary',
+  call:['titles','title_source'],fig:'titles',body:`<p>One short LLM call writes a title and a one-line description from the summary (not the transcript, so it's quick even on a local model).</p>`,steps:[],nums:[],files:['src/meetings/titles.rs']},
+ {id:'tickets',x:680,y:640,w:160,h:84,kind:'llm',band:'Afterwards',title:'Linear tickets',tech:'draft → create',
+  call:['draft_tickets','linear'],fig:'tickets',body:`<p>Action items become draft Linear tickets you review before they are created through Linear's GraphQL API.</p>`,steps:[],nums:[],files:['src/linear/','src/meetings/manager.rs (draft_tickets)']},
+ {id:'search',x:1320,y:640,w:150,h:84,kind:'store',band:'Afterwards',title:'Search',tech:'FTS5 · BM25',
+  call:['meetings::search'],fig:'search',body:`<p>Full-text search across titles, descriptions, summaries and transcript lines, kept in sync by SQLite triggers.</p>`,steps:[],nums:[],files:['src/meetings/search.rs']},
+];
+const byId = Object.fromEntries(N.map(n=>[n.id,n]));
+// sub-topics: reached from inside a panel
+const SUB = {
+ silero:{title:'Silero: the speech scorer inside VAD',fig:'silero',call:['SileroVad','SpeechScorer'],
+   body:`<p>Silero VAD is a tiny recurrent neural network trained to tell speech from everything else. It sees 512 samples (32 ms) at a time and keeps an internal state, so each frame's score uses what came before. Guidy runs the v6.2 model as GGUF through transcribe.cpp, on the CPU with one thread.</p><p>If Silero can't load, live transcription falls back to <b>Earshot</b>, a lighter detector with 256-sample frames.</p>`,
+   nums:[['Model file','silero-vad-v6.2-F32.gguf'],['Frame','512 samples / 32 ms'],['Score window','60 s of audio per read']],files:['src/audio_toolkit/vad/silero.rs','src/audio_toolkit/vad/earshot.rs']},
+ language:{title:'Language unification',fig:'language',call:['unify_language','main_language'],
+   body:`<p>Autodetect picks a language per segment, and short accented segments sometimes come out in another language or script. After transcribing, Guidy finds the meeting's main language and transcribes the odd ones out again, forced to it.</p>`,
+   nums:[['MAIN_LANGUAGE_MIN_WORDS','20'],['MAIN_LANGUAGE_MIN_SHARE','0.6'],['PREFERRED_LANGUAGE_MIN_SHARE','1/3']],files:['src/meetings/processing/pipeline.rs']},
+ uservoice:{title:'Your voice sample',fig:'uservoice',call:['user_voice','user_voiceprints','others_on_mic'],
+   body:`<p>By default every mic line is you. If you record a short sample under People › Your voice, the mic track is diarized too, so a colleague sitting next to you gets their own speaker.</p>`,
+   nums:[['user_voice_threshold','0.5']],files:['src/meetings/processing/user_voice.rs']},
+ match:{title:'Matching clusters to people',fig:'match',call:['match_clusters','person_similarity'],
+   body:`<p>Each cluster's centroid (the average of its voiceprints) is compared with every person you have named. A person's score is the mean of their best three prints: between "one lucky print decides" and "old noisy prints drag it down".</p>`,
+   nums:[['speaker_match_threshold','0.65'],['speaker_suggest_threshold','0.45'],['SAME_PRINT_SIMILARITY','0.999 (a line\'s own print doesn\'t vouch for it)']],files:['src/meetings/processing/cluster.rs']},
+ merge:{title:'Writing the timeline',fig:'merge',call:['merge_timeline','apply_pins','build_transcript'],
+   body:`<p>After the echo net, every remaining line gets its speaker (you, someone in the room, or a cluster), pins are applied, and the lines are sorted by start time and written as the meeting's transcript.</p>`,nums:[],files:['src/meetings/processing/timeline.rs','src/meetings/processing/pipeline.rs']},
+};
+
+const E = [
+ ['mic','align','mic'],['sys','align','sys'],['align','rec'],['rec','gopus'],['rec','live','eph','copy of every buffer'],
+ ['gopus','jobs','', 'on Stop'],['jobs','decode'],['decode','vad'],['vad','turns'],['turns','transcribe'],['transcribe','voiceprints'],['voiceprints','cluster'],['cluster','merge'],
+ ['merge','db','','transcript'],['db','summary'],['summary','titles'],['summary','tickets'],['db','search'],
+ ['naming','cluster','fb','known voices'],['db','naming'],
+];
+
+/* --------------------------------------------------------- render map */
+const map = document.getElementById('map');
+const fills = {mic:[C.micS,C.mic],sys:[C.sysS,C.sys],both:[C.bothS,C.both],store:[C.storeS,C.store],llm:[C.llmS,C.llm],eph:['#fff',C.eph]};
+function el(tag,attrs={},parent=map){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);parent.appendChild(e);return e;}
+map.innerHTML = `<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${C.ink2}"/></marker>
+ <marker id="arrM" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${C.mic}"/></marker>
+ <marker id="arrS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${C.sys}"/></marker>
+ <marker id="arrE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="${C.eph}"/></marker></defs>`;
+// bands
+[[8,'1 · Recording','while the meeting happens · Swift capture → Rust writer thread',8,290],
+ [312,'2 · Processing','after Stop · background job, resumable · decode → VAD → transcribe → voiceprints → cluster → merge',312,200],
+ [534,'3 · Afterwards','on demand · the stored transcript feeds everything else',534,236]].forEach(([y,l,n,_y,h])=>{
+  el('rect',{x:8,y:y+4,width:1484,height:h-10,rx:14,class:'band'});
+  el('text',{x:26,y:y+28,class:'band-label'}).textContent=l;
+  el('text',{x:26+l.length*9.2+14,y:y+28,class:'band-note'}).textContent=n;
+});
+// processing lane hint
+el('text',{x:374,y:500,class:'band-note'}).textContent='VAD, Transcribe, Voiceprints run on both tracks; the turn splitter on the system track only';
+el('text',{x:30,y:788,class:'band-note'}).textContent='Dashed loop: naming a speaker stores their voiceprints, so the next meeting\'s Cluster & match can recognise them.';
+
+const center=n=>[n.x+n.w/2,n.y+n.h/2];
+function anchor(n,toward){const [cx,cy]=center(n),[tx,ty]=toward;const dx=tx-cx,dy=ty-cy;
+  const sx=dx===0?Infinity:(n.w/2)/Math.abs(dx), sy=dy===0?Infinity:(n.h/2)/Math.abs(dy), s=Math.min(sx,sy);return [cx+dx*s,cy+dy*s];}
+const edgeEls=[];
+E.forEach(([a,b,cls='',label])=>{
+  const A=byId[a],B=byId[b]; let d;
+  if(a==='gopus'&&b==='jobs'){ d=`M ${A.x+A.w/2} ${A.y+A.h} V 300 H ${B.x+B.w/2} V ${B.y-2}`; }
+  else if(a==='naming'&&b==='cluster'){ d=`M ${A.x+72} ${A.y} V ${B.y+B.h+2}`; }
+  else if(a==='merge'&&b==='db'){ d=`M ${A.x+A.w/2} ${A.y+A.h} V 522 H ${B.x+B.w/2} V ${B.y-2}`; }
+  else if(a==='db'&&b==='naming'){ d=`M ${A.x+A.w*0.4} ${A.y+A.h} V 744 H ${B.x+B.w/2} V ${B.y+B.h+2}`; }
+  else if(a==='db'&&b==='search'){ d=`M ${A.x+A.w*0.6} ${A.y+A.h} V 756 H ${B.x+B.w/2} V ${B.y+B.h+2}`; }
+  else if(a==='summary'&&b==='tickets'){ d=`M ${A.x+A.w/2} ${A.y} V 616 H ${B.x+B.w/2} V ${B.y-2}`; }
+  else if(a==='rec'&&b==='live'){ d=`M ${A.x+A.w/2} ${A.y} V ${B.y+B.h/2} H ${B.x-2}`; }
+  else { const p=anchor(A,center(B)), q=anchor(B,center(A)); d=`M ${p[0]} ${p[1]} L ${q[0]} ${q[1]}`; }
+  const m = cls==='mic'?'arrM':cls==='sys'?'arrS':cls==='eph'?'arrE':'arr';
+  const pe=el('path',{d,class:'edge '+cls,'marker-end':`url(#${m})`}); edgeEls.push([a,b,pe]);
+  if(label){ const t=el('text',{class:'elabel'}); t.textContent=label;
+    const pos={'rec>live':[ (A.x+A.w/2)+8, 112],'gopus>jobs':[700,294],'naming>cluster':[1180,600],'merge>db':[1000,516]}[a+'>'+b];
+    if(pos){t.setAttribute('x',pos[0]);t.setAttribute('y',pos[1]);} else {const [p,q]=[center(A),center(B)];t.setAttribute('x',(p[0]+q[0])/2+4);t.setAttribute('y',(p[1]+q[1])/2-6);} }
+});
+// nodes
+N.forEach(n=>{
+  const g=el('g',{class:'node',tabindex:0,role:'button','aria-label':`${n.title}: ${n.tech}. Open details`,'data-id':n.id});
+  const [f,s]=fills[n.kind];
+  if(n.kind==='store'){ // cylinder
+    const r=9; el('path',{class:'box',d:`M ${n.x} ${n.y+r} a ${n.w/2} ${r} 0 0 1 ${n.w} 0 V ${n.y+n.h-r} a ${n.w/2} ${r} 0 0 1 ${-n.w} 0 Z`,fill:f,stroke:s},g);
+    el('path',{d:`M ${n.x} ${n.y+r} a ${n.w/2} ${r} 0 0 0 ${n.w} 0`,fill:'none',stroke:s,'stroke-width':1.3},g);
+  } else if(n.kind==='llm'){
+    el('path',{class:'box',d:`M ${n.x+14} ${n.y} H ${n.x+n.w-14} L ${n.x+n.w} ${n.y+n.h/2} L ${n.x+n.w-14} ${n.y+n.h} H ${n.x+14} L ${n.x} ${n.y+n.h/2} Z`,fill:f,stroke:s},g);
+  } else {
+    el('rect',{class:'box',x:n.x,y:n.y,width:n.w,height:n.h,rx:n.kind==='eph'?18:7,fill:f,stroke:s,'stroke-dasharray':n.kind==='eph'?'6 4':''},g);
+  }
+  const kindLabel={mic:'MIC TRACK',sys:'SYSTEM TRACK',both:n.band==='Processing'?'STAGE':'BOTH TRACKS',store:'ON DISK',llm:'LLM',eph:'IN MEMORY'}[n.kind];
+  const k=el('text',{x:n.x+12+(n.kind==='llm'?6:0),y:n.y+(n.kind==='store'?28:18),class:'k'},g); k.textContent=kindLabel;
+  const t=el('text',{x:n.x+12+(n.kind==='llm'?6:0),y:n.y+(n.kind==='store'?46:38),class:'t'},g); t.textContent=n.title;
+  const s2=el('text',{x:n.x+12+(n.kind==='llm'?6:0),y:n.y+(n.kind==='store'?64:56),class:'s'},g); s2.textContent=n.tech;
+  const m=el('text',{x:n.x+n.w-10-(n.kind==='llm'?8:0),y:n.y+n.h-8,class:'more','text-anchor':'end'},g); m.textContent='details →';
+  g.addEventListener('click',()=>openNode(n.id));
+  g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openNode(n.id);}});
+});
+
+/* ----------------------------------------------------------- drawer */
+const drawer=document.getElementById('drawer'), dBody=document.getElementById('dBody');
+const ORDER=N.map(n=>n.id); let cur=null, lastFocus=null;
+function render(item, crumb, parentId){
+  document.getElementById('dCrumb').textContent=crumb;
+  document.getElementById('dTitle').textContent=item.title;
+  let h=`<div class="callit">${(item.call||[]).map((c,i)=>`<span class="chip">${i===0?'<b>call it:</b> ':''}${esc(c)}</span>`).join('')}</div>`;
+  h+=item.body||'';
+  if(item.fig&&FIG[item.fig]) h+=`<div class="fig">${FIG[item.fig]()}</div>`;
+  if(item.steps&&item.steps.length) h+=`<h3>How it works</h3><ol>${item.steps.map(s=>`<li>${s}</li>`).join('')}</ol>`;
+  if(item.sub){const s=SUB[item.sub]; h+=`<h3>Go deeper</h3><p><button type="button" data-sub="${item.sub}">${esc(s.title)} →</button></p>`;}
+  if(parentId) h+=`<p><button type="button" data-back="${parentId}">← Back to ${esc(byId[parentId].title)}</button></p>`;
+  if(item.nums&&item.nums.length) h+=`<h3>Numbers and names in the code</h3><table class="nums">${item.nums.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table>`;
+  if(item.files&&item.files.length) h+=`<h3>Where it lives (crates/guidy-core/…)</h3><ul class="files">${item.files.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
+  dBody.innerHTML=h; dBody.scrollTop=0;
+  if(item.fig==='vad') wireVad();
+  dBody.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>render(SUB[b.dataset.sub], `${byId[cur].title} › deeper`, cur));
+  dBody.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>openNode(b.dataset.back));
+}
+function openNode(id){
+  if(!drawer.classList.contains('open')) lastFocus=document.activeElement;
+  cur=id; const n=byId[id];
+  document.querySelectorAll('.node').forEach(g=>g.classList.toggle('sel',g.dataset.id===id));
+  render(n, `${n.band} · ${ORDER.indexOf(id)+1} of ${ORDER.length}`);
+  drawer.classList.add('open'); drawer.setAttribute('aria-hidden','false');
+  document.getElementById('dClose').focus({preventScroll:true});
+}
+function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');
+  document.querySelectorAll('.node').forEach(g=>g.classList.remove('sel')); if(lastFocus&&lastFocus.focus) lastFocus.focus();}
+const step=d=>{if(cur===null)return; openNode(ORDER[(ORDER.indexOf(cur)+d+ORDER.length)%ORDER.length]);};
+document.getElementById('dClose').onclick=closeDrawer;
+document.getElementById('dPrev').onclick=()=>step(-1);
+document.getElementById('dNext').onclick=()=>step(1);
+document.addEventListener('keydown',e=>{ if(!drawer.classList.contains('open'))return;
+  if(e.key==='Escape')closeDrawer();
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='ArrowRight')step(1); if(e.key==='ArrowLeft')step(-1);});
+
+// deep link: meeting-pipeline-explorer.html#vad opens that block
+const fromHash=()=>{const id=location.hash.slice(1); if(byId[id]) openNode(id);};
+addEventListener('hashchange',fromHash); fromHash();
+
+/* ------------------------------------------------------ trace a sentence */
+const TRACE=[
+ ['sys','Alice says "let\'s ship the beta on Friday" in Meet. The process tap captures it on the system track.'],
+ ['mic','Your speakers leak a quieter copy into the mic. VPIO removes most of it, but not all.'],
+ ['align','Both chunks are stamped onto the same clock, so they line up in time.'],
+ ['rec','The writer thread encodes both tracks.'],
+ ['live','Within about a second the sentence appears in the live view (in memory only).'],
+ ['gopus','The audio lands in two .gopus files, 1-second chunks with CRCs.'],
+ ['jobs','You press Stop. The meeting is queued for processing.'],
+ ['vad','Silero scores every 32 ms; the sentence becomes one speech segment on each track.'],
+ ['turns','Bob replies with no pause, so pyannote + TitaNet cut the span where the voice changes.'],
+ ['transcribe','Parakeet turns each segment into words with timestamps.'],
+ ['voiceprints','Each system segment gets a 256-number voiceprint.'],
+ ['cluster','Alice\'s segments cluster together; her centroid matches her People entry at 0.78, so she is named automatically.'],
+ ['merge','The mic copy says the same words at the same time: the echo net drops it, so the line isn\'t credited to you.'],
+ ['db','"Alice: let\'s ship the beta on Friday" is stored, timestamped.'],
+ ['summary','Summarize later turns it into an action item, kept because its quote is found in the transcript.'],
+];
+let tracing=null;
+document.getElementById('trace').onclick=()=>{
+  if(tracing){clearTimeout(tracing.t);tracing=null;document.getElementById('trace').textContent='▶ Trace one sentence through it';return;}
+  let i=0; document.getElementById('trace').textContent='■ Stop trace';
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const go=()=>{ if(i>=TRACE.length){tracing=null;document.getElementById('trace').textContent='▶ Trace one sentence through it';return;}
+    const [id,msg]=TRACE[i++]; openNode(id);
+    dBody.insertAdjacentHTML('afterbegin',`<div class="fig" style="border-color:${C.ink};background:#fff8d6"><b>Trace ${i}/${TRACE.length}:</b> ${esc(msg)}</div>`);
+    tracing={t:setTimeout(go, reduce?4500:3800)}; };
+  go();
+};
+</script>
+</body>
+</html>
