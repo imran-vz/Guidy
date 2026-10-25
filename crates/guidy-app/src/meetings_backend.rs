@@ -302,6 +302,27 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn download_speaker_model(&self) -> MeetingsResult<()> {
         Err(unavailable())
     }
+    /// Both speaker-turn models (TitaNet and segmentation) are on disk.
+    fn speaker_turn_models_installed(&self) -> bool {
+        true
+    }
+    /// Download the speaker-turn models. The caller has already recorded
+    /// consent in meetings settings.
+    fn start_speaker_turn_downloads(&self) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// The shared download tracker.
+    fn downloads(&self) -> Vec<guidy_core::downloads::DownloadItem> {
+        Vec::new()
+    }
+    /// Stop a running download the tracker knows about.
+    fn cancel_download(&self, _id: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    /// Start a failed or cancelled download again.
+    fn retry_download(&self, _id: &str) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
 
     // -- the user's voice (People) -------------------------------------------
     fn user_voice(&self) -> MeetingsResult<UserVoice> {
@@ -669,6 +690,27 @@ impl MeetingsBackend for CoreMeetingsBackend {
     fn download_speaker_model(&self) -> MeetingsResult<()> {
         guidy_core::meetings::processing::start_speaker_model_download(&self.app);
         Ok(())
+    }
+    fn speaker_turn_models_installed(&self) -> bool {
+        guidy_core::meetings::processing::speaker_turn_models_installed(&self.app)
+    }
+    fn start_speaker_turn_downloads(&self) -> MeetingsResult<()> {
+        guidy_core::meetings::processing::start_speaker_turn_downloads(&self.app);
+        Ok(())
+    }
+    fn downloads(&self) -> Vec<guidy_core::downloads::DownloadItem> {
+        guidy_core::downloads::global().list()
+    }
+    fn cancel_download(&self, id: &str) -> MeetingsResult<()> {
+        if guidy_core::downloads::global().cancel(&self.app, id) {
+            Ok(())
+        } else {
+            Err("that download isn't running".into())
+        }
+    }
+    fn retry_download(&self, id: &str) -> MeetingsResult<()> {
+        guidy_core::meetings::processing::retry_model_download(&self.app, id)
+            .map_err(|e| e.to_string())
     }
 
     fn user_voice(&self) -> MeetingsResult<UserVoice> {
@@ -1095,6 +1137,9 @@ pub mod fake {
         pub progress: HashMap<MeetingId, ProcessingProgress>,
         pub next_id: i64,
         pub speaker_model: SpeakerModelStatus,
+        /// Speaker-turn models (TitaNet + segmentation) are on disk.
+        /// `true` so existing tests don't grow a consent banner.
+        pub turn_models_installed: bool,
         pub init: MeetingsInit,
         /// `process_meeting` and `retranscribe` fail with this (encoded)
         /// error.
@@ -1122,6 +1167,7 @@ pub mod fake {
                 progress: HashMap::new(),
                 next_id: 1000,
                 speaker_model: SpeakerModelStatus::Ready,
+                turn_models_installed: true,
                 init: MeetingsInit::Ready,
                 fail_process: None,
                 cloud_options: Vec::new(),
@@ -1531,6 +1577,14 @@ pub mod fake {
         }
         fn download_speaker_model(&self) -> MeetingsResult<()> {
             self.rec("download_speaker_model");
+            Ok(())
+        }
+        fn speaker_turn_models_installed(&self) -> bool {
+            self.data.lock().turn_models_installed
+        }
+        fn start_speaker_turn_downloads(&self) -> MeetingsResult<()> {
+            self.rec("start_speaker_turn_downloads");
+            self.data.lock().turn_models_installed = true;
             Ok(())
         }
         fn init_status(&self) -> MeetingsInit {

@@ -1208,6 +1208,27 @@
       "done_one": "Titled 1 meeting",
       "done_other": "Titled {{count}} meetings",
       "error": "Couldn't generate the title"
+    },
+    "downloads": {
+      "activity": "Downloading {{name}} · {{percent}}%",
+      "activityFailed": "Download failed · {{name}}",
+      "multiple": "Downloading {{count}} models",
+      "cancel": "Cancel",
+      "retry": "Retry",
+      "done": "{{name}} downloaded",
+      "failed": "Couldn't download {{name}}",
+      "startError": "Couldn't start the download",
+      "empty": "No downloads",
+      "queued": "Queued",
+      "doneShort": "Done",
+      "failedShort": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "turnConsent": {
+      "title": "Speaker turn detection",
+      "body": "Download the models that split lines where the voice changes ({{size}}). Until then, lines split at pauses.",
+      "download": "Download",
+      "notNow": "Not now"
     }
   },
   "meetingsAi": {

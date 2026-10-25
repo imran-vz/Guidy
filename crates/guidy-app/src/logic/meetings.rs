@@ -2,6 +2,7 @@
 //! sidebar visibility, transcript grouping, labels and formatting, deep
 //! links, external-URL checks and settings patches.
 
+use guidy_core::downloads::{DownloadItem, DOWNLOADS_CHANGED_EVENT};
 use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
@@ -53,11 +54,15 @@ pub enum MeetingsEvent {
     LocalModelsChanged,
     /// UI-only: the Linear API key was saved or removed.
     LinearKeyChanged,
+    /// The shared download tracker changed (the full list).
+    DownloadsChanged(Vec<DownloadItem>),
 }
 
 /// Whether [`decode_event`] handles events with this name.
 pub fn is_meetings_event(name: &str) -> bool {
-    name.starts_with("meetings://") || name.starts_with("llm-models://")
+    name.starts_with("meetings://")
+        || name.starts_with("llm-models://")
+        || name == DOWNLOADS_CHANGED_EVENT
 }
 
 pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
@@ -103,6 +108,9 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
             })
         }
         LLM_MODELS_CHANGED_EVENT => Some(MeetingsEvent::LocalModelsChanged),
+        DOWNLOADS_CHANGED_EVENT => serde_json::from_value(payload.clone())
+            .ok()
+            .map(MeetingsEvent::DownloadsChanged),
         _ => None,
     }
 }

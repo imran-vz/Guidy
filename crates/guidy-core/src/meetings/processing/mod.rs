@@ -42,11 +42,13 @@ use crate::meetings::audio_store::TrackReader;
 
 pub use cloud::{CloudApiError, CloudKeyMissing};
 pub use jobs::Processor;
+pub use jobs::{retry_model_download, start_speaker_turn_downloads};
 pub use sidecar::delete_sidecars;
 pub use speaker_model::{
     ensure_speaker_model, installed_speaker_model, speaker_model_installed, speaker_model_status,
-    start_speaker_model_download, SpeakerModelMissing, SpeakerModelStatus, SPEAKER_MODEL_NAME,
-    SPEAKER_MODEL_SIZE, SPEAKER_MODEL_STATUS_EVENT, SPEAKER_MODEL_TRAINED_ON,
+    speaker_turn_models_bytes, speaker_turn_models_installed, start_speaker_model_download,
+    SpeakerModelMissing, SpeakerModelStatus, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE,
+    SPEAKER_MODEL_STATUS_EVENT, SPEAKER_MODEL_TRAINED_ON,
 };
 
 /// All meeting audio is 16 kHz mono.

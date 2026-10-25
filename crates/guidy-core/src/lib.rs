@@ -15,6 +15,7 @@ pub mod chinese_script;
 pub mod cli;
 pub mod clipboard;
 pub mod commands;
+pub mod downloads;
 pub mod engine_supervisor;
 pub mod helpers;
 pub mod host;

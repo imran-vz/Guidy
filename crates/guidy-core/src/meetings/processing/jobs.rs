@@ -794,12 +794,13 @@ impl Processor {
         }
         // Lines split where the voice changes once TitaNet (which confirms
         // each change) is on disk, with the segmentation model when it is
-        // too. Both download in the background once the user has the
-        // speaker model; until then lines split at pauses only.
+        // too. Those downloads (~107 MB) start only after the user agrees;
+        // models already on disk are used either way. Until TitaNet is
+        // there, lines split at pauses only.
         let titanet = SpeakerModelId::TitanetLarge;
         let titanet_ready = super::speaker_model::separation_model_installed(&inner.app, titanet);
         let segmentation = super::speaker_model::installed_segmentation_model(&inner.app);
-        if speaker_model_installed(&inner.app) {
+        if settings.meetings.speaker_turn_models_consent && speaker_model_installed(&inner.app) {
             if segmentation.is_none() {
                 super::speaker_model::start_segmentation_model_download(&inner.app);
             }
@@ -1067,6 +1068,42 @@ impl TurnSegmenter for LazySegmenter {
         }
         self.segmenter.as_mut().expect("loaded").turns(pcm)
     }
+}
+
+/// Download TitaNet and the segmentation model in the background (each
+/// no-ops when it is already there). The user asked for them.
+pub fn start_speaker_turn_downloads(app: &AppHandle) {
+    if super::speaker_model::installed_segmentation_model(app).is_none() {
+        super::speaker_model::start_segmentation_model_download(app);
+    }
+    let titanet = SpeakerModelId::TitanetLarge;
+    if !super::speaker_model::separation_model_installed(app, titanet) {
+        start_separation_model_download(app, titanet);
+    }
+}
+
+/// Start again a download the tracker knows about (speaker model,
+/// a separation model, or the segmentation model).
+pub fn retry_model_download(app: &AppHandle, id: &str) -> Result<()> {
+    use super::speaker_model::{
+        segmentation_download_id, separation_download_id, speaker_download_id,
+    };
+    if id == speaker_download_id() {
+        super::speaker_model::start_speaker_model_download(app);
+        return Ok(());
+    }
+    if id == segmentation_download_id() {
+        super::speaker_model::start_segmentation_model_download(app);
+        return Ok(());
+    }
+    if let Some(rest) = id.strip_prefix("separation:") {
+        let model = SpeakerModelId::parse(rest);
+        if separation_download_id(model) == id {
+            start_separation_model_download(app, model);
+            return Ok(());
+        }
+    }
+    bail!("unknown download {id}")
 }
 
 /// Download a separation model in the background (no-op when it is there).

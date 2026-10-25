@@ -1237,6 +1237,31 @@ mod banners_and_events {
         );
     }
 
+    #[gpui_kit::test]
+    fn a_download_event_shows_the_status_indicator(cx: &mut TestAppContext) {
+        use guidy_core::downloads::{DownloadItem, DownloadState};
+        let state = setup(cx, FakeBackend::new());
+        let (w, _) = open(cx, |_, cx| StatusBar::new(cx));
+        assert!(!exists(cx, w, "download-activity"));
+        let item = DownloadItem {
+            id: "separation:titanet_large".into(),
+            name: "TitaNet".into(),
+            total_bytes: 100,
+            downloaded_bytes: 45,
+            state: DownloadState::Downloading,
+            error: None,
+            started_at_ms: 0,
+            cancellable: true,
+        };
+        dispatch(
+            cx,
+            &state,
+            guidy_core::downloads::DOWNLOADS_CHANGED_EVENT,
+            serde_json::to_value(vec![item]).unwrap(),
+        );
+        assert!(exists(cx, w, "download-activity"));
+    }
+
     /// PARITY E-14, F-06
     #[gpui_kit::test]
     fn tray_update_check_event_runs_a_manual_check(cx: &mut TestAppContext) {
@@ -2416,6 +2441,28 @@ mod meetings_fixes {
             window.click("meetings-permission-request-microphone", cx)
         });
         assert!(meetings.called("request_permissions"));
+    }
+
+    #[gpui_kit::test]
+    fn speaker_turn_models_ask_before_downloading(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().turn_models_installed = false;
+        setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "speaker-turn-consent"));
+        with_window(cx, w, |window, cx| window.click("speaker-turn-not-now", cx));
+        assert!(!exists(cx, w, "speaker-turn-consent"));
+        assert!(!meetings.called("start_speaker_turn_downloads"));
+        assert!(!backend.settings().meetings.speaker_turn_models_consent);
+
+        meetings.data.lock().turn_models_installed = false;
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| {
+            window.click("speaker-turn-download", cx)
+        });
+        cx.run_until_parked();
+        assert!(backend.settings().meetings.speaker_turn_models_consent);
+        assert!(meetings.called("start_speaker_turn_downloads"));
     }
 
     #[gpui_kit::test]

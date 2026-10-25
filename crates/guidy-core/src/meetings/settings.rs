@@ -73,6 +73,10 @@ pub struct MeetingSettings {
     /// Generating a title keeps the calendar event's name (only the
     /// description is generated) for meetings linked to an event.
     pub prefer_calendar_titles: bool,
+    /// The user agreed to download the speaker-turn models (TitaNet and
+    /// the segmentation model, about 107 MB). Until then those downloads
+    /// do not start on their own. Models already on disk are still used.
+    pub speaker_turn_models_consent: bool,
 }
 
 /// Where the controls of a recording in progress are shown.
@@ -163,6 +167,7 @@ impl Default for MeetingSettings {
             speaker_separation_model: String::new(),
             recording_controls: RecordingControls::Floating,
             prefer_calendar_titles: true,
+            speaker_turn_models_consent: false,
         }
     }
 }
@@ -205,6 +210,10 @@ impl std::fmt::Debug for MeetingSettings {
             .field("speaker_separation_model", &self.speaker_separation_model)
             .field("recording_controls", &self.recording_controls)
             .field("prefer_calendar_titles", &self.prefer_calendar_titles)
+            .field(
+                "speaker_turn_models_consent",
+                &self.speaker_turn_models_consent,
+            )
             .finish()
     }
 }

@@ -7,6 +7,7 @@
 //! audio than the 3D-Speaker (zh-cn) model.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
@@ -239,14 +240,33 @@ pub fn ensure_separation_model(
     if separation_model_installed(app, id) {
         return Ok(path);
     }
-    crate::host::async_runtime::block_on(download_verified(
+    let download_id = separation_download_id(id);
+    let flag = crate::downloads::global().begin(app, &download_id, model.name, model.size);
+    let app_for_progress = app.clone();
+    let progress_id = download_id.clone();
+    let result = crate::host::async_runtime::block_on(download_verified_cancellable(
         model.url,
         &path,
         model.sha256,
-        |downloaded, total| on_progress(downloaded, total.unwrap_or(model.size)),
-    ))
-    .with_context(|| format!("could not download the speaker model {}", model.name))?;
-    Ok(path)
+        |downloaded, total| {
+            let total = total.unwrap_or(model.size);
+            crate::downloads::global().progress(&app_for_progress, &progress_id, downloaded, total);
+            on_progress(downloaded, total);
+        },
+        || flag.load(Ordering::SeqCst),
+    ));
+    match result {
+        Ok(()) => {
+            crate::downloads::global().finish(app, &download_id);
+            Ok(path)
+        }
+        Err(e) if e.is::<crate::downloads::DownloadCancelled>() => Err(e),
+        Err(e) => {
+            let error = format!("could not download the speaker model {}: {e:#}", model.name);
+            crate::downloads::global().fail(app, &download_id, &error);
+            Err(e).context(error)
+        }
+    }
 }
 
 /// Delete a downloaded separation model (never the standard one, which
@@ -281,28 +301,34 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
             total: SPEAKER_MODEL_SIZE,
         },
     );
+    let download_id = speaker_download_id();
+    let flag =
+        crate::downloads::global().begin(app, download_id, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE);
     let mut last_emit = std::time::Instant::now();
-    let result = crate::host::async_runtime::block_on(download_verified(
+    let app_for_progress = app.clone();
+    let result = crate::host::async_runtime::block_on(download_verified_cancellable(
         SPEAKER_MODEL_URL,
         &path,
         SPEAKER_MODEL_SHA256,
         |downloaded, total| {
+            let total = total.unwrap_or(SPEAKER_MODEL_SIZE);
+            crate::downloads::global().progress(&app_for_progress, download_id, downloaded, total);
             if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
                 last_emit = std::time::Instant::now();
-                set_status(
-                    app,
-                    SpeakerModelStatus::Downloading {
-                        downloaded,
-                        total: total.unwrap_or(SPEAKER_MODEL_SIZE),
-                    },
-                );
+                set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
             }
         },
+        || flag.load(Ordering::SeqCst),
     ));
     match result {
         Ok(()) => {
             set_status(app, SpeakerModelStatus::Ready);
+            crate::downloads::global().finish(app, download_id);
             Ok(path)
+        }
+        Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {
+            set_status(app, SpeakerModelStatus::Missing);
+            Err(e)
         }
         Err(e) => {
             let error = format!("Could not download the speaker voice model: {e:#}");
@@ -312,6 +338,7 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
                     error: error.clone(),
                 },
             );
+            crate::downloads::global().fail(app, download_id, &error);
             bail!(error)
         }
     }
@@ -335,7 +362,19 @@ pub async fn download_verified(
     url: &str,
     dest: &Path,
     sha256: &str,
+    on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
+    download_verified_cancellable(url, dest, sha256, on_progress, || false).await
+}
+
+/// [`download_verified`] that stops when `cancel` returns true
+/// ([`crate::downloads::DownloadCancelled`]), deleting the partial file.
+pub async fn download_verified_cancellable(
+    url: &str,
+    dest: &Path,
+    sha256: &str,
     mut on_progress: impl FnMut(u64, Option<u64>),
+    cancel: impl Fn() -> bool,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -368,10 +407,19 @@ pub async fn download_verified(
             .map_err(|_| anyhow::anyhow!("download stalled"))?;
         let Some(chunk) = next else { break };
         let chunk = chunk.context("download interrupted")?;
+        if cancel() {
+            drop(file);
+            let _ = std::fs::remove_file(&part);
+            return Err(crate::downloads::DownloadCancelled.into());
+        }
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
+    }
+    if cancel() {
+        let _ = std::fs::remove_file(&part);
+        return Err(crate::downloads::DownloadCancelled.into());
     }
     file.flush().await?;
     drop(file);
@@ -438,6 +486,33 @@ pub const SEGMENTATION_MODEL_SHA256: &str =
     "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079";
 pub const SEGMENTATION_MODEL_SIZE: u64 = 5_992_913;
 
+/// Tracker id of the standard speaker model.
+pub fn speaker_download_id() -> &'static str {
+    "speaker:resnet34"
+}
+
+/// Tracker id of a separation model.
+pub fn separation_download_id(id: SpeakerModelId) -> String {
+    format!("separation:{}", id.as_str())
+}
+
+/// Tracker id of the pyannote segmentation model.
+pub fn segmentation_download_id() -> &'static str {
+    "segmentation:pyannote"
+}
+
+/// TitaNet plus the segmentation model, the pair a meeting uses to split
+/// lines where the voice changes.
+pub fn speaker_turn_models_bytes() -> u64 {
+    separation_model(SpeakerModelId::TitanetLarge).size + SEGMENTATION_MODEL_SIZE
+}
+
+/// Both speaker-turn models are on disk.
+pub fn speaker_turn_models_installed(app: &AppHandle) -> bool {
+    separation_model_installed(app, SpeakerModelId::TitanetLarge)
+        && installed_segmentation_model(app).is_some()
+}
+
 pub fn segmentation_model_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(speaker_model_dir(app)?.join(SEGMENTATION_MODEL_FILE))
 }
@@ -467,16 +542,41 @@ pub fn start_segmentation_model_download(app: &AppHandle) {
     let spawned = std::thread::Builder::new()
         .name("segmentation-model-download".into())
         .spawn(move || {
+            let download_id = segmentation_download_id();
+            let flag = crate::downloads::global().begin(
+                &app,
+                download_id,
+                "Speaker segmentation",
+                SEGMENTATION_MODEL_SIZE,
+            );
             let result = segmentation_model_path(&app).and_then(|path| {
-                crate::host::async_runtime::block_on(download_verified(
+                let app_for_progress = app.clone();
+                crate::host::async_runtime::block_on(download_verified_cancellable(
                     SEGMENTATION_MODEL_URL,
                     &path,
                     SEGMENTATION_MODEL_SHA256,
-                    |_, _| {},
+                    |downloaded, total| {
+                        crate::downloads::global().progress(
+                            &app_for_progress,
+                            download_id,
+                            downloaded,
+                            total.unwrap_or(SEGMENTATION_MODEL_SIZE),
+                        );
+                    },
+                    || flag.load(Ordering::SeqCst),
                 ))
             });
-            if let Err(e) = result {
-                log::warn!("could not download the speaker segmentation model: {e:#}");
+            match result {
+                Ok(()) => crate::downloads::global().finish(&app, download_id),
+                Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {}
+                Err(e) => {
+                    log::warn!("could not download the speaker segmentation model: {e:#}");
+                    crate::downloads::global().fail(
+                        &app,
+                        download_id,
+                        format!("could not download the speaker segmentation model: {e:#}"),
+                    );
+                }
             }
             *DOWNLOADING.lock() = false;
         });

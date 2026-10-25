@@ -74,6 +74,8 @@ pub struct MeetingList {
     bulk: Option<BulkTitles>,
     /// How many meetings "Generate titles" would title.
     title_candidates: usize,
+    /// "Not now" on the speaker-turn download prompt, for this visit.
+    turn_prompt_dismissed: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -120,6 +122,7 @@ impl MeetingList {
             titling: HashSet::new(),
             bulk: None,
             title_candidates: 0,
+            turn_prompt_dismissed: false,
             _subs: subs,
         };
         this.reload(cx);
@@ -424,6 +427,89 @@ impl MeetingList {
                 }
             },
         );
+    }
+
+    fn consent_turn_models(&mut self, cx: &mut Context<Self>) {
+        super::settings::update_meetings(cx, |m| m.speaker_turn_models_consent = true);
+        run(
+            cx,
+            |b| b.start_speaker_turn_downloads(),
+            |this: &mut Self, r, cx| {
+                if let Err(e) = r {
+                    toast_error("meetings.downloads.startError", &e, cx);
+                }
+                this.turn_prompt_dismissed = true;
+                cx.notify();
+            },
+        );
+    }
+
+    /// Speaker-turn models (~107 MB) download only after the user agrees.
+    fn render_turn_consent(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.turn_prompt_dismissed || meeting_settings(cx).speaker_turn_models_consent {
+            return None;
+        }
+        if meetings_backend(cx).speaker_turn_models_installed() {
+            return None;
+        }
+        let bytes = guidy_core::meetings::processing::speaker_turn_models_bytes();
+        let size = format_model_size(Some(bytes as f64 / (1024.0 * 1024.0)));
+        let tone = design::tone(cx);
+        let theme = cx.theme().clone();
+        Some(
+            design::notice(theme.info)
+                .id("speaker-turn-consent")
+                .flex()
+                .items_center()
+                .gap_3()
+                .justify_between()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(dp(2.))
+                        .child(
+                            div()
+                                .text_size(design::TEXT_BODY)
+                                .text_color(tone.text)
+                                .child(t("meetings.turnConsent.title")),
+                        )
+                        .child(
+                            div()
+                                .text_size(dp(12.))
+                                .text_color(tone.text_muted)
+                                .child(t_args("meetings.turnConsent.body", &[("size", &size)])),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("speaker-turn-not-now")
+                                .ghost()
+                                .small()
+                                .pill()
+                                .label(t("meetings.turnConsent.notNow"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.turn_prompt_dismissed = true;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("speaker-turn-download")
+                                .primary()
+                                .small()
+                                .pill()
+                                .icon(icon("download"))
+                                .label(t("meetings.turnConsent.download"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.consent_turn_models(cx)),
+                                ),
+                        ),
+                )
+                .test_support()
+                .into_any_element(),
+        )
     }
 
     /// "Download the speaker model" while it's missing: without it nothing
@@ -1154,6 +1240,7 @@ impl Render for MeetingList {
             )
             .children(model_banner)
             .children(speaker_banner)
+            .children(self.render_turn_consent(cx))
             .child(design::panel(cx).child(content))
             .test_support()
     }
