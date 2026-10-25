@@ -207,6 +207,7 @@ struct Run {
     embed_calls: usize,
     result: Result<()>,
     progress: Vec<ProcessingProgress>,
+    lines: Vec<ProvisionalLine>,
 }
 
 fn run(f: &Fixture, cancel_after: Option<usize>) -> Run {
@@ -242,6 +243,8 @@ fn run_accented(
     };
     let progress = Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = progress.clone();
+    let lines = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let line_sink = lines.clone();
     let result = Pipeline {
         meeting_id: f.id,
         store: &f.store,
@@ -259,14 +262,17 @@ fn run_accented(
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: Some(Box::new(move |line| line_sink.borrow_mut().push(line))),
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
     .run();
     let progress = progress.borrow().clone();
+    let lines = lines.borrow().clone();
     Run {
         transcribe_calls: t_calls.get(),
         embed_calls: e_calls.get(),
         result,
+        lines,
         progress,
     }
 }
@@ -484,6 +490,7 @@ fn run_back_to_back(f: &Fixture, detect: bool) -> Run {
             embedder: &mut voices,
         }),
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(|_| {}),
     }
     .run();
@@ -492,6 +499,7 @@ fn run_back_to_back(f: &Fixture, detect: bool) -> Run {
         embed_calls: e_calls.get(),
         result,
         progress: Vec::new(),
+        lines: Vec::new(),
     }
 }
 
@@ -758,6 +766,7 @@ fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) ->
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(move |p| hook(&p)),
     }
     .run()
@@ -1086,6 +1095,7 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(move |p| {
             // The user deletes the meeting (and its sidecars) while it runs.
             if p.stage == ProcessingStage::Transcribe && store.delete_meeting(id).unwrap() {
@@ -1132,6 +1142,7 @@ fn a_run_no_longer_processing_saves_nothing() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(move |p| {
             // Restored (as `Processor::finish` does) while it is in VAD.
             if p.stage == ProcessingStage::Vad {
@@ -1180,6 +1191,7 @@ fn mic_only_meeting_has_just_the_user() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(|_| {}),
     }
     .run()
@@ -1215,6 +1227,7 @@ fn no_audio_is_an_error() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(|_| {}),
     }
     .run()
@@ -1250,6 +1263,7 @@ fn a_cancel_during_the_merge_lets_it_complete() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(move |p| {
             if p.stage == ProcessingStage::Merge {
                 flag.store(true, Ordering::SeqCst);
@@ -1391,6 +1405,37 @@ fn a_segment_in_two_scripts_is_mixed() {
 }
 
 #[test]
+fn provisional_lines_are_emitted_once_per_unit_in_time_order() {
+    let f = fixture();
+    // Mic, then a system turn that starts in between, then mic again.
+    // Storage is mic-then-system; the announcements must follow the clock.
+    let mic = [(0usize, 0, 2_000), (0, 8_000, 10_000)];
+    let system = [(1, 3_000, 5_000)];
+    let r = run_tracks(&f, None, &mic, &system);
+    r.result.unwrap();
+    assert_eq!(r.lines.len(), 3, "{:?}", r.lines);
+    let starts: Vec<i64> = r.lines.iter().map(|l| l.t0_ms).collect();
+    assert!(
+        starts.windows(2).all(|w| w[0] <= w[1]),
+        "not in time order: {starts:?}"
+    );
+    assert_eq!(
+        r.lines.iter().map(|l| l.track).collect::<Vec<_>>(),
+        vec![Track::Mic, Track::System, Track::Mic]
+    );
+    let mut spans: Vec<_> = r
+        .lines
+        .iter()
+        .map(|l| (l.t0_ms, l.t1_ms, l.track.as_str()))
+        .collect();
+    let n = spans.len();
+    spans.sort();
+    spans.dedup();
+    assert_eq!(spans.len(), n);
+    assert!(r.lines.iter().all(|l| !l.text.is_empty()));
+}
+
+#[test]
 fn batches_group_pending_units_of_one_track_up_to_the_limit() {
     let unit = |track, t0, t1| Unit {
         track,
@@ -1405,13 +1450,15 @@ fn batches_group_pending_units_of_one_track_up_to_the_limit() {
         unit(Track::System, 21000, 22000),
     ];
     let all = [true; 6];
+    // Start-time order interleaves the tracks: mic 0, system 0, system 3000,
+    // then the later mic units, then the last system unit.
     assert_eq!(
         batches(&units, &all, 7000),
-        vec![vec![0, 1, 2], vec![3], vec![4], vec![5]]
+        vec![vec![0], vec![3], vec![4], vec![1, 2], vec![5]]
     );
     assert_eq!(
         batches(&units, &all, 6000),
-        vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5]]
+        vec![vec![0], vec![3], vec![4], vec![1, 2], vec![5]]
     );
     // Done units are skipped (a resumed run).
     let pending = [false, true, true, false, false, true];
@@ -1487,15 +1534,17 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
     .run()
     .unwrap();
 
     let calls = calls.borrow().clone();
-    // 2 mic units, then 6 system ones: [mic, mic], then system pairs.
+    // Time order, one track per call, 7000 ms cap. The mic turns sit inside
+    // the system turns, so the groups are not "all mic, then all system".
     let units: Vec<usize> = calls.iter().map(Vec::len).collect();
-    assert_eq!(units, vec![2, 2, 2, 2], "{calls:?}");
+    assert_eq!(units, vec![1, 1, 2, 2, 1, 1], "{calls:?}");
     for call in &calls {
         let total: i64 = call.iter().sum();
         assert!(total <= limit_ms, "{call:?}");

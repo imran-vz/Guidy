@@ -352,6 +352,10 @@ pub struct Pipeline<'a> {
     pub turns: Option<TurnDetection<'a>>,
     pub cancel: &'a AtomicBool,
     pub on_progress: Box<dyn FnMut(ProcessingProgress) + 'a>,
+    /// A unit's transcript, as soon as it exists. `None` stays quiet.
+    /// Blank text is not announced. A later language pass does not announce
+    /// again: one line per unit.
+    pub on_line: Option<Box<dyn FnMut(ProvisionalLine) + 'a>>,
 }
 
 /// Write the cache at most this often inside a long stage.
@@ -636,8 +640,12 @@ impl<'a> Pipeline<'a> {
             return self.unify_language(cache);
         }
         let n = cache.units.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        // Time order across both tracks. `cache.units` stays mic-then-system:
+        // transcripts, embeddings and checkpoints are indexed into it.
+        order.sort_by_key(|&i| (cache.units[i].span.t0_ms, i));
         let mut last_save = Instant::now();
-        for i in 0..n {
+        for i in order {
             if cache.transcripts[i].is_some() {
                 continue;
             }
@@ -646,7 +654,10 @@ impl<'a> Pipeline<'a> {
                 return Err(e);
             }
             match self.transcribe_unit(cache.units[i], None) {
-                Ok(t) => cache.transcripts[i] = Some(t),
+                Ok(t) => {
+                    self.emit_line(cache.units[i], &t.text);
+                    cache.transcripts[i] = Some(t);
+                }
                 Err(e) => {
                     // Keep what is done so a retry resumes here.
                     self.save(cache)?;
@@ -681,6 +692,9 @@ impl<'a> Pipeline<'a> {
             }
             match self.transcribe_group(cache, &batch) {
                 Ok(done) => {
+                    for (&i, t) in batch.iter().zip(&done) {
+                        self.emit_line(cache.units[i], &t.text);
+                    }
                     for (i, t) in batch.into_iter().zip(done) {
                         cache.transcripts[i] = Some(t);
                     }
@@ -750,6 +764,24 @@ impl<'a> Pipeline<'a> {
                 }
             })
             .collect())
+    }
+
+    /// Tell the host this unit's text. Skips blanks and a missing callback.
+    fn emit_line(&mut self, unit: Unit, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let Some(cb) = self.on_line.as_mut() else {
+            return;
+        };
+        cb(ProvisionalLine {
+            meeting_id: self.meeting_id,
+            track: unit.track,
+            t0_ms: unit.span.t0_ms,
+            t1_ms: unit.span.t1_ms,
+            text: text.to_string(),
+        });
     }
 
     /// One unit's transcript, in `language` when given.
@@ -1171,16 +1203,21 @@ pub fn main_language(
 }
 
 /// Groups of units (indices) for a batching transcriber: the `pending`
-/// ones, in unit order, each group on one track and holding at most
+/// ones, in start-time order, each group on one track and holding at most
 /// `limit_ms` of speech (a longer unit is a group of its own).
+///
+/// Storage order (mic, then system) is not the walk order. Callers keep
+/// `units` as stored; only the indices move.
 pub fn batches(units: &[Unit], pending: &[bool], limit_ms: i64) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..units.len())
+        .filter(|&i| pending.get(i).copied().unwrap_or(false))
+        .collect();
+    order.sort_by_key(|&i| (units[i].span.t0_ms, i));
     let mut out: Vec<Vec<usize>> = Vec::new();
     let mut current: Vec<usize> = Vec::new();
     let mut current_ms = 0;
-    for (i, unit) in units.iter().enumerate() {
-        if !pending.get(i).copied().unwrap_or(false) {
-            continue;
-        }
+    for i in order {
+        let unit = &units[i];
         let len = unit.span.len_ms();
         let same_track = current
             .first()

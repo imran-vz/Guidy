@@ -958,6 +958,7 @@
     "detail": {
       "back": "All meetings",
       "transcript": "Transcript",
+      "speakerPending": "…",
       "empty": "No transcript yet. Process the meeting to create one.",
       "loading": "Loading transcript...",
       "loadError": "Couldn't load the meeting",

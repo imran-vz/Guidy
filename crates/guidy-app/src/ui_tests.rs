@@ -1768,6 +1768,31 @@ mod meetings_page {
     }
 
     #[gpui_kit::test]
+    fn a_provisional_line_renders_while_processing(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        meetings.data.lock().meetings[1].status = MeetingStatus::Processing;
+        let state = setup_meetings(cx, backend, meetings);
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-2", cx));
+        let line = guidy_core::meetings::types::ProvisionalLine {
+            meeting_id: 2,
+            track: guidy_core::meetings::types::Track::System,
+            t0_ms: 1_000,
+            t1_ms: 4_000,
+            text: "hello from the call".into(),
+        };
+        dispatch(
+            cx,
+            &state,
+            events::PROVISIONAL_LINE,
+            serde_json::to_value(&line).unwrap(),
+        );
+        show_transcript(cx, &page);
+        assert!(exists(cx, w, "provisional-0"), "streamed line");
+        assert!(!exists(cx, w, "transcript-empty"));
+    }
+
+    #[gpui_kit::test]
     fn progress_events_update_the_list(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         let state = setup_meetings(cx, backend, meetings.clone());

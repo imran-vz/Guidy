@@ -26,7 +26,8 @@ use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
 use guidy_core::meetings::types::{
     CloudTranscriptionOption, DiarizationOptions, LiveStatus, Meeting, MeetingId, MeetingSpeaker,
-    MeetingStatus, Person, ProcessingProgress, Segment, SpeakerId, Track, TranscriptionEngine,
+    MeetingStatus, Person, ProcessingProgress, ProvisionalLine, Segment, SpeakerId, Track,
+    TranscriptionEngine,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -117,6 +118,8 @@ pub struct MeetingDetail {
     /// The notes view, kept from the last time that tab rendered so copy
     /// and regenerate can reach it from a click.
     summary_view: Option<Entity<super::summary::SummaryView>>,
+    /// Lines announced while this meeting is still transcribing, in time order.
+    provisional: Vec<ProvisionalLine>,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -195,6 +198,7 @@ impl MeetingDetail {
             speakers_open: false,
             titling: false,
             summary_view: None,
+            provisional: Vec::new(),
             ticking: false,
             _subs: subs,
         };
@@ -206,6 +210,10 @@ impl MeetingDetail {
         match ev {
             MeetingsEvent::MeetingChanged(id) if *id == self.meeting_id => self.load(cx),
             MeetingsEvent::PeopleChanged | MeetingsEvent::Ready => self.load(cx),
+            MeetingsEvent::ProvisionalLine(line) if line.meeting_id == self.meeting_id => {
+                self.push_provisional(line.clone());
+                cx.notify();
+            }
             MeetingsEvent::Progress(p) if p.meeting_id == self.meeting_id => {
                 let done = p.fraction >= 1.0;
                 self.progress = Some(p.clone());
@@ -254,6 +262,16 @@ impl MeetingDetail {
                             talk_time(&segments, meeting.as_ref().and_then(|m| m.duration_ms()));
                         this.meeting = meeting;
                         this.segments = segments;
+                        // A finished run replaces the streamed lines. While a
+                        // run is still going, keep them (a redo keeps the old
+                        // transcript too, dimmed until the first new line).
+                        let processing = this
+                            .meeting
+                            .as_ref()
+                            .is_some_and(|m| m.status == MeetingStatus::Processing);
+                        if !processing {
+                            this.provisional.clear();
+                        }
                         this.speakers = speakers;
                         this.people = people;
                         if progress.is_some() {
@@ -2238,11 +2256,63 @@ impl MeetingDetail {
         )
     }
 
+    /// Insert a streamed line in time order. The same span updates in place
+    /// (a language pass would, if it announced; the pipeline announces once).
+    fn push_provisional(&mut self, line: ProvisionalLine) {
+        if let Some(existing) = self
+            .provisional
+            .iter_mut()
+            .find(|l| l.track == line.track && l.t0_ms == line.t0_ms && l.t1_ms == line.t1_ms)
+        {
+            existing.text = line.text;
+            return;
+        }
+        let at = self
+            .provisional
+            .partition_point(|l| (l.t0_ms, l.track as u8) <= (line.t0_ms, line.track as u8));
+        self.provisional.insert(at, line);
+    }
+
+    fn render_provisional(
+        &self,
+        i: usize,
+        line: &ProvisionalLine,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tone = design::tone(cx);
+        h_flex()
+            .id(SharedString::from(format!("provisional-{i}")))
+            .w_full()
+            .gap(dp(8.))
+            .px_4()
+            .py(dp(6.))
+            .text_size(design::TEXT_BODY)
+            .text_color(tone.text_muted)
+            .child(
+                div()
+                    .w(dp(52.))
+                    .text_color(tone.text_faint)
+                    .child(format_offset(line.t0_ms)),
+            )
+            .child(div().child(t("meetings.detail.speakerPending")))
+            .child(div().flex_1().min_w_0().child(line.text.clone()))
+            .test_support()
+            .into_any_element()
+    }
+
     fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(live) = self.render_live_transcript(cx) {
             return live;
         }
         let theme = cx.theme().clone();
+        let processing = self
+            .meeting
+            .as_ref()
+            .is_some_and(|m| m.status == MeetingStatus::Processing);
+        // A redo keeps the stored transcript, dimmed, until the first new
+        // line arrives. Then the streamed lines replace it until merge.
+        let show_provisional = processing && !self.provisional.is_empty();
+        let dim_old = processing && !self.segments.is_empty() && self.provisional.is_empty();
         let rows: Vec<AnyElement> = if self.loading {
             vec![div()
                 .px_4()
@@ -2252,6 +2322,12 @@ impl MeetingDetail {
                 .text_color(theme.muted_foreground)
                 .child(t("meetings.detail.loading"))
                 .into_any_element()]
+        } else if show_provisional {
+            self.provisional
+                .iter()
+                .enumerate()
+                .map(|(i, line)| self.render_provisional(i, line, cx))
+                .collect()
         } else if self.segments.is_empty() {
             vec![div()
                 .id("transcript-empty")
@@ -2316,6 +2392,7 @@ impl MeetingDetail {
                 div()
                     .id("transcript-lines")
                     .w_full()
+                    .when(dim_old, |d| d.opacity(0.45))
                     .track_focus(&self.focus)
                     .on_key_down(cx.listener(Self::on_key_down))
                     // A drag let go outside the transcript ends there.

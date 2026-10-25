@@ -201,6 +201,7 @@ fn full_pipeline_on_the_fixture() {
         diarizer: Default::default(),
         turns: None,
         cancel: &cancel,
+        on_line: None,
         on_progress: Box::new(|p| eprintln!("{:?} {:.2}", p.stage, p.fraction)),
     }
     .run()

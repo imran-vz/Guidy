@@ -837,6 +837,7 @@ impl Processor {
             embedder: &mut turn_voices,
         });
         let app = inner.app.clone();
+        let line_app = app.clone();
         let this = self.clone();
         let run = cancel.clone();
         let result = Pipeline {
@@ -855,6 +856,9 @@ impl Processor {
             diarizer,
             turns,
             cancel,
+            on_line: Some(Box::new(move |line| {
+                let _ = line_app.emit(events::PROVISIONAL_LINE, line);
+            })),
             on_progress: Box::new(move |p| this.report_progress(&run, p)),
         }
         .run();

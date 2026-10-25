@@ -463,6 +463,17 @@ pub struct ProcessingProgress {
     pub total: Option<usize>,
 }
 
+/// One line of a transcript that is still being written. The real segments
+/// replace these when the run merges.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionalLine {
+    pub meeting_id: MeetingId,
+    pub track: Track,
+    pub t0_ms: i64,
+    pub t1_ms: i64,
+    pub text: String,
+}
+
 /// What transcribes a meeting's speech.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -729,6 +740,8 @@ pub mod events {
     pub const RECORDER_STATE: &str = "meetings://recorder-state";
     /// Payload: [`super::ProcessingProgress`].
     pub const PROCESSING_PROGRESS: &str = "meetings://processing-progress";
+    /// Payload: [`super::ProvisionalLine`]. One unit just finished transcribing.
+    pub const PROVISIONAL_LINE: &str = "meetings://provisional-line";
     /// Payload: meeting id. A meeting row changed (status, title, ...).
     pub const MEETING_CHANGED: &str = "meetings://meeting-changed";
     /// Payload: (). The People list changed.

@@ -7,8 +7,8 @@ use guidy_core::meetings::processing::SpeakerModelStatus;
 use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
     events, ActionItem, CloudTranscriptionOption, Meeting, MeetingId, MeetingSpeaker,
-    MeetingStatus, Person, ProcessingProgress, RecorderState, Segment, SpeakerId, StoredSummary,
-    TranscriptionEngine,
+    MeetingStatus, Person, ProcessingProgress, ProvisionalLine, RecorderState, Segment, SpeakerId,
+    StoredSummary, TranscriptionEngine,
 };
 use serde_json::Value;
 
@@ -27,6 +27,8 @@ pub const LLM_MODELS_CHANGED_EVENT: &str = guidy_core::llm::local_models::events
 pub enum MeetingsEvent {
     RecorderState(RecorderState),
     Progress(ProcessingProgress),
+    /// A transcript line from a run that has not merged yet.
+    ProvisionalLine(ProvisionalLine),
     MeetingChanged(MeetingId),
     PeopleChanged,
     /// The meetings manager is registered (startup or retry finished).
@@ -73,6 +75,9 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
         events::PROCESSING_PROGRESS => serde_json::from_value(payload.clone())
             .ok()
             .map(MeetingsEvent::Progress),
+        events::PROVISIONAL_LINE => serde_json::from_value(payload.clone())
+            .ok()
+            .map(MeetingsEvent::ProvisionalLine),
         events::MEETING_CHANGED => payload.as_i64().map(MeetingsEvent::MeetingChanged),
         events::PEOPLE_CHANGED => Some(MeetingsEvent::PeopleChanged),
         guidy_core::MEETINGS_READY_EVENT => Some(MeetingsEvent::Ready),
