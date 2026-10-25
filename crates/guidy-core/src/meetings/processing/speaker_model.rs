@@ -428,6 +428,133 @@ impl SpeakerEmbedder {
     }
 }
 
+/// Speaker segmentation model: pyannote segmentation-3.0 (MIT), exported by
+/// sherpa-onnx. It finds where the voice changes inside a line (see
+/// [`super::turns`]); it downloads in the background with the speaker
+/// model and, until it is there, the voiceprint scan finds changes alone.
+pub const SEGMENTATION_MODEL_FILE: &str = "pyannote_segmentation_3_0.onnx";
+pub const SEGMENTATION_MODEL_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0/model.onnx";
+pub const SEGMENTATION_MODEL_SHA256: &str =
+    "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079";
+pub const SEGMENTATION_MODEL_SIZE: u64 = 5_992_913;
+
+pub fn segmentation_model_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(speaker_model_dir(app)?.join(SEGMENTATION_MODEL_FILE))
+}
+
+/// The segmentation model's path when it is on disk (no download).
+pub fn installed_segmentation_model(app: &AppHandle) -> Option<PathBuf> {
+    segmentation_model_path(app)
+        .ok()
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == SEGMENTATION_MODEL_SIZE))
+}
+
+/// Download the segmentation model in the background (no-op when it is
+/// there, or already downloading).
+pub fn start_segmentation_model_download(app: &AppHandle) {
+    static DOWNLOADING: Mutex<bool> = Mutex::new(false);
+    if installed_segmentation_model(app).is_some() {
+        return;
+    }
+    {
+        let mut busy = DOWNLOADING.lock();
+        if *busy {
+            return;
+        }
+        *busy = true;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("segmentation-model-download".into())
+        .spawn(move || {
+            let result = segmentation_model_path(&app).and_then(|path| {
+                crate::host::async_runtime::block_on(download_verified(
+                    SEGMENTATION_MODEL_URL,
+                    &path,
+                    SEGMENTATION_MODEL_SHA256,
+                    |_, _| {},
+                ))
+            });
+            if let Err(e) = result {
+                log::warn!("could not download the speaker segmentation model: {e:#}");
+            }
+            *DOWNLOADING.lock() = false;
+        });
+    if spawned.is_err() {
+        *DOWNLOADING.lock() = false;
+    }
+}
+
+/// Speaker turns from the segmentation model, through sherpa-onnx's
+/// diarizer. Its speaker labels hold within one call only; the pipeline
+/// uses them just to find where the voice changes.
+pub struct PyannoteSegmenter {
+    diarizer: sherpa_onnx::OfflineSpeakerDiarization,
+}
+
+impl PyannoteSegmenter {
+    /// `segmentation`: the pyannote model; `embedding`: a speaker model the
+    /// diarizer links one window's speakers to the next with.
+    pub fn new(segmentation: &Path, embedding: &Path) -> Result<Self> {
+        let config = sherpa_onnx::OfflineSpeakerDiarizationConfig {
+            segmentation: sherpa_onnx::OfflineSpeakerSegmentationModelConfig {
+                pyannote: sherpa_onnx::OfflineSpeakerSegmentationPyannoteModelConfig {
+                    model: Some(segmentation.to_string_lossy().into_owned()),
+                    window_shift_ratio: SEGMENTATION_WINDOW_SHIFT,
+                },
+                num_threads: 2,
+                ..Default::default()
+            },
+            embedding: sherpa_onnx::SpeakerEmbeddingExtractorConfig {
+                model: Some(embedding.to_string_lossy().into_owned()),
+                num_threads: 2,
+                debug: false,
+                provider: Some("cpu".into()),
+            },
+            // Splitting one voice in two costs only a check (every change
+            // is confirmed by voiceprints); merging two hides a change.
+            clustering: sherpa_onnx::FastClusteringConfig {
+                threshold: SEGMENTATION_CLUSTER_THRESHOLD,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let diarizer =
+            sherpa_onnx::OfflineSpeakerDiarization::create(&config).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "could not load the speaker segmentation model {}",
+                    segmentation.display()
+                )
+            })?;
+        Ok(Self { diarizer })
+    }
+}
+
+/// Step of the model's 10 s window, as a share of it: 0.25 finds the same
+/// changes as sherpa's 0.1 in half the time; 0.5 misplaces some.
+const SEGMENTATION_WINDOW_SHIFT: f32 = 0.25;
+
+/// sherpa-onnx's clustering cut for [`PyannoteSegmenter`]: lower makes more
+/// speakers.
+const SEGMENTATION_CLUSTER_THRESHOLD: f32 = 0.5;
+
+impl super::turns::TurnSegmenter for PyannoteSegmenter {
+    fn turns(&mut self, pcm: &[f32]) -> Result<Vec<super::turns::Turn>> {
+        let Some(result) = self.diarizer.process(pcm) else {
+            bail!("speaker segmentation failed");
+        };
+        Ok(result
+            .sort_by_start_time()
+            .into_iter()
+            .map(|s| super::turns::Turn {
+                t0_ms: (s.start * 1000.0).round() as i64,
+                t1_ms: (s.end * 1000.0).round() as i64,
+                speaker: s.speaker,
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

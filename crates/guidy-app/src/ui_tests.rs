@@ -3,12 +3,12 @@
 
 use crate::state::AppState;
 use crate::testing::FakeBackend;
-use guidy_core::commands::audio::AudioDevice;
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
 use gpui_kit::{
     px, size, AnyWindowHandle, AppContext as _, Bounds, Context, Entity, Point, Render,
     TestAppContext, Window, WindowBounds, WindowOptions,
 };
+use guidy_core::commands::audio::AudioDevice;
 use std::sync::Arc;
 
 pub fn setup(cx: &mut TestAppContext, backend: Arc<FakeBackend>) -> Entity<AppState> {
@@ -1739,6 +1739,8 @@ mod meetings_page {
             stage: ProcessingStage::Transcribe,
             fraction: 0.4,
             message: None,
+            done: None,
+            total: None,
         };
         dispatch(
             cx,

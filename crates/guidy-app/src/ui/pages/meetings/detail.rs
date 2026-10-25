@@ -5,9 +5,9 @@
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
     can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_near,
-    line_range, needs_confirmation, non_empty, select_lines, speaker_name, status_key, talk_time,
-    transcript_issue, LineClick, MeetingsEvent, RedoChoice, SpeakerBlock, SpeakerRedoChoice,
-    TalkTime, TranscriptIssue,
+    line_range, needs_confirmation, non_empty, progress_label, select_lines, speaker_name,
+    status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice, SpeakerBlock,
+    SpeakerRedoChoice, TalkTime, TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -1464,7 +1464,7 @@ impl MeetingDetail {
                                     .text_size(design::TEXT_MONO)
                                     .child(design::shimmer_text(
                                         "meeting-detail-stage",
-                                        format!("{stage} · {:.0}%", fraction * 100.0),
+                                        progress_label(&stage, self.progress.as_ref()),
                                         cx,
                                     )),
                             )

@@ -257,6 +257,7 @@ fn run_accented(
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
@@ -400,6 +401,168 @@ fn processes_a_meeting_end_to_end() {
     );
     assert_eq!(r.progress.last().unwrap().stage, ProcessingStage::Done);
     assert_eq!(*fractions.last().unwrap(), 1.0);
+}
+
+/// Per 1 ms of `pcm`, the synthetic speaker talking (`None`: silence).
+fn speakers_by_ms(pcm: &[f32]) -> Vec<Option<usize>> {
+    pcm.chunks(SAMPLE_RATE / 1000)
+        .map(|ms| {
+            let max = ms.iter().fold(0f32, |m, s| m.max(s.abs()));
+            (max > 0.01).then(|| ((max / 0.1).round() as usize).saturating_sub(1))
+        })
+        .collect()
+}
+
+/// Turns where the synthetic speaker changes, as a segmentation model
+/// would report them.
+struct FakeSegmenter;
+
+impl TurnSegmenter for FakeSegmenter {
+    fn turns(&mut self, pcm: &[f32]) -> Result<Vec<turns::Turn>> {
+        let mut out: Vec<turns::Turn> = Vec::new();
+        for (t, k) in speakers_by_ms(pcm).into_iter().enumerate() {
+            let (Some(k), t) = (k, t as i64) else {
+                continue;
+            };
+            match out.last_mut() {
+                Some(last) if last.speaker == k as i32 && last.t1_ms == t => last.t1_ms = t + 1,
+                _ => out.push(turns::Turn {
+                    t0_ms: t,
+                    t1_ms: t + 1,
+                    speaker: k as i32,
+                }),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Voiceprints for finding turns: how much of the audio each synthetic
+/// speaker says.
+struct ShareOfVoices;
+
+impl Embedder for ShareOfVoices {
+    fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
+        let mut v = vec![0f32; 16];
+        for k in speakers_by_ms(pcm).into_iter().flatten() {
+            v[k] += 1.0;
+        }
+        Ok(Some(v))
+    }
+}
+
+/// Two remote speakers back to back, no pause: one VAD span. With turn
+/// detection it becomes two lines, each transcribed and diarized alone.
+fn run_back_to_back(f: &Fixture, detect: bool) -> Run {
+    let cancel = AtomicBool::new(false);
+    let t_calls = Rc::new(Cell::new(0));
+    let e_calls = Rc::new(Cell::new(0));
+    let mut transcriber = FakeTranscriber {
+        calls: t_calls.clone(),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: e_calls.clone(),
+    };
+    let (mut segmenter, mut voices) = (FakeSegmenter, ShareOfVoices);
+    // A change on a VAD frame boundary (32 ms), where a cut snaps to.
+    let system = [(0, 1000, 7008), (1, 7008, 13000)];
+    let result = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config: PipelineConfig::default(),
+        mic: None,
+        system: Some(Box::new(PcmSource::new(render(30_000, &system)))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Default::default(),
+        turns: detect.then_some(TurnDetection {
+            segmenter: Some(&mut segmenter),
+            embedder: &mut voices,
+        }),
+        cancel: &cancel,
+        on_progress: Box::new(|_| {}),
+    }
+    .run();
+    Run {
+        transcribe_calls: t_calls.get(),
+        embed_calls: e_calls.get(),
+        result,
+        progress: Vec::new(),
+    }
+}
+
+#[test]
+fn a_line_is_split_where_the_voice_changes() {
+    let f = fixture();
+    run_back_to_back(&f, true).result.unwrap();
+    let segments = f.store.segments(f.id).unwrap();
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    assert_eq!(segments[0].t1_ms, 7008);
+    assert_eq!(segments[1].t0_ms, 7008);
+    assert_eq!(segments[0].text, "hello from speaker 0 today");
+    assert_eq!(segments[1].text, "hello from speaker 1 today");
+    assert_ne!(segments[0].speaker_id, segments[1].speaker_id);
+}
+
+#[test]
+fn without_turn_detection_a_line_holds_both_voices() {
+    let f = fixture();
+    let r = run_back_to_back(&f, false);
+    r.result.unwrap();
+    assert_eq!(r.transcribe_calls, 1);
+    assert_eq!(f.store.segments(f.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_runs_progress_is_shared_by_the_stages_it_runs() {
+    // A redo of the speakers runs voiceprints, cluster and merge: 0 to 1
+    // over those, the slow larger-model cluster getting most of the bar.
+    let mut model = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let diarizer = Diarizer::Model(&mut model);
+    let plan = ProgressPlan::new(ProcessingStage::Voiceprints, |s| {
+        stage_cost(s, &diarizer, false)
+    });
+    assert_eq!(plan.fraction(ProcessingStage::Voiceprints, 0.0), 0.0);
+    let cluster = plan.fraction(ProcessingStage::Cluster, 0.0);
+    let merge = plan.fraction(ProcessingStage::Merge, 0.0);
+    assert!(cluster < 0.2 && merge > 0.9, "{cluster} {merge}");
+    assert_eq!(plan.fraction(ProcessingStage::Done, 0.0), 1.0);
+    // Stages before the run's first count as not reached.
+    assert_eq!(plan.fraction(ProcessingStage::Transcribe, 0.5), 0.0);
+
+    // With turn detection, finding speech is no longer a sliver.
+    let full = |turns| {
+        ProgressPlan::new(ProcessingStage::Decode, |s| {
+            stage_cost(s, &Diarizer::Voiceprints, turns)
+        })
+    };
+    let vad_share = |p: &ProgressPlan| {
+        p.fraction(ProcessingStage::Transcribe, 0.0) - p.fraction(ProcessingStage::Vad, 0.0)
+    };
+    assert!(vad_share(&full(true)) > 0.5);
+    assert!(vad_share(&full(false)) < 0.05);
+}
+
+#[test]
+fn progress_counts_the_stages_items() {
+    let f = fixture();
+    let r = run(&f, None);
+    r.result.unwrap();
+    let transcribing: Vec<(Option<usize>, Option<usize>)> = r
+        .progress
+        .iter()
+        .filter(|p| p.stage == ProcessingStage::Transcribe && p.done.is_some())
+        .map(|p| (p.done, p.total))
+        .collect();
+    assert_eq!(transcribing.first(), Some(&(Some(1), Some(8))));
+    assert_eq!(transcribing.last(), Some(&(Some(8), Some(8))));
+    assert_eq!(r.progress.first().unwrap().fraction, 0.0);
 }
 
 #[test]
@@ -593,6 +756,7 @@ fn run_hooked<'a>(f: &'a Fixture, hook: impl FnMut(&ProcessingProgress) + 'a) ->
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| hook(&p)),
     }
@@ -920,6 +1084,7 @@ fn deleting_the_meeting_mid_run_writes_no_more_sidecars() {
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             // The user deletes the meeting (and its sidecars) while it runs.
@@ -965,6 +1130,7 @@ fn a_run_no_longer_processing_saves_nothing() {
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             // Restored (as `Processor::finish` does) while it is in VAD.
@@ -1012,6 +1178,7 @@ fn mic_only_meeting_has_just_the_user() {
         transcriber: &mut t,
         embedder: &mut e,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(|_| {}),
     }
@@ -1046,6 +1213,7 @@ fn no_audio_is_an_error() {
         transcriber: &mut t,
         embedder: &mut e,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(|_| {}),
     }
@@ -1080,6 +1248,7 @@ fn a_cancel_during_the_merge_lets_it_complete() {
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| {
             if p.stage == ProcessingStage::Merge {
@@ -1316,6 +1485,7 @@ fn a_batching_transcriber_gets_same_track_groups_and_results_land_on_their_units
         transcriber: &mut transcriber,
         embedder: &mut embedder,
         diarizer: Default::default(),
+        turns: None,
         cancel: &cancel,
         on_progress: Box::new(move |p| sink.borrow_mut().push(p)),
     }
@@ -1809,4 +1979,57 @@ fn a_line_tagged_by_hand_is_never_overruled_by_its_voice() {
         .unwrap();
     assert_eq!(person_at(&f, 1_000), (Some(bob), true));
     assert_eq!(person_at(&f, 13_000).0, Some(alice));
+}
+
+/// A pin overruled on one line still holds the others it covers.
+#[test]
+fn an_overruled_pin_keeps_the_lines_its_voice_agreed_with() {
+    let seg = |id: i64, t0: i64, t1: i64| Segment {
+        id,
+        meeting_id: 1,
+        track: Track::System,
+        t0_ms: t0,
+        t1_ms: t1,
+        text: "x".into(),
+        words: Vec::new(),
+        speaker_id: None,
+    };
+    // One pin from naming a whole speaker; a redo split its stretch into
+    // two lines, and only the second sounds like someone else.
+    let pin = SegmentPin {
+        track: Track::System,
+        t0_ms: 0,
+        t1_ms: 4_000,
+        person_id: 7,
+        by_hand: false,
+    };
+    let other = SegmentPin {
+        track: Track::System,
+        t0_ms: 9_000,
+        t1_ms: 9_500,
+        person_id: 8,
+        by_hand: true,
+    };
+    let built = (
+        Vec::new(),
+        vec![seg(1, 0, 2_000), seg(2, 2_000, 4_000), seg(3, 9_000, 9_500)],
+        vec![0, 1, 2],
+    );
+    let overruled = [Overruled {
+        pin: 0,
+        person_id: 7,
+        unit: 1,
+    }];
+    let kept = without_overruled(&built, &[pin.clone(), other.clone()], &overruled);
+    assert_eq!(
+        kept,
+        vec![
+            SegmentPin {
+                t0_ms: 0,
+                t1_ms: 2_000,
+                ..pin
+            },
+            other,
+        ]
+    );
 }

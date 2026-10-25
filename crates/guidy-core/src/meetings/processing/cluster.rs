@@ -334,7 +334,10 @@ pub const LINE_MATCH_MARGIN: f32 = 0.1;
 /// similar (see [`person_similarity`]), and [`LINE_MATCH_MARGIN`] ahead of
 /// everyone else. The line's own prints (see [`SAME_PRINT_SIMILARITY`])
 /// are left out; `None` when they are all someone has (nothing then says
-/// how much the line sounds like them).
+/// how much the line sounds like them). That is on purpose, not a missed
+/// case: such a person may be whom the line is (their print is it), so no
+/// one else can be said to clearly lead them. Skipping them instead would
+/// let a line tagged by hand be overruled by another person's prints.
 pub fn match_line(voice: &[f32], people: &[KnownVoice], threshold: f32) -> Option<(PersonId, f32)> {
     let mut ranked: Vec<(PersonId, f32)> = Vec::with_capacity(people.len());
     for p in people.iter().filter(|p| !p.prints.is_empty()) {

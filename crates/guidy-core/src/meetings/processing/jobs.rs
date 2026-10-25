@@ -23,11 +23,13 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use super::cloud::CloudTranscriber;
 use super::pipeline::{
-    next_stage, overall_fraction, Diarizer, Embedder, Pipeline, PipelineConfig, SegmentTranscriber,
+    next_stage, Diarizer, Embedder, Pipeline, PipelineConfig, SegmentTranscriber, TurnDetection,
 };
 use super::speaker_model::{
-    installed_speaker_model, speaker_model_installed, SpeakerEmbedder, SpeakerModelMissing,
+    installed_speaker_model, speaker_model_installed, PyannoteSegmenter, SpeakerEmbedder,
+    SpeakerModelMissing,
 };
+use super::turns::{Turn, TurnSegmenter};
 use super::{is_cancelled, AudioSource};
 use crate::audio_toolkit::SpeechScorer;
 use crate::engine_supervisor::EngineSupervisor;
@@ -294,8 +296,10 @@ impl Processor {
         let queued = ProcessingProgress {
             meeting_id: id,
             stage: next,
-            fraction: overall_fraction(next, 0.0).min(0.99),
+            fraction: 0.0,
             message: Some("queued".into()),
+            done: None,
+            total: None,
         };
         state.progress.insert(id, queued.clone());
         state.queue.push_back(id);
@@ -788,6 +792,49 @@ impl Processor {
         if diarization != DiarizationEngine::default() {
             log::info!("meeting {id}: telling the speakers apart with {diarization:?}");
         }
+        // Lines split where the voice changes once TitaNet (which confirms
+        // each change) is on disk, with the segmentation model when it is
+        // too. Both download in the background once the user has the
+        // speaker model; until then lines split at pauses only.
+        let titanet = SpeakerModelId::TitanetLarge;
+        let titanet_ready = super::speaker_model::separation_model_installed(&inner.app, titanet);
+        let segmentation = super::speaker_model::installed_segmentation_model(&inner.app);
+        if speaker_model_installed(&inner.app) {
+            if segmentation.is_none() {
+                super::speaker_model::start_segmentation_model_download(&inner.app);
+            }
+            if !titanet_ready {
+                start_separation_model_download(&inner.app, titanet);
+            }
+        }
+        if !titanet_ready || segmentation.is_none() {
+            log::info!(
+                "meeting {id}: speaker turn models not all downloaded yet (TitaNet: \
+                 {titanet_ready}, segmentation: {}); lines split {}",
+                segmentation.is_some(),
+                if titanet_ready {
+                    "by the voiceprint scan alone"
+                } else {
+                    "at pauses only"
+                }
+            );
+        }
+        let mut turn_voices = LazyEmbedder {
+            app: &inner.app,
+            embedder: None,
+            model: titanet,
+        };
+        let mut segmenter = segmentation
+            .zip(super::speaker_model::separation_model_path(&inner.app, titanet).ok())
+            .map(|(segmentation, voices)| LazySegmenter {
+                segmentation,
+                voices,
+                segmenter: None,
+            });
+        let turns = titanet_ready.then(|| TurnDetection {
+            segmenter: segmenter.as_mut().map(|s| s as &mut dyn TurnSegmenter),
+            embedder: &mut turn_voices,
+        });
         let app = inner.app.clone();
         let this = self.clone();
         let run = cancel.clone();
@@ -805,6 +852,7 @@ impl Processor {
             transcriber: segment_transcriber,
             embedder: &mut embedder,
             diarizer,
+            turns,
             cancel,
             on_progress: Box::new(move |p| this.report_progress(&run, p)),
         }
@@ -1001,6 +1049,23 @@ impl Embedder for LazyEmbedder<'_> {
             });
         }
         self.embedder.as_ref().expect("loaded").embed(pcm)
+    }
+}
+
+/// Loads the speaker segmentation model on first use.
+struct LazySegmenter {
+    segmentation: std::path::PathBuf,
+    /// The speaker model it links its windows' speakers with.
+    voices: std::path::PathBuf,
+    segmenter: Option<PyannoteSegmenter>,
+}
+
+impl TurnSegmenter for LazySegmenter {
+    fn turns(&mut self, pcm: &[f32]) -> Result<Vec<Turn>> {
+        if self.segmenter.is_none() {
+            self.segmenter = Some(PyannoteSegmenter::new(&self.segmentation, &self.voices)?);
+        }
+        self.segmenter.as_mut().expect("loaded").turns(pcm)
     }
 }
 
@@ -1558,8 +1623,10 @@ mod tests {
         let at = |stage| ProcessingProgress {
             meeting_id: id,
             stage,
-            fraction: overall_fraction(stage, 0.5),
+            fraction: 0.5,
             message: None,
+            done: None,
+            total: None,
         };
         p.enqueue(id).unwrap();
         let run = take_job(&p, id);

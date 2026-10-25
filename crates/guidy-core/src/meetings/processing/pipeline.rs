@@ -1,5 +1,6 @@
 //! The processing pipeline for one meeting:
-//! decode -> VAD -> transcribe -> voiceprints -> cluster/match -> merge.
+//! decode -> VAD (+ turn splits) -> transcribe -> voiceprints ->
+//! cluster/match -> merge.
 //!
 //! Each completed stage is recorded as `Meeting::processing_stage`, and its
 //! results are kept in the [`ProcessingCache`] checkpoint (in `meetings.db`), so a
@@ -19,6 +20,7 @@ use anyhow::{bail, Result};
 use super::cluster::{self, ClusterParams, KnownVoice};
 use super::sidecar::{self, Clustering, ProcessingCache, SegmentEmbedding, Unit, UnitTranscript};
 use super::timeline::{self, EchoParams, RawSegment};
+use super::turns::{self, TurnParams, TurnSegmenter};
 use super::vad::{self, VadParams};
 use super::{AudioSource, Cancelled};
 use crate::audio_toolkit::SpeechScorer;
@@ -85,6 +87,17 @@ pub enum Diarizer<'a> {
     Service(&'a mut dyn SpeakerTurns),
 }
 
+/// Splits system speech where the voice changes inside one VAD span (see
+/// [`super::turns`]), before it is transcribed.
+pub struct TurnDetection<'a> {
+    /// Proposes changes; without it the voiceprint scan proposes alone.
+    pub segmenter: Option<&'a mut dyn TurnSegmenter>,
+    /// The voiceprints that scan and confirm changes. Not the standard
+    /// model: on call audio it scores two voices a few seconds apart about
+    /// as alike as one voice (TitaNet tells them apart).
+    pub embedder: &'a mut dyn Embedder,
+}
+
 /// A pin a line's own voice overruled (see `Pipeline::overruled_pins`).
 struct Overruled {
     /// Its index in the meeting's pins.
@@ -99,6 +112,7 @@ struct Overruled {
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
     pub vad: VadParams,
+    pub turns: TurnParams,
     pub cluster: ClusterParams,
     pub echo: EchoParams,
     /// System segments shorter than this get no voiceprint of their own; they
@@ -121,6 +135,7 @@ impl PipelineConfig {
         let name = s.user_display_name.trim();
         Self {
             vad: VadParams::default(),
+            turns: TurnParams::default(),
             cluster: ClusterParams::default(),
             echo: EchoParams::default(),
             min_embed_ms: 1_500,
@@ -244,23 +259,77 @@ fn cache_covers(cache: &ProcessingCache, stage: ProcessingStage) -> bool {
     }
 }
 
-/// The share of the whole run before `stage` starts, and its own share.
-fn stage_window(stage: ProcessingStage) -> (f32, f32) {
-    use ProcessingStage::*;
-    match stage {
-        Decode => (0.0, 0.02),
-        Vad => (0.02, 0.08),
-        Transcribe => (0.10, 0.65),
-        Voiceprints => (0.75, 0.17),
-        Cluster => (0.92, 0.03),
-        Merge => (0.95, 0.05),
-        Done => (1.0, 0.0),
+/// How one run's progress bar is shared out: each stage the run goes
+/// through gets a share in proportion to its usual cost, so a run that starts
+/// late (redoing the speakers, resuming) still goes from 0 to 1, and the slow
+/// stages move the bar the most.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressPlan {
+    /// Per stage, the share of the run before it starts and its own share.
+    windows: Vec<(ProcessingStage, f32, f32)>,
+}
+
+impl ProgressPlan {
+    /// A run from `first` to the end, `cost` giving each stage's weight.
+    pub fn new(first: ProcessingStage, cost: impl Fn(ProcessingStage) -> f32) -> Self {
+        let mut stages = vec![first];
+        while *stages.last().expect("one stage") != ProcessingStage::Done {
+            stages.push(next_stage(*stages.last().expect("one stage")));
+        }
+        let costs: Vec<f32> = stages.iter().map(|&s| cost(s).max(0.0)).collect();
+        let total: f32 = costs.iter().sum::<f32>().max(f32::EPSILON);
+        let mut start = 0.0;
+        let windows = stages
+            .into_iter()
+            .zip(costs)
+            .map(|(s, c)| {
+                let w = (s, start, c / total);
+                start += c / total;
+                w
+            })
+            .collect();
+        Self { windows }
+    }
+
+    /// The run's fraction `within` (0..=1) through `stage`; a stage the run
+    /// doesn't go through counts as done.
+    pub fn fraction(&self, stage: ProcessingStage, within: f32) -> f32 {
+        match self.windows.iter().find(|w| w.0 == stage) {
+            Some(&(_, start, len)) => (start + len * within.clamp(0.0, 1.0)).clamp(0.0, 1.0),
+            None if stage == ProcessingStage::Done => 1.0,
+            None => 0.0,
+        }
     }
 }
 
+/// A stage's usual cost, in seconds per half hour of meeting on an
+/// M-series Mac (from processing logs): local transcription runs on the
+/// GPU (~1 min); finding speaker turns, and telling voices apart with a
+/// larger model, take longer than that.
+pub fn stage_cost(stage: ProcessingStage, diarizer: &Diarizer<'_>, turns: bool) -> f32 {
+    use ProcessingStage::*;
+    match stage {
+        Decode => 1.0,
+        Vad => 3.0 + if turns { 180.0 } else { 0.0 },
+        Transcribe => 60.0,
+        Voiceprints => 30.0,
+        Cluster => match diarizer {
+            Diarizer::Voiceprints => 1.0,
+            Diarizer::Model(_) => 200.0,
+            Diarizer::Service(_) => 40.0,
+        },
+        Merge => 3.0,
+        Done => 0.0,
+    }
+}
+
+/// The fraction through a whole run (decode to done, standard speakers,
+/// no turn detection) at `within` of `stage`.
 pub fn overall_fraction(stage: ProcessingStage, within: f32) -> f32 {
-    let (start, len) = stage_window(stage);
-    (start + len * within.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    ProgressPlan::new(ProcessingStage::Decode, |s| {
+        stage_cost(s, &Diarizer::Voiceprints, false)
+    })
+    .fraction(stage, within)
 }
 
 /// What one run needs. Construct it, then call [`Pipeline::run`].
@@ -278,6 +347,9 @@ pub struct Pipeline<'a> {
     pub embedder: &'a mut dyn Embedder,
     /// How the cluster stage tells speakers apart.
     pub diarizer: Diarizer<'a>,
+    /// Splitting lines where the voice changes; `None` splits at pauses
+    /// only.
+    pub turns: Option<TurnDetection<'a>>,
     pub cancel: &'a AtomicBool,
     pub on_progress: Box<dyn FnMut(ProcessingProgress) + 'a>,
 }
@@ -312,6 +384,15 @@ impl<'a> Pipeline<'a> {
             self.record_stage(None)?;
         }
         log::info!("meeting {id}: processing from stage {}", stage.as_str());
+        // `progress` reports how far through its stage the run is; this
+        // turns that into how far through the run.
+        let turns = self.turns.is_some();
+        let plan = ProgressPlan::new(stage, |s| stage_cost(s, &self.diarizer, turns));
+        let mut report = std::mem::replace(&mut self.on_progress, Box::new(|_| {}));
+        self.on_progress = Box::new(move |mut p: ProcessingProgress| {
+            p.fraction = plan.fraction(p.stage, p.fraction);
+            report(p)
+        });
 
         while stage != ProcessingStage::Done {
             self.check_cancel()?;
@@ -347,12 +428,16 @@ impl<'a> Pipeline<'a> {
         }
     }
 
-    fn progress(&mut self, stage: ProcessingStage, within: f32, message: Option<String>) {
+    /// Report `within` (0..=1) of `stage`, with `(done, total)` items of
+    /// it when it counts them. ([`Self::run`] scales `within` to the run.)
+    fn progress(&mut self, stage: ProcessingStage, within: f32, counts: Option<(usize, usize)>) {
         (self.on_progress)(ProcessingProgress {
             meeting_id: self.meeting_id,
             stage,
-            fraction: overall_fraction(stage, within),
-            message,
+            fraction: within.clamp(0.0, 1.0),
+            message: None,
+            done: counts.map(|c| c.0),
+            total: counts.map(|c| c.1),
         });
     }
 
@@ -431,6 +516,10 @@ impl<'a> Pipeline<'a> {
             .collect();
         let n_tracks = tracks.len().max(1) as f32;
         for (k, track) in tracks.into_iter().enumerate() {
+            // With turns to find, scoring is the first half of the track's
+            // share, the turns the second.
+            let split = track == Track::System && self.turns.is_some();
+            let scoring_share = if split { 0.5 } else { 1.0 };
             let mut scorer = (self.vad)()?;
             let cancel = self.cancel;
             let frame_ms = vad::frame_ms(scorer.frame_samples());
@@ -439,19 +528,106 @@ impl<'a> Pipeline<'a> {
                 reports.push(f)
             })?;
             if let Some(&f) = reports.last() {
-                self.progress(ProcessingStage::Vad, (k as f32 + f) / n_tracks, None);
+                self.progress(
+                    ProcessingStage::Vad,
+                    (k as f32 + f * scoring_share) / n_tracks,
+                    None,
+                );
             }
-            units.extend(
-                vad::speech_spans(&probs, frame_ms, &self.config.vad)
-                    .into_iter()
-                    .map(|span| Unit { track, span }),
-            );
+            let spans = vad::speech_spans(&probs, frame_ms, &self.config.vad);
+            let spans = if split {
+                self.split_turns(track, spans, &probs, frame_ms, |f| {
+                    (k as f32 + 0.5 + f / 2.0) / n_tracks
+                })?
+            } else {
+                spans
+            };
+            units.extend(spans.into_iter().map(|span| Unit { track, span }));
         }
         cache.transcripts = vec![None; units.len()];
         cache.embeddings = vec![None; units.len()];
         cache.units = units;
         cache.clustering = None;
         Ok(())
+    }
+
+    /// `spans` of `track` cut where the voice changes. A failure other than
+    /// a cancel stops the splitting (the rest stay whole) rather than the
+    /// run: the lines are still right, only coarser.
+    fn split_turns(
+        &mut self,
+        track: Track,
+        spans: Vec<vad::Span>,
+        probs: &[f32],
+        frame_ms: f64,
+        overall: impl Fn(f32) -> f32,
+    ) -> Result<Vec<vad::Span>> {
+        let Some(mut detection) = self.turns.take() else {
+            return Ok(spans);
+        };
+        let result = self.split_turns_with(&mut detection, track, spans, probs, frame_ms, overall);
+        self.turns = Some(detection);
+        result
+    }
+
+    fn split_turns_with(
+        &mut self,
+        detection: &mut TurnDetection<'a>,
+        track: Track,
+        spans: Vec<vad::Span>,
+        probs: &[f32],
+        frame_ms: f64,
+        overall: impl Fn(f32) -> f32,
+    ) -> Result<Vec<vad::Span>> {
+        let params = self.config.turns;
+        let n = spans.len();
+        let mut out = Vec::with_capacity(n);
+        let mut failed = false;
+        let mut last_report = Instant::now();
+        for (i, span) in spans.into_iter().enumerate() {
+            if failed || span.len_ms() < params.min_span_ms {
+                out.push(span);
+                continue;
+            }
+            self.check_cancel()?;
+            let pcm = self.source(track)?.read_range(span.t0_ms, span.t1_ms)?;
+            let found = turns::find_changes(
+                &pcm,
+                detection.segmenter.as_deref_mut(),
+                &mut *detection.embedder,
+                &params,
+            );
+            match found {
+                Ok(changes) => {
+                    out.extend(turns::split_span(span, &changes, probs, frame_ms, &params))
+                }
+                Err(e) if super::is_cancelled(&e) => return Err(e),
+                Err(e) => {
+                    log::warn!(
+                        "meeting {}: lines not split where the voice changes: {e:#}",
+                        self.meeting_id
+                    );
+                    failed = true;
+                    out.push(span);
+                }
+            }
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                self.progress(
+                    ProcessingStage::Vad,
+                    overall((i + 1) as f32 / n as f32),
+                    Some((i + 1, n)),
+                );
+            }
+        }
+        log::info!(
+            "meeting {}: {} {} speech span(s) became {} line(s) at changes of voice",
+            self.meeting_id,
+            n,
+            track.as_str(),
+            out.len()
+        );
+        Ok(out)
     }
 
     fn transcribe(&mut self, cache: &mut ProcessingCache) -> Result<()> {
@@ -481,7 +657,7 @@ impl<'a> Pipeline<'a> {
             self.progress(
                 ProcessingStage::Transcribe,
                 done as f32 / n.max(1) as f32,
-                None,
+                Some((done, n)),
             );
             if last_save.elapsed() >= CHECKPOINT_EVERY {
                 self.save(cache)?;
@@ -519,7 +695,7 @@ impl<'a> Pipeline<'a> {
             self.progress(
                 ProcessingStage::Transcribe,
                 done as f32 / n.max(1) as f32,
-                None,
+                Some((done, n)),
             );
             if last_save.elapsed() >= CHECKPOINT_EVERY {
                 self.save(cache)?;
@@ -683,7 +859,7 @@ impl<'a> Pipeline<'a> {
             self.progress(
                 ProcessingStage::Voiceprints,
                 done as f32 / n.max(1) as f32,
-                None,
+                Some((done, n)),
             );
             if last_save.elapsed() >= CHECKPOINT_EVERY {
                 self.save(cache)?;
@@ -714,10 +890,11 @@ impl<'a> Pipeline<'a> {
                 // The units the standard model could embed: the same
                 // speech, through the better model.
                 let mut vectors = vec![None; n];
-                for (i, slot) in vectors.iter_mut().enumerate() {
-                    if !matches!(cache.embeddings.get(i), Some(Some(Some(_)))) {
-                        continue;
-                    }
+                let todo: Vec<usize> = (0..n)
+                    .filter(|&i| matches!(cache.embeddings.get(i), Some(Some(Some(_)))))
+                    .collect();
+                for (k, &i) in todo.iter().enumerate() {
+                    let slot = &mut vectors[i];
                     self.check_cancel()?;
                     let unit = cache.units[i];
                     let pcm = self
@@ -726,7 +903,12 @@ impl<'a> Pipeline<'a> {
                     if let Diarizer::Model(e) = &mut self.diarizer {
                         *slot = e.embed(&pcm)?.map(|v| cluster::normalized(&v));
                     }
-                    self.progress(ProcessingStage::Cluster, i as f32 / n.max(1) as f32, None);
+                    let done = (k + 1, todo.len());
+                    self.progress(
+                        ProcessingStage::Cluster,
+                        done.0 as f32 / done.1 as f32,
+                        Some(done),
+                    );
                 }
                 Ok(ClusterSource::Vectors(vectors))
             }
@@ -774,12 +956,7 @@ impl<'a> Pipeline<'a> {
         // that a whole speaker's name gives way to a line's own voice.
         let all_pins = self.store.segment_pins(self.meeting_id)?;
         let overruled = self.overruled_pins(&built, &clustering, &all_pins)?;
-        let pins: Vec<SegmentPin> = all_pins
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !overruled.iter().any(|o| o.pin == *i))
-            .map(|(_, p)| p.clone())
-            .collect();
+        let pins = without_overruled(&built, &all_pins, &overruled);
         if !pins.is_empty() {
             // Matches made before a merge name whom they went into, so a
             // pin finds its person's speaker (`replace_transcript` checks
@@ -1481,6 +1658,41 @@ pub fn apply_pins(
 
 /// `pins` moved onto the stored `segments` they matched (see [`pin_for`]);
 /// ones that matched none are kept as they were.
+/// `pins` less the overruled lines. A pin is overruled line by line, and
+/// one pin can cover several lines of a new transcript: it is then split
+/// into one pin per line it still holds, so the lines whose voice didn't
+/// overrule it keep its person.
+fn without_overruled(
+    (_, segments, unit_of_segment): &(Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>),
+    pins: &[SegmentPin],
+    overruled: &[Overruled],
+) -> Vec<SegmentPin> {
+    let mut out = Vec::with_capacity(pins.len());
+    for (i, pin) in pins.iter().enumerate() {
+        let lost: Vec<usize> = overruled
+            .iter()
+            .filter(|o| o.pin == i)
+            .map(|o| o.unit)
+            .collect();
+        if lost.is_empty() {
+            out.push(pin.clone());
+            continue;
+        }
+        for (seg, unit) in segments.iter().zip(unit_of_segment) {
+            let held = pin_for(seg, pins).is_some_and(|p| std::ptr::eq(p, pin));
+            if held && !lost.contains(unit) {
+                out.push(SegmentPin {
+                    track: seg.track,
+                    t0_ms: seg.t0_ms,
+                    t1_ms: seg.t1_ms,
+                    ..pin.clone()
+                });
+            }
+        }
+    }
+    out
+}
+
 fn repin(segments: &[Segment], pins: &[SegmentPin]) -> Vec<SegmentPin> {
     let mut used = vec![false; pins.len()];
     let mut out: Vec<SegmentPin> = segments

@@ -975,6 +975,16 @@ pub fn merge_targets(people: &[Person], from: i64) -> Vec<&Person> {
     people.iter().filter(|p| p.id != from).collect()
 }
 
+/// A processing run's status line: "Transcribing · 45/158 · 32%" (the
+/// stage's items when it counts them, then how far the whole run is).
+pub fn progress_label(stage: &str, p: Option<&ProcessingProgress>) -> String {
+    let fraction = p.map(|p| p.fraction).unwrap_or(0.0).clamp(0.0, 1.0);
+    match p.and_then(|p| p.done.zip(p.total)).filter(|(_, n)| *n > 0) {
+        Some((done, total)) => format!("{stage} · {done}/{total} · {:.0}%", fraction * 100.0),
+        None => format!("{stage} · {:.0}%", fraction * 100.0),
+    }
+}
+
 /// Apply a progress event to the cached meeting list (status follows it).
 pub fn apply_progress(meetings: &mut [Meeting], p: &ProcessingProgress) {
     if let Some(m) = meetings.iter_mut().find(|m| m.id == p.meeting_id) {
@@ -1400,6 +1410,28 @@ mod tests {
     }
 
     #[test]
+    fn progress_labels_show_counts_when_there_are_some() {
+        let mut p = ProcessingProgress {
+            meeting_id: 1,
+            stage: ProcessingStage::Transcribe,
+            fraction: 0.316,
+            message: None,
+            done: Some(45),
+            total: Some(158),
+        };
+        assert_eq!(
+            progress_label("Transcribing", Some(&p)),
+            "Transcribing · 45/158 · 32%"
+        );
+        (p.done, p.total) = (None, None);
+        assert_eq!(
+            progress_label("Transcribing", Some(&p)),
+            "Transcribing · 32%"
+        );
+        assert_eq!(progress_label("Processing", None), "Processing · 0%");
+    }
+
+    #[test]
     fn decodes_core_events() {
         let p = serde_json::json!({
             "meeting_id": 4, "stage": "transcribe", "fraction": 0.5, "message": null
@@ -1411,6 +1443,8 @@ mod tests {
                 stage: ProcessingStage::Transcribe,
                 fraction: 0.5,
                 message: None,
+                done: None,
+                total: None,
             }))
         );
         assert_eq!(

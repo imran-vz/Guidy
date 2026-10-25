@@ -405,7 +405,9 @@ private struct MicPlan {
 }
 
 private final class MicCapture {
-    private let engine = AVAudioEngine()
+    /// Replaced (see `replaceEngine`) on `controlQueue`, or in `start`
+    /// before anything else uses it.
+    private var engine = AVAudioEngine()
     private let sink: CaptureSink
     /// Serializes restarts and stop.
     private let controlQueue = DispatchQueue(label: "dev.guidy.meetings.mic.control")
@@ -451,9 +453,8 @@ private final class MicCapture {
                 voiceProcessing = true
             } catch {
                 // Echo cancellation is preferred, not required: record the
-                // plain mic rather than nothing, and say so.
-                stopEngine()
-                disableVoiceProcessing()
+                // plain mic rather than nothing, and say so. The failed
+                // attempt already replaced the engine.
                 try installTapAndStart()
                 sink.event(
                     GUIDY_MB_STREAM_MIC,
@@ -461,6 +462,15 @@ private final class MicCapture {
             }
         }
 
+        observeConfigurationChanges()
+        startSilenceTimer()
+    }
+
+    /// Restart on device changes of the current engine.
+    private func observeConfigurationChanges() {
+        if let observer = observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
@@ -470,7 +480,22 @@ private final class MicCapture {
                 self.restart(generation: self.restartGeneration, attempt: 0)
             }
         }
-        startSilenceTimer()
+    }
+
+    /// Swap in a fresh engine for the plain microphone. Voice processing
+    /// (even a failed attempt) leaves the engine's output side configured:
+    /// the main mixer connected to the output node, the VPIO output unit
+    /// half set up. Starting that engine again then fails on the output's
+    /// format (-10875, `IsFormatSampleRateAndChannelCountValid(outputHWFormat)`)
+    /// although nothing plays. The plain path never touches the output, so a
+    /// new engine has none to fail on.
+    private func replaceEngine() {
+        stopEngine()
+        disableVoiceProcessing()
+        engine = AVAudioEngine()
+        if observer != nil {
+            observeConfigurationChanges()
+        }
     }
 
     /// While the mic delivers nothing (a VPIO restart in progress, a restart
@@ -502,6 +527,7 @@ private final class MicCapture {
             }
         }
         if let error = enableError {
+            replaceEngine()
             throw BridgeError("enabling voice processing (echo cancellation) failed: \(error)")
         }
         if #available(macOS 14.0, *) {
@@ -514,7 +540,14 @@ private final class MicCapture {
         // path (silent) so it renders.
         engine.mainMixerNode.outputVolume = 0
 
-        try installTapAndStart()
+        do {
+            try installTapAndStart()
+        } catch {
+            // `voiceProcessing` (set only on success) stays false, so the
+            // next plain start must get an engine without voice processing.
+            replaceEngine()
+            throw error
+        }
     }
 
     private func installTapAndStart() throws {
@@ -653,7 +686,7 @@ private final class MicCapture {
                 "echo cancellation unavailable after a device change, recording the plain microphone")
         }
         if voiceProcessing && !wantVoiceProcessing {
-            disableVoiceProcessing()
+            replaceEngine()
             voiceProcessing = false
         }
         device = wantVoiceProcessing ? nil : plan.device
@@ -681,14 +714,16 @@ private final class MicCapture {
     }
 
     func stop() {
-        if let observer = observer {
-            NotificationCenter.default.removeObserver(observer)
-            self.observer = nil
-        }
         silenceTimer?.cancel()
         silenceTimer = nil
         controlQueue.sync {
             stopped = true
+            // On `controlQueue`: a restart may be replacing the engine (and
+            // its observer).
+            if let observer = observer {
+                NotificationCenter.default.removeObserver(observer)
+                self.observer = nil
+            }
             stopEngine()
         }
         // Wait out a tick already running.

@@ -8,7 +8,8 @@ use super::{
     toast_error,
 };
 use crate::logic::meetings::{
-    apply_progress, can_process, duration_minutes, non_empty, status_key, MeetingsEvent,
+    apply_progress, can_process, duration_minutes, non_empty, progress_label, status_key,
+    MeetingsEvent,
 };
 use crate::logic::models::format_model_size;
 use crate::meetings_backend::{error_message, MeetingsError};
@@ -616,7 +617,7 @@ impl MeetingList {
                 .child(
                     h_flex().child(design::chip("", true, cx).child(design::shimmer_text(
                         SharedString::from(format!("meeting-stage-{}", m.id)),
-                        format!("{stage} · {:.0}%", fraction * 100.0),
+                        progress_label(&stage, p),
                         cx,
                     ))),
                 )

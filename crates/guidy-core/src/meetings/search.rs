@@ -81,6 +81,9 @@ pub const MAX_SNIPPETS: usize = 2;
 const MAX_TERMS: usize = 8;
 /// Close words searched for a misspelled term.
 const MAX_CORRECTIONS: usize = 3;
+/// Misspelled terms corrected per query (each scans part of the
+/// vocabulary); later ones are searched as typed.
+const MAX_CORRECTED_TERMS: usize = 2;
 
 /// Highlight markers handed to FTS5's `highlight()` / `snippet()`: control
 /// characters that never occur in stored text.
@@ -299,22 +302,27 @@ fn in_vocabulary(conn: &Connection, word: &str) -> Result<bool> {
 
 /// Indexed words within typo distance of `word`, closest and most common
 /// first. A longer word counts when its start is that close (still typing).
+///
+/// Only words with the same first letter are looked at (a range of the
+/// sorted vocabulary, not all of it): a search holds the database while it
+/// runs, and a first letter is rarely the one mistyped.
 fn corrections_for(conn: &Connection, word: &str) -> Result<Vec<String>> {
     let len = word.chars().count();
     let max = max_typos(len);
-    if max == 0 {
+    let Some(first) = word.chars().next().filter(|_| max > 0) else {
         return Ok(Vec::new());
-    }
+    };
+    let (from, to) = (first.to_string(), format!("{first}\u{10FFFF}"));
+    let shortest = len.saturating_sub(max) as i64;
     let mut best: HashMap<String, (usize, i64)> = HashMap::new();
     for v in VOCABS {
-        let mut stmt = conn.prepare_cached(&format!("SELECT term, doc FROM {v}"))?;
-        let mut rows = stmt.query([])?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT term, doc FROM {v} WHERE term >= ?1 AND term < ?2 AND length(term) >= ?3"
+        ))?;
+        let mut rows = stmt.query(params![from, to, shortest])?;
         while let Some(row) = rows.next()? {
             let term: String = row.get(0)?;
             let tlen = term.chars().count();
-            if tlen + max < len {
-                continue;
-            }
             let whole = edit_distance(word, &term, max);
             let start = (tlen > len)
                 .then(|| {
@@ -406,7 +414,10 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<SearchResu
     let mut exprs = Vec::with_capacity(terms.len());
     for term in &terms {
         let mut alternatives = Vec::new();
-        if !term.phrase && !in_vocabulary(conn, term.word())? {
+        if !term.phrase
+            && corrections.len() < MAX_CORRECTED_TERMS
+            && !in_vocabulary(conn, term.word())?
+        {
             alternatives = corrections_for(conn, term.word())?;
             if let Some(first) = alternatives.first() {
                 corrections.push((term.word().to_string(), first.clone()));
@@ -808,8 +819,14 @@ mod tests {
             .unwrap();
         assert!(s.search("neocore", 10).unwrap().hits.is_empty());
         assert_eq!(ids(&s.search("vendor", 10).unwrap()), vec![weekly]);
-        s.set_generated_title(weekly, None, "Courier escalations")
-            .unwrap();
+        s.set_generated_title(
+            weekly,
+            None,
+            ("Vendor review", TitleSource::User),
+            "Courier escalations",
+            || true,
+        )
+        .unwrap();
         let r = s.search("courier", 10).unwrap();
         assert_eq!(ids(&r), vec![weekly]);
         assert_eq!(r.hits[0].snippets[0].field, MatchField::Description);

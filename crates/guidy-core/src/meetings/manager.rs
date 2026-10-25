@@ -108,9 +108,9 @@ pub struct MeetingsManager {
     deletions: parking_lot::Mutex<std::collections::HashSet<MeetingId>>,
     /// Live transcript of the recording in progress (fed by the recorder).
     live: Arc<crate::meetings::live::LiveTranscriber>,
-    /// Set to stop the title generations running now
-    /// ([`Self::cancel_title_generation`]); replaced after each cancel.
-    title_cancel: parking_lot::Mutex<crate::llm::CancelFlag>,
+    /// The cancel flags of the bulk title generations running now
+    /// ([`Self::cancel_title_generation`] sets them all).
+    title_cancels: parking_lot::Mutex<Vec<crate::llm::CancelFlag>>,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -143,7 +143,7 @@ impl MeetingsManager {
             summary_commits: Default::default(),
             deletions: Default::default(),
             live: Arc::new(crate::meetings::live::LiveTranscriber::new(app)),
-            title_cancel: Default::default(),
+            title_cancels: Default::default(),
         }))
     }
 
@@ -1219,7 +1219,47 @@ impl MeetingsManager {
         id: MeetingId,
         bulk: bool,
     ) -> Result<crate::meetings::titles::TitleOutcome> {
+        use std::sync::atomic::Ordering;
+        // Registered before anything slow, so a cancel can't slip in
+        // between. Only bulk runs are cancelled: titling one meeting isn't.
+        let cancel = crate::llm::CancelFlag::default();
+        struct Registered<'a>(&'a MeetingsManager, crate::llm::CancelFlag);
+        impl Drop for Registered<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .title_cancels
+                    .lock()
+                    .retain(|f| !std::sync::Arc::ptr_eq(f, &self.1));
+            }
+        }
+        let _registered = bulk.then(|| {
+            self.title_cancels.lock().push(cancel.clone());
+            Registered(self, cancel.clone())
+        });
+        let cancelled = || cancel.load(Ordering::SeqCst);
+        self.run_generate_title(id, bulk, &cancel)
+            .and_then(|outcome| match outcome {
+                Some(o) => Ok(o),
+                None => anyhow::bail!(crate::llm::CANCELLED),
+            })
+            .map_err(|e| {
+                if cancelled() && !crate::llm::is_cancelled_error(&e) {
+                    anyhow::anyhow!(crate::llm::CANCELLED)
+                } else {
+                    e
+                }
+            })
+    }
+
+    /// [`Self::generate_title`]; `None` when cancelled before storing.
+    fn run_generate_title(
+        &self,
+        id: MeetingId,
+        bulk: bool,
+        cancel: &crate::llm::CancelFlag,
+    ) -> Result<Option<crate::meetings::titles::TitleOutcome>> {
         use crate::meetings::titles;
+        use std::sync::atomic::Ordering;
 
         let meeting = self
             .store
@@ -1232,11 +1272,14 @@ impl MeetingsManager {
         let settings = crate::settings::get_settings(&self.app);
         let keep = titles::keep_title(&meeting, settings.meetings.prefer_calendar_titles, bulk);
         if bulk && keep && meeting.description.is_some() {
-            return Ok(titles::TitleOutcome {
+            return Ok(Some(titles::TitleOutcome {
                 meeting,
                 title_changed: false,
                 generated: false,
-            });
+            }));
+        }
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
         }
         let provider = crate::llm::provider_for_feature(
             &self.app,
@@ -1245,11 +1288,10 @@ impl MeetingsManager {
             None,
         )?;
         let items = self.store.action_items(id)?;
-        let cancel = self.title_cancel.lock().clone();
         let opts = crate::llm::ChatOptions {
             cancel: Some(cancel.clone()),
             meter: Some(crate::llm::usage::UsageMeter::new(
-                crate::llm::usage::UsageFeature::MeetingSummary,
+                crate::llm::usage::UsageFeature::MeetingTitle,
                 Some(id),
             )),
             ..Default::default()
@@ -1261,22 +1303,28 @@ impl MeetingsManager {
         let calendar_title = meeting.calendar_event.as_ref().map(|e| e.title.as_str());
         let generated =
             titles::generate(provider.as_ref(), &summary, &items, calendar_title, &opts)?;
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            anyhow::bail!(crate::llm::CANCELLED);
-        }
         let new_title = (!keep).then_some(generated.title.as_str());
-        self.store
-            .set_generated_title(id, new_title, &generated.description)?;
+        // A rename while the model ran wins over the generated title.
+        let Some(title_changed) = self.store.set_generated_title(
+            id,
+            new_title,
+            (&meeting.title, meeting.title_source),
+            &generated.description,
+            || !cancel.load(Ordering::SeqCst),
+        )?
+        else {
+            return Ok(None);
+        };
         self.emit_meeting_changed(id);
         let meeting = self
             .store
             .get_meeting(id)?
             .ok_or_else(|| anyhow::anyhow!("meeting {id} not found"))?;
-        Ok(titles::TitleOutcome {
+        Ok(Some(titles::TitleOutcome {
             meeting,
-            title_changed: new_title.is_some(),
+            title_changed,
             generated: true,
-        })
+        }))
     }
 
     /// Meetings bulk titling would change (summarized, and with no
@@ -1285,12 +1333,13 @@ impl MeetingsManager {
         self.store.title_candidates()
     }
 
-    /// Stop the title generations running now: they end with the
-    /// "cancelled" error and store nothing.
+    /// Stop the bulk title generations running now: they end with the
+    /// "cancelled" error and store nothing (unless already storing). A
+    /// title generated for one meeting at a time isn't stopped.
     pub fn cancel_title_generation(&self) {
-        let mut flag = self.title_cancel.lock();
-        flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        *flag = Default::default();
+        for flag in self.title_cancels.lock().iter() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Search titles, descriptions, summaries and transcripts.

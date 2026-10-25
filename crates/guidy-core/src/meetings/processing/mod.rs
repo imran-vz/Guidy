@@ -4,6 +4,7 @@
 //! - [`vad`]: speech segmentation over Silero probabilities.
 //! - [`cluster`]: agglomerative clustering, matching against known people.
 //! - [`timeline`]: merging the two tracks, with the D9 echo safety net.
+//! - [`turns`]: splitting a speech span where the voice changes.
 //! - [`pipeline`]: the resumable stage runner for one meeting.
 //! - [`jobs`]: the background queue (one meeting at a time) and cancel.
 //! - [`cloud`]: transcription through a cloud speech-to-text API instead.
@@ -28,6 +29,7 @@ pub mod pipeline;
 pub mod sidecar;
 pub mod speaker_model;
 pub mod timeline;
+pub mod turns;
 pub mod user_voice;
 pub mod vad;
 

@@ -262,3 +262,30 @@ fn an_interrupted_conversion_resumes() {
     assert!(backup.join("meetings.db").is_file());
     assert!(backup.join("audio/1-mic.gopus").is_file());
 }
+
+#[test]
+fn a_keychain_that_wont_retire_the_key_doesnt_stop_meeting_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path();
+    encrypted_data_dir(dir);
+    let report =
+        convert_if_needed(dir, || Ok(KEY), |_| anyhow::bail!("the Keychain is locked")).unwrap();
+    assert!(report.database && !report.key_retired);
+    assert!(!has_encrypted_data(dir).unwrap());
+    let backup = report.backup.unwrap();
+    assert!(!backup.join(KEY_RETIRED_MARKER).exists(), "retried later");
+    // The next start retires it.
+    let retired = RefCell::new(Vec::new());
+    let report = convert_if_needed(
+        dir,
+        || panic!("no key needed"),
+        |stamp| {
+            retired.borrow_mut().push(stamp.to_string());
+            Ok(true)
+        },
+    )
+    .unwrap();
+    assert!(report.key_retired);
+    assert_eq!(retired.borrow().len(), 1);
+    assert!(backup.join(KEY_RETIRED_MARKER).is_file());
+}

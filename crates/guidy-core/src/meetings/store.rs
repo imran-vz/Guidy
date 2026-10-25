@@ -317,6 +317,17 @@ pub(crate) static MIGRATIONS: &[M] = &[
     CREATE VIRTUAL TABLE meetings_vocab USING fts5vocab(meetings_fts, 'row');
     CREATE VIRTUAL TABLE summaries_vocab USING fts5vocab(summaries_fts, 'row');",
     ),
+    // 13: 12 took any title ending in a time for the recorder's
+    // placeholder, so "Standup 9:30" counted as one (and bulk titling could
+    // replace it). The placeholder ends in ", HH:MM" with the meeting's own
+    // local start time; any other "default" title was typed.
+    M::up(
+        "UPDATE meetings SET title_source = 'user'
+        WHERE title_source = 'default' AND NOT (
+            title GLOB '*, [0-9][0-9]:[0-9][0-9]'
+            AND substr(title, -5) = strftime('%H:%M', started_at / 1000, 'unixepoch', 'localtime')
+        );",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -860,22 +871,44 @@ impl MeetingsStore {
         expect_one(n, "meeting", id)
     }
 
-    /// Store a generated description and, when given, a generated title
-    /// (one statement: a reader never sees half of it).
+    /// Store a generated description and, when given, a generated title:
+    /// the title only while the meeting still has the title `was` (with
+    /// its source) the generation started from, so a rename meanwhile
+    /// wins. `proceed` is asked first, under the database lock (a cancel
+    /// lands either before it, storing nothing, or after the store).
+    /// Returns `None` when `proceed` said no, else whether the title was
+    /// replaced.
     pub fn set_generated_title(
         &self,
         id: MeetingId,
         title: Option<&str>,
+        was: (&str, TitleSource),
         description: &str,
-    ) -> Result<()> {
-        let n = self.conn.lock().execute(
-            "UPDATE meetings SET description = ?3,
-                title = coalesce(?2, title),
-                title_source = CASE WHEN ?2 IS NULL THEN title_source ELSE 'generated' END
-             WHERE id = ?1",
-            params![id, title, description],
-        )?;
-        expect_one(n, "meeting", id)
+        proceed: impl FnOnce() -> bool,
+    ) -> Result<Option<bool>> {
+        self.with_tx(|tx| {
+            let (current, source): (String, String) = tx
+                .query_row(
+                    "SELECT title, title_source FROM meetings WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow!("meeting {id} not found"))?;
+            if !proceed() {
+                return Ok(None);
+            }
+            let unchanged = current == was.0 && source == was.1.as_str();
+            let title = title.filter(|_| unchanged);
+            tx.execute(
+                "UPDATE meetings SET description = ?3,
+                    title = coalesce(?2, title),
+                    title_source = CASE WHEN ?2 IS NULL THEN title_source ELSE 'generated' END
+                 WHERE id = ?1",
+                params![id, title, description],
+            )?;
+            Ok(Some(title.is_some()))
+        })
     }
 
     /// Meetings with a summary whose title or description is still to be
@@ -3583,10 +3616,22 @@ pub(crate) mod tests {
         Migrations::new(MIGRATIONS[..11].to_vec())
             .to_latest(&mut conn)
             .unwrap();
+        // The recorder's placeholder carries its own local start time.
+        let hhmm: String = conn
+            .query_row(
+                "SELECT strftime('%H:%M', 2 / 1000, 'unixepoch', 'localtime')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO meetings (id, title, started_at, status) VALUES (2, ?1, 2, 'processed')",
+            [format!("Meeting Oct 23, {hhmm}")],
+        )
+        .unwrap();
         conn.execute_batch(
             r#"INSERT INTO meetings (id, title, calendar_event, started_at, status) VALUES
                 (1, 'Daily stand-up', '{"id":"e","title":"Daily stand-up","start_at":0,"end_at":0,"meeting_url":null,"attendees":[]}', 1, 'processed'),
-                (2, 'Meeting Oct 23, 14:19', NULL, 2, 'processed'),
                 (3, 'Pricing with Acme', NULL, 3, 'processed');
             INSERT INTO meeting_segments (meeting_id, track, t0_ms, t1_ms, text)
                 VALUES (2, 'system', 0, 1, 'The courier is late again.');
@@ -3614,18 +3659,95 @@ pub(crate) mod tests {
         assert_eq!(found("discount"), vec![3]);
         // Only the summarized meeting can be titled; it has no description.
         assert_eq!(s.title_candidates().unwrap(), vec![3]);
-        s.set_generated_title(3, None, "Discount agreed.").unwrap();
+        let was = ("Pricing with Acme", TitleSource::User);
+        assert_eq!(
+            s.set_generated_title(3, None, was, "Discount agreed.", || true)
+                .unwrap(),
+            Some(false)
+        );
         assert!(s.title_candidates().unwrap().is_empty());
         let m = s.get_meeting(3).unwrap().unwrap();
         assert_eq!(m.title, "Pricing with Acme");
         assert_eq!(m.title_source, TitleSource::User);
         assert_eq!(m.description.as_deref(), Some("Discount agreed."));
-        s.set_generated_title(3, Some("Acme discount"), "d")
-            .unwrap();
+        assert_eq!(
+            s.set_generated_title(3, Some("Acme discount"), was, "d", || true)
+                .unwrap(),
+            Some(true)
+        );
         let m = s.get_meeting(3).unwrap().unwrap();
         assert_eq!(
             (m.title.as_str(), m.title_source),
             ("Acme discount", TitleSource::Generated)
         );
+    }
+
+    #[test]
+    fn a_generated_title_never_replaces_a_rename_made_meanwhile() {
+        let s = store();
+        let id = s
+            .insert_meeting(&meeting("Meeting Oct 23, 14:19", 1))
+            .unwrap();
+        let was = ("Meeting Oct 23, 14:19", TitleSource::Default);
+        // Renamed while the model ran: the description is stored, the
+        // typed title stays.
+        s.set_meeting_title(id, "Acme pricing", TitleSource::User)
+            .unwrap();
+        assert_eq!(
+            s.set_generated_title(id, Some("Pricing review"), was, "About pricing.", || true)
+                .unwrap(),
+            Some(false)
+        );
+        let m = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(
+            (m.title.as_str(), m.title_source),
+            ("Acme pricing", TitleSource::User)
+        );
+        assert_eq!(m.description.as_deref(), Some("About pricing."));
+        // Cancelled before storing: nothing changes.
+        let now = ("Acme pricing", TitleSource::User);
+        assert_eq!(
+            s.set_generated_title(id, Some("X"), now, "Y", || false)
+                .unwrap(),
+            None
+        );
+        let m = s.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.description.as_deref(), Some("About pricing."));
+        assert!(s.set_generated_title(999, None, now, "d", || true).is_err());
+    }
+
+    #[test]
+    fn migration_13_keeps_typed_titles_that_end_in_a_time() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        Migrations::new(MIGRATIONS[..12].to_vec())
+            .to_latest(&mut conn)
+            .unwrap();
+        // The recorder's placeholder: its own local start time.
+        let started: i64 = 1_761_000_000_000;
+        let hhmm: String = conn
+            .query_row(
+                "SELECT strftime('%H:%M', ?1 / 1000, 'unixepoch', 'localtime')",
+                [started],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO meetings (id, title, started_at, status, title_source)
+             VALUES (1, ?1, ?2, 'processed', 'default'),
+                    (2, 'Standup 9:30', ?2, 'processed', 'default'),
+                    (3, 'Review, 23:59', ?2, 'processed', 'default'),
+                    (4, 'Sync', ?2, 'processed', 'calendar')",
+            params![format!("Meeting Oct 21, {hhmm}"), started],
+        )
+        .unwrap();
+        let s = MeetingsStore::init(conn).unwrap();
+        let source = |id| s.get_meeting(id).unwrap().unwrap().title_source;
+        assert_eq!(source(1), TitleSource::Default);
+        assert_eq!(source(2), TitleSource::User);
+        if hhmm != "23:59" {
+            assert_eq!(source(3), TitleSource::User);
+        }
+        assert_eq!(source(4), TitleSource::Calendar);
     }
 }

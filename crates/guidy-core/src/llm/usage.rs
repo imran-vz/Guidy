@@ -114,6 +114,8 @@ pub enum UsageFeature {
     Dictation,
     MeetingTranscription,
     MeetingSummary,
+    /// Titles and descriptions generated from a summary.
+    MeetingTitle,
     /// Anything else (ticket drafts, connection tests, ...).
     #[default]
     Other,
@@ -125,6 +127,7 @@ impl UsageFeature {
             Self::Dictation => "dictation",
             Self::MeetingTranscription => "meeting_transcription",
             Self::MeetingSummary => "meeting_summary",
+            Self::MeetingTitle => "meeting_title",
             Self::Other => "other",
         }
     }
@@ -134,6 +137,7 @@ impl UsageFeature {
             "dictation" => Self::Dictation,
             "meeting_transcription" => Self::MeetingTranscription,
             "meeting_summary" => Self::MeetingSummary,
+            "meeting_title" => Self::MeetingTitle,
             _ => Self::Other,
         }
     }

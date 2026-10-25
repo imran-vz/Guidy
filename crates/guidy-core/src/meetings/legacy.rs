@@ -62,7 +62,9 @@ pub fn has_encrypted_data(data_dir: &Path) -> Result<bool> {
 
 /// Convert whatever encrypted meeting data is left under `data_dir` (see the
 /// module docs). `key` is asked for only when there is some; `retire_key`
-/// (given the backup stamp) once none is left. A wrong key is
+/// (given the backup stamp) once none is left. A `retire_key` failure is
+/// logged and retried at the next start, never an error: the data is
+/// already plain by then. A wrong key is
 /// [`MeetingsDbUndecryptable`] or [`audio_store::WrongKey`] in the error chain,
 /// a missing one whatever `key` returns (`MeetingsDataKeyMissing`).
 pub fn convert_if_needed(
@@ -88,10 +90,22 @@ pub fn convert_if_needed(
             .and_then(|n| n.strip_prefix(BACKUP_PREFIX))
             .context("backup folder name")?
             .to_string();
-        report.key_retired |= retire_key(&format!("backup-{stamp}"))?;
-        std::fs::write(backup.join(KEY_RETIRED_MARKER), b"")
-            .with_context(|| format!("mark {}", backup.display()))?;
-        report.backup.get_or_insert(backup);
+        report.backup.get_or_insert(backup.clone());
+        // Cleanup only: the data is already plain, so a Keychain that says
+        // no (locked, access denied) must not keep meeting notes from
+        // starting. The backup stays unmarked; the next start tries again.
+        match retire_key(&format!("backup-{stamp}")) {
+            Ok(retired) => report.key_retired |= retired,
+            Err(e) => {
+                log::warn!(
+                    "meetings: retiring the old data key failed (retried next start): {e:#}"
+                );
+                continue;
+            }
+        }
+        if let Err(e) = std::fs::write(backup.join(KEY_RETIRED_MARKER), b"") {
+            log::warn!("meetings: marking {} failed: {e}", backup.display());
+        }
     }
     if report != Report::default() {
         log::info!("meetings: converted the encrypted meeting data: {report:?}");

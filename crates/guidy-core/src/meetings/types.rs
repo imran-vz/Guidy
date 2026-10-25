@@ -427,9 +427,17 @@ impl ProcessingStage {
 pub struct ProcessingProgress {
     pub meeting_id: MeetingId,
     pub stage: ProcessingStage,
-    /// 0.0..=1.0 within the whole pipeline.
+    /// 0.0..=1.0 through this run (a run that resumes or redoes only the
+    /// speakers still goes from 0 to 1).
     pub fraction: f32,
     pub message: Option<String>,
+    /// Items of the stage done so far (lines transcribed, voiceprints
+    /// computed...), when it counts them...
+    #[serde(default)]
+    pub done: Option<usize>,
+    /// ...out of this many.
+    #[serde(default)]
+    pub total: Option<usize>,
 }
 
 /// What transcribes a meeting's speech.
