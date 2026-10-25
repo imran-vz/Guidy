@@ -10,8 +10,8 @@
 use super::ai_settings::AiSettingsView;
 use super::emails::UserEmailsView;
 use super::{
-    meeting_model_missing, meeting_settings, render_model_download, render_model_download_with,
-    run, toast_error,
+    meeting_model_missing, meeting_settings, meetings_backend, render_model_download,
+    render_model_download_with, run, toast_error,
 };
 use crate::logic::meetings::{
     meetings_patch, non_empty, parse_retention, retention_value, MeetingsEvent,
@@ -38,7 +38,8 @@ use guidy_core::managers::transcription::meeting::{
 };
 use guidy_core::meetings::manager::PermissionReport;
 use guidy_core::meetings::processing::{
-    SpeakerModelStatus, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE, SPEAKER_MODEL_TRAINED_ON,
+    speaker_turn_models_bytes, SpeakerModelStatus, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE,
+    SPEAKER_MODEL_TRAINED_ON,
 };
 use guidy_core::meetings::settings::{MeetingSettings, RecordingControls, RETENTION_CHOICES};
 use guidy_core::meetings::types::{DiarizationOptions, SpeakerModelId};
@@ -124,6 +125,10 @@ pub struct MeetingSettingsView {
     diarization: Option<DiarizationOptions>,
     /// The speaker model being downloaded from its row.
     downloading_separation: Option<SpeakerModelId>,
+    /// This view started the speaker-turn download.
+    turn_busy: bool,
+    /// A speaker-turn download is in the shared tracker.
+    turn_downloading: bool,
     /// Deepgram key for "Redo speakers" in the cloud (never shown back).
     deepgram_key: Entity<InputState>,
     has_deepgram_key: bool,
@@ -188,11 +193,20 @@ impl MeetingSettingsView {
             cx.subscribe(&suggest_slider, |this, _, ev: &SliderEvent, cx| {
                 this.on_slider(Threshold::Suggest, ev, cx)
             }),
-            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
-                if let AppEvent::Meetings(MeetingsEvent::SpeakerModelStatus(s)) = ev {
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
+                AppEvent::Meetings(MeetingsEvent::SpeakerModelStatus(s)) => {
                     this.speaker_model = Some(s.clone());
                     cx.notify();
                 }
+                AppEvent::Meetings(MeetingsEvent::DownloadsChanged(items)) => {
+                    this.turn_downloading = items.iter().any(|d| {
+                        d.state.is_active()
+                            && (d.id.starts_with("separation:")
+                                || d.id.starts_with("segmentation:"))
+                    });
+                    cx.notify();
+                }
+                _ => {}
             }),
         ];
         let mut this = Self {
@@ -206,6 +220,8 @@ impl MeetingSettingsView {
             speaker_model: None,
             diarization: None,
             downloading_separation: None,
+            turn_busy: false,
+            turn_downloading: false,
             deepgram_key,
             has_deepgram_key: false,
             advanced_open: false,
@@ -642,6 +658,82 @@ impl MeetingSettingsView {
             )
             .into_any_element(),
         )
+    }
+
+    fn download_turn_models(&mut self, cx: &mut Context<Self>) {
+        update_meetings(cx, |m| {
+            m.speaker_turn_models_consent = true;
+            m.speaker_turn_prompt_dismissed = true;
+        });
+        self.turn_busy = true;
+        cx.notify();
+        run(
+            cx,
+            |b| b.start_speaker_turn_downloads(),
+            |this: &mut Self, r, cx| {
+                this.turn_busy = false;
+                if let Err(e) = r {
+                    toast_error("meetings.downloads.startError", &e, cx);
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Optional TitaNet + segmentation models. "Not now" on the meetings
+    /// page hides the prompt; this row is how to start the download later.
+    fn render_turn_models(&self, cx: &mut Context<Self>) -> AnyElement {
+        let installed = meetings_backend(cx).speaker_turn_models_installed();
+        let bytes = speaker_turn_models_bytes();
+        let size = format_model_size(Some(bytes as f64 / (1024.0 * 1024.0)));
+        let theme = cx.theme().clone();
+        let control: AnyElement = if installed {
+            h_flex()
+                .id("meetings-turn-models-ready")
+                .gap_1()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(icon("check").xsmall().text_color(theme.success))
+                .child(t("meetings.settings.turnModels.ready"))
+                .test_support()
+                .into_any_element()
+        } else if self.turn_busy || self.turn_downloading {
+            h_flex()
+                .id("meetings-turn-models-downloading")
+                .gap_1()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(crate::ui::kit::spinner(
+                    "meetings-turn-models-spinner",
+                    icon("loader-circle").xsmall(),
+                ))
+                .child(t("meetings.settings.turnModels.downloading"))
+                .test_support()
+                .into_any_element()
+        } else {
+            Button::new("meetings-turn-models-download")
+                .primary()
+                .pill()
+                .small()
+                .icon(icon("download"))
+                .label(t_args(
+                    "meetings.settings.turnModels.download",
+                    &[("size", &size)],
+                ))
+                .on_click(cx.listener(|this, _, _, cx| this.download_turn_models(cx)))
+                .into_any_element()
+        };
+        SettingRow::new(
+            "meetings-turn-models",
+            t("meetings.settings.turnModels.title"),
+        )
+        .description(t_args(
+            "meetings.settings.turnModels.description",
+            &[("size", &size)],
+        ))
+        .inline_description()
+        .control(control)
+        .into_any_element()
     }
 
     fn render_speaker_model(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1103,6 +1195,7 @@ impl Render for MeetingSettingsView {
             .into_any_element(),
         ]);
         recording.extend(self.render_speaker_model(cx));
+        recording.push(self.render_turn_models(cx));
         recording.extend(self.render_separation_model(cx));
         recording.push(self.render_deepgram_key(cx));
 

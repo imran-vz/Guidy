@@ -2,12 +2,14 @@
 //! with their name pickers, and the transcript grouped by speaker with
 //! click-to-play segments.
 
+use super::ai_settings::SummaryChoice;
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_near,
-    line_range, needs_confirmation, non_empty, progress_label, redo_diff, select_lines,
-    speaker_name, status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice,
-    RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime, TranscriptIssue,
+    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker,
+    insert_provisional, line_near, line_range, needs_confirmation, non_empty, progress_label,
+    redo_diff, select_lines, speaker_name, status_key, talk_time, transcript_issue, LineClick,
+    MeetingsEvent, RedoChoice, RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime,
+    TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -918,6 +920,9 @@ impl MeetingDetail {
             .when_some(current.clone(), |b, c| {
                 b.tooltip(t_args("meetings.redo.tooltip", &[("model", &c.label)]))
             })
+            // No local model: the main action can't run. The menu stays
+            // enabled (only `busy` disables it) so speakers and the summary
+            // are still reachable.
             .disabled(busy || current.is_none())
             .when_some(current, |b, c| {
                 b.on_click(
@@ -926,6 +931,14 @@ impl MeetingDetail {
             });
         let weak = cx.entity().downgrade();
         let speakers = self.speaker_redo_choices();
+        let (summary_choices, has_summary) = self
+            .summary_view
+            .as_ref()
+            .map(|v| {
+                let v = v.read(cx);
+                (v.provider_choices(), v.has_summary())
+            })
+            .unwrap_or_default();
         let offer_speakers = self
             .meeting
             .as_ref()
@@ -994,19 +1007,79 @@ impl MeetingDetail {
                         },
                     );
                 }
-                let weak = weak.clone();
-                menu.separator().item(
-                    PopupMenuItem::new(t("meetingsAi.summary.regenerate")).on_click(
-                        move |_, _, cx| {
-                            weak.update(cx, |this, cx| {
-                                if let Some(v) = this.summary_view.clone() {
-                                    v.update(cx, |v, cx| v.generate(None, cx));
+                if has_summary {
+                    let choices = summary_choices.clone();
+                    let weak = weak.clone();
+                    menu = menu.separator().submenu(
+                        t("meetingsAi.summary.regenerate"),
+                        window,
+                        cx,
+                        move |menu, _window, _cx| {
+                            let mut local: Vec<_> =
+                                choices.iter().filter(|c| c.local).cloned().collect();
+                            let mut cloud: Vec<_> =
+                                choices.iter().filter(|c| !c.local).cloned().collect();
+                            let current_first = |rows: &mut Vec<SummaryChoice>| {
+                                rows.sort_by(|a, b| {
+                                    b.current.cmp(&a.current).then(a.label.cmp(&b.label))
+                                });
+                            };
+                            current_first(&mut local);
+                            current_first(&mut cloud);
+                            let mut menu = menu;
+                            let mut first = true;
+                            for (title, rows) in [
+                                (t("meetings.redo.localTitle"), local),
+                                (t("meetings.redo.cloudTitle"), cloud),
+                            ] {
+                                if rows.is_empty() {
+                                    continue;
                                 }
-                            })
-                            .ok();
+                                if !first {
+                                    menu = menu.separator();
+                                }
+                                first = false;
+                                menu = menu.label(title);
+                                for c in rows {
+                                    let run = (c.provider_id.clone(), c.model.clone());
+                                    let weak = weak.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(c.label.clone())
+                                            .checked(c.current)
+                                            .on_click(move |_, _, cx| {
+                                                let run = run.clone();
+                                                weak.update(cx, |this, cx| {
+                                                    if let Some(v) = this.summary_view.clone() {
+                                                        v.update(cx, |v, cx| {
+                                                            v.generate(Some(run), cx)
+                                                        });
+                                                    }
+                                                })
+                                                .ok();
+                                            }),
+                                    );
+                                }
+                            }
+                            if !first {
+                                menu = menu.separator();
+                            }
+                            let weak = weak.clone();
+                            menu.item(
+                                PopupMenuItem::new(t("meetingsAi.summary.otherModel")).on_click(
+                                    move |_, window, cx| {
+                                        weak.update(cx, |this, cx| {
+                                            if let Some(v) = this.summary_view.clone() {
+                                                v.update(cx, |v, cx| v.open_picker(window, cx));
+                                            }
+                                        })
+                                        .ok();
+                                    },
+                                ),
+                            )
                         },
-                    ),
-                )
+                    );
+                }
+                menu
             })
     }
 
@@ -2332,30 +2405,20 @@ impl MeetingDetail {
 
     /// Insert a streamed line in time order. The same span updates in place
     /// (a language pass would, if it announced; the pipeline announces once).
+    /// Cloud batches finish one track before the other, so lines can arrive
+    /// out of order; [`insert_provisional`] still places them on the clock.
     fn push_provisional(&mut self, line: ProvisionalLine) {
-        if let Some(existing) = self
-            .provisional
-            .iter_mut()
-            .find(|l| l.track == line.track && l.t0_ms == line.t0_ms && l.t1_ms == line.t1_ms)
-        {
-            existing.text = line.text;
-            return;
-        }
-        let at = self
-            .provisional
-            .partition_point(|l| (l.t0_ms, l.track as u8) <= (line.t0_ms, line.track as u8));
-        self.provisional.insert(at, line);
+        insert_provisional(&mut self.provisional, line);
     }
 
-    fn render_provisional(
-        &self,
-        i: usize,
-        line: &ProvisionalLine,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_provisional(&self, line: &ProvisionalLine, cx: &mut Context<Self>) -> AnyElement {
         let tone = design::tone(cx);
         h_flex()
-            .id(SharedString::from(format!("provisional-{i}")))
+            .id(SharedString::from(format!(
+                "provisional-{}-{}",
+                line.track.as_str(),
+                line.t0_ms
+            )))
             .w_full()
             .gap(dp(8.))
             .px_4()
@@ -2399,8 +2462,7 @@ impl MeetingDetail {
         } else if show_provisional {
             self.provisional
                 .iter()
-                .enumerate()
-                .map(|(i, line)| self.render_provisional(i, line, cx))
+                .map(|line| self.render_provisional(line, cx))
                 .collect()
         } else if self.segments.is_empty() {
             vec![div()
@@ -2487,12 +2549,41 @@ impl MeetingDetail {
         !self.segments.is_empty() || self.meeting.as_ref().is_some_and(|m| m.has_summary)
     }
 
-    /// Notes (summary, and later the minutes) are the default copy.
+    /// The summary view has notes loaded, or the meeting record says it
+    /// has a summary that has not arrived in the view yet.
+    fn has_notes(&self, cx: &App) -> bool {
+        self.meeting.as_ref().is_some_and(|m| m.has_summary)
+            || self
+                .summary_view
+                .as_ref()
+                .is_some_and(|v| v.read(cx).has_summary())
+    }
+
+    /// Notes when they exist. With only a transcript, the default copies
+    /// that instead. Nothing is marked copied unless text was written.
     fn copy_notes(&mut self, cx: &mut Context<Self>) {
-        let Some(v) = self.summary_view.clone() else {
+        let view_has = self
+            .summary_view
+            .as_ref()
+            .is_some_and(|v| v.read(cx).has_summary());
+        if view_has {
+            if let Some(v) = self.summary_view.clone() {
+                v.update(cx, |v, cx| v.copy(cx));
+            }
+            self.flash_copied(cx);
             return;
-        };
-        v.update(cx, |v, cx| v.copy(cx));
+        }
+        // The meeting has a summary the view has not loaded. Don't claim
+        // the copy, and don't fall through to the transcript.
+        if self.meeting.as_ref().is_some_and(|m| m.has_summary) {
+            return;
+        }
+        if self.write_transcript(cx) {
+            self.flash_copied(cx);
+        }
+    }
+
+    fn flash_copied(&mut self, cx: &mut Context<Self>) {
         self.notes_copied = true;
         cx.notify();
         cx.spawn(async |this, cx| {
@@ -2510,6 +2601,7 @@ impl MeetingDetail {
 
     fn copy_button(&self, cx: &mut Context<Self>) -> DropdownButton {
         let copied = self.notes_copied;
+        let notes = self.has_notes(cx);
         let main = Button::new("summary-copy")
             .ghost()
             .small()
@@ -2517,8 +2609,10 @@ impl MeetingDetail {
             .icon(icon(if copied { "check" } else { "copy" }))
             .label(if copied {
                 t("meetings.copy.copied")
-            } else {
+            } else if notes {
                 t("meetings.copy.notes")
+            } else {
+                t("meetings.copy.transcript")
             })
             .on_click(cx.listener(|this, _, _, cx| this.copy_notes(cx)));
         let weak = cx.entity().downgrade();
@@ -2554,17 +2648,30 @@ impl MeetingDetail {
         let tone = design::tone(cx);
         let count = diff.lines_changed.to_string();
         let line_count = t_args("meetings.changed.lines", &[("count", &count)]);
+        let shift_key = |shift: &SpeakerShift| match shift {
+            SpeakerShift::Renamed { from, to } => format!("rename-{from}-{to}"),
+            SpeakerShift::Merged { from, into } => format!("merge-{from}-{into}"),
+            SpeakerShift::Moved { from, to, .. } => format!("move-{from}-{to}"),
+            SpeakerShift::Added { label } => format!("added-{label}"),
+            SpeakerShift::Removed { label } => format!("removed-{label}"),
+        };
         let shifts: Vec<_> = diff
             .speakers
             .iter()
-            .enumerate()
-            .map(|(i, shift)| {
+            .map(|shift| {
                 let text = match shift {
                     SpeakerShift::Renamed { from, to } => {
                         t_args("meetings.changed.renamed", &[("from", from), ("to", to)])
                     }
                     SpeakerShift::Merged { from, into } => {
                         t_args("meetings.changed.merged", &[("from", from), ("into", into)])
+                    }
+                    SpeakerShift::Moved { count, from, to } => {
+                        let count_s = count.to_string();
+                        t_args(
+                            "meetings.changed.moved",
+                            &[("count", &count_s), ("from", from), ("to", to)],
+                        )
                     }
                     SpeakerShift::Added { label } => {
                         t_args("meetings.changed.added", &[("label", label)])
@@ -2574,23 +2681,66 @@ impl MeetingDetail {
                     }
                 };
                 div()
-                    .id(SharedString::from(format!("what-changed-shift-{i}")))
+                    .id(SharedString::from(format!(
+                        "what-changed-shift-{}",
+                        shift_key(shift)
+                    )))
                     .text_size(dp(12.5))
                     .text_color(tone.text)
                     .child(text)
                     .test_support()
             })
             .collect::<Vec<_>>();
-        let bars: Vec<_> = diff
-            .shares
+        let by = |share_of: fn(&crate::logic::meetings::ShareShift) -> f32| {
+            let mut order: Vec<_> = diff.shares.iter().filter(|s| share_of(s) > 0.0).collect();
+            order.sort_by(|a, b| {
+                share_of(b)
+                    .partial_cmp(&share_of(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.label.cmp(&b.label))
+            });
+            order
+        };
+        let before_order = by(|s| s.before);
+        let after_order = by(|s| s.after);
+        let mut rows: Vec<_> = diff.shares.iter().collect();
+        rows.sort_by(|a, b| {
+            b.after
+                .partial_cmp(&a.after)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.label.cmp(&b.label))
+        });
+        let bars: Vec<_> = rows
             .iter()
-            .enumerate()
-            .map(|(i, share)| {
+            .map(|share| {
                 let before = share.before;
                 let after = share.after;
-                let id = SharedString::from(format!("what-changed-bar-{i}"));
+                let label = share.label.clone();
+                let id = SharedString::from(format!("what-changed-bar-{label}"));
+                let before_pct = (before * 100.0).round() as i32;
+                let after_pct = (after * 100.0).round() as i32;
+                let before_s = before_pct.to_string();
+                let after_s = after_pct.to_string();
+                let pct = t_args(
+                    "meetings.changed.share",
+                    &[("before", &before_s), ("after", &after_s)],
+                );
+                let before_i = before_order.iter().position(|s| s.label == label);
+                let after_i = after_order.iter().position(|s| s.label == label);
+                let rank = match (before_i, after_i) {
+                    (Some(b), Some(a)) if b != a => {
+                        let delta = b as i32 - a as i32;
+                        let n = delta.unsigned_abs().to_string();
+                        Some(if delta > 0 {
+                            t_args("meetings.changed.rankUp", &[("n", &n)])
+                        } else {
+                            t_args("meetings.changed.rankDown", &[("n", &n)])
+                        })
+                    }
+                    _ => None,
+                };
                 h_flex()
-                    .id(SharedString::from(format!("what-changed-share-{i}")))
+                    .id(SharedString::from(format!("what-changed-share-{label}")))
                     .w_full()
                     .gap(dp(8.))
                     .items_center()
@@ -2601,10 +2751,20 @@ impl MeetingDetail {
                             .min_w_0()
                             .text_size(dp(12.))
                             .text_color(tone.text)
-                            .child(share.label.clone()),
+                            .child(label),
                     )
+                    .when_some(rank, |row, rank| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_size(dp(11.))
+                                .text_color(tone.text_muted)
+                                .child(rank),
+                        )
+                    })
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .h(dp(8.))
                             .rounded_full()
@@ -2612,6 +2772,9 @@ impl MeetingDetail {
                             .overflow_hidden()
                             .child(
                                 div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
                                     .h_full()
                                     .rounded_full()
                                     .bg(tone.accent)
@@ -2623,7 +2786,26 @@ impl MeetingDetail {
                                             el.w(relative(w.clamp(0.0, 1.0)))
                                         },
                                     ),
-                            ),
+                            )
+                            .when(before > 0.01, |track| {
+                                track.child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .h_full()
+                                        .w(px(2.))
+                                        .bg(tone.text.opacity(0.45))
+                                        .left(relative(before.clamp(0.0, 1.0))),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .w(dp(88.))
+                            .flex_none()
+                            .text_size(dp(11.))
+                            .text_color(tone.text_muted)
+                            .child(pct),
                     )
                     .test_support()
             })
@@ -2688,9 +2870,12 @@ impl MeetingDetail {
     }
 
     /// Copy the transcript as `[mm:ss] Speaker: text` lines under the
-    /// meeting's title and date.
-    fn copy_transcript(&mut self, cx: &mut Context<Self>) {
-        let Some(m) = &self.meeting else { return };
+    /// meeting's title and date. Returns whether anything was written.
+    fn write_transcript(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(m) = &self.meeting else { return false };
+        if self.segments.is_empty() {
+            return false;
+        }
         let text = crate::logic::meetings::transcript_text(
             &m.title,
             &format_meeting_date(m.started_at, &guidy_i18n::language()),
@@ -2699,7 +2884,19 @@ impl MeetingDetail {
             &self.people,
             &meeting_settings(cx).user_display_name,
         );
+        if text.trim().is_empty() {
+            return false;
+        }
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        true
+    }
+
+    /// Copy the transcript as `[mm:ss] Speaker: text` lines under the
+    /// meeting's title and date.
+    fn copy_transcript(&mut self, cx: &mut Context<Self>) {
+        if !self.write_transcript(cx) {
+            return;
+        }
         self.transcript_copied = true;
         cx.notify();
         cx.spawn(async |this, cx| {

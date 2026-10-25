@@ -80,7 +80,20 @@ pub struct MeetingList {
     permissions: Option<PermissionReport>,
     /// A model download is in progress (the status bar has the detail).
     downloads_active: bool,
+    /// Percent of the active download, when its size is known.
+    download_percent: Option<u32>,
     _subs: Vec<Subscription>,
+}
+
+/// What the checklist's Models row is waiting on. Speaker-turn models
+/// are not part of this.
+enum ModelsReadiness {
+    Ready,
+    Downloading(Option<u32>),
+    /// `speaker` is the standard speaker model, which this row can download.
+    NotDownloaded {
+        speaker: bool,
+    },
 }
 
 impl EventEmitter<MeetingListEvent> for MeetingList {}
@@ -129,6 +142,7 @@ impl MeetingList {
             turn_prompt_dismissed: false,
             permissions: None,
             downloads_active: false,
+            download_percent: None,
             _subs: subs,
         };
         this.reload(cx);
@@ -169,6 +183,10 @@ impl MeetingList {
             }
             MeetingsEvent::DownloadsChanged(items) => {
                 self.downloads_active = items.iter().any(|d| d.state.is_active());
+                self.download_percent = items
+                    .iter()
+                    .find(|d| d.state.is_active())
+                    .and_then(|d| d.percent());
                 cx.notify();
             }
             _ => {}
@@ -200,40 +218,29 @@ impl MeetingList {
         );
     }
 
-    /// Mic, system audio, calendar, and models. Hidden once all are ready.
-    /// Recording stays available either way; processing waits on the models.
+    /// Mic, system audio, and the required models. Calendar is optional and
+    /// does not keep the list up. Hidden once those are ready, or once the
+    /// user dismisses it. Recording stays available either way.
     fn render_checklist(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if meeting_settings(cx).setup_checklist_dismissed {
+            return None;
+        }
         let report = self.permissions.as_ref()?;
-        let models_ready = meeting_model_missing(cx).is_none()
-            && meetings_backend(cx).speaker_turn_models_installed();
-        let rows = [
-            (
-                "microphone",
-                t("meetings.settings.permissions.microphone"),
-                report.microphone_granted,
-            ),
-            (
-                "system-audio",
-                t("meetings.settings.permissions.systemAudio"),
-                report.system_audio_granted,
-            ),
-            (
-                "calendar",
-                t("meetings.settings.permissions.calendar"),
-                report.calendar_granted,
-            ),
-        ];
-        if rows.iter().all(|(_, _, ok)| *ok) && models_ready {
+        let models = self.models_readiness(cx);
+        let required_ready = report.microphone_granted
+            && report.system_audio_granted
+            && matches!(models, ModelsReadiness::Ready);
+        if required_ready {
             return None;
         }
         let tone = design::tone(cx);
-        let row = |id: &str, label: SharedString, ok: bool, allow: bool| {
-            let state = if ok {
-                t("meetings.settings.permissions.granted")
-            } else if id == "models" && self.downloads_active {
-                t("meetings.checklist.downloading")
+        let permission = |id: &str, label: SharedString, ok: bool, optional: bool| {
+            let (state_id, state, muted) = if ok {
+                ("ready", t("meetings.settings.permissions.granted"), true)
+            } else if optional {
+                ("optional", t("meetings.checklist.optional"), true)
             } else {
-                t("meetings.settings.permissions.denied")
+                ("needed", t("meetings.settings.permissions.denied"), false)
             };
             h_flex()
                 .id(SharedString::from(format!("meetings-check-{id}")))
@@ -254,15 +261,14 @@ impl MeetingList {
                         .child(
                             div()
                                 .id(SharedString::from(format!(
-                                    "meetings-check-{}-{id}",
-                                    if ok { "ready" } else { "needed" }
+                                    "meetings-check-{state_id}-{id}"
                                 )))
                                 .text_size(dp(12.))
-                                .text_color(if ok { tone.text_muted } else { tone.text })
+                                .text_color(if muted { tone.text_muted } else { tone.text })
                                 .child(state)
                                 .test_support(),
                         )
-                        .when(!ok && allow, |d| {
+                        .when(!ok && !optional, |d| {
                             d.child(
                                 Button::new(SharedString::from(format!(
                                     "meetings-check-allow-{id}"
@@ -284,16 +290,44 @@ impl MeetingList {
                         v_flex()
                             .w_full()
                             .gap(dp(8.))
-                            .child(design::eyebrow(t("meetings.checklist.title"), cx))
-                            .child(row("microphone", rows[0].1.clone(), rows[0].2, true))
-                            .child(row("system-audio", rows[1].1.clone(), rows[1].2, true))
-                            .child(row("calendar", rows[2].1.clone(), rows[2].2, true))
-                            .child(row(
-                                "models",
-                                t("meetings.checklist.models"),
-                                models_ready && !self.downloads_active,
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(design::eyebrow(t("meetings.checklist.title"), cx))
+                                    .child(
+                                        Button::new("meetings-checklist-dismiss")
+                                            .ghost()
+                                            .xsmall()
+                                            .label(t("meetings.checklist.dismiss"))
+                                            .on_click(cx.listener(|_, _, _, cx| {
+                                                super::settings::update_meetings(cx, |m| {
+                                                    m.setup_checklist_dismissed = true
+                                                });
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(permission(
+                                "microphone",
+                                t("meetings.settings.permissions.microphone"),
+                                report.microphone_granted,
                                 false,
                             ))
+                            .child(permission(
+                                "system-audio",
+                                t("meetings.settings.permissions.systemAudio"),
+                                report.system_audio_granted,
+                                false,
+                            ))
+                            .child(permission(
+                                "calendar",
+                                t("meetings.settings.permissions.calendar"),
+                                report.calendar_granted,
+                                true,
+                            ))
+                            .child(self.models_row(cx))
                             .child(
                                 div()
                                     .text_size(dp(12.))
@@ -305,6 +339,106 @@ impl MeetingList {
                 .test_support()
                 .into_any_element(),
         )
+    }
+
+    /// Required models only: the meeting transcription model and the
+    /// standard speaker model. Speaker-turn models are optional.
+    fn models_readiness(&self, cx: &App) -> ModelsReadiness {
+        let speaker_missing = matches!(
+            self.speaker_model,
+            Some(SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. })
+        );
+        let speaker_downloading = matches!(
+            self.speaker_model,
+            Some(SpeakerModelStatus::Downloading { .. })
+        );
+        if speaker_downloading {
+            let pct = match self.speaker_model {
+                Some(SpeakerModelStatus::Downloading { downloaded, total }) if total > 0 => {
+                    Some((downloaded * 100 / total) as u32)
+                }
+                _ => None,
+            };
+            return ModelsReadiness::Downloading(pct);
+        }
+        if speaker_missing {
+            return ModelsReadiness::NotDownloaded { speaker: true };
+        }
+        if meeting_model_missing(cx).is_some() {
+            if self.downloads_active {
+                return ModelsReadiness::Downloading(self.download_percent);
+            }
+            return ModelsReadiness::NotDownloaded { speaker: false };
+        }
+        ModelsReadiness::Ready
+    }
+
+    fn models_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tone = design::tone(cx);
+        let readiness = self.models_readiness(cx);
+        let (state_id, state) = match readiness {
+            ModelsReadiness::Ready => ("ready", t("meetings.checklist.ready")),
+            ModelsReadiness::Downloading(Some(pct)) => {
+                let pct = pct.to_string();
+                (
+                    "downloading",
+                    t_args(
+                        "meetings.checklist.downloadingPercent",
+                        &[("percent", &pct)],
+                    ),
+                )
+            }
+            ModelsReadiness::Downloading(None) => {
+                ("downloading", t("meetings.checklist.downloading"))
+            }
+            ModelsReadiness::NotDownloaded { .. } => {
+                ("needed", t("meetings.checklist.notDownloaded"))
+            }
+        };
+        let offer_download = matches!(readiness, ModelsReadiness::NotDownloaded { speaker: true });
+        h_flex()
+            .id("meetings-check-models")
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(design::TEXT_BODY)
+                    .text_color(tone.text)
+                    .child(t("meetings.checklist.models")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "meetings-check-{state_id}-models"
+                            )))
+                            .text_size(dp(12.))
+                            .text_color(if state_id == "needed" {
+                                tone.text
+                            } else {
+                                tone.text_muted
+                            })
+                            .child(state)
+                            .test_support(),
+                    )
+                    .when(offer_download, |d| {
+                        d.child(
+                            Button::new("meetings-check-download-models")
+                                .ghost()
+                                .xsmall()
+                                .label(t("meetings.checklist.download"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.download_speaker_model(cx)),
+                                ),
+                        )
+                    }),
+            )
+            .test_support()
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -591,7 +725,11 @@ impl MeetingList {
 
     /// Speaker-turn models (~107 MB) download only after the user agrees.
     fn render_turn_consent(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.turn_prompt_dismissed || meeting_settings(cx).speaker_turn_models_consent {
+        let settings = meeting_settings(cx);
+        if self.turn_prompt_dismissed
+            || settings.speaker_turn_prompt_dismissed
+            || settings.speaker_turn_models_consent
+        {
             return None;
         }
         if meetings_backend(cx).speaker_turn_models_installed() {
@@ -637,6 +775,9 @@ impl MeetingList {
                                 .label(t("meetings.turnConsent.notNow"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.turn_prompt_dismissed = true;
+                                    super::settings::update_meetings(cx, |m| {
+                                        m.speaker_turn_prompt_dismissed = true
+                                    });
                                     cx.notify();
                                 })),
                         )

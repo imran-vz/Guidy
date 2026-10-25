@@ -1844,7 +1844,7 @@ mod meetings_page {
             serde_json::to_value(&line).unwrap(),
         );
         show_transcript(cx, &page);
-        assert!(exists(cx, w, "provisional-0"), "streamed line");
+        assert!(exists(cx, w, "provisional-system-1000"), "streamed line");
         assert!(!exists(cx, w, "transcript-empty"));
     }
 
@@ -2578,18 +2578,72 @@ mod meetings_fixes {
         let (w, _) = open(cx, MeetingsPage::new);
         assert!(exists(cx, w, "speaker-turn-consent"));
         with_window(cx, w, |window, cx| window.click("speaker-turn-not-now", cx));
+        cx.run_until_parked();
         assert!(!exists(cx, w, "speaker-turn-consent"));
         assert!(!meetings.called("start_speaker_turn_downloads"));
         assert!(!backend.settings().meetings.speaker_turn_models_consent);
+        assert!(backend.settings().meetings.speaker_turn_prompt_dismissed);
 
+        // A later visit does not ask again. Settings can still start it.
         meetings.data.lock().turn_models_installed = false;
         let (w, _) = open(cx, MeetingsPage::new);
+        assert!(!exists(cx, w, "speaker-turn-consent"));
+        settings_tab(cx, w);
+        assert!(exists(cx, w, "meetings-turn-models"));
         with_window(cx, w, |window, cx| {
-            window.click("speaker-turn-download", cx)
+            window.click("meetings-turn-models-download", cx)
         });
         cx.run_until_parked();
         assert!(backend.settings().meetings.speaker_turn_models_consent);
         assert!(meetings.called("start_speaker_turn_downloads"));
+    }
+
+    #[gpui_kit::test]
+    fn the_setup_checklist_ignores_optional_items_and_can_be_dismissed(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        // Turn models are optional, so declining them does not keep the list up
+        // once the required permissions and models are ready.
+        meetings.data.lock().turn_models_installed = false;
+        meetings.data.lock().permissions = guidy_core::meetings::manager::PermissionReport {
+            calendar_granted: false,
+            system_audio_granted: true,
+            microphone_granted: true,
+            notifications_granted: false,
+        };
+        setup_meetings(cx, backend.clone(), meetings.clone());
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(
+            !exists(cx, w, "meetings-checklist"),
+            "calendar and turn models must not block the checklist"
+        );
+
+        meetings.data.lock().speaker_model = SpeakerModelStatus::Missing;
+        meetings.data.lock().permissions.microphone_granted = false;
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meetings-checklist"));
+        assert!(exists(cx, w, "meetings-check-needed-models"));
+        assert!(exists(cx, w, "meetings-check-optional-calendar"));
+        assert!(!exists(cx, w, "meetings-check-needed-calendar"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-check-download-models", cx)
+        });
+        assert!(meetings.called("download_speaker_model"));
+
+        meetings.data.lock().speaker_model = SpeakerModelStatus::Downloading {
+            downloaded: 45,
+            total: 100,
+        };
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(exists(cx, w, "meetings-check-downloading-models"));
+
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-checklist-dismiss", cx)
+        });
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "meetings-checklist"));
+        assert!(backend.settings().meetings.setup_checklist_dismissed);
+        let (w, _) = open(cx, MeetingsPage::new);
+        assert!(!exists(cx, w, "meetings-checklist"));
     }
 
     #[gpui_kit::test]
@@ -3851,6 +3905,27 @@ mod redo_transcript {
         let md = clipboard(cx);
         assert!(md.contains("## Summary\n\nShipping Friday."), "{md}");
         assert!(md.contains("## Decisions\n\n- Ship on Friday"), "{md}");
+    }
+
+    #[gpui_kit::test]
+    fn copy_without_a_summary_copies_the_transcript(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Let's ship it on Friday."]);
+        setup_meetings(cx, backend, meetings);
+        let (w, _) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        cx.run_until_parked();
+        let before = cx
+            .update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+            .unwrap_or_default();
+        with_window(cx, w, |window, cx| window.click("summary-copy", cx));
+        let text = cx
+            .update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+            .unwrap_or_default();
+        assert_ne!(text, before);
+        assert!(
+            text.contains("[00:00] Speaker 1: Let's ship it on Friday."),
+            "{text}"
+        );
     }
 
     #[gpui_kit::test]

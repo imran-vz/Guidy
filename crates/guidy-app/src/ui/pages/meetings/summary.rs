@@ -525,6 +525,15 @@ impl SummaryView {
 
     // -- summary --------------------------------------------------------
 
+    pub(crate) fn has_summary(&self) -> bool {
+        self.summary.is_some()
+    }
+
+    /// Providers the header Redo menu lists under "Regenerate summary".
+    pub(crate) fn provider_choices(&self) -> Vec<SummaryChoice> {
+        self.choices.clone()
+    }
+
     /// Generate with the meetings model from settings (`None`) or the
     /// picker's provider/model.
     pub fn generate(
@@ -576,7 +585,7 @@ impl SummaryView {
         cx.notify();
     }
 
-    fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let choice = AppState::global(cx)
             .read(cx)
             .app_settings()
@@ -949,6 +958,8 @@ impl SummaryView {
 
     fn header(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_summary = self.summary.is_some();
+        // Regenerate lives on the meeting header's Redo menu. This button
+        // is only the empty state, before a summary exists.
         h_flex()
             .w_full()
             .gap_2()
@@ -965,13 +976,13 @@ impl SummaryView {
                         .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
                 )
             })
-            .child(self.generate_button(has_summary, cx))
+            .when(!has_summary, |d| d.child(self.generate_button(cx)))
             .into_any_element()
     }
 
     /// "Generate summary" with the meetings model, and a menu of the other
     /// ready models (on this Mac first) and the full picker.
-    fn generate_button(&self, has_summary: bool, cx: &mut Context<Self>) -> DropdownButton {
+    fn generate_button(&self, cx: &mut Context<Self>) -> DropdownButton {
         let current = self.choices.iter().find(|c| c.current);
         let main = Button::new("summary-generate")
             .primary()
@@ -979,11 +990,7 @@ impl SummaryView {
             .pill()
             .small()
             .icon(icon("sparkles"))
-            .label(if has_summary {
-                t("meetingsAi.summary.regenerate")
-            } else {
-                t("meetingsAi.summary.generate")
-            })
+            .label(t("meetingsAi.summary.generate"))
             .when_some(current, |b, c| {
                 b.tooltip(t_args(
                     "meetingsAi.summary.generateWith",
@@ -1329,10 +1336,10 @@ impl SummaryView {
             let sections: Vec<AnyElement> =
                 s.notes
                     .iter()
-                    .enumerate()
-                    .map(|(i, section)| {
+                    .map(|section| {
+                        let key = minute_key(section);
                         let seek = section.start_ms.map(|t_ms| {
-                            Button::new(SharedString::from(format!("minute-seek-{i}")))
+                            Button::new(SharedString::from(format!("minute-seek-{key}")))
                                 .link()
                                 .xsmall()
                                 .label(SharedString::from(if section.start.is_empty() {
@@ -1346,7 +1353,7 @@ impl SummaryView {
                                 }))
                         });
                         v_flex()
-                            .id(SharedString::from(format!("minute-{i}")))
+                            .id(SharedString::from(format!("minute-{key}")))
                             .w_full()
                             .gap(dp(4.))
                             .px(design::SECTION_X)
@@ -1564,6 +1571,16 @@ impl SummaryView {
         );
         rows
     }
+}
+
+/// Stable id for a minute section: its start time plus a hash of the
+/// heading, so reordering sections does not reuse another section's element.
+fn minute_key(section: &guidy_core::meetings::types::NoteSection) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    section.heading.hash(&mut hasher);
+    format!("{}-{:x}", section.start_ms.unwrap_or(-1), hasher.finish())
 }
 
 fn empty_summary(meeting_id: MeetingId) -> StoredSummary {
@@ -1839,7 +1856,16 @@ mod ui {
         });
         setup_with(cx, fb, mb.clone());
         let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
-        with_window(cx, w, |window, cx| window.click("summary-generate", cx));
+        cx.run_until_parked();
+        // A summary already exists: regenerate is the header Redo menu,
+        // not a second button on this panel.
+        assert!(!exists(cx, w, "summary-generate"));
+        assert!(exists(cx, w, "summary-edit"));
+        cx.update_window(w, |_, _, cx| {
+            view.update(cx, |v, cx| v.generate(None, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
         assert!(mb.called("summarize 1 default"), "{:?}", mb.calls());
 
         // "Other model…" in the generate menu.
@@ -1859,7 +1885,23 @@ mod ui {
         assert!(!exists(cx, w, "summary-picker"));
 
         mb.data.lock().ai.fail_summarize = Some("model not downloaded".into());
-        with_window(cx, w, |window, cx| window.click("summary-generate", cx));
+        cx.update_window(w, |_, _, cx| {
+            view.update(cx, |v, cx| v.generate(None, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
         assert!(exists(cx, w, "summary-error"));
+    }
+
+    #[gpui_kit::test]
+    fn generate_summary_stays_when_there_is_no_summary(cx: &mut TestAppContext) {
+        let mb = backend();
+        mb.data.lock().ai.summaries.clear();
+        setup(cx, mb.clone());
+        let (w, _) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "summary-generate"));
+        with_window(cx, w, |window, cx| window.click("summary-generate", cx));
+        assert!(mb.called("summarize 1 default"), "{:?}", mb.calls());
     }
 }

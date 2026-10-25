@@ -77,6 +77,11 @@ pub struct MeetingSettings {
     /// the segmentation model, about 107 MB). Until then those downloads
     /// do not start on their own. Models already on disk are still used.
     pub speaker_turn_models_consent: bool,
+    /// "Not now" on the speaker-turn prompt. Stays dismissed across visits;
+    /// Meetings settings can still start the download.
+    pub speaker_turn_prompt_dismissed: bool,
+    /// The user dismissed the meetings setup checklist.
+    pub setup_checklist_dismissed: bool,
 }
 
 /// Where the controls of a recording in progress are shown.
@@ -168,6 +173,8 @@ impl Default for MeetingSettings {
             recording_controls: RecordingControls::Floating,
             prefer_calendar_titles: true,
             speaker_turn_models_consent: false,
+            speaker_turn_prompt_dismissed: false,
+            setup_checklist_dismissed: false,
         }
     }
 }
@@ -214,6 +221,11 @@ impl std::fmt::Debug for MeetingSettings {
                 "speaker_turn_models_consent",
                 &self.speaker_turn_models_consent,
             )
+            .field(
+                "speaker_turn_prompt_dismissed",
+                &self.speaker_turn_prompt_dismissed,
+            )
+            .field("setup_checklist_dismissed", &self.setup_checklist_dismissed)
             .finish()
     }
 }

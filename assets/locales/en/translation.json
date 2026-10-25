@@ -981,10 +981,15 @@
       "dismiss": "Dismiss",
       "renamed": "{{from}} → {{to}}",
       "merged": "{{from}} merged into {{into}}",
+      "moved_one": "1 line moved from {{from}} to {{to}}",
+      "moved_other": "{{count}} lines moved from {{from}} to {{to}}",
       "added": "{{label}} joined",
       "removed": "{{label}} left",
       "lines_one": "{{count}} line changed speaker",
-      "lines_other": "{{count}} lines changed speaker"
+      "lines_other": "{{count}} lines changed speaker",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
     },
     "speaker": {
       "rename": "Name this speaker",
@@ -1135,6 +1140,13 @@
         "retry": "Retry download",
         "failed": "Download failed: {{error}}"
       },
+      "turnModels": {
+        "title": "Speaker turn detection",
+        "description": "Splits lines where the voice changes ({{size}}). Until these are downloaded, lines split at pauses.",
+        "ready": "Ready",
+        "downloading": "Downloading",
+        "download": "Download ({{size}})"
+      },
       "retention": {
         "title": "Keep meeting audio",
         "description": "Raw audio is deleted after this time. Transcripts and voiceprints are kept.",
@@ -1229,7 +1241,13 @@
       "title": "Setup",
       "models": "Models",
       "note": "You can record before the models finish downloading. Processing waits until they are ready.",
-      "downloading": "Downloading"
+      "downloading": "Downloading",
+      "downloadingPercent": "Downloading {{percent}}%",
+      "ready": "Ready",
+      "notDownloaded": "Not downloaded",
+      "download": "Download",
+      "dismiss": "Dismiss",
+      "optional": "Optional"
     },
     "downloads": {
       "activity": "Downloading {{name}} · {{percent}}%",
