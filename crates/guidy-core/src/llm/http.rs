@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::usage::{self, UsageFeature, UsageSlot};
 use super::{
     block_on, extract_json, json_via_prompt, strip_think, validate_json, ChatMessage, ChatOptions,
-    LlmProvider, CANCELLED,
+    InvalidJsonReply, LlmProvider, CANCELLED,
 };
 use crate::llm_client::{self, ChatError, ChatParams, ModelInfo};
 use crate::settings::{
@@ -87,8 +87,16 @@ impl HttpProvider {
         let label = &self.provider.label;
         match reply {
             Ok(Some(text)) => Ok(strip_think(&text).to_string()),
-            Ok(None) => Err(ReplyCutShort(format!("{label} returned an empty reply")).into()),
-            Err(ChatError::Truncated(e)) => Err(ReplyCutShort(format!("{label}: {e}")).into()),
+            Ok(None) => Err(ReplyCutShort {
+                message: format!("{label} returned an empty reply"),
+                token_limit: false,
+            }
+            .into()),
+            Err(ChatError::Truncated(e)) => Err(ReplyCutShort {
+                message: format!("{label}: {e}"),
+                token_limit: true,
+            }
+            .into()),
             Err(ChatError::NoChoices) => Err(anyhow!("{label} returned an empty reply")),
             Err(ChatError::Failed(e)) if e == CANCELLED => Err(anyhow!(CANCELLED)),
             Err(ChatError::Status { status, body }) => {
@@ -201,15 +209,31 @@ fn structured_output_rejections() -> &'static Mutex<HashSet<String>> {
 /// reasons, like OpenRouter's "error", are failures). A typed error so the connection test can
 /// tell such a probe from a failed one (see `super::test_connection`).
 #[derive(Debug)]
-pub struct ReplyCutShort(String);
+pub struct ReplyCutShort {
+    message: String,
+    token_limit: bool,
+}
 
 impl std::fmt::Display for ReplyCutShort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for ReplyCutShort {}
+
+/// Only token-limit cutoffs are invalid JSON; an empty normal stop stays a probe error.
+fn invalid_json_if_truncated(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .downcast_ref::<ReplyCutShort>()
+        .is_some_and(|reply| reply.token_limit)
+    {
+        let invalid = InvalidJsonReply::new(error.to_string());
+        error.context(invalid)
+    } else {
+        error
+    }
+}
 
 /// Context window when nothing is known about a model: small enough for
 /// most hosted and local models, so long transcripts are chunked rather than
@@ -441,13 +465,13 @@ impl LlmProvider for HttpProvider {
                     );
                     structured_output_rejections().lock().insert(endpoint);
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(invalid_json_if_truncated(e)),
             }
         }
         // Prompt-only JSON retries once. A reply that still isn't valid JSON
-        // is an `InvalidJsonReply`; auth, network and truncation errors from
-        // `send` are returned unchanged.
-        json_via_prompt(self, messages, json_schema, opts)
+        // is an `InvalidJsonReply`, including token-limit cutoffs. Other
+        // `send` failures are returned unchanged.
+        json_via_prompt(self, messages, json_schema, opts).map_err(invalid_json_if_truncated)
     }
 }
 
@@ -806,6 +830,33 @@ mod tests {
     }
 
     #[test]
+    fn chat_json_marks_token_limit_truncation_without_losing_the_probe_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
+        for structured in [false, true] {
+            let base = rt.block_on(serve(vec![
+                (
+                    "200 OK",
+                    json!({"choices":[{"message":{"content":"{\"a\""},"finish_reason":"length"}]})
+                        .to_string(),
+                ),
+                ("200 OK", completion("{\"a\":\"b\"}")),
+            ]));
+            let p = HttpProvider::new(
+                provider("openai", &base, structured),
+                "k".into(),
+                "m".into(),
+            );
+            let err = p
+                .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
+                .unwrap_err();
+            assert!(super::super::is_invalid_json_reply(&err), "{err:#}");
+            assert!(err.downcast_ref::<ReplyCutShort>().is_some(), "{err:#}");
+            assert!(!structured_output_rejected(&err), "{err:#}");
+        }
+    }
+
+    #[test]
     fn chat_json_propagates_failures_other_than_a_schema_rejection() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let schema = json!({"type":"object","required":["a"],"properties":{"a":{"type":"string"}}});
@@ -836,12 +887,6 @@ mod tests {
                     .into(),
                 "maximum context length",
             ),
-            (
-                "200 OK",
-                json!({"choices":[{"message":{"content":"{\"a\""},"finish_reason":"length"}]})
-                    .to_string(),
-                "truncated",
-            ),
         ];
         for (status, body, expected) in cases {
             // A prompt-only retry would get this valid reply.
@@ -859,12 +904,12 @@ mod tests {
                 "{status}: {err:#}"
             );
         }
-        let truncated_base = rt.block_on(serve(vec![(
+        let empty_base = rt.block_on(serve(vec![(
             "200 OK",
-            json!({"choices":[{"message":{"content":""},"finish_reason":"length"}]}).to_string(),
+            json!({"choices":[{"message":{"content":null},"finish_reason":"stop"}]}).to_string(),
         )]));
         let p = HttpProvider::new(
-            provider("openai", &truncated_base, true),
+            provider("openai", &empty_base, true),
             "k".into(),
             "m".into(),
         );
@@ -879,9 +924,10 @@ mod tests {
         let base = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         let p = HttpProvider::new(provider("openai", &base, true), "k".into(), "m".into());
-        assert!(p
+        let err = p
             .chat_json(&[ChatMessage::user("x")], &schema, &ChatOptions::default())
-            .is_err());
+            .unwrap_err();
+        assert!(!super::super::is_invalid_json_reply(&err), "{err:#}");
     }
 
     #[test]
@@ -943,7 +989,11 @@ mod tests {
             "openai: response_format unsupported"
         )));
         assert!(!structured_output_rejected(
-            &ReplyCutShort("schema truncated".into()).into()
+            &ReplyCutShort {
+                message: "schema truncated".into(),
+                token_limit: true,
+            }
+            .into()
         ));
     }
 

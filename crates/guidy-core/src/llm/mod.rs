@@ -141,7 +141,8 @@ impl std::error::Error for InvalidJsonReply {}
 
 /// Whether `e` (or anything it wraps) is an [`InvalidJsonReply`].
 pub fn is_invalid_json_reply(e: &anyhow::Error) -> bool {
-    e.chain().any(|cause| cause.is::<InvalidJsonReply>())
+    e.downcast_ref::<InvalidJsonReply>().is_some()
+        || e.chain().any(|cause| cause.is::<InvalidJsonReply>())
 }
 
 fn invalid_json(error: anyhow::Error) -> anyhow::Error {

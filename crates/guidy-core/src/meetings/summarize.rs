@@ -1827,6 +1827,7 @@ mod tests {
 
     /// Fails the first `fails_left` chunk replies, then returns a short summary.
     struct Flaky {
+        failure_message: &'static str,
         fails_left: Mutex<usize>,
         calls: Mutex<usize>,
     }
@@ -1851,18 +1852,17 @@ mod tests {
             let user = messages.last().map(|m| m.content.as_str()).unwrap_or("");
             // The shorter-notes retry is a user message, not the transcript.
             let retrying = user.contains("not valid JSON");
+            if retrying {
+                assert!(user.contains("at most 4 minute sections and at most 3 points"));
+            }
             let mut left = self.fails_left.lock();
             if *left > 0 && !retrying {
                 *left -= 1;
-                return Err(
-                    crate::llm::InvalidJsonReply::new("response was not valid JSON").into(),
-                );
+                return Err(crate::llm::InvalidJsonReply::new(self.failure_message).into());
             }
             if *left > 0 && retrying {
                 *left -= 1;
-                return Err(
-                    crate::llm::InvalidJsonReply::new("response was not valid JSON").into(),
-                );
+                return Err(crate::llm::InvalidJsonReply::new(self.failure_message).into());
             }
             drop(left);
             if schema["properties"].get("action_items").is_none() {
@@ -1885,6 +1885,7 @@ mod tests {
     fn a_chunk_that_fails_to_parse_is_retried_once_then_kept() {
         let f = fixture();
         let once = Flaky {
+            failure_message: "response was not valid JSON",
             fails_left: Mutex::new(1),
             calls: Mutex::new(0),
         };
@@ -1896,6 +1897,7 @@ mod tests {
 
         // One chunk, and every reply is invalid JSON: don't persist empty minutes.
         let always = Flaky {
+            failure_message: "response was not valid JSON",
             fails_left: Mutex::new(10),
             calls: Mutex::new(0),
         };
@@ -1903,6 +1905,21 @@ mod tests {
             .unwrap_err();
         assert_eq!(*always.calls.lock(), 2, "one retry, then the summary fails");
         assert!(err.to_string().contains("valid minutes"), "{err:#}");
+    }
+
+    #[test]
+    fn a_cut_off_chunk_is_retried_with_shorter_minutes() {
+        let f = fixture();
+        let p = Flaky {
+            failure_message: "reply truncated at the output token limit",
+            fails_left: Mutex::new(1),
+            calls: Mutex::new(0),
+        };
+        let out = summarize_meeting(&p, &input(&f), &ChatOptions::default(), &|_, _| {}).unwrap();
+        assert_eq!(*p.calls.lock(), 2);
+        assert_eq!(out.summary.notes.len(), 1);
+        assert_eq!(out.summary.notes[0].heading, "Beta");
+        assert_eq!(out.summary.notes[0].points, vec!["Ship Friday"]);
     }
 
     /// Auth-style failures are not bad JSON: no retry, and the summary errors.
