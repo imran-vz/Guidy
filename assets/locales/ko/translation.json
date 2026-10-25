@@ -57,6 +57,7 @@
       "dictation": "받아쓰기",
       "meetingTranscription": "회의 전사",
       "meetingSummary": "회의 요약",
+      "meetingTitle": "회의 제목",
       "other": "기타"
     },
     "localAudio": "전사된 오디오",

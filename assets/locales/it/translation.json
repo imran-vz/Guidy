@@ -57,6 +57,7 @@
       "dictation": "Dettatura",
       "meetingTranscription": "Trascrizione riunioni",
       "meetingSummary": "Riepiloghi riunioni",
+      "meetingTitle": "Titoli delle riunioni",
       "other": "Altro"
     },
     "localAudio": "Audio trascritto",

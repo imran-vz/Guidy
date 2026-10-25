@@ -57,6 +57,7 @@
       "dictation": "Diktering",
       "meetingTranscription": "Mötestranskription",
       "meetingSummary": "Mötessammanfattningar",
+      "meetingTitle": "Mötestitlar",
       "other": "Övrigt"
     },
     "localAudio": "Transkriberat ljud",

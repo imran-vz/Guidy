@@ -57,6 +57,7 @@
       "dictation": "Dictation",
       "meetingTranscription": "Meeting transcription",
       "meetingSummary": "Meeting summaries",
+      "meetingTitle": "Meeting titles",
       "other": "Other"
     },
     "localAudio": "Audio transcribed",

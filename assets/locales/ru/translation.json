@@ -57,6 +57,7 @@
       "dictation": "Диктовка",
       "meetingTranscription": "Транскрипция встреч",
       "meetingSummary": "Сводки встреч",
+      "meetingTitle": "Названия встреч",
       "other": "Другое"
     },
     "localAudio": "Транскрибировано аудио",

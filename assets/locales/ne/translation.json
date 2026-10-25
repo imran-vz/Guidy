@@ -57,6 +57,7 @@
       "dictation": "डिक्टेसन",
       "meetingTranscription": "मिटिङ ट्रान्सक्रिप्सन",
       "meetingSummary": "मिटिङ सारांश",
+      "meetingTitle": "बैठकका शीर्षकहरू",
       "other": "अन्य"
     },
     "localAudio": "ट्रान्सक्राइब गरिएको अडियो",

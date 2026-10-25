@@ -57,6 +57,7 @@
       "dictation": "الإملاء",
       "meetingTranscription": "تفريغ الاجتماعات",
       "meetingSummary": "ملخصات الاجتماعات",
+      "meetingTitle": "عناوين الاجتماعات",
       "other": "أخرى"
     },
     "localAudio": "الصوت المفرغ",

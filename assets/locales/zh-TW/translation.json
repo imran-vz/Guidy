@@ -57,6 +57,7 @@
       "dictation": "聽寫",
       "meetingTranscription": "會議轉錄",
       "meetingSummary": "會議摘要",
+      "meetingTitle": "會議標題",
       "other": "其他"
     },
     "localAudio": "已轉錄音訊",

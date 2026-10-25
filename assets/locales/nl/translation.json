@@ -57,6 +57,7 @@
       "dictation": "Dicteren",
       "meetingTranscription": "Vergadertranscriptie",
       "meetingSummary": "Vergadersamenvattingen",
+      "meetingTitle": "Vergadertitels",
       "other": "Overig"
     },
     "localAudio": "Getranscribeerde audio",

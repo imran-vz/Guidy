@@ -57,6 +57,7 @@
       "dictation": "Dictat",
       "meetingTranscription": "Transcripció de reunions",
       "meetingSummary": "Resums de reunions",
+      "meetingTitle": "Títols de reunions",
       "other": "Altres"
     },
     "localAudio": "Àudio transcrit",

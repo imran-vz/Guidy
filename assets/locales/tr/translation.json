@@ -57,6 +57,7 @@
       "dictation": "Dikte",
       "meetingTranscription": "Toplantı transkripsiyonu",
       "meetingSummary": "Toplantı özetleri",
+      "meetingTitle": "Toplantı başlıkları",
       "other": "Diğer"
     },
     "localAudio": "Transkribe edilen ses",
