@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Ustawienia...",
+    "recentTranscripts": "Ostatnie transkrypcje",
+    "noTranscripts": "Brak transkrypcji",
     "unloadModel": "Zwolnij model",
     "model": "Model",
     "quit": "Zamknij",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopiuj",
       "transcript": "Kopiuj transkrypcję",
-      "copied": "Skopiowano"
+      "copied": "Skopiowano",
+      "notes": "Kopiuj notatki",
+      "summaryOnly": "Kopiuj tylko podsumowanie",
+      "more": "Więcej sposobów kopiowania"
     },
     "redo": {
       "action": "Ponów transkrypcję",
@@ -841,7 +846,8 @@
       "noKeyShort": "wymaga klucza API (Spotkania › Ustawienia › AI)",
       "confirmTitle": "Transkrybować za pomocą {{provider}}?",
       "confirmCloud": "Audio z tego spotkania zostanie przesłane do {{provider}} i transkrybowane modelem {{model}}, za około {{cost}}. Transkrypcja i mówcy zostaną zastąpieni.",
-      "confirmCloudUnpriced": "Audio z tego spotkania zostanie przesłane do {{provider}} i transkrybowane modelem {{model}}. Transkrypcja i mówcy zostaną zastąpieni."
+      "confirmCloudUnpriced": "Audio z tego spotkania zostanie przesłane do {{provider}} i transkrybowane modelem {{model}}. Transkrypcja i mówcy zostaną zastąpieni.",
+      "menu": "Ponów"
     },
     "widget": {
       "recording": "Nagrywanie",
@@ -861,7 +867,12 @@
       "expand": "Pokaż transkrypcję na żywo",
       "collapse": "Zwiń",
       "liveTitle": "Transkrypcja na żywo",
-      "liveHint": "Tak, jak usłyszano do tej pory. Pełna transkrypcja z nazwami mówców powstanie po zakończeniu spotkania."
+      "liveHint": "Tak, jak usłyszano do tej pory. Pełna transkrypcja z nazwami mówców powstanie po zakończeniu spotkania.",
+      "callTitle": "Rozmowa {{app}}",
+      "callPrompt": "Robić notatki ze spotkania?",
+      "start": "Rób notatki",
+      "starting": "Uruchamianie…",
+      "dismiss": "Nie teraz"
     },
     "description": "Nagraj spotkanie na tym Macu, a potem przeczytaj transkrypcję z nazwanymi mówcami.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Wszystkie spotkania",
       "transcript": "Transkrypcja",
+      "speakerPending": "…",
       "empty": "Brak transkrypcji. Przetwórz spotkanie, aby ją utworzyć.",
       "loading": "Wczytywanie transkrypcji...",
       "loadError": "Nie udało się wczytać spotkania",
@@ -966,7 +978,8 @@
       "share": "Udział",
       "youSpoke": "Twój czas mówienia",
       "minutes": "Min",
-      "speakersToName": "Do nazwania: {{count}}"
+      "speakersToName": "Do nazwania: {{count}}",
+      "notesTab": "Notatki"
     },
     "speaker": {
       "rename": "Nazwij tego mówcę",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Zachowaj nazwy z kalendarza jako tytuły",
         "description": "Podczas generowania tytułów spotkania z wydarzenia w kalendarzu zachowują nazwę wydarzenia i dostają tylko opis."
+      },
+      "turnModels": {
+        "title": "Wykrywanie zmiany mówcy",
+        "description": "Dzieli wiersze tam, gdzie zmienia się głos ({{size}}). Dopóki modele nie zostaną pobrane, wiersze są dzielone na pauzach.",
+        "ready": "Gotowe",
+        "downloading": "Pobieranie",
+        "download": "Pobierz ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Proponuj notatki podczas rozmów",
+        "description": "Gdy zaczyna się rozmowa w Zoom, Google Meet lub WhatsApp, pokaż zatrzymany panel pływający z propozycją robienia notatek."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "Nadano tytuł 1 spotkaniu",
       "done_other": "Spotkania z nadanym tytułem: {{count}}",
       "error": "Nie udało się wygenerować tytułu"
+    },
+    "changed": {
+      "title": "Co się zmieniło",
+      "dismiss": "Odrzuć",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} scalono z {{into}}",
+      "moved_one": "1 wiersz przeniesiono z {{from}} do {{to}}",
+      "moved_other": "Przeniesione wiersze z {{from}} do {{to}}: {{count}}",
+      "added": "{{label}} dołącza",
+      "removed": "{{label}} wychodzi",
+      "lines_one": "{{count}} wiersz zmienił mówcę",
+      "lines_other": "Wiersze ze zmienionym mówcą: {{count}}",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Konfiguracja",
+      "models": "Modele",
+      "note": "Możesz nagrywać, zanim modele się pobiorą. Przetwarzanie zaczeka, aż będą gotowe.",
+      "downloading": "Pobieranie",
+      "downloadingPercent": "Pobieranie {{percent}}%",
+      "ready": "Gotowe",
+      "notDownloaded": "Nie pobrano",
+      "download": "Pobierz",
+      "dismiss": "Odrzuć",
+      "optional": "Opcjonalne"
+    },
+    "downloads": {
+      "activity": "Pobieranie {{name}} · {{percent}}%",
+      "activityFailed": "Pobieranie nie powiodło się · {{name}}",
+      "multiple": "Pobieranie modeli: {{count}}",
+      "cancel": "Anuluj",
+      "retry": "Ponów",
+      "done": "Pobrano {{name}}",
+      "failed": "Nie udało się pobrać {{name}}",
+      "startError": "Nie udało się rozpocząć pobierania",
+      "empty": "Brak pobrań",
+      "queued": "W kolejce",
+      "doneShort": "Gotowe",
+      "failedShort": "Błąd",
+      "cancelled": "Anulowano"
+    },
+    "turnConsent": {
+      "title": "Wykrywanie zmiany mówcy",
+      "body": "Pobierz modele, które dzielą wiersze tam, gdzie zmienia się głos ({{size}}). Do tego czasu wiersze są dzielone na pauzach.",
+      "download": "Pobierz",
+      "notNow": "Nie teraz"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Brak odpowiedzialnego",
         "me": "Ja",
         "meNamed": "Ja ({{name}})"
-      }
+      },
+      "minutes": "Protokół",
+      "openQuestions": "Otwarte pytania",
+      "outcome": "Wynik"
     },
     "tickets": {
       "heading": "Zgłoszenia Linear",

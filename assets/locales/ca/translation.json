@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Configuració...",
+    "recentTranscripts": "Transcripcions recents",
+    "noTranscripts": "Encara no hi ha transcripcions",
     "unloadModel": "Allibera el model de la memòria",
     "model": "Model",
     "quit": "Surt",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Copia",
       "transcript": "Copia la transcripció",
-      "copied": "Copiat"
+      "copied": "Copiat",
+      "notes": "Copia les notes",
+      "summaryOnly": "Copia només el resum",
+      "more": "Més maneres de copiar"
     },
     "redo": {
       "action": "Refés la transcripció",
@@ -841,7 +846,8 @@
       "noKeyShort": "cal una clau de l'API (Reunions › Configuració › IA)",
       "confirmTitle": "Voleu transcriure amb {{provider}}?",
       "confirmCloud": "L'àudio d'aquesta reunió es puja a {{provider}} i es transcriu amb {{model}}, per uns {{cost}}. Se substitueixen la transcripció i els parlants.",
-      "confirmCloudUnpriced": "L'àudio d'aquesta reunió es puja a {{provider}} i es transcriu amb {{model}}. Se substitueixen la transcripció i els parlants."
+      "confirmCloudUnpriced": "L'àudio d'aquesta reunió es puja a {{provider}} i es transcriu amb {{model}}. Se substitueixen la transcripció i els parlants.",
+      "menu": "Refés"
     },
     "widget": {
       "recording": "S'està enregistrant",
@@ -861,7 +867,12 @@
       "expand": "Mostra la transcripció en directe",
       "collapse": "Redueix",
       "liveTitle": "Transcripció en directe",
-      "liveHint": "Tal com s'ha sentit fins ara. La transcripció completa amb els noms dels parlants es fa quan acaba la reunió."
+      "liveHint": "Tal com s'ha sentit fins ara. La transcripció completa amb els noms dels parlants es fa quan acaba la reunió.",
+      "callTitle": "Trucada de {{app}}",
+      "callPrompt": "Voleu prendre notes de la reunió?",
+      "start": "Pren notes",
+      "starting": "S'està iniciant…",
+      "dismiss": "Ara no"
     },
     "description": "Enregistreu una reunió en aquest Mac i després llegiu-ne la transcripció amb els parlants identificats.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Totes les reunions",
       "transcript": "Transcripció",
+      "speakerPending": "…",
       "empty": "Encara no hi ha transcripció. Processeu la reunió per crear-ne una.",
       "loading": "S'està carregant la transcripció...",
       "loadError": "No s'ha pogut carregar la reunió",
@@ -966,7 +978,8 @@
       "share": "Proporció",
       "youSpoke": "Heu parlat",
       "minutes": "Min",
-      "speakersToName": "{{count}} per anomenar"
+      "speakersToName": "{{count}} per anomenar",
+      "notesTab": "Notes"
     },
     "speaker": {
       "rename": "Anomena aquest parlant",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Conserva els noms del calendari com a títols",
         "description": "Quan es generen títols, les reunions d'un esdeveniment del calendari conserven el nom de l'esdeveniment i només reben una descripció."
+      },
+      "turnModels": {
+        "title": "Detecció de torns de parlant",
+        "description": "Divideix les línies on canvia la veu ({{size}}). Fins que no es baixin, les línies es divideixen a les pauses.",
+        "ready": "A punt",
+        "downloading": "S'està baixant",
+        "download": "Baixa ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Suggereix notes a les trucades",
+        "description": "Quan comença una trucada de Zoom, Google Meet o WhatsApp, mostra la finestra flotant, aturada, amb l'oferta de prendre notes."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "S'ha titulat 1 reunió",
       "done_other": "S'han titulat {{count}} reunions",
       "error": "No s'ha pogut generar el títol"
+    },
+    "changed": {
+      "title": "Què ha canviat",
+      "dismiss": "Descarta",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} s'ha fusionat amb {{into}}",
+      "moved_one": "1 línia s'ha mogut de {{from}} a {{to}}",
+      "moved_other": "{{count}} línies s'han mogut de {{from}} a {{to}}",
+      "added": "{{label}} s'ha afegit",
+      "removed": "{{label}} ha marxat",
+      "lines_one": "{{count}} línia ha canviat de parlant",
+      "lines_other": "{{count}} línies han canviat de parlant",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Configuració inicial",
+      "models": "Models",
+      "note": "Podeu enregistrar abans que s'acabin de baixar els models. El processament espera fins que estiguin a punt.",
+      "downloading": "S'està baixant",
+      "downloadingPercent": "S'està baixant: {{percent}}%",
+      "ready": "A punt",
+      "notDownloaded": "No baixat",
+      "download": "Baixa",
+      "dismiss": "Descarta",
+      "optional": "Opcional"
+    },
+    "downloads": {
+      "activity": "S'està baixant {{name}} · {{percent}}%",
+      "activityFailed": "Ha fallat la baixada · {{name}}",
+      "multiple": "S'estan baixant {{count}} models",
+      "cancel": "Cancel·la",
+      "retry": "Torna-ho a provar",
+      "done": "S'ha baixat {{name}}",
+      "failed": "No s'ha pogut baixar {{name}}",
+      "startError": "No s'ha pogut iniciar la baixada",
+      "empty": "No hi ha baixades",
+      "queued": "En cua",
+      "doneShort": "Fet",
+      "failedShort": "Ha fallat",
+      "cancelled": "Cancel·lat"
+    },
+    "turnConsent": {
+      "title": "Detecció de torns de parlant",
+      "body": "Baixeu els models que divideixen les línies on canvia la veu ({{size}}). Fins aleshores, les línies es divideixen a les pauses.",
+      "download": "Baixa",
+      "notNow": "Ara no"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Sense responsable",
         "me": "Jo",
         "meNamed": "Jo ({{name}})"
-      }
+      },
+      "minutes": "Acta",
+      "openQuestions": "Preguntes obertes",
+      "outcome": "Resultat"
     },
     "tickets": {
       "heading": "Tiquets de Linear",

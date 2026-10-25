@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "設定…",
+    "recentTranscripts": "最近の文字起こし",
+    "noTranscripts": "まだ文字起こしがありません",
     "unloadModel": "モデルをアンロード",
     "model": "モデル",
     "quit": "終了",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "コピー",
       "transcript": "文字起こしをコピー",
-      "copied": "コピーしました"
+      "copied": "コピーしました",
+      "notes": "メモをコピー",
+      "summaryOnly": "要約のみコピー",
+      "more": "その他のコピー方法"
     },
     "redo": {
       "action": "文字起こしをやり直す",
@@ -841,7 +846,8 @@
       "noKeyShort": "API キーが必要 (会議 › 設定 › AI)",
       "confirmTitle": "{{provider}} で文字起こししますか？",
       "confirmCloud": "この会議の音声が {{provider}} にアップロードされ、{{model}} で文字起こしされます。費用は約 {{cost}} です。文字起こしと話者は置き換えられます。",
-      "confirmCloudUnpriced": "この会議の音声が {{provider}} にアップロードされ、{{model}} で文字起こしされます。文字起こしと話者は置き換えられます。"
+      "confirmCloudUnpriced": "この会議の音声が {{provider}} にアップロードされ、{{model}} で文字起こしされます。文字起こしと話者は置き換えられます。",
+      "menu": "やり直す"
     },
     "widget": {
       "recording": "録音中",
@@ -861,7 +867,12 @@
       "expand": "ライブ文字起こしを表示",
       "collapse": "折りたたむ",
       "liveTitle": "ライブ文字起こし",
-      "liveHint": "ここまでに聞き取った内容です。話者名付きの完全な文字起こしは会議の終了後に作成されます。"
+      "liveHint": "ここまでに聞き取った内容です。話者名付きの完全な文字起こしは会議の終了後に作成されます。",
+      "callTitle": "{{app}} 通話",
+      "callPrompt": "会議のメモを取りますか？",
+      "start": "メモを取る",
+      "starting": "開始中…",
+      "dismiss": "後で"
     },
     "description": "この Mac で会議を録音し、話者名付きの文字起こしを読めます。",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "すべての会議",
       "transcript": "文字起こし",
+      "speakerPending": "…",
       "empty": "まだ文字起こしがありません。会議を処理して作成してください。",
       "loading": "文字起こしを読み込み中…",
       "loadError": "会議を読み込めませんでした",
@@ -966,7 +978,8 @@
       "share": "割合",
       "youSpoke": "あなたの発話",
       "minutes": "分",
-      "speakersToName": "{{count}} 人が未命名"
+      "speakersToName": "{{count}} 人が未命名",
+      "notesTab": "メモ"
     },
     "speaker": {
       "rename": "この話者に名前を付ける",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "カレンダーの名前をタイトルとして維持",
         "description": "タイトルを生成するとき、カレンダーの予定から作られた会議は予定の名前を維持し、説明だけが追加されます。"
+      },
+      "turnModels": {
+        "title": "話者交代の検出",
+        "description": "声が変わった位置で行を分割します ({{size}})。ダウンロードが完了するまでは、間 (ま) で行を分割します。",
+        "ready": "準備完了",
+        "downloading": "ダウンロード中",
+        "download": "ダウンロード ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "通話中にメモを提案",
+        "description": "Zoom、Google Meet、WhatsApp の通話が始まると、停止状態のフローティングコントロールを表示し、メモを取るよう提案します。"
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 件の会議にタイトルを付けました",
       "done_other": "{{count}} 件の会議にタイトルを付けました",
       "error": "タイトルを生成できませんでした"
+    },
+    "changed": {
+      "title": "変更点",
+      "dismiss": "閉じる",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} を {{into}} に統合",
+      "moved_one": "1 行を {{from}} から {{to}} に移動",
+      "moved_other": "{{count}} 行を {{from}} から {{to}} に移動",
+      "added": "{{label}} が参加",
+      "removed": "{{label}} が退出",
+      "lines_one": "{{count}} 行の話者が変更",
+      "lines_other": "{{count}} 行の話者が変更",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "セットアップ",
+      "models": "モデル",
+      "note": "モデルのダウンロード完了前でも録音できます。処理はモデルの準備ができるまで待機します。",
+      "downloading": "ダウンロード中",
+      "downloadingPercent": "ダウンロード中 {{percent}}%",
+      "ready": "準備完了",
+      "notDownloaded": "未ダウンロード",
+      "download": "ダウンロード",
+      "dismiss": "閉じる",
+      "optional": "任意"
+    },
+    "downloads": {
+      "activity": "{{name}} をダウンロード中 · {{percent}}%",
+      "activityFailed": "ダウンロード失敗 · {{name}}",
+      "multiple": "{{count}} 個のモデルをダウンロード中",
+      "cancel": "キャンセル",
+      "retry": "再試行",
+      "done": "{{name}} をダウンロードしました",
+      "failed": "{{name}} をダウンロードできませんでした",
+      "startError": "ダウンロードを開始できませんでした",
+      "empty": "ダウンロードはありません",
+      "queued": "待機中",
+      "doneShort": "完了",
+      "failedShort": "失敗",
+      "cancelled": "キャンセル済み"
+    },
+    "turnConsent": {
+      "title": "話者交代の検出",
+      "body": "声が変わった位置で行を分割するモデルをダウンロードします ({{size}})。それまでは、間 (ま) で行を分割します。",
+      "download": "ダウンロード",
+      "notNow": "後で"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "担当者なし",
         "me": "自分",
         "meNamed": "自分 ({{name}})"
-      }
+      },
+      "minutes": "議事録",
+      "openQuestions": "未解決の質問",
+      "outcome": "結論"
     },
     "tickets": {
       "heading": "Linear チケット",

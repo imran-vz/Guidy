@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Paramètres...",
+    "recentTranscripts": "Transcriptions récentes",
+    "noTranscripts": "Aucune transcription pour l'instant",
     "unloadModel": "Décharger le modèle",
     "model": "Modèle",
     "quit": "Quitter",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Copier",
       "transcript": "Copier la transcription",
-      "copied": "Copié"
+      "copied": "Copié",
+      "notes": "Copier les notes",
+      "summaryOnly": "Copier le résumé seul",
+      "more": "Autres options de copie"
     },
     "redo": {
       "action": "Refaire la transcription",
@@ -841,7 +846,8 @@
       "noKeyShort": "nécessite une clé API (Réunions › Paramètres › IA)",
       "confirmTitle": "Transcrire avec {{provider}} ?",
       "confirmCloud": "L'audio de cette réunion est envoyé à {{provider}} et transcrit avec {{model}}, pour environ {{cost}}. La transcription et les intervenants sont remplacés.",
-      "confirmCloudUnpriced": "L'audio de cette réunion est envoyé à {{provider}} et transcrit avec {{model}}. La transcription et les intervenants sont remplacés."
+      "confirmCloudUnpriced": "L'audio de cette réunion est envoyé à {{provider}} et transcrit avec {{model}}. La transcription et les intervenants sont remplacés.",
+      "menu": "Refaire"
     },
     "widget": {
       "recording": "Enregistrement",
@@ -861,7 +867,12 @@
       "expand": "Afficher la transcription en direct",
       "collapse": "Réduire",
       "liveTitle": "Transcription en direct",
-      "liveHint": "Tel qu'entendu jusqu'ici. La transcription complète avec le nom des intervenants est créée à la fin de la réunion."
+      "liveHint": "Tel qu'entendu jusqu'ici. La transcription complète avec le nom des intervenants est créée à la fin de la réunion.",
+      "callTitle": "Appel {{app}}",
+      "callPrompt": "Prendre des notes de réunion ?",
+      "start": "Prendre des notes",
+      "starting": "Démarrage…",
+      "dismiss": "Pas maintenant"
     },
     "description": "Enregistrez une réunion sur ce Mac, puis lisez la transcription avec le nom des intervenants.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Toutes les réunions",
       "transcript": "Transcription",
+      "speakerPending": "…",
       "empty": "Pas encore de transcription. Traitez la réunion pour en créer une.",
       "loading": "Chargement de la transcription...",
       "loadError": "Impossible de charger la réunion",
@@ -966,7 +978,8 @@
       "share": "Part",
       "youSpoke": "Votre temps de parole",
       "minutes": "Min",
-      "speakersToName": "{{count}} à nommer"
+      "speakersToName": "{{count}} à nommer",
+      "notesTab": "Notes"
     },
     "speaker": {
       "rename": "Nommer cet intervenant",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Conserver les noms du calendrier comme titres",
         "description": "Lors de la génération des titres, les réunions issues d'un événement du calendrier conservent le nom de l'événement et reçoivent seulement une description."
+      },
+      "turnModels": {
+        "title": "Détection des tours de parole",
+        "description": "Coupe les lignes là où la voix change ({{size}}). Tant qu'ils ne sont pas téléchargés, les lignes sont coupées aux pauses.",
+        "ready": "Prêt",
+        "downloading": "Téléchargement",
+        "download": "Télécharger ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Proposer des notes pendant les appels",
+        "description": "Quand un appel Zoom, Google Meet ou WhatsApp commence, affiche la fenêtre flottante, à l'arrêt, avec une proposition de prendre des notes."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "{{count}} réunion titrée",
       "done_other": "{{count}} réunions titrées",
       "error": "Impossible de générer le titre"
+    },
+    "changed": {
+      "title": "Ce qui a changé",
+      "dismiss": "Ignorer",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} fusionné avec {{into}}",
+      "moved_one": "1 ligne déplacée de {{from}} vers {{to}}",
+      "moved_other": "{{count}} lignes déplacées de {{from}} vers {{to}}",
+      "added": "{{label}} a rejoint",
+      "removed": "{{label}} est parti",
+      "lines_one": "{{count}} ligne a changé d'intervenant",
+      "lines_other": "{{count}} lignes ont changé d'intervenant",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Configuration",
+      "models": "Modèles",
+      "note": "Vous pouvez enregistrer avant la fin du téléchargement des modèles. Le traitement attend qu'ils soient prêts.",
+      "downloading": "Téléchargement",
+      "downloadingPercent": "Téléchargement {{percent}} %",
+      "ready": "Prêt",
+      "notDownloaded": "Non téléchargé",
+      "download": "Télécharger",
+      "dismiss": "Ignorer",
+      "optional": "Facultatif"
+    },
+    "downloads": {
+      "activity": "Téléchargement de {{name}} · {{percent}} %",
+      "activityFailed": "Échec du téléchargement · {{name}}",
+      "multiple": "Téléchargement de {{count}} modèles",
+      "cancel": "Annuler",
+      "retry": "Réessayer",
+      "done": "{{name}} téléchargé",
+      "failed": "Impossible de télécharger {{name}}",
+      "startError": "Impossible de lancer le téléchargement",
+      "empty": "Aucun téléchargement",
+      "queued": "En attente",
+      "doneShort": "Terminé",
+      "failedShort": "Échec",
+      "cancelled": "Annulé"
+    },
+    "turnConsent": {
+      "title": "Détection des tours de parole",
+      "body": "Téléchargez les modèles qui coupent les lignes là où la voix change ({{size}}). D'ici là, les lignes sont coupées aux pauses.",
+      "download": "Télécharger",
+      "notNow": "Pas maintenant"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Aucun responsable",
         "me": "Moi",
         "meNamed": "Moi ({{name}})"
-      }
+      },
+      "minutes": "Compte rendu",
+      "openQuestions": "Questions ouvertes",
+      "outcome": "Résultat"
     },
     "tickets": {
       "heading": "Tickets Linear",

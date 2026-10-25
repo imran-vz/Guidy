@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "설정...",
+    "recentTranscripts": "최근 전사 내용",
+    "noTranscripts": "아직 전사 내용이 없습니다",
     "unloadModel": "모델 언로드",
     "model": "모델",
     "quit": "종료",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "복사",
       "transcript": "전사 내용 복사",
-      "copied": "복사됨"
+      "copied": "복사됨",
+      "notes": "노트 복사",
+      "summaryOnly": "요약만 복사",
+      "more": "다른 복사 방법"
     },
     "redo": {
       "action": "다시 전사",
@@ -841,7 +846,8 @@
       "noKeyShort": "API 키 필요 (회의 › 설정 › AI)",
       "confirmTitle": "{{provider}}(으)로 전사할까요?",
       "confirmCloud": "이 회의의 오디오가 {{provider}}에 업로드되어 {{model}}(으)로 전사되며, 비용은 약 {{cost}}입니다. 전사 내용과 화자가 교체됩니다.",
-      "confirmCloudUnpriced": "이 회의의 오디오가 {{provider}}에 업로드되어 {{model}}(으)로 전사됩니다. 전사 내용과 화자가 교체됩니다."
+      "confirmCloudUnpriced": "이 회의의 오디오가 {{provider}}에 업로드되어 {{model}}(으)로 전사됩니다. 전사 내용과 화자가 교체됩니다.",
+      "menu": "다시 하기"
     },
     "widget": {
       "recording": "녹음 중",
@@ -861,7 +867,12 @@
       "expand": "실시간 전사 보기",
       "collapse": "접기",
       "liveTitle": "실시간 전사",
-      "liveHint": "지금까지 들린 내용입니다. 화자 이름이 포함된 전체 전사는 회의가 끝나면 만들어집니다."
+      "liveHint": "지금까지 들린 내용입니다. 화자 이름이 포함된 전체 전사는 회의가 끝나면 만들어집니다.",
+      "callTitle": "{{app}} 통화",
+      "callPrompt": "회의 노트를 작성할까요?",
+      "start": "노트 작성",
+      "starting": "시작하는 중…",
+      "dismiss": "나중에"
     },
     "description": "이 Mac에서 회의를 녹음하고, 화자 이름이 표시된 전사 내용을 읽어 보세요.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "모든 회의",
       "transcript": "전사 내용",
+      "speakerPending": "…",
       "empty": "아직 전사 내용이 없습니다. 회의를 처리하여 만드세요.",
       "loading": "전사 내용 로딩 중...",
       "loadError": "회의를 불러오지 못했습니다",
@@ -966,7 +978,8 @@
       "share": "비율",
       "youSpoke": "내 발언",
       "minutes": "분",
-      "speakersToName": "{{count}}명 이름 지정 필요"
+      "speakersToName": "{{count}}명 이름 지정 필요",
+      "notesTab": "노트"
     },
     "speaker": {
       "rename": "이 화자 이름 지정",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "캘린더 이름을 제목으로 유지",
         "description": "제목을 생성할 때 캘린더 일정에서 만든 회의는 일정 이름을 유지하고 설명만 추가됩니다."
+      },
+      "turnModels": {
+        "title": "화자 전환 감지",
+        "description": "목소리가 바뀌는 지점에서 줄을 나눕니다({{size}}). 다운로드하기 전까지는 말이 끊기는 지점에서 줄을 나눕니다.",
+        "ready": "준비됨",
+        "downloading": "다운로드 중",
+        "download": "다운로드({{size}})"
+      },
+      "callSuggestions": {
+        "title": "통화 시 노트 제안",
+        "description": "Zoom, Google Meet 또는 WhatsApp 통화가 시작되면 플로팅 컨트롤을 정지 상태로 표시하고 노트 작성을 제안합니다."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "회의 1개에 제목을 붙였습니다",
       "done_other": "회의 {{count}}개에 제목을 붙였습니다",
       "error": "제목을 생성하지 못했습니다"
+    },
+    "changed": {
+      "title": "변경 사항",
+      "dismiss": "닫기",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}}을(를) {{into}}에 병합",
+      "moved_one": "1줄을 {{from}}에서 {{to}}(으)로 이동",
+      "moved_other": "{{count}}줄을 {{from}}에서 {{to}}(으)로 이동",
+      "added": "{{label}} 참여",
+      "removed": "{{label}} 나감",
+      "lines_one": "{{count}}줄의 화자 변경",
+      "lines_other": "{{count}}줄의 화자 변경",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "설정",
+      "models": "모델",
+      "note": "모델 다운로드가 끝나기 전에도 녹음할 수 있습니다. 처리는 모델이 준비될 때까지 대기합니다.",
+      "downloading": "다운로드 중",
+      "downloadingPercent": "다운로드 중 {{percent}}%",
+      "ready": "준비됨",
+      "notDownloaded": "다운로드 안 됨",
+      "download": "다운로드",
+      "dismiss": "닫기",
+      "optional": "선택 사항"
+    },
+    "downloads": {
+      "activity": "{{name}} 다운로드 중 · {{percent}}%",
+      "activityFailed": "다운로드 실패 · {{name}}",
+      "multiple": "모델 {{count}}개 다운로드 중",
+      "cancel": "취소",
+      "retry": "다시 시도",
+      "done": "{{name}} 다운로드 완료",
+      "failed": "{{name}}을(를) 다운로드하지 못했습니다",
+      "startError": "다운로드를 시작하지 못했습니다",
+      "empty": "다운로드 없음",
+      "queued": "대기 중",
+      "doneShort": "완료",
+      "failedShort": "실패",
+      "cancelled": "취소됨"
+    },
+    "turnConsent": {
+      "title": "화자 전환 감지",
+      "body": "목소리가 바뀌는 지점에서 줄을 나누는 모델을 다운로드합니다({{size}}). 그전까지는 말이 끊기는 지점에서 줄을 나눕니다.",
+      "download": "다운로드",
+      "notNow": "나중에"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "담당자 없음",
         "me": "나",
         "meNamed": "나 ({{name}})"
-      }
+      },
+      "minutes": "회의록",
+      "openQuestions": "미해결 질문",
+      "outcome": "결과"
     },
     "tickets": {
       "heading": "Linear 티켓",

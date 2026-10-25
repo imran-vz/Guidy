@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Pengaturan...",
+    "recentTranscripts": "Transkrip Terbaru",
+    "noTranscripts": "Belum ada transkrip",
     "unloadModel": "Keluarkan Model dari Memori",
     "model": "Model",
     "quit": "Keluar",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Salin",
       "transcript": "Salin transkrip",
-      "copied": "Disalin"
+      "copied": "Disalin",
+      "notes": "Salin catatan",
+      "summaryOnly": "Salin ringkasan saja",
+      "more": "Cara lain untuk menyalin"
     },
     "redo": {
       "action": "Ulangi transkrip",
@@ -841,7 +846,8 @@
       "noKeyShort": "memerlukan kunci API (Rapat › Pengaturan › AI)",
       "confirmTitle": "Transkripsikan dengan {{provider}}?",
       "confirmCloud": "Audio rapat ini diunggah ke {{provider}} dan ditranskripsi dengan {{model}}, dengan biaya sekitar {{cost}}. Transkrip dan pembicara akan diganti.",
-      "confirmCloudUnpriced": "Audio rapat ini diunggah ke {{provider}} dan ditranskripsi dengan {{model}}. Transkrip dan pembicara akan diganti."
+      "confirmCloudUnpriced": "Audio rapat ini diunggah ke {{provider}} dan ditranskripsi dengan {{model}}. Transkrip dan pembicara akan diganti.",
+      "menu": "Ulangi"
     },
     "widget": {
       "recording": "Merekam",
@@ -861,7 +867,12 @@
       "expand": "Tampilkan transkrip langsung",
       "collapse": "Ciutkan",
       "liveTitle": "Transkrip langsung",
-      "liveHint": "Sejauh yang terdengar. Transkrip lengkap dengan nama pembicara dibuat saat rapat berakhir."
+      "liveHint": "Sejauh yang terdengar. Transkrip lengkap dengan nama pembicara dibuat saat rapat berakhir.",
+      "callTitle": "Panggilan {{app}}",
+      "callPrompt": "Buat catatan rapat?",
+      "start": "Buat catatan",
+      "starting": "Memulai…",
+      "dismiss": "Jangan sekarang"
     },
     "description": "Rekam rapat di Mac ini, lalu baca transkrip dengan nama para pembicara.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Semua rapat",
       "transcript": "Transkrip",
+      "speakerPending": "…",
       "empty": "Belum ada transkrip. Proses rapat untuk membuatnya.",
       "loading": "Memuat transkrip...",
       "loadError": "Gagal memuat rapat",
@@ -966,7 +978,8 @@
       "share": "Porsi",
       "youSpoke": "Anda berbicara",
       "minutes": "Mnt",
-      "speakersToName": "{{count}} perlu diberi nama"
+      "speakersToName": "{{count}} perlu diberi nama",
+      "notesTab": "Catatan"
     },
     "speaker": {
       "rename": "Beri nama pembicara ini",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Pertahankan nama kalender sebagai judul",
         "description": "Saat judul dibuat, rapat dari acara kalender tetap memakai nama acara dan hanya mendapat deskripsi."
+      },
+      "turnModels": {
+        "title": "Deteksi giliran pembicara",
+        "description": "Memisahkan baris saat suara berganti ({{size}}). Sampai model ini diunduh, baris dipisah pada jeda.",
+        "ready": "Siap",
+        "downloading": "Mengunduh",
+        "download": "Unduh ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Sarankan catatan saat panggilan",
+        "description": "Saat panggilan Zoom, Google Meet, atau WhatsApp dimulai, tampilkan kontrol mengambang dalam keadaan berhenti, dengan tawaran untuk membuat catatan."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 rapat diberi judul",
       "done_other": "{{count}} rapat diberi judul",
       "error": "Gagal membuat judul"
+    },
+    "changed": {
+      "title": "Yang berubah",
+      "dismiss": "Tutup",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} digabung ke {{into}}",
+      "moved_one": "1 baris dipindah dari {{from}} ke {{to}}",
+      "moved_other": "{{count}} baris dipindah dari {{from}} ke {{to}}",
+      "added": "{{label}} bergabung",
+      "removed": "{{label}} keluar",
+      "lines_one": "{{count}} baris berganti pembicara",
+      "lines_other": "{{count}} baris berganti pembicara",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Penyiapan",
+      "models": "Model",
+      "note": "Anda bisa merekam sebelum model selesai diunduh. Pemrosesan menunggu sampai model siap.",
+      "downloading": "Mengunduh",
+      "downloadingPercent": "Mengunduh {{percent}}%",
+      "ready": "Siap",
+      "notDownloaded": "Belum diunduh",
+      "download": "Unduh",
+      "dismiss": "Tutup",
+      "optional": "Opsional"
+    },
+    "downloads": {
+      "activity": "Mengunduh {{name}} · {{percent}}%",
+      "activityFailed": "Unduhan gagal · {{name}}",
+      "multiple": "Mengunduh {{count}} model",
+      "cancel": "Batal",
+      "retry": "Coba lagi",
+      "done": "{{name}} telah diunduh",
+      "failed": "Gagal mengunduh {{name}}",
+      "startError": "Gagal memulai unduhan",
+      "empty": "Tidak ada unduhan",
+      "queued": "Dalam antrean",
+      "doneShort": "Selesai",
+      "failedShort": "Gagal",
+      "cancelled": "Dibatalkan"
+    },
+    "turnConsent": {
+      "title": "Deteksi giliran pembicara",
+      "body": "Unduh model yang memisahkan baris saat suara berganti ({{size}}). Sampai saat itu, baris dipisah pada jeda.",
+      "download": "Unduh",
+      "notNow": "Jangan sekarang"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Tanpa penanggung jawab",
         "me": "Saya",
         "meNamed": "Saya ({{name}})"
-      }
+      },
+      "minutes": "Notulen",
+      "openQuestions": "Pertanyaan terbuka",
+      "outcome": "Hasil"
     },
     "tickets": {
       "heading": "Tiket Linear",

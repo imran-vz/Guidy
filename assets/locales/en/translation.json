@@ -867,7 +867,12 @@
       "expand": "Show the live transcript",
       "collapse": "Collapse",
       "liveTitle": "Live transcript",
-      "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends."
+      "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends.",
+      "callTitle": "{{app}} call",
+      "callPrompt": "Take meeting notes?",
+      "start": "Take notes",
+      "starting": "Starting…",
+      "dismiss": "Not now"
     },
     "description": "Record a meeting on this Mac, then read the transcript with named speakers.",
     "init": {
@@ -1166,6 +1171,10 @@
       "calendarNotifications": {
         "title": "Calendar notifications",
         "description": "Ask to take notes when a calendar meeting with a call link starts."
+      },
+      "callSuggestions": {
+        "title": "Suggest notes on calls",
+        "description": "When a Zoom, Google Meet or WhatsApp call starts, show the floater, stopped, with an offer to take notes."
       },
       "recordingControls": {
         "title": "Recording controls",

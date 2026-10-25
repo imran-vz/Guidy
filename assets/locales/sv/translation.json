@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Inställningar...",
+    "recentTranscripts": "Senaste transkriptioner",
+    "noTranscripts": "Inga transkriptioner än",
     "unloadModel": "Avlasta modell",
     "model": "Modell",
     "quit": "Avsluta",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopiera",
       "transcript": "Kopiera transkription",
-      "copied": "Kopierat"
+      "copied": "Kopierat",
+      "notes": "Kopiera anteckningar",
+      "summaryOnly": "Kopiera bara sammanfattningen",
+      "more": "Fler sätt att kopiera"
     },
     "redo": {
       "action": "Gör om transkription",
@@ -841,7 +846,8 @@
       "noKeyShort": "kräver en API-nyckel (Möten › Inställningar › AI)",
       "confirmTitle": "Transkribera med {{provider}}?",
       "confirmCloud": "Ljudet från det här mötet laddas upp till {{provider}} och transkriberas med {{model}}, för cirka {{cost}}. Transkriptionen och talarna ersätts.",
-      "confirmCloudUnpriced": "Ljudet från det här mötet laddas upp till {{provider}} och transkriberas med {{model}}. Transkriptionen och talarna ersätts."
+      "confirmCloudUnpriced": "Ljudet från det här mötet laddas upp till {{provider}} och transkriberas med {{model}}. Transkriptionen och talarna ersätts.",
+      "menu": "Gör om"
     },
     "widget": {
       "recording": "Spelar in",
@@ -861,7 +867,12 @@
       "expand": "Visa livetranskriptionen",
       "collapse": "Fäll ihop",
       "liveTitle": "Livetranskription",
-      "liveHint": "Så som det hörts hittills. Den fullständiga transkriptionen med talarnamn skapas när mötet slutar."
+      "liveHint": "Så som det hörts hittills. Den fullständiga transkriptionen med talarnamn skapas när mötet slutar.",
+      "callTitle": "{{app}}-samtal",
+      "callPrompt": "Föra mötesanteckningar?",
+      "start": "För anteckningar",
+      "starting": "Startar…",
+      "dismiss": "Inte nu"
     },
     "description": "Spela in ett möte på den här Macen och läs sedan transkriptionen med namngivna talare.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Alla möten",
       "transcript": "Transkription",
+      "speakerPending": "…",
       "empty": "Ingen transkription ännu. Bearbeta mötet för att skapa en.",
       "loading": "Laddar transkription...",
       "loadError": "Det gick inte att ladda mötet",
@@ -966,7 +978,8 @@
       "share": "Andel",
       "youSpoke": "Du pratade",
       "minutes": "Min",
-      "speakersToName": "{{count}} att namnge"
+      "speakersToName": "{{count}} att namnge",
+      "notesTab": "Anteckningar"
     },
     "speaker": {
       "rename": "Namnge talaren",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Behåll kalendernamn som rubriker",
         "description": "När rubriker skapas behåller möten från en kalenderhändelse händelsens namn och får bara en beskrivning."
+      },
+      "turnModels": {
+        "title": "Identifiering av talarbyten",
+        "description": "Delar rader där rösten byts ({{size}}). Tills dessa har laddats ner delas rader vid pauser.",
+        "ready": "Klar",
+        "downloading": "Laddar ner",
+        "download": "Ladda ner ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Föreslå anteckningar vid samtal",
+        "description": "När ett Zoom-, Google Meet- eller WhatsApp-samtal startar visas den flytande panelen, stoppad, med ett erbjudande om att föra anteckningar."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 möte har fått rubrik",
       "done_other": "{{count}} möten har fått rubrik",
       "error": "Det gick inte att skapa rubriken"
+    },
+    "changed": {
+      "title": "Vad som ändrades",
+      "dismiss": "Avfärda",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} sammanslagen med {{into}}",
+      "moved_one": "1 rad flyttad från {{from}} till {{to}}",
+      "moved_other": "{{count}} rader flyttade från {{from}} till {{to}}",
+      "added": "{{label}} anslöt",
+      "removed": "{{label}} lämnade",
+      "lines_one": "{{count}} rad bytte talare",
+      "lines_other": "{{count}} rader bytte talare",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Konfiguration",
+      "models": "Modeller",
+      "note": "Du kan spela in innan modellerna har laddats ner. Bearbetningen väntar tills de är klara.",
+      "downloading": "Laddar ner",
+      "downloadingPercent": "Laddar ner {{percent}}%",
+      "ready": "Klar",
+      "notDownloaded": "Inte nedladdad",
+      "download": "Ladda ner",
+      "dismiss": "Avfärda",
+      "optional": "Valfritt"
+    },
+    "downloads": {
+      "activity": "Laddar ner {{name}} · {{percent}}%",
+      "activityFailed": "Nedladdningen misslyckades · {{name}}",
+      "multiple": "Laddar ner {{count}} modeller",
+      "cancel": "Avbryt",
+      "retry": "Försök igen",
+      "done": "{{name}} nedladdad",
+      "failed": "Det gick inte att ladda ner {{name}}",
+      "startError": "Det gick inte att starta nedladdningen",
+      "empty": "Inga nedladdningar",
+      "queued": "I kö",
+      "doneShort": "Klar",
+      "failedShort": "Misslyckades",
+      "cancelled": "Avbruten"
+    },
+    "turnConsent": {
+      "title": "Identifiering av talarbyten",
+      "body": "Ladda ner modellerna som delar rader där rösten byts ({{size}}). Tills dess delas rader vid pauser.",
+      "download": "Ladda ner",
+      "notNow": "Inte nu"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Ingen ansvarig",
         "me": "Jag",
         "meNamed": "Jag ({{name}})"
-      }
+      },
+      "minutes": "Protokoll",
+      "openQuestions": "Öppna frågor",
+      "outcome": "Resultat"
     },
     "tickets": {
       "heading": "Linear-ärenden",

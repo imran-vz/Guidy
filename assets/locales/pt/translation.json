@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Configurações...",
+    "recentTranscripts": "Transcrições recentes",
+    "noTranscripts": "Nenhuma transcrição ainda",
     "unloadModel": "Descarregar modelo",
     "model": "Modelo",
     "quit": "Sair",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Copiar",
       "transcript": "Copiar transcrição",
-      "copied": "Copiado"
+      "copied": "Copiado",
+      "notes": "Copiar notas",
+      "summaryOnly": "Copiar só o resumo",
+      "more": "Mais formas de copiar"
     },
     "redo": {
       "action": "Refazer transcrição",
@@ -841,7 +846,8 @@
       "noKeyShort": "requer uma chave da API (Reuniões › Configurações › IA)",
       "confirmTitle": "Transcrever com {{provider}}?",
       "confirmCloud": "O áudio desta reunião é enviado para {{provider}} e transcrito com {{model}}, por cerca de {{cost}}. A transcrição e os falantes são substituídos.",
-      "confirmCloudUnpriced": "O áudio desta reunião é enviado para {{provider}} e transcrito com {{model}}. A transcrição e os falantes são substituídos."
+      "confirmCloudUnpriced": "O áudio desta reunião é enviado para {{provider}} e transcrito com {{model}}. A transcrição e os falantes são substituídos.",
+      "menu": "Refazer"
     },
     "widget": {
       "recording": "Gravando",
@@ -861,7 +867,12 @@
       "expand": "Mostrar a transcrição ao vivo",
       "collapse": "Recolher",
       "liveTitle": "Transcrição ao vivo",
-      "liveHint": "O que foi ouvido até agora. A transcrição completa com os nomes dos falantes é feita quando a reunião termina."
+      "liveHint": "O que foi ouvido até agora. A transcrição completa com os nomes dos falantes é feita quando a reunião termina.",
+      "callTitle": "Chamada do {{app}}",
+      "callPrompt": "Fazer notas da reunião?",
+      "start": "Fazer notas",
+      "starting": "Iniciando…",
+      "dismiss": "Agora não"
     },
     "description": "Grave uma reunião neste Mac e depois leia a transcrição com os falantes identificados.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Todas as reuniões",
       "transcript": "Transcrição",
+      "speakerPending": "…",
       "empty": "Nenhuma transcrição ainda. Processe a reunião para criar uma.",
       "loading": "Carregando transcrição...",
       "loadError": "Não foi possível carregar a reunião",
@@ -966,7 +978,8 @@
       "share": "Participação",
       "youSpoke": "Você falou",
       "minutes": "Min",
-      "speakersToName": "{{count}} para nomear"
+      "speakersToName": "{{count}} para nomear",
+      "notesTab": "Notas"
     },
     "speaker": {
       "rename": "Nomear este falante",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Manter nomes do calendário como títulos",
         "description": "Ao gerar títulos, reuniões de um evento do calendário mantêm o nome do evento e recebem apenas uma descrição."
+      },
+      "turnModels": {
+        "title": "Detecção de troca de falante",
+        "description": "Divide as linhas onde a voz muda ({{size}}). Até que sejam baixados, as linhas são divididas nas pausas.",
+        "ready": "Pronto",
+        "downloading": "Baixando",
+        "download": "Baixar ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Sugerir notas em chamadas",
+        "description": "Quando uma chamada do Zoom, Google Meet ou WhatsApp começar, mostrar o painel flutuante, parado, com a oferta de fazer notas."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "{{count}} reunião recebeu título",
       "done_other": "{{count}} reuniões receberam título",
       "error": "Não foi possível gerar o título"
+    },
+    "changed": {
+      "title": "O que mudou",
+      "dismiss": "Dispensar",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} unido a {{into}}",
+      "moved_one": "1 linha movida de {{from}} para {{to}}",
+      "moved_other": "{{count}} linhas movidas de {{from}} para {{to}}",
+      "added": "{{label}} entrou",
+      "removed": "{{label}} saiu",
+      "lines_one": "{{count}} linha mudou de falante",
+      "lines_other": "{{count}} linhas mudaram de falante",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Configuração",
+      "models": "Modelos",
+      "note": "Você pode gravar antes de os modelos terminarem de baixar. O processamento espera até que estejam prontos.",
+      "downloading": "Baixando",
+      "downloadingPercent": "Baixando {{percent}}%",
+      "ready": "Pronto",
+      "notDownloaded": "Não baixado",
+      "download": "Baixar",
+      "dismiss": "Dispensar",
+      "optional": "Opcional"
+    },
+    "downloads": {
+      "activity": "Baixando {{name}} · {{percent}}%",
+      "activityFailed": "Falha no download · {{name}}",
+      "multiple": "Baixando {{count}} modelos",
+      "cancel": "Cancelar",
+      "retry": "Tentar novamente",
+      "done": "{{name}} baixado",
+      "failed": "Não foi possível baixar {{name}}",
+      "startError": "Não foi possível iniciar o download",
+      "empty": "Nenhum download",
+      "queued": "Na fila",
+      "doneShort": "Concluído",
+      "failedShort": "Falhou",
+      "cancelled": "Cancelado"
+    },
+    "turnConsent": {
+      "title": "Detecção de troca de falante",
+      "body": "Baixe os modelos que dividem as linhas onde a voz muda ({{size}}). Até lá, as linhas são divididas nas pausas.",
+      "download": "Baixar",
+      "notNow": "Agora não"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Sem responsável",
         "me": "Eu",
         "meNamed": "Eu ({{name}})"
-      }
+      },
+      "minutes": "Ata",
+      "openQuestions": "Perguntas em aberto",
+      "outcome": "Resultado"
     },
     "tickets": {
       "heading": "Tickets do Linear",

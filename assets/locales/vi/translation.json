@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Cài đặt...",
+    "recentTranscripts": "Bản chép lời gần đây",
+    "noTranscripts": "Chưa có bản chép lời",
     "unloadModel": "Dỡ mô hình",
     "model": "Mô hình",
     "quit": "Thoát",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Sao chép",
       "transcript": "Sao chép bản chép lời",
-      "copied": "Đã sao chép"
+      "copied": "Đã sao chép",
+      "notes": "Sao chép ghi chú",
+      "summaryOnly": "Chỉ sao chép tóm tắt",
+      "more": "Cách sao chép khác"
     },
     "redo": {
       "action": "Phiên âm lại",
@@ -841,7 +846,8 @@
       "noKeyShort": "cần khóa API (Cuộc họp › Cài đặt › AI)",
       "confirmTitle": "Phiên âm bằng {{provider}}?",
       "confirmCloud": "Âm thanh của cuộc họp này sẽ được tải lên {{provider}} và phiên âm bằng {{model}}, với chi phí khoảng {{cost}}. Bản chép lời và người nói sẽ bị thay thế.",
-      "confirmCloudUnpriced": "Âm thanh của cuộc họp này sẽ được tải lên {{provider}} và phiên âm bằng {{model}}. Bản chép lời và người nói sẽ bị thay thế."
+      "confirmCloudUnpriced": "Âm thanh của cuộc họp này sẽ được tải lên {{provider}} và phiên âm bằng {{model}}. Bản chép lời và người nói sẽ bị thay thế.",
+      "menu": "Làm lại"
     },
     "widget": {
       "recording": "Đang ghi âm",
@@ -861,7 +867,12 @@
       "expand": "Hiện bản chép lời trực tiếp",
       "collapse": "Thu gọn",
       "liveTitle": "Bản chép lời trực tiếp",
-      "liveHint": "Những gì nghe được đến giờ. Bản chép lời đầy đủ kèm tên người nói sẽ được tạo khi cuộc họp kết thúc."
+      "liveHint": "Những gì nghe được đến giờ. Bản chép lời đầy đủ kèm tên người nói sẽ được tạo khi cuộc họp kết thúc.",
+      "callTitle": "Cuộc gọi {{app}}",
+      "callPrompt": "Ghi chú cuộc họp?",
+      "start": "Ghi chú",
+      "starting": "Đang bắt đầu…",
+      "dismiss": "Để sau"
     },
     "description": "Ghi âm cuộc họp trên máy Mac này, rồi đọc bản chép lời với tên người nói.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Tất cả cuộc họp",
       "transcript": "Bản chép lời",
+      "speakerPending": "…",
       "empty": "Chưa có bản chép lời. Hãy xử lý cuộc họp để tạo.",
       "loading": "Đang tải bản chép lời...",
       "loadError": "Không thể tải cuộc họp",
@@ -966,7 +978,8 @@
       "share": "Tỷ lệ",
       "youSpoke": "Bạn đã nói",
       "minutes": "Phút",
-      "speakersToName": "{{count}} cần đặt tên"
+      "speakersToName": "{{count}} cần đặt tên",
+      "notesTab": "Ghi chú"
     },
     "speaker": {
       "rename": "Đặt tên người nói này",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Giữ tên trong lịch làm tiêu đề",
         "description": "Khi tạo tiêu đề, các cuộc họp từ sự kiện lịch giữ tên sự kiện và chỉ được thêm mô tả."
+      },
+      "turnModels": {
+        "title": "Phát hiện lượt nói",
+        "description": "Tách dòng khi giọng nói thay đổi ({{size}}). Cho đến khi tải xuống xong, các dòng sẽ được tách tại các khoảng lặng.",
+        "ready": "Sẵn sàng",
+        "downloading": "Đang tải xuống",
+        "download": "Tải xuống ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Gợi ý ghi chú khi có cuộc gọi",
+        "description": "Khi cuộc gọi Zoom, Google Meet hoặc WhatsApp bắt đầu, hiện cửa sổ nổi ở trạng thái dừng kèm đề nghị ghi chú."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "Đã đặt tiêu đề cho 1 cuộc họp",
       "done_other": "Đã đặt tiêu đề cho {{count}} cuộc họp",
       "error": "Không thể tạo tiêu đề"
+    },
+    "changed": {
+      "title": "Những gì đã thay đổi",
+      "dismiss": "Bỏ qua",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} đã gộp vào {{into}}",
+      "moved_one": "1 dòng đã chuyển từ {{from}} sang {{to}}",
+      "moved_other": "{{count}} dòng đã chuyển từ {{from}} sang {{to}}",
+      "added": "{{label}} đã tham gia",
+      "removed": "{{label}} đã rời đi",
+      "lines_one": "{{count}} dòng đã đổi người nói",
+      "lines_other": "{{count}} dòng đã đổi người nói",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Thiết lập",
+      "models": "Mô hình",
+      "note": "Bạn có thể ghi âm trước khi các mô hình tải xuống xong. Việc xử lý sẽ chờ đến khi chúng sẵn sàng.",
+      "downloading": "Đang tải xuống",
+      "downloadingPercent": "Đang tải xuống {{percent}}%",
+      "ready": "Sẵn sàng",
+      "notDownloaded": "Chưa tải xuống",
+      "download": "Tải xuống",
+      "dismiss": "Bỏ qua",
+      "optional": "Tùy chọn"
+    },
+    "downloads": {
+      "activity": "Đang tải xuống {{name}} · {{percent}}%",
+      "activityFailed": "Tải xuống thất bại · {{name}}",
+      "multiple": "Đang tải xuống {{count}} mô hình",
+      "cancel": "Hủy",
+      "retry": "Thử lại",
+      "done": "Đã tải xuống {{name}}",
+      "failed": "Không thể tải xuống {{name}}",
+      "startError": "Không thể bắt đầu tải xuống",
+      "empty": "Không có tải xuống nào",
+      "queued": "Đang chờ",
+      "doneShort": "Xong",
+      "failedShort": "Thất bại",
+      "cancelled": "Đã hủy"
+    },
+    "turnConsent": {
+      "title": "Phát hiện lượt nói",
+      "body": "Tải xuống các mô hình tách dòng khi giọng nói thay đổi ({{size}}). Cho đến lúc đó, các dòng sẽ được tách tại các khoảng lặng.",
+      "download": "Tải xuống",
+      "notNow": "Để sau"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Chưa có người phụ trách",
         "me": "Tôi",
         "meNamed": "Tôi ({{name}})"
-      }
+      },
+      "minutes": "Biên bản",
+      "openQuestions": "Câu hỏi còn mở",
+      "outcome": "Kết quả"
     },
     "tickets": {
       "heading": "Ticket Linear",

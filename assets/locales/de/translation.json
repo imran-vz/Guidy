@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Einstellungen...",
+    "recentTranscripts": "Letzte Transkripte",
+    "noTranscripts": "Noch keine Transkripte",
     "unloadModel": "Modell entladen",
     "model": "Modell",
     "quit": "Beenden",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopieren",
       "transcript": "Transkript kopieren",
-      "copied": "Kopiert"
+      "copied": "Kopiert",
+      "notes": "Notizen kopieren",
+      "summaryOnly": "Nur Zusammenfassung kopieren",
+      "more": "Weitere Kopieroptionen"
     },
     "redo": {
       "action": "Neu transkribieren",
@@ -841,7 +846,8 @@
       "noKeyShort": "API-Schlüssel nötig (Meetings › Einstellungen › KI)",
       "confirmTitle": "Mit {{provider}} transkribieren?",
       "confirmCloud": "Das Audio dieses Meetings wird zu {{provider}} hochgeladen und mit {{model}} transkribiert, für etwa {{cost}}. Transkript und Sprecher werden ersetzt.",
-      "confirmCloudUnpriced": "Das Audio dieses Meetings wird zu {{provider}} hochgeladen und mit {{model}} transkribiert. Transkript und Sprecher werden ersetzt."
+      "confirmCloudUnpriced": "Das Audio dieses Meetings wird zu {{provider}} hochgeladen und mit {{model}} transkribiert. Transkript und Sprecher werden ersetzt.",
+      "menu": "Wiederholen"
     },
     "widget": {
       "recording": "Aufnahme",
@@ -861,7 +867,12 @@
       "expand": "Live-Transkript anzeigen",
       "collapse": "Einklappen",
       "liveTitle": "Live-Transkript",
-      "liveHint": "So weit bisher gehört. Das vollständige Transkript mit Sprechernamen wird am Ende des Meetings erstellt."
+      "liveHint": "So weit bisher gehört. Das vollständige Transkript mit Sprechernamen wird am Ende des Meetings erstellt.",
+      "callTitle": "{{app}}-Anruf",
+      "callPrompt": "Meeting-Notizen erstellen?",
+      "start": "Notizen erstellen",
+      "starting": "Wird gestartet…",
+      "dismiss": "Nicht jetzt"
     },
     "description": "Nimm ein Meeting auf diesem Mac auf und lies dann das Transkript mit benannten Sprechern.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Alle Meetings",
       "transcript": "Transkript",
+      "speakerPending": "…",
       "empty": "Noch kein Transkript. Verarbeite das Meeting, um eines zu erstellen.",
       "loading": "Transkript wird geladen...",
       "loadError": "Meeting konnte nicht geladen werden",
@@ -966,7 +978,8 @@
       "share": "Anteil",
       "youSpoke": "Dein Anteil",
       "minutes": "Min.",
-      "speakersToName": "{{count}} zu benennen"
+      "speakersToName": "{{count}} zu benennen",
+      "notesTab": "Notizen"
     },
     "speaker": {
       "rename": "Diesen Sprecher benennen",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Kalendernamen als Titel behalten",
         "description": "Beim Erstellen von Titeln behalten Meetings aus einem Kalendertermin den Namen des Termins und erhalten nur eine Beschreibung."
+      },
+      "turnModels": {
+        "title": "Sprecherwechsel-Erkennung",
+        "description": "Trennt Zeilen dort, wo die Stimme wechselt ({{size}}). Bis diese heruntergeladen sind, werden Zeilen an Pausen getrennt.",
+        "ready": "Bereit",
+        "downloading": "Wird heruntergeladen",
+        "download": "Herunterladen ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Notizen bei Anrufen vorschlagen",
+        "description": "Wenn ein Zoom-, Google-Meet- oder WhatsApp-Anruf beginnt, wird das schwebende Fenster angehalten angezeigt, mit dem Angebot, Notizen zu erstellen."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 Meeting betitelt",
       "done_other": "{{count}} Meetings betitelt",
       "error": "Titel konnte nicht erstellt werden"
+    },
+    "changed": {
+      "title": "Was sich geändert hat",
+      "dismiss": "Ausblenden",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} mit {{into}} zusammengeführt",
+      "moved_one": "1 Zeile von {{from}} zu {{to}} verschoben",
+      "moved_other": "{{count}} Zeilen von {{from}} zu {{to}} verschoben",
+      "added": "{{label}} ist hinzugekommen",
+      "removed": "{{label}} ist weggefallen",
+      "lines_one": "{{count}} Zeile hat den Sprecher gewechselt",
+      "lines_other": "{{count}} Zeilen haben den Sprecher gewechselt",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Einrichtung",
+      "models": "Modelle",
+      "note": "Du kannst schon aufnehmen, bevor die Modelle fertig heruntergeladen sind. Die Verarbeitung wartet, bis sie bereit sind.",
+      "downloading": "Wird heruntergeladen",
+      "downloadingPercent": "Wird heruntergeladen: {{percent}}%",
+      "ready": "Bereit",
+      "notDownloaded": "Nicht heruntergeladen",
+      "download": "Herunterladen",
+      "dismiss": "Ausblenden",
+      "optional": "Optional"
+    },
+    "downloads": {
+      "activity": "{{name}} wird heruntergeladen · {{percent}}%",
+      "activityFailed": "Download fehlgeschlagen · {{name}}",
+      "multiple": "Lade {{count}} Modelle herunter",
+      "cancel": "Abbrechen",
+      "retry": "Erneut versuchen",
+      "done": "{{name}} heruntergeladen",
+      "failed": "{{name}} konnte nicht heruntergeladen werden",
+      "startError": "Download konnte nicht gestartet werden",
+      "empty": "Keine Downloads",
+      "queued": "In Warteschlange",
+      "doneShort": "Fertig",
+      "failedShort": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
+    },
+    "turnConsent": {
+      "title": "Sprecherwechsel-Erkennung",
+      "body": "Lade die Modelle herunter, die Zeilen dort trennen, wo die Stimme wechselt ({{size}}). Bis dahin werden Zeilen an Pausen getrennt.",
+      "download": "Herunterladen",
+      "notNow": "Nicht jetzt"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Niemand verantwortlich",
         "me": "Ich",
         "meNamed": "Ich ({{name}})"
-      }
+      },
+      "minutes": "Protokoll",
+      "openQuestions": "Offene Fragen",
+      "outcome": "Ergebnis"
     },
     "tickets": {
       "heading": "Linear-Tickets",

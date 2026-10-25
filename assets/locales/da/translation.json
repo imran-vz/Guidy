@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Indstillinger...",
+    "recentTranscripts": "Seneste transskriptioner",
+    "noTranscripts": "Ingen transskriptioner endnu",
     "unloadModel": "Frigør model",
     "model": "Model",
     "quit": "Afslut",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopiér",
       "transcript": "Kopiér transskription",
-      "copied": "Kopieret"
+      "copied": "Kopieret",
+      "notes": "Kopiér noter",
+      "summaryOnly": "Kopiér kun referat",
+      "more": "Flere måder at kopiere på"
     },
     "redo": {
       "action": "Transskribér igen",
@@ -841,7 +846,8 @@
       "noKeyShort": "kræver en API-nøgle (Møder › Indstillinger › AI)",
       "confirmTitle": "Transskribér med {{provider}}?",
       "confirmCloud": "Lyden fra dette møde uploades til {{provider}} og transskriberes med {{model}}, for ca. {{cost}}. Transskriptionen og talerne erstattes.",
-      "confirmCloudUnpriced": "Lyden fra dette møde uploades til {{provider}} og transskriberes med {{model}}. Transskriptionen og talerne erstattes."
+      "confirmCloudUnpriced": "Lyden fra dette møde uploades til {{provider}} og transskriberes med {{model}}. Transskriptionen og talerne erstattes.",
+      "menu": "Gør om"
     },
     "widget": {
       "recording": "Optager",
@@ -861,7 +867,12 @@
       "expand": "Vis live transskriptionen",
       "collapse": "Skjul",
       "liveTitle": "Live transskription",
-      "liveHint": "Som hørt indtil nu. Den fulde transskription med talernavne laves, når mødet slutter."
+      "liveHint": "Som hørt indtil nu. Den fulde transskription med talernavne laves, når mødet slutter.",
+      "callTitle": "{{app}}-opkald",
+      "callPrompt": "Tag mødenoter?",
+      "start": "Tag noter",
+      "starting": "Starter…",
+      "dismiss": "Ikke nu"
     },
     "description": "Optag et møde på denne Mac, og læs derefter transskriptionen med navngivne talere.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Alle møder",
       "transcript": "Transskription",
+      "speakerPending": "…",
       "empty": "Ingen transskription endnu. Behandl mødet for at oprette en.",
       "loading": "Indlæser transskription...",
       "loadError": "Kunne ikke indlæse mødet",
@@ -966,7 +978,8 @@
       "share": "Andel",
       "youSpoke": "Du talte",
       "minutes": "Min",
-      "speakersToName": "{{count}} skal navngives"
+      "speakersToName": "{{count}} skal navngives",
+      "notesTab": "Noter"
     },
     "speaker": {
       "rename": "Navngiv denne taler",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Behold kalendernavne som titler",
         "description": "Når der genereres titler, beholder møder fra en kalenderbegivenhed begivenhedens navn og får kun en beskrivelse."
+      },
+      "turnModels": {
+        "title": "Registrering af talerskift",
+        "description": "Deler linjer, hvor stemmen skifter ({{size}}). Indtil de er downloadet, deles linjer ved pauser.",
+        "ready": "Klar",
+        "downloading": "Downloader",
+        "download": "Download ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Foreslå noter ved opkald",
+        "description": "Når et Zoom-, Google Meet- eller WhatsApp-opkald starter, vises det svævende vindue, stoppet, med et tilbud om at tage noter."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 møde har fået titel",
       "done_other": "{{count}} møder har fået titel",
       "error": "Kunne ikke generere titlen"
+    },
+    "changed": {
+      "title": "Hvad er ændret",
+      "dismiss": "Luk",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} flettet ind i {{into}}",
+      "moved_one": "1 linje flyttet fra {{from}} til {{to}}",
+      "moved_other": "{{count}} linjer flyttet fra {{from}} til {{to}}",
+      "added": "{{label}} kom med",
+      "removed": "{{label}} forlod",
+      "lines_one": "{{count}} linje skiftede taler",
+      "lines_other": "{{count}} linjer skiftede taler",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Opsætning",
+      "models": "Modeller",
+      "note": "Du kan optage, før modellerne er færdige med at downloade. Behandlingen venter, til de er klar.",
+      "downloading": "Downloader",
+      "downloadingPercent": "Downloader {{percent}}%",
+      "ready": "Klar",
+      "notDownloaded": "Ikke downloadet",
+      "download": "Download",
+      "dismiss": "Luk",
+      "optional": "Valgfri"
+    },
+    "downloads": {
+      "activity": "Downloader {{name}} · {{percent}}%",
+      "activityFailed": "Download mislykkedes · {{name}}",
+      "multiple": "Downloader {{count}} modeller",
+      "cancel": "Annuller",
+      "retry": "Prøv igen",
+      "done": "{{name}} downloadet",
+      "failed": "Kunne ikke downloade {{name}}",
+      "startError": "Kunne ikke starte download",
+      "empty": "Ingen downloads",
+      "queued": "I kø",
+      "doneShort": "Færdig",
+      "failedShort": "Mislykkedes",
+      "cancelled": "Annulleret"
+    },
+    "turnConsent": {
+      "title": "Registrering af talerskift",
+      "body": "Download modellerne, der deler linjer, hvor stemmen skifter ({{size}}). Indtil da deles linjer ved pauser.",
+      "download": "Download",
+      "notNow": "Ikke nu"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Ingen ansvarlig",
         "me": "Mig",
         "meNamed": "Mig ({{name}})"
-      }
+      },
+      "minutes": "Mødereferat",
+      "openQuestions": "Åbne spørgsmål",
+      "outcome": "Resultat"
     },
     "tickets": {
       "heading": "Linear-sager",

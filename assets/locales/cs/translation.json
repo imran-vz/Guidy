@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Nastavení...",
+    "recentTranscripts": "Nedávné přepisy",
+    "noTranscripts": "Zatím žádné přepisy",
     "unloadModel": "Uvolnit model",
     "model": "Model",
     "quit": "Ukončit",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopírovat",
       "transcript": "Kopírovat přepis",
-      "copied": "Zkopírováno"
+      "copied": "Zkopírováno",
+      "notes": "Kopírovat poznámky",
+      "summaryOnly": "Kopírovat jen shrnutí",
+      "more": "Další způsoby kopírování"
     },
     "redo": {
       "action": "Přepsat znovu",
@@ -841,7 +846,8 @@
       "noKeyShort": "vyžaduje API klíč (Schůzky › Nastavení › AI)",
       "confirmTitle": "Přepsat pomocí {{provider}}?",
       "confirmCloud": "Zvuk této schůzky se nahraje do {{provider}} a přepíše pomocí {{model}}, přibližně za {{cost}}. Přepis i mluvčí budou nahrazeny.",
-      "confirmCloudUnpriced": "Zvuk této schůzky se nahraje do {{provider}} a přepíše pomocí {{model}}. Přepis i mluvčí budou nahrazeny."
+      "confirmCloudUnpriced": "Zvuk této schůzky se nahraje do {{provider}} a přepíše pomocí {{model}}. Přepis i mluvčí budou nahrazeny.",
+      "menu": "Znovu"
     },
     "widget": {
       "recording": "Nahrávání",
@@ -861,7 +867,12 @@
       "expand": "Zobrazit živý přepis",
       "collapse": "Sbalit",
       "liveTitle": "Živý přepis",
-      "liveHint": "Co zatím zaznělo. Úplný přepis se jmény mluvčích vznikne po skončení schůzky."
+      "liveHint": "Co zatím zaznělo. Úplný přepis se jmény mluvčích vznikne po skončení schůzky.",
+      "callTitle": "Hovor {{app}}",
+      "callPrompt": "Psát poznámky ze schůzky?",
+      "start": "Psát poznámky",
+      "starting": "Spouštění…",
+      "dismiss": "Teď ne"
     },
     "description": "Nahrajte schůzku na tomto Macu a pak si přečtěte přepis s pojmenovanými mluvčími.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Všechny schůzky",
       "transcript": "Přepis",
+      "speakerPending": "…",
       "empty": "Zatím žádný přepis. Zpracujte schůzku a vytvořte jej.",
       "loading": "Načítání přepisu...",
       "loadError": "Schůzku se nepodařilo načíst",
@@ -966,7 +978,8 @@
       "share": "Podíl",
       "youSpoke": "Vy jste mluvili",
       "minutes": "Min",
-      "speakersToName": "{{count}} k pojmenování"
+      "speakersToName": "{{count}} k pojmenování",
+      "notesTab": "Poznámky"
     },
     "speaker": {
       "rename": "Pojmenovat mluvčího",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Ponechat názvy z kalendáře",
         "description": "Při vytváření názvů si schůzky z události v kalendáři ponechají název události a dostanou jen popis."
+      },
+      "turnModels": {
+        "title": "Rozpoznání střídání mluvčích",
+        "description": "Rozdělí řádky tam, kde se mění hlas ({{size}}). Dokud nejsou staženy, řádky se dělí v pauzách.",
+        "ready": "Připraveno",
+        "downloading": "Stahování",
+        "download": "Stáhnout ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Navrhovat poznámky při hovorech",
+        "description": "Když začne hovor v Zoom, Google Meet nebo WhatsApp, zobrazí plovoucí okno, zastavené, s nabídkou psát poznámky."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "Pojmenována 1 schůzka",
       "done_other": "Pojmenované schůzky: {{count}}",
       "error": "Název se nepodařilo vytvořit"
+    },
+    "changed": {
+      "title": "Co se změnilo",
+      "dismiss": "Zavřít",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} sloučen do {{into}}",
+      "moved_one": "1 řádek přesunut z {{from}} k {{to}}",
+      "moved_other": "{{count}} řádků přesunuto z {{from}} k {{to}}",
+      "added": "{{label}} se připojil(a)",
+      "removed": "{{label}} odešel/odešla",
+      "lines_one": "{{count}} řádek změnil mluvčího",
+      "lines_other": "{{count}} řádků změnilo mluvčího",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Nastavení",
+      "models": "Modely",
+      "note": "Nahrávat můžete ještě před dokončením stahování modelů. Zpracování počká, až budou připraveny.",
+      "downloading": "Stahování",
+      "downloadingPercent": "Stahování {{percent}}%",
+      "ready": "Připraveno",
+      "notDownloaded": "Nestaženo",
+      "download": "Stáhnout",
+      "dismiss": "Zavřít",
+      "optional": "Volitelné"
+    },
+    "downloads": {
+      "activity": "Stahování {{name}} · {{percent}}%",
+      "activityFailed": "Stahování selhalo · {{name}}",
+      "multiple": "Stahování {{count}} modelů",
+      "cancel": "Zrušit",
+      "retry": "Zkusit znovu",
+      "done": "{{name}} stažen",
+      "failed": "{{name}} se nepodařilo stáhnout",
+      "startError": "Stahování se nepodařilo spustit",
+      "empty": "Žádná stahování",
+      "queued": "Ve frontě",
+      "doneShort": "Hotovo",
+      "failedShort": "Selhalo",
+      "cancelled": "Zrušeno"
+    },
+    "turnConsent": {
+      "title": "Rozpoznání střídání mluvčích",
+      "body": "Stáhněte modely, které rozdělují řádky tam, kde se mění hlas ({{size}}). Do té doby se řádky dělí v pauzách.",
+      "download": "Stáhnout",
+      "notNow": "Teď ne"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Bez odpovědné osoby",
         "me": "Já",
         "meNamed": "Já ({{name}})"
-      }
+      },
+      "minutes": "Zápis",
+      "openQuestions": "Otevřené otázky",
+      "outcome": "Výsledek"
     },
     "tickets": {
       "heading": "Tikety v Linearu",

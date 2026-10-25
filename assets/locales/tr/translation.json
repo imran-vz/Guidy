@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Ayarlar...",
+    "recentTranscripts": "Son Transkriptler",
+    "noTranscripts": "Henüz transkript yok",
     "unloadModel": "Modeli Boşalt",
     "model": "Model",
     "quit": "Çıkış",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopyala",
       "transcript": "Transkripti kopyala",
-      "copied": "Kopyalandı"
+      "copied": "Kopyalandı",
+      "notes": "Notları kopyala",
+      "summaryOnly": "Yalnızca özeti kopyala",
+      "more": "Diğer kopyalama yolları"
     },
     "redo": {
       "action": "Transkripti yeniden oluştur",
@@ -841,7 +846,8 @@
       "noKeyShort": "API anahtarı gerekir (Toplantılar › Ayarlar › Yapay Zekâ)",
       "confirmTitle": "{{provider}} ile transkribe edilsin mi?",
       "confirmCloud": "Bu toplantının sesi {{provider}} hizmetine yüklenir ve yaklaşık {{cost}} karşılığında {{model}} ile transkribe edilir. Transkript ve konuşmacılar değiştirilir.",
-      "confirmCloudUnpriced": "Bu toplantının sesi {{provider}} hizmetine yüklenir ve {{model}} ile transkribe edilir. Transkript ve konuşmacılar değiştirilir."
+      "confirmCloudUnpriced": "Bu toplantının sesi {{provider}} hizmetine yüklenir ve {{model}} ile transkribe edilir. Transkript ve konuşmacılar değiştirilir.",
+      "menu": "Yeniden oluştur"
     },
     "widget": {
       "recording": "Kaydediliyor",
@@ -861,7 +867,12 @@
       "expand": "Canlı transkripti göster",
       "collapse": "Daralt",
       "liveTitle": "Canlı transkript",
-      "liveHint": "Şu ana kadar duyulanlar. Konuşmacı adlarıyla tam transkript toplantı bittiğinde oluşturulur."
+      "liveHint": "Şu ana kadar duyulanlar. Konuşmacı adlarıyla tam transkript toplantı bittiğinde oluşturulur.",
+      "callTitle": "{{app}} görüşmesi",
+      "callPrompt": "Toplantı notu alınsın mı?",
+      "start": "Not al",
+      "starting": "Başlatılıyor…",
+      "dismiss": "Şimdi değil"
     },
     "description": "Bu Mac'te bir toplantıyı kaydedin, ardından transkripti adlandırılmış konuşmacılarla okuyun.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Tüm toplantılar",
       "transcript": "Transkript",
+      "speakerPending": "…",
       "empty": "Henüz transkript yok. Oluşturmak için toplantıyı işleyin.",
       "loading": "Transkript yükleniyor...",
       "loadError": "Toplantı yüklenemedi",
@@ -966,7 +978,8 @@
       "share": "Pay",
       "youSpoke": "Konuştuğunuz",
       "minutes": "Dk",
-      "speakersToName": "{{count}} adlandırılacak"
+      "speakersToName": "{{count}} adlandırılacak",
+      "notesTab": "Notlar"
     },
     "speaker": {
       "rename": "Bu konuşmacıyı adlandır",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Takvim adlarını başlık olarak koru",
         "description": "Başlıklar oluşturulurken, bir takvim etkinliğinden gelen toplantılar etkinliğin adını korur ve yalnızca bir açıklama alır."
+      },
+      "turnModels": {
+        "title": "Konuşmacı değişimi algılama",
+        "description": "Ses değiştiğinde satırları böler ({{size}}). Bunlar indirilene kadar satırlar duraklamalarda bölünür.",
+        "ready": "Hazır",
+        "downloading": "İndiriliyor",
+        "download": "İndir ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Görüşmelerde not öner",
+        "description": "Bir Zoom, Google Meet veya WhatsApp görüşmesi başladığında kayan pencereyi durdurulmuş hâlde, not alma önerisiyle göster."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 toplantıya başlık verildi",
       "done_other": "{{count}} toplantıya başlık verildi",
       "error": "Başlık oluşturulamadı"
+    },
+    "changed": {
+      "title": "Neler değişti",
+      "dismiss": "Kapat",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}}, {{into}} ile birleştirildi",
+      "moved_one": "1 satır {{from}} konuşmacısından {{to}} konuşmacısına taşındı",
+      "moved_other": "{{count}} satır {{from}} konuşmacısından {{to}} konuşmacısına taşındı",
+      "added": "{{label}} katıldı",
+      "removed": "{{label}} ayrıldı",
+      "lines_one": "{{count}} satırın konuşmacısı değişti",
+      "lines_other": "{{count}} satırın konuşmacısı değişti",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Kurulum",
+      "models": "Modeller",
+      "note": "Modellerin indirilmesi bitmeden kayıt yapabilirsiniz. İşleme, modeller hazır olana kadar bekler.",
+      "downloading": "İndiriliyor",
+      "downloadingPercent": "İndiriliyor %{{percent}}",
+      "ready": "Hazır",
+      "notDownloaded": "İndirilmedi",
+      "download": "İndir",
+      "dismiss": "Kapat",
+      "optional": "İsteğe bağlı"
+    },
+    "downloads": {
+      "activity": "{{name}} indiriliyor · %{{percent}}",
+      "activityFailed": "İndirme başarısız · {{name}}",
+      "multiple": "{{count}} model indiriliyor",
+      "cancel": "İptal",
+      "retry": "Tekrar dene",
+      "done": "{{name}} indirildi",
+      "failed": "{{name}} indirilemedi",
+      "startError": "İndirme başlatılamadı",
+      "empty": "İndirme yok",
+      "queued": "Sırada",
+      "doneShort": "Bitti",
+      "failedShort": "Başarısız",
+      "cancelled": "İptal edildi"
+    },
+    "turnConsent": {
+      "title": "Konuşmacı değişimi algılama",
+      "body": "Ses değiştiğinde satırları bölen modelleri indirin ({{size}}). O zamana kadar satırlar duraklamalarda bölünür.",
+      "download": "İndir",
+      "notNow": "Şimdi değil"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Sorumlu yok",
         "me": "Ben",
         "meNamed": "Ben ({{name}})"
-      }
+      },
+      "minutes": "Tutanak",
+      "openQuestions": "Açık sorular",
+      "outcome": "Sonuç"
     },
     "tickets": {
       "heading": "Linear görevleri",

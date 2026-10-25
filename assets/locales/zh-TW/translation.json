@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "設定...",
+    "recentTranscripts": "最近的逐字稿",
+    "noTranscripts": "尚無逐字稿",
     "unloadModel": "卸載模型",
     "model": "模型",
     "quit": "結束",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "複製",
       "transcript": "複製逐字稿",
-      "copied": "已複製"
+      "copied": "已複製",
+      "notes": "複製筆記",
+      "summaryOnly": "僅複製摘要",
+      "more": "更多複製方式"
     },
     "redo": {
       "action": "重新轉錄",
@@ -841,7 +846,8 @@
       "noKeyShort": "需要 API 金鑰（會議 › 設定 › AI）",
       "confirmTitle": "要使用 {{provider}} 轉錄嗎？",
       "confirmCloud": "此會議的音訊將上傳至 {{provider}}，並以 {{model}} 轉錄，費用約 {{cost}}。逐字稿和說話者將被取代。",
-      "confirmCloudUnpriced": "此會議的音訊將上傳至 {{provider}}，並以 {{model}} 轉錄。逐字稿和說話者將被取代。"
+      "confirmCloudUnpriced": "此會議的音訊將上傳至 {{provider}}，並以 {{model}} 轉錄。逐字稿和說話者將被取代。",
+      "menu": "重做"
     },
     "widget": {
       "recording": "錄音中",
@@ -861,7 +867,12 @@
       "expand": "顯示即時逐字稿",
       "collapse": "收合",
       "liveTitle": "即時逐字稿",
-      "liveHint": "目前為止聽到的內容。含說話者名稱的完整逐字稿會在會議結束後產生。"
+      "liveHint": "目前為止聽到的內容。含說話者名稱的完整逐字稿會在會議結束後產生。",
+      "callTitle": "{{app}} 通話",
+      "callPrompt": "要做會議筆記嗎？",
+      "start": "做筆記",
+      "starting": "正在開始…",
+      "dismiss": "稍後再說"
     },
     "description": "在這台 Mac 上錄製會議，然後閱讀標有說話者名稱的逐字稿。",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "所有會議",
       "transcript": "逐字稿",
+      "speakerPending": "…",
       "empty": "尚無逐字稿。處理會議即可產生。",
       "loading": "正在載入逐字稿...",
       "loadError": "無法載入會議",
@@ -966,7 +978,8 @@
       "share": "占比",
       "youSpoke": "您的發言",
       "minutes": "分鐘",
-      "speakersToName": "{{count}} 位待命名"
+      "speakersToName": "{{count}} 位待命名",
+      "notesTab": "筆記"
     },
     "speaker": {
       "rename": "為此說話者命名",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "保留行事曆名稱作為標題",
         "description": "產生標題時，來自行事曆活動的會議會保留活動名稱，只會加上描述。"
+      },
+      "turnModels": {
+        "title": "說話者輪替偵測",
+        "description": "在聲音改變處分行（{{size}}）。下載完成前，會在停頓處分行。",
+        "ready": "就緒",
+        "downloading": "下載中",
+        "download": "下載（{{size}}）"
+      },
+      "callSuggestions": {
+        "title": "通話時建議做筆記",
+        "description": "Zoom、Google Meet 或 WhatsApp 通話開始時，顯示處於停止狀態的浮動視窗，並詢問是否做筆記。"
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "已為 1 場會議產生標題",
       "done_other": "已為 {{count}} 場會議產生標題",
       "error": "無法產生標題"
+    },
+    "changed": {
+      "title": "變更內容",
+      "dismiss": "關閉",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} 已合併至 {{into}}",
+      "moved_one": "1 行已從 {{from}} 移至 {{to}}",
+      "moved_other": "{{count}} 行已從 {{from}} 移至 {{to}}",
+      "added": "{{label}} 加入",
+      "removed": "{{label}} 離開",
+      "lines_one": "{{count}} 行變更了說話者",
+      "lines_other": "{{count}} 行變更了說話者",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "設定",
+      "models": "模型",
+      "note": "模型下載完成前即可錄音。處理會等到模型就緒後進行。",
+      "downloading": "下載中",
+      "downloadingPercent": "下載中 {{percent}}%",
+      "ready": "就緒",
+      "notDownloaded": "未下載",
+      "download": "下載",
+      "dismiss": "關閉",
+      "optional": "選用"
+    },
+    "downloads": {
+      "activity": "正在下載 {{name}} · {{percent}}%",
+      "activityFailed": "下載失敗 · {{name}}",
+      "multiple": "正在下載 {{count}} 個模型",
+      "cancel": "取消",
+      "retry": "重試",
+      "done": "已下載 {{name}}",
+      "failed": "無法下載 {{name}}",
+      "startError": "無法開始下載",
+      "empty": "沒有下載項目",
+      "queued": "已排入佇列",
+      "doneShort": "完成",
+      "failedShort": "失敗",
+      "cancelled": "已取消"
+    },
+    "turnConsent": {
+      "title": "說話者輪替偵測",
+      "body": "下載在聲音改變處分行的模型（{{size}}）。在此之前，會在停頓處分行。",
+      "download": "下載",
+      "notNow": "稍後再說"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "無負責人",
         "me": "我",
         "meNamed": "我（{{name}}）"
-      }
+      },
+      "minutes": "會議紀錄",
+      "openQuestions": "待解決問題",
+      "outcome": "結果"
     },
     "tickets": {
       "heading": "Linear 工單",

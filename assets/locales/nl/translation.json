@@ -1,6 +1,8 @@
 {
   "tray": {
     "settings": "Instellingen...",
+    "recentTranscripts": "Recente transcripten",
+    "noTranscripts": "Nog geen transcripten",
     "unloadModel": "Model ontladen",
     "model": "Model",
     "quit": "Afsluiten",
@@ -826,7 +828,10 @@
     "copy": {
       "summary": "Kopiëren",
       "transcript": "Transcript kopiëren",
-      "copied": "Gekopieerd"
+      "copied": "Gekopieerd",
+      "notes": "Notities kopiëren",
+      "summaryOnly": "Alleen samenvatting kopiëren",
+      "more": "Meer manieren om te kopiëren"
     },
     "redo": {
       "action": "Opnieuw transcriberen",
@@ -841,7 +846,8 @@
       "noKeyShort": "vereist een API-sleutel (Vergaderingen › Instellingen › AI)",
       "confirmTitle": "Transcriberen met {{provider}}?",
       "confirmCloud": "De audio van deze vergadering wordt naar {{provider}} geüpload en getranscribeerd met {{model}}, voor ongeveer {{cost}}. Het transcript en de sprekers worden vervangen.",
-      "confirmCloudUnpriced": "De audio van deze vergadering wordt naar {{provider}} geüpload en getranscribeerd met {{model}}. Het transcript en de sprekers worden vervangen."
+      "confirmCloudUnpriced": "De audio van deze vergadering wordt naar {{provider}} geüpload en getranscribeerd met {{model}}. Het transcript en de sprekers worden vervangen.",
+      "menu": "Opnieuw doen"
     },
     "widget": {
       "recording": "Opnemen",
@@ -861,7 +867,12 @@
       "expand": "Live transcript tonen",
       "collapse": "Invouwen",
       "liveTitle": "Live transcript",
-      "liveHint": "Zoals tot nu toe gehoord. Het volledige transcript met sprekersnamen wordt gemaakt als de vergadering is afgelopen."
+      "liveHint": "Zoals tot nu toe gehoord. Het volledige transcript met sprekersnamen wordt gemaakt als de vergadering is afgelopen.",
+      "callTitle": "{{app}}-gesprek",
+      "callPrompt": "Vergadernotities maken?",
+      "start": "Notities maken",
+      "starting": "Starten…",
+      "dismiss": "Niet nu"
     },
     "description": "Neem een vergadering op deze Mac op en lees daarna het transcript met benoemde sprekers.",
     "init": {
@@ -952,6 +963,7 @@
     "detail": {
       "back": "Alle vergaderingen",
       "transcript": "Transcript",
+      "speakerPending": "…",
       "empty": "Nog geen transcript. Verwerk de vergadering om er een te maken.",
       "loading": "Transcript laden...",
       "loadError": "Vergadering laden mislukt",
@@ -966,7 +978,8 @@
       "share": "Aandeel",
       "youSpoke": "Jij sprak",
       "minutes": "Min",
-      "speakersToName": "{{count}} nog te benoemen"
+      "speakersToName": "{{count}} nog te benoemen",
+      "notesTab": "Notities"
     },
     "speaker": {
       "rename": "Deze spreker een naam geven",
@@ -1179,6 +1192,17 @@
       "calendarTitles": {
         "title": "Agendanamen als titel behouden",
         "description": "Bij het genereren van titels behouden vergaderingen uit een agenda-afspraak de naam van de afspraak en krijgen ze alleen een beschrijving."
+      },
+      "turnModels": {
+        "title": "Sprekerwisseldetectie",
+        "description": "Splitst regels waar de stem verandert ({{size}}). Tot deze zijn gedownload, worden regels bij pauzes gesplitst.",
+        "ready": "Klaar",
+        "downloading": "Downloaden",
+        "download": "Downloaden ({{size}})"
+      },
+      "callSuggestions": {
+        "title": "Notities voorstellen bij gesprekken",
+        "description": "Wanneer een Zoom-, Google Meet- of WhatsApp-gesprek begint, verschijnt de zwevende bediening, gestopt, met het aanbod om notities te maken."
       }
     },
     "search": {
@@ -1206,6 +1230,54 @@
       "done_one": "1 vergadering van een titel voorzien",
       "done_other": "{{count}} vergaderingen van een titel voorzien",
       "error": "Titel genereren mislukt"
+    },
+    "changed": {
+      "title": "Wat er veranderd is",
+      "dismiss": "Sluiten",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} samengevoegd met {{into}}",
+      "moved_one": "1 regel verplaatst van {{from}} naar {{to}}",
+      "moved_other": "{{count}} regels verplaatst van {{from}} naar {{to}}",
+      "added": "{{label}} is erbij gekomen",
+      "removed": "{{label}} is vertrokken",
+      "lines_one": "{{count}} regel heeft een andere spreker",
+      "lines_other": "{{count}} regels hebben een andere spreker",
+      "share": "{{before}}% → {{after}}%",
+      "rankUp": "↑{{n}}",
+      "rankDown": "↓{{n}}"
+    },
+    "checklist": {
+      "title": "Instellen",
+      "models": "Modellen",
+      "note": "Je kunt al opnemen voordat de modellen klaar zijn met downloaden. De verwerking wacht tot ze klaar zijn.",
+      "downloading": "Downloaden",
+      "downloadingPercent": "Downloaden {{percent}}%",
+      "ready": "Klaar",
+      "notDownloaded": "Niet gedownload",
+      "download": "Downloaden",
+      "dismiss": "Sluiten",
+      "optional": "Optioneel"
+    },
+    "downloads": {
+      "activity": "{{name}} downloaden · {{percent}}%",
+      "activityFailed": "Download mislukt · {{name}}",
+      "multiple": "{{count}} modellen downloaden",
+      "cancel": "Annuleren",
+      "retry": "Opnieuw proberen",
+      "done": "{{name}} gedownload",
+      "failed": "Kan {{name}} niet downloaden",
+      "startError": "Kan de download niet starten",
+      "empty": "Geen downloads",
+      "queued": "In wachtrij",
+      "doneShort": "Klaar",
+      "failedShort": "Mislukt",
+      "cancelled": "Geannuleerd"
+    },
+    "turnConsent": {
+      "title": "Sprekerwisseldetectie",
+      "body": "Download de modellen die regels splitsen waar de stem verandert ({{size}}). Tot die tijd worden regels bij pauzes gesplitst.",
+      "download": "Downloaden",
+      "notNow": "Niet nu"
     }
   },
   "meetingsAi": {
@@ -1256,7 +1328,10 @@
         "none": "Geen eigenaar",
         "me": "Ik",
         "meNamed": "Ik ({{name}})"
-      }
+      },
+      "minutes": "Notulen",
+      "openQuestions": "Open vragen",
+      "outcome": "Resultaat"
     },
     "tickets": {
       "heading": "Linear-tickets",
