@@ -6,7 +6,12 @@
 //! and a stop button; expanded it is a panel with the meeting being
 //! recorded, which sources are picking up sound, the live transcript and
 //! the controls.
+//!
+//! While nothing records but a call is on in Zoom, Google Meet or WhatsApp
+//! ([`guidy_core::meetings::calls`]), it shows stopped, with a hint to take
+//! notes, until the call ends or the hint is dismissed.
 
+use guidy_core::meetings::calls::Call;
 use guidy_core::meetings::types::{
     format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState, Track,
 };
@@ -77,6 +82,14 @@ pub struct WidgetModel {
     pub recorder: RecorderState,
     pub expanded: bool,
     pub live: LiveTranscript,
+    /// A call in another app (offer to take notes while idle).
+    pub call: Option<Call>,
+    /// The call whose hint was dismissed (or that was recorded), by its
+    /// start: it isn't offered again.
+    dismissed: Option<i64>,
+    /// "Take notes" was clicked and the recording hasn't started yet
+    /// (loading the live transcriber takes seconds).
+    starting: bool,
     /// The waveform (both sources together).
     wave: VecDeque<f32>,
     /// Recent levels per source: mic, system.
@@ -89,6 +102,9 @@ impl Default for WidgetModel {
             recorder: RecorderState::Idle,
             expanded: false,
             live: LiveTranscript::default(),
+            call: None,
+            dismissed: None,
+            starting: false,
             wave: VecDeque::from(vec![0.0; BARS]),
             sources: [
                 VecDeque::from(vec![0.0; SOURCE_SAMPLES]),
@@ -100,7 +116,45 @@ impl Default for WidgetModel {
 
 impl WidgetModel {
     pub fn visible(&self) -> bool {
-        self.recorder.is_recording()
+        self.recorder.is_recording() || self.hinting()
+    }
+
+    /// Stopped, offering to take notes for a call.
+    pub fn hinting(&self) -> bool {
+        !self.recorder.is_recording() && self.hint_call().is_some()
+    }
+
+    /// The call offered notes for, unless dismissed.
+    pub fn hint_call(&self) -> Option<Call> {
+        self.call.filter(|c| Some(c.since) != self.dismissed)
+    }
+
+    pub fn set_call(&mut self, call: Option<Call>) {
+        self.call = call;
+    }
+
+    /// "Not now": stop offering notes for this call.
+    pub fn dismiss_call(&mut self) {
+        if let Some(c) = self.call {
+            self.dismissed = Some(c.since);
+        }
+    }
+
+    /// Starting a recording from the hint, until it reports in.
+    pub fn starting(&self) -> bool {
+        self.starting && !self.recorder.is_recording()
+    }
+
+    /// "Take notes" clicked: show it starting. False when it already is
+    /// (a second click starts nothing).
+    pub fn begin_start(&mut self) -> bool {
+        !std::mem::replace(&mut self.starting, true)
+    }
+
+    /// The start finished (the recording reports in through
+    /// [`Self::set_recorder`]) or failed: back to offering notes.
+    pub fn end_start(&mut self) {
+        self.starting = false;
     }
 
     pub fn paused(&self) -> bool {
@@ -137,8 +191,14 @@ impl WidgetModel {
                 // The live transcriber starts before the recorder reports
                 // the recording: keep what it already said.
                 live: std::mem::take(&mut self.live),
+                call: self.call,
+                dismissed: self.dismissed,
                 ..Self::default()
             };
+        }
+        // Stopped during a call: don't offer notes for it again.
+        if self.recorder.is_recording() && !state.is_recording() {
+            self.dismiss_call();
         }
         self.recorder = state;
     }
@@ -276,6 +336,66 @@ mod tests {
         });
         assert!(m.live().is_none());
         assert_eq!(m.live_status(), LiveStatus::Starting);
+    }
+
+    fn call(since: i64) -> Call {
+        Call {
+            app: guidy_core::meetings::calls::CallApp::Zoom,
+            since,
+        }
+    }
+
+    #[test]
+    fn a_call_shows_the_hint_until_dismissed() {
+        let mut m = WidgetModel::default();
+        assert!(!m.visible());
+        m.set_call(Some(call(10)));
+        assert!(m.visible() && m.hinting());
+        m.dismiss_call();
+        assert!(!m.visible());
+        // The next call is offered again.
+        m.set_call(Some(call(20)));
+        assert!(m.hinting());
+        m.set_call(None);
+        assert!(!m.visible());
+    }
+
+    #[test]
+    fn recording_replaces_the_hint_and_stopping_does_not_bring_it_back() {
+        let mut m = WidgetModel::default();
+        m.set_call(Some(call(10)));
+        m.set_recorder(recording(1));
+        assert!(m.visible() && !m.hinting());
+        m.set_recorder(RecorderState::Idle);
+        assert!(!m.visible());
+        m.set_call(Some(call(30)));
+        assert!(m.hinting());
+    }
+
+    #[test]
+    fn take_notes_shows_starting_until_the_recording_reports_in() {
+        let mut m = WidgetModel::default();
+        m.set_call(Some(call(10)));
+        assert!(m.begin_start());
+        assert!(m.starting() && m.hinting());
+        // A second click while starting does nothing.
+        assert!(!m.begin_start());
+        m.set_recorder(recording(1));
+        assert!(!m.starting());
+        m.end_start();
+        m.set_recorder(RecorderState::Idle);
+        m.set_call(Some(call(30)));
+        assert!(!m.starting());
+    }
+
+    #[test]
+    fn a_failed_start_offers_notes_again() {
+        let mut m = WidgetModel::default();
+        m.set_call(Some(call(10)));
+        assert!(m.begin_start());
+        m.end_start();
+        assert!(!m.starting() && m.hinting());
+        assert!(m.begin_start());
     }
 
     #[test]

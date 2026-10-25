@@ -18,6 +18,9 @@ pub struct MeetingSettings {
     pub audio_retention_days: Option<u32>,
     /// Post "Take notes for <event>?" at a calendar event's start time.
     pub calendar_notifications: bool,
+    /// Offer to take notes (the floater, stopped) when a Zoom, Google Meet or
+    /// WhatsApp call starts ([`crate::meetings::calls`]).
+    pub suggest_notes_on_calls: bool,
     /// Minutes between "still recording" reminders.
     pub reminder_interval_minutes: u32,
     /// Name the mic track (always the user) is labelled with.
@@ -146,6 +149,7 @@ impl Default for MeetingSettings {
             meeting_model: None,
             audio_retention_days: Some(3),
             calendar_notifications: true,
+            suggest_notes_on_calls: true,
             reminder_interval_minutes: 10,
             user_display_name: String::new(),
             user_emails: Vec::new(),
@@ -188,6 +192,7 @@ impl std::fmt::Debug for MeetingSettings {
             .field("meeting_model", &self.meeting_model)
             .field("audio_retention_days", &self.audio_retention_days)
             .field("calendar_notifications", &self.calendar_notifications)
+            .field("suggest_notes_on_calls", &self.suggest_notes_on_calls)
             .field("reminder_interval_minutes", &self.reminder_interval_minutes)
             .field(
                 "user_display_name",

@@ -10,6 +10,10 @@
 //! - tucked into a corner, a leaf with the waveform and stop; a click opens
 //!   the panel beside it.
 //!
+//! While nothing records but a call is on in Zoom, Google Meet or WhatsApp,
+//! it shows stopped: a flat waveform and a record button, with a hint
+//! beside it to take notes ([`watch_calls`]).
+//!
 //! Dragged near a notch or a corner it is drawn in and snaps on; pulled
 //! away, it stretches like jelly and breaks free. A click on any waveform
 //! pauses (the pause button shows over it on hover). Docking at the notch
@@ -33,6 +37,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::{h_flex, v_flex, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::meetings::calls::{Call, CallDetector};
 use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::settings::RecordingControls;
 use guidy_core::meetings::types::{LiveStatus, LiveUpdate, RecorderState, Track};
@@ -40,6 +45,8 @@ use std::time::{Duration, Instant};
 
 /// Level poll / waveform scroll interval.
 const TICK: Duration = Duration::from_millis(90);
+/// How often the microphone's users are checked for a call.
+const CALL_POLL: Duration = Duration::from_secs(2);
 /// Pointer poll while shown: whether the window takes the pointer.
 const POINTER_POLL: Duration = Duration::from_millis(16);
 const WAVE_MAX: f32 = 16.;
@@ -97,7 +104,7 @@ impl RecordingWidgetState {
 
     pub fn set_recorder(&mut self, state: RecorderState, cx: &mut Context<Self>) {
         self.model.set_recorder(state);
-        if self.model.visible() && !self.ticking {
+        if self.model.recorder.is_recording() && !self.ticking {
             self.start_ticking(cx);
         }
         cx.notify();
@@ -127,12 +134,14 @@ impl RecordingWidgetState {
             self.last_step = None;
             return false;
         }
-        if self.floater.is_none() || self.meeting != self.model.meeting_id() {
+        // A recording started from the hint keeps the floater where it is.
+        let meeting = self.model.meeting_id();
+        if self.floater.is_none() || (self.meeting.is_some() && self.meeting != meeting) {
             self.floater = Some(Floater::new(&self.desk, self.docked));
-            self.meeting = self.model.meeting_id();
             self.docked_applied = self.docked;
             self.last_step = None;
         }
+        self.meeting = meeting;
         let Some(f) = self.floater.as_mut() else {
             return false;
         };
@@ -163,7 +172,7 @@ impl RecordingWidgetState {
             cx.background_executor().timer(TICK).await;
             let keep = this
                 .update(cx, |s, cx| {
-                    if !s.model.visible() {
+                    if !s.model.recorder.is_recording() {
                         s.ticking = false;
                         return false;
                     }
@@ -198,6 +207,115 @@ fn set_paused(paused: bool, cx: &mut App) {
     let backend = AppState::global(cx).read(cx).meetings.clone();
     cx.background_spawn(async move { backend.set_recording_paused(paused) })
         .detach();
+}
+
+/// Watch for calls in other apps (polling who holds the microphone), so
+/// the floater can offer notes while nothing records: meeting notes on and
+/// the "Suggest notes on calls" setting. Runs for the app's lifetime;
+/// `shown` follows each change (opening or closing the floater's windows).
+pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut detector = CallDetector::default();
+        // Unix ms on the executor's clock (faked in tests).
+        let (epoch, t0) = (now_ms(), cx.background_executor().now());
+        loop {
+            cx.background_executor().timer(CALL_POLL).await;
+            let backend = cx.update(|cx| {
+                let state = AppState::global(cx).read(cx);
+                let on = state
+                    .app_settings()
+                    .is_some_and(|s| s.meetings.enabled && s.meetings.suggest_notes_on_calls);
+                on.then(|| state.meetings.clone())
+            });
+            let call = match backend {
+                Some(backend) => {
+                    let apps = cx
+                        .background_executor()
+                        .spawn(async move { backend.audio_input_apps() })
+                        .await;
+                    let now = epoch + (cx.background_executor().now() - t0).as_millis() as i64;
+                    detector.observe(&apps, now)
+                }
+                None => {
+                    detector.reset();
+                    None
+                }
+            };
+            cx.update(|cx| {
+                if set_call(call, cx) {
+                    shown(cx);
+                }
+            });
+        }
+    })
+    .detach();
+}
+
+/// The call in progress (from [`watch_calls`]): shows or hides the hint.
+/// Returns whether it changed.
+pub fn set_call(call: Option<Call>, cx: &mut App) -> bool {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return false;
+    };
+    state.update(cx, |s, cx| {
+        if s.model.call == call {
+            return false;
+        }
+        if call.is_some() && s.model.call.is_none() {
+            log::info!(
+                "A {} call started: offering meeting notes",
+                call.map(|c| c.app.name()).unwrap_or_default()
+            );
+        }
+        s.model.set_call(call);
+        cx.notify();
+        true
+    })
+}
+
+/// "Not now" on the hint.
+fn dismiss_call(cx: &mut App) {
+    if let Some(state) = RecordingWidgetState::global(cx) {
+        state.update(cx, |s, cx| {
+            s.model.dismiss_call();
+            cx.notify();
+        });
+    }
+    crate::windows::sync_recording_controls(cx);
+}
+
+/// Take notes for the call the hint is about. The recording links to the
+/// calendar event happening now, if any. The hint shows it starting until
+/// the recording reports in: loading the live transcriber takes seconds.
+fn start(cx: &mut App) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return;
+    };
+    let begun = state.update(cx, |s, cx| {
+        let begun = s.model.begin_start();
+        cx.notify();
+        begun
+    });
+    if !begun {
+        return;
+    }
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.spawn(async move |cx| {
+        let started = cx
+            .background_executor()
+            .spawn(async move { backend.start_recording(None) })
+            .await;
+        if let Err(e) = &started {
+            log::error!("Starting meeting notes from the floater failed: {e}");
+        }
+        cx.update(|cx| {
+            state.update(cx, |s, cx| {
+                s.model.end_start();
+                cx.notify();
+            })
+        });
+    })
+    .detach();
 }
 
 fn stop(cx: &mut App) {
@@ -289,7 +407,9 @@ impl RecordingWidgetView {
                 let floater = s.floater.as_ref()?;
                 let (gx, gy) = crate::windows::pointer_location()?;
                 let p = s.desk.from_cocoa(gx, gy);
-                let hit = s.desk.screen_rect(this.screen).contains(p) && floater.hit(&s.desk, p);
+                let hint = s.model.hinting().then(|| floater.hint(&s.desk)).flatten();
+                let hit = s.desk.screen_rect(this.screen).contains(p)
+                    && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)));
                 (hit != this.accepting).then(|| {
                     this.accepting = hit;
                     !hit
@@ -369,8 +489,10 @@ impl RecordingWidgetView {
         };
         let click = state.update(cx, |s, _| {
             let desk = s.desk.clone();
+            let hinting = s.model.hinting();
             let f = s.floater.as_mut()?;
-            Some(f.release(&desk) == Release::Click && !f.expanded())
+            // Stopped there is no panel to open.
+            Some(f.release(&desk) == Release::Click && !f.expanded() && !hinting)
         });
         if click == Some(true) {
             cx.defer(|cx| set_expanded(true, cx));
@@ -428,7 +550,7 @@ fn wave(model: &WidgetModel, bars: usize, max: f32, fg: Hsla) -> Div {
         .gap(dp(2.5))
         .h(dp(max))
         .items_center()
-        .when(model.paused(), |d| d.opacity(0.35))
+        .when(model.paused() || model.hinting(), |d| d.opacity(0.35))
         .children(levels[from..].iter().map(move |v| {
             div()
                 .w(dp(3.))
@@ -459,6 +581,44 @@ fn stop_button(id: &'static str, r: R) -> Stateful<Div> {
         .on_click(|_, _, cx| stop(cx))
 }
 
+/// The record button of the stopped floater (a call's hint), at `r`; dim
+/// while the recording starts.
+fn start_button(id: &'static str, r: R, starting: bool) -> Stateful<Div> {
+    place(r)
+        .id(id)
+        .aria_label(if starting {
+            t("meetings.widget.starting")
+        } else {
+            t("meetings.widget.start")
+        })
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(hsla(0., 0., 1., 0.14))
+        .child(
+            div()
+                .size(px(r.w * 0.42))
+                .rounded_full()
+                .bg(rgb(RED))
+                .when(starting, |d| d.opacity(0.45)),
+        )
+        .when(!starting, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.bg(hsla(0., 0., 1., 0.26)))
+                .on_click(|_, _, cx| start(cx))
+        })
+}
+
+/// The stop button, or the record button while stopped.
+fn end_button(m: &WidgetModel, ids: (&'static str, &'static str), r: R) -> Stateful<Div> {
+    if m.hinting() {
+        start_button(ids.1, r, m.starting())
+    } else {
+        stop_button(ids.0, r)
+    }
+}
+
 /// The stop button inside the floater (or the leaf) `b`.
 fn blob_stop_rect(b: R, stage: &Stage) -> R {
     let (_, stop_x) = blob_columns(b, stage);
@@ -479,15 +639,23 @@ fn blob_columns(b: R, stage: &Stage) -> (f32, f32) {
     (b.x + gap + wave / 2., b.x + 2. * gap + wave + stop / 2.)
 }
 
-/// The wings' stop button: in the middle of the right wing (`housing`:
-/// the camera's part of the wings `w`).
+/// The wings' stop button: at the outer end of the right wing (`housing`:
+/// the camera's part of the wings `w`), the timer before it.
 fn wings_stop_rect(w: R, housing: R, stage: &Stage) -> R {
     let s = stage.d(20.).min(w.h - 6.);
-    R::centered(
-        P::new((housing.right() + w.right()) / 2.0, w.y + w.h / 2.0),
-        s,
-        s,
-    )
+    let x = (w.right() - stage.d(12.) - s / 2.0).max((housing.right() + w.right()) / 2.0);
+    R::centered(P::new(x, w.y + w.h / 2.0), s, s)
+}
+
+/// The wings' timer: between the camera and the stop button.
+fn wings_timer_rect(w: R, housing: R, stop: R, stage: &Stage) -> R {
+    let x = housing.right() + stage.d(4.);
+    R {
+        x,
+        y: w.y,
+        w: (stop.x - stage.d(6.) - x).max(0.),
+        h: w.h,
+    }
 }
 
 /// Width of a waveform of `bars` bars.
@@ -626,6 +794,8 @@ fn wave_button(
 ) -> Stateful<Div> {
     let paused = m.paused();
     let fg = hsla(0., 0., 1., 0.92);
+    // Stopped, there is nothing to pause.
+    let sign = sign.filter(|_| !m.hinting());
     place(r)
         .id(group)
         .group(group)
@@ -876,9 +1046,13 @@ impl RecordingWidgetView {
                     .test_support(),
                 )
                 .child(
-                    stop_button("recording-widget-stop-blob", stop_rect)
-                        .opacity(content)
-                        .test_support(),
+                    end_button(
+                        m,
+                        ("recording-widget-stop-blob", "recording-widget-start-blob"),
+                        stop_rect,
+                    )
+                    .opacity(content)
+                    .test_support(),
                 )
                 .into_any_element(),
         )
@@ -981,6 +1155,22 @@ impl RecordingWidgetView {
             })
             .test_support();
         let mut layer = div().absolute().inset_0().child(shape);
+        if content > 0.0 && !m.hinting() && panel <= 0.0 {
+            let tone = design::tone_on_black();
+            layer = layer.child(
+                place(wings_timer_rect(w, housing, stop_rect, stage))
+                    .id("recording-widget-timer-wings")
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .font_family(crate::theme::MONO_FONT)
+                    .text_size(dp(11.))
+                    .text_color(if m.paused() { tone.text_muted } else { tone.text })
+                    .child(m.timer(now_ms()))
+                    .opacity(content)
+                    .test_support(),
+            );
+        }
         if content > 0.0 {
             layer = layer
                 .child(
@@ -996,9 +1186,16 @@ impl RecordingWidgetView {
                     .test_support(),
                 )
                 .child(
-                    stop_button("recording-widget-stop-wings", stop_rect)
-                        .opacity(content)
-                        .test_support(),
+                    end_button(
+                        m,
+                        (
+                            "recording-widget-stop-wings",
+                            "recording-widget-start-wings",
+                        ),
+                        stop_rect,
+                    )
+                    .opacity(content)
+                    .test_support(),
                 );
         }
         layer.into_any_element()
@@ -1058,12 +1255,122 @@ impl RecordingWidgetView {
                     .test_support(),
                 )
                 .child(
-                    stop_button("recording-widget-stop-leaf", stop_rect)
-                        .opacity(content)
-                        .test_support(),
+                    end_button(
+                        m,
+                        ("recording-widget-stop-leaf", "recording-widget-start-leaf"),
+                        stop_rect,
+                    )
+                    .opacity(content)
+                    .test_support(),
                 );
         }
         layer.into_any_element()
+    }
+
+    /// The hint beside the stopped floater: which call, "Take meeting
+    /// notes?", the start button and "Not now". It fades in with the
+    /// floater's controls.
+    fn render_hint(&self, m: &WidgetModel, f: &Floater, desk: &Desk) -> Option<AnyElement> {
+        let call = m.hint_call().filter(|_| m.hinting())?;
+        if f.screen(desk) != self.screen {
+            return None;
+        }
+        let r = local(f.hint(desk)?, desk.origin(self.screen));
+        let content = if f.is_docked() {
+            f.shape_content()
+        } else {
+            f.blob_content()
+        };
+        if content <= 0.0 {
+            return None;
+        }
+        let tone = design::tone_on_black();
+        let text = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap(dp(1.))
+            .child(
+                div()
+                    .truncate()
+                    .text_size(dp(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tone.text)
+                    .child(t_args(
+                        "meetings.widget.callTitle",
+                        &[("app", call.app.name())],
+                    )),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_size(dp(12.))
+                    .text_color(tone.text_muted)
+                    .child(t("meetings.widget.callPrompt")),
+            );
+        let starting = m.starting();
+        let label = if starting {
+            t("meetings.widget.starting")
+        } else {
+            t("meetings.widget.start")
+        };
+        let take = h_flex()
+            .id("recording-widget-hint-start")
+            .aria_label(label.clone())
+            .h(dp(28.))
+            .px(dp(10.))
+            .flex_none()
+            .items_center()
+            .rounded(design::RADIUS_PILL)
+            .text_size(dp(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(black())
+            .child(label)
+            .map(|d| {
+                if starting {
+                    d.bg(hsla(0., 0., 1., 0.55))
+                } else {
+                    d.bg(hsla(0., 0., 1., 0.92))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hsla(0., 0., 1., 1.)))
+                        .on_click(|_, _, cx| start(cx))
+                }
+            })
+            .test_support();
+        let dismiss = icon_button(
+            "recording-widget-hint-dismiss",
+            "x",
+            t("meetings.widget.dismiss"),
+            tone,
+        )
+        .on_click(|_, _, cx| dismiss_call(cx))
+        .test_support();
+        Some(
+            place(r)
+                .child(
+                    h_flex()
+                        .id("recording-widget-hint")
+                        .size_full()
+                        .pl(dp(14.))
+                        .pr(dp(6.))
+                        .gap(dp(8.))
+                        .items_center()
+                        .rounded(px(r.h / 2.))
+                        .bg(black())
+                        .shadow(vec![BoxShadow {
+                            color: hsla(0., 0., 0., 0.35),
+                            offset: point(px(0.), dp(6.)),
+                            blur_radius: dp(18.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                        .child(text)
+                        .child(take)
+                        .child(dismiss)
+                        .test_support(),
+                )
+                .opacity(content)
+                .into_any_element(),
+        )
     }
 
     fn render_neck(&self, f: &Floater, desk: &Desk) -> Option<AnyElement> {
@@ -1291,6 +1598,7 @@ impl Render for RecordingWidgetView {
         let shape = self.render_shape(&m, &f, &desk, window, cx);
         let blob = self.render_blob(&m, &f, &desk, cx);
         let panel = self.render_free_panel(&m, &f, &desk, window, cx);
+        let hint = self.render_hint(&m, &f, &desk);
 
         // A drag goes on outside this window (onto another display): the
         // window that took the press keeps getting the pointer, so these
@@ -1335,6 +1643,7 @@ impl Render for RecordingWidgetView {
             .children(shape)
             .children(blob)
             .children(panel)
+            .children(hint)
             .test_support()
             .into_any_element()
     }

@@ -52,6 +52,9 @@ extern "C" {
     ) -> i32;
     fn guidy_mb_remove_notification(notification_id: *const c_char);
     fn guidy_mb_set_notification_handler(cb: Option<NotificationCallback>);
+
+    fn guidy_mb_audio_input_bundle_ids() -> *mut c_char;
+    fn guidy_mb_window_titles(bundle_id: *const c_char) -> *mut c_char;
 }
 
 /// Take ownership of a bridge string (may be null).
@@ -301,6 +304,22 @@ pub(super) fn set_notification_handler(handler: Box<dyn Fn(&str, &str) + Send + 
         return;
     }
     unsafe { guidy_mb_set_notification_handler(Some(notification_trampoline)) }
+}
+
+// ===== Calls in other apps =================================================
+
+fn strings(json: Option<String>) -> Vec<String> {
+    json.and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
+}
+
+pub(super) fn audio_input_bundle_ids() -> Vec<String> {
+    strings(unsafe { take_string(guidy_mb_audio_input_bundle_ids()) })
+}
+
+pub(super) fn window_titles(bundle_id: &str) -> Vec<String> {
+    let id = c_string(bundle_id);
+    strings(unsafe { take_string(guidy_mb_window_titles(id.as_ptr())) })
 }
 
 #[cfg(test)]

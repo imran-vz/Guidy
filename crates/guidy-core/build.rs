@@ -705,6 +705,8 @@ fn build_meeting_bridge() {
         "AVFoundation",
         "AudioToolbox",
         "UserNotifications",
+        "AppKit",
+        "ApplicationServices",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }

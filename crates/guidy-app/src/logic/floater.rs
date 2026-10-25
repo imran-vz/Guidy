@@ -21,6 +21,9 @@ use crate::logic::recording_widget::{MARGIN, PANEL, TOP_SHARE};
 
 /// The free floater's size (a rounded rectangle), in design units.
 pub const BLOB: (f32, f32) = (96.0, 44.0);
+/// The hint beside the stopped floater during a call ("Take meeting
+/// notes?"), in design units.
+pub const HINT: (f32, f32) = (296.0, 52.0);
 /// The leaf tucked into a corner, in design units.
 pub const LEAF: (f32, f32) = (84.0, 38.0);
 /// The blob docks when its center comes this close to the wings' bottom
@@ -1119,6 +1122,41 @@ impl Floater {
         }
     }
 
+    /// The hint beside the floater: under the wings, else beside the leaf or
+    /// the blob toward the middle of its display, kept on screen and below
+    /// the menu bar. None while it is open, held or on its way in.
+    pub fn hint(&self, desk: &Desk) -> Option<R> {
+        if self.expanded() || self.press.is_some() {
+            return None;
+        }
+        let (anchor, below) = match self.mode {
+            Mode::Docked => (self.shape(desk)?, self.at_notch()),
+            Mode::Free => (self.blob(desk)?, false),
+        };
+        let i = self.screen(desk);
+        let screen = desk.screen_rect(i);
+        let (w, h) = (desk.d(HINT.0), desk.d(HINT.1));
+        let gap = desk.d(8.0);
+        let (x, y) = if below {
+            (anchor.center().x - w / 2.0, anchor.bottom() + gap)
+        } else if anchor.center().x >= screen.center().x {
+            (anchor.x - gap - w, anchor.center().y - h / 2.0)
+        } else {
+            (anchor.right() + gap, anchor.center().y - h / 2.0)
+        };
+        let margin = desk.d(MARGIN as f32);
+        let top = screen.y + desk.stage(i).top_inset + margin;
+        Some(R {
+            x: x.clamp(
+                screen.x + margin,
+                (screen.right() - w - margin).max(screen.x + margin),
+            ),
+            y: y.clamp(top, (screen.bottom() - h - margin).max(top)),
+            w,
+            h,
+        })
+    }
+
     /// The liquid bridge between the docked shape and the blob, if any.
     pub fn neck(&self, desk: &Desk) -> Option<Neck> {
         let blob = self.blob(desk)?;
@@ -1282,6 +1320,40 @@ mod tests {
         assert_eq!(f.release(&d), Release::None);
         assert!(f.shape(&d).is_none());
         assert_eq!(f.blob_content(), 1.0);
+    }
+
+    #[test]
+    fn the_hint_sits_beside_the_floater_toward_the_middle() {
+        let d = desk();
+        let s = d.stage(0);
+        let mut f = Floater::new(&d, false);
+        run(&mut f, 1.0);
+        let blob = f.blob(&d).unwrap();
+        let hint = f.hint(&d).unwrap();
+        assert!(hint.right() < blob.x, "left of the blob at the right edge");
+        assert!((hint.center().y - blob.center().y).abs() < 0.01);
+        // Held, it hides.
+        f.press(blob.center());
+        assert!(f.hint(&d).is_none());
+        f.release(&d);
+        // At the notch: under the wings.
+        let mut f = Floater::new(&d, true);
+        run(&mut f, 1.0);
+        let wings = f.shape(&d).unwrap();
+        let hint = f.hint(&d).unwrap();
+        assert!(hint.y > wings.bottom());
+        assert!((hint.center().x - wings.center().x).abs() < 0.01);
+        // In the top-left corner: right of the leaf, below the menu bar.
+        let corner = s.corner_point(Corner::TopLeft);
+        let mut f = Floater::new(&d, false);
+        let from = f.blob_center();
+        drag(&mut f, &d, from, corner + P::new(10.0, 10.0));
+        f.release(&d);
+        run(&mut f, 2.0);
+        let leaf = f.shape(&d).unwrap();
+        let hint = f.hint(&d).unwrap();
+        assert!(hint.x > leaf.right());
+        assert!(hint.y >= s.top_inset);
     }
 
     #[test]

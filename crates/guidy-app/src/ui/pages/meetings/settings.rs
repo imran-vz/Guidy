@@ -1165,6 +1165,18 @@ impl Render for MeetingSettingsView {
             ))
             .into_any_element(),
             SettingRow::new(
+                "meetings-call-suggestions",
+                t("meetings.settings.callSuggestions.title"),
+            )
+            .description(t("meetings.settings.callSuggestions.description"))
+            .control(toggle(
+                "meetings-call-suggestions-toggle",
+                m.suggest_notes_on_calls,
+                updating,
+                |v, _, cx| update_meetings(cx, |m| m.suggest_notes_on_calls = v),
+            ))
+            .into_any_element(),
+            SettingRow::new(
                 "meetings-calendar-titles",
                 t("meetings.settings.calendarTitles.title"),
             )

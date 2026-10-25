@@ -3475,8 +3475,20 @@ mod recording_widget {
         Entity<RecordingWidgetState>,
         AnyWindowHandle,
     ) {
+        widget_setup_with(cx, docked, FakeBackend::new())
+    }
+
+    fn widget_setup_with(
+        cx: &mut TestAppContext,
+        docked: bool,
+        backend: Arc<FakeBackend>,
+    ) -> (
+        Arc<FakeMeetingsBackend>,
+        Entity<RecordingWidgetState>,
+        AnyWindowHandle,
+    ) {
         let meetings = FakeMeetingsBackend::new();
-        setup_meetings(cx, FakeBackend::new(), meetings.clone());
+        setup_meetings(cx, backend, meetings.clone());
         let widget = cx.update(RecordingWidgetState::install);
         cx.update(|cx| {
             widget.update(cx, |s, _| {
@@ -3585,6 +3597,81 @@ mod recording_widget {
             !exists(cx, w, "recording-widget-blob"),
             "gone after the stop"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_call_shows_the_floater_stopped_with_a_hint_to_take_notes(cx: &mut TestAppContext) {
+        use guidy_core::meetings::calls::{InputApp, CONFIRM_MS, END_GRACE_MS};
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let (meetings, widget, w) = widget_setup_with(cx, false, backend.clone());
+        cx.update(|cx| crate::ui::recording_widget::watch_calls(|_| {}, cx));
+        let poll = |cx: &mut TestAppContext, ms: i64| {
+            for _ in 0..(ms / 2_000 + 1) {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_secs(2));
+                cx.run_until_parked();
+            }
+        };
+        // Zoom takes the microphone: after a few seconds, the hint.
+        meetings.data.lock().input_apps = vec![InputApp {
+            bundle_id: "us.zoom.xos".into(),
+            titles: vec![],
+        }];
+        poll(cx, CONFIRM_MS + 2_000);
+        assert!(exists(cx, w, "recording-widget-blob"));
+        assert!(exists(cx, w, "recording-widget-start-blob"));
+        assert!(!exists(cx, w, "recording-widget-stop-blob"));
+        assert!(exists(cx, w, "recording-widget-hint"));
+        // A click on the stopped floater opens nothing.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-blob", cx)
+        });
+        assert!(!widget.read_with(cx, |s, _| s.model.expanded));
+
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-hint-start", cx)
+        });
+        cx.run_until_parked();
+        assert!(meetings.called("start_recording"), "{:?}", meetings.calls());
+
+        // The recording reports: the same floater records, the hint goes.
+        let recorder = meetings.data.lock().recorder.clone();
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recorder, cx)));
+        assert!(exists(cx, w, "recording-widget-stop-blob"));
+        assert!(!exists(cx, w, "recording-widget-hint"));
+        // Stopped mid-call: not offered again for this call.
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(RecorderState::Idle, cx)));
+        poll(cx, 4_000);
+        assert!(!exists(cx, w, "recording-widget-blob"));
+
+        // The call ends; the next one is offered, and "Not now" hides it.
+        meetings.data.lock().input_apps.clear();
+        poll(cx, END_GRACE_MS + 2_000);
+        meetings.data.lock().input_apps = vec![InputApp {
+            bundle_id: "net.whatsapp.WhatsApp".into(),
+            titles: vec![],
+        }];
+        poll(cx, CONFIRM_MS + 2_000);
+        assert!(exists(cx, w, "recording-widget-hint"));
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-hint-dismiss", cx)
+        });
+        assert!(!exists(cx, w, "recording-widget-blob"));
+
+        // Turned off in settings: no hints.
+        backend.with_settings(|s| s.meetings.suggest_notes_on_calls = false);
+        cx.update(|cx| {
+            AppState::global(cx).update(cx, |s, cx| s.refresh_settings(cx));
+        });
+        meetings.data.lock().input_apps.clear();
+        poll(cx, END_GRACE_MS + 2_000);
+        meetings.data.lock().input_apps = vec![InputApp {
+            bundle_id: "us.zoom.xos".into(),
+            titles: vec![],
+        }];
+        poll(cx, CONFIRM_MS + 2_000);
+        assert!(!exists(cx, w, "recording-widget-blob"));
     }
 
     #[gpui_kit::test]

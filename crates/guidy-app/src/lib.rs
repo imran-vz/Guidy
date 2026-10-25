@@ -174,6 +174,13 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     );
     let overlay = OverlayState::install(cx);
     crate::ui::recording_widget::RecordingWidgetState::install(cx);
+    #[cfg(debug_assertions)]
+    let call_demo = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO").as_deref() == Ok("call");
+    #[cfg(not(debug_assertions))]
+    let call_demo = false;
+    if !call_demo {
+        crate::ui::recording_widget::watch_calls(windows::sync_recording_controls, cx);
+    }
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
     spawn_event_loop(event_rx, state, overlay, cx);
@@ -187,7 +194,16 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         demo_meeting(&app, cx);
     }
     #[cfg(debug_assertions)]
-    if let Ok(mode) = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO") {
+    if call_demo {
+        // The stopped floater offering notes for a Zoom call (no detection).
+        let call = guidy_core::meetings::calls::Call {
+            app: guidy_core::meetings::calls::CallApp::Zoom,
+            since: guidy_core::meetings::recorder::now_ms(),
+        };
+        if crate::ui::recording_widget::set_call(Some(call), cx) {
+            windows::sync_recording_controls(cx);
+        }
+    } else if let Ok(mode) = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO") {
         recording_widget_demo(&app, mode == "expanded", cx);
     }
 

@@ -581,6 +581,31 @@ pub fn set_notification_handler(handler: impl Fn(&str, &str) + Send + Sync + 'st
     let _ = handler;
 }
 
+// ===== Calls in other apps =================================================
+
+/// The other apps capturing from the microphone now, with their window
+/// titles for browsers ([`crate::meetings::calls::title_source`]: is Meet
+/// open?). Empty before macOS 14 and on other platforms. Titles need the
+/// Accessibility permission (dictation's paste has it); without it a Meet
+/// call in a browser goes unseen.
+pub fn audio_input_apps() -> Vec<crate::meetings::calls::InputApp> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::meetings::calls::{title_source, InputApp};
+        macos::audio_input_bundle_ids()
+            .into_iter()
+            .map(|bundle_id| InputApp {
+                titles: title_source(&bundle_id)
+                    .map(macos::window_titles)
+                    .unwrap_or_default(),
+                bundle_id,
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
 // ===== MeetingsManager support (permissions, upcoming events) ===============
 
 /// Window of [`upcoming_events`]: from an hour ago to a day ahead.

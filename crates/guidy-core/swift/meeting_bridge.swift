@@ -9,6 +9,8 @@
 // concurrency); thread safety is handled explicitly with locks and queues.
 
 import AVFoundation
+import AppKit
+import ApplicationServices
 import AudioToolbox
 import CoreAudio
 import Darwin
@@ -421,6 +423,12 @@ private final class MicCapture {
     /// bursts, so each one bumps the generation and stale retries drop out.
     private var restartGeneration = 0
     private var voiceProcessing = false
+    /// The default input and output when echo cancellation last failed to
+    /// start. On the same devices it isn't tried again this recording: each
+    /// failed attempt reconfigures the hardware, which posts another
+    /// configuration change, whose restart tried again (the mic flickered
+    /// on and off for the whole meeting and recorded little but silence).
+    private var voiceProcessingFailedOn: (input: AudioObjectID?, output: AudioObjectID?)?
     /// The input device recorded instead of the default one (headphones:
     /// the built-in mic). `nil`: the default input.
     private var device: AudioObjectID?
@@ -455,6 +463,7 @@ private final class MicCapture {
                 // Echo cancellation is preferred, not required: record the
                 // plain mic rather than nothing, and say so. The failed
                 // attempt already replaced the engine.
+                voiceProcessingFailedOn = currentDevices()
                 try installTapAndStart()
                 sink.event(
                     GUIDY_MB_STREAM_MIC,
@@ -464,6 +473,17 @@ private final class MicCapture {
 
         observeConfigurationChanges()
         startSilenceTimer()
+    }
+
+    private func currentDevices() -> (input: AudioObjectID?, output: AudioObjectID?) {
+        (defaultDevice(input: true), defaultDevice(input: false))
+    }
+
+    /// Echo cancellation already failed on the devices in use now.
+    private func voiceProcessingFailedHere() -> Bool {
+        guard let failed = voiceProcessingFailedOn else { return false }
+        let now = currentDevices()
+        return failed.input == now.input && failed.output == now.output
     }
 
     /// Restart on device changes of the current engine.
@@ -679,7 +699,8 @@ private final class MicCapture {
         stopEngine()
         // Headphones may have been put on or taken off: plan again.
         let plan = MicPlan.current()
-        let wantVoiceProcessing = plan.voiceProcessing && attempt < 3
+        let wantVoiceProcessing =
+            plan.voiceProcessing && attempt < 3 && !voiceProcessingFailedHere()
         if voiceProcessing && plan.voiceProcessing && attempt == 3 {
             sink.event(
                 GUIDY_MB_STREAM_MIC,
@@ -692,8 +713,18 @@ private final class MicCapture {
         device = wantVoiceProcessing ? nil : plan.device
         do {
             if wantVoiceProcessing && !voiceProcessing {
-                try startVoiceProcessing()
-                voiceProcessing = true
+                do {
+                    try startVoiceProcessing()
+                    voiceProcessing = true
+                } catch {
+                    // As at the start: the plain mic now, no retry of echo
+                    // cancellation (and no meeting error) for this failure.
+                    voiceProcessingFailedOn = currentDevices()
+                    sink.event(
+                        GUIDY_MB_STREAM_MIC,
+                        "echo cancellation unavailable after a device change, recording the plain microphone: \(error)")
+                    try installTapAndStart()
+                }
             } else {
                 try installTapAndStart()
             }
@@ -1620,4 +1651,86 @@ public func guidyMbSetNotificationHandler(_ callback: guidy_mb_notification_cb?)
     // Install the delegate now so a click that launched/activated the app is
     // delivered.
     _ = notificationCenter()
+}
+
+// MARK: - Calls in other apps (who holds the microphone)
+
+/// A JSON array of strings, or nil.
+private func jsonStrings(_ values: [String]) -> UnsafeMutablePointer<CChar>? {
+    guard let data = try? JSONSerialization.data(withJSONObject: values, options: []),
+        let json = String(data: data, encoding: .utf8)
+    else { return nil }
+    return strdup(json)
+}
+
+@available(macOS 14.0, *)
+private func processBundleID(_ id: AudioObjectID) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let status = withUnsafeMutablePointer(to: &value) {
+        AudioObjectGetPropertyData(id, &address, 0, nil, &size, $0)
+    }
+    guard status == noErr, let cf = value?.takeRetainedValue() else { return nil }
+    let bundle = cf as String
+    return bundle.isEmpty ? nil : bundle
+}
+
+@_cdecl("guidy_mb_audio_input_bundle_ids")
+public func guidyMbAudioInputBundleIds() -> UnsafeMutablePointer<CChar>? {
+    guard #available(macOS 14.0, *) else { return jsonStrings([]) }
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyProcessObjectList,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0
+    else { return jsonStrings([]) }
+    var objects = [AudioObjectID](
+        repeating: AudioObjectID(kAudioObjectUnknown),
+        count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else {
+        return jsonStrings([])
+    }
+    let own = getpid()
+    var out: [String] = []
+    for object in objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
+        let running = audioProperty(
+            object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal, UInt32(0))
+        let pid = audioProperty(
+            object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0))
+        guard (running ?? 0) != 0, pid != own,
+            let bundle = processBundleID(object), !out.contains(bundle)
+        else { continue }
+        out.append(bundle)
+    }
+    return jsonStrings(out)
+}
+
+@_cdecl("guidy_mb_window_titles")
+public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    guard let bundleID = bundleID, AXIsProcessTrusted() else { return jsonStrings([]) }
+    var titles: [String] = []
+    for app in NSRunningApplication.runningApplications(
+        withBundleIdentifier: String(cString: bundleID))
+    {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        // A busy app must not stall the poll.
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windows)
+            == .success, let list = windows as? [AXUIElement]
+        else { continue }
+        for window in list {
+            var title: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
+                == .success, let title = title as? String, !title.isEmpty
+            {
+                titles.append(title)
+            }
+        }
+    }
+    return jsonStrings(titles)
 }

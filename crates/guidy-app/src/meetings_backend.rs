@@ -15,6 +15,7 @@
 
 use crate::logic::meetings::MeetingsInit;
 pub use guidy_core::llm::ModelCatalog;
+use guidy_core::meetings::calls::InputApp;
 use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult, UserVoice,
 };
@@ -213,6 +214,9 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn set_recording_paused(&self, paused: bool) -> bool;
     /// Peak input level (0.0..=1.0) since the last call, for the waveform.
     fn take_recording_level(&self) -> f32;
+    /// The other apps capturing from the microphone now (a call starting:
+    /// [`guidy_core::meetings::calls`]).
+    fn audio_input_apps(&self) -> Vec<InputApp>;
     /// The same per source, `[mic, system]`.
     fn take_recording_levels(&self) -> [f32; 2];
     /// 16 kHz mono f32 samples of one track between `t0_ms` and `t1_ms`.
@@ -564,6 +568,12 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         self.m()?.stop_recording().map_err(err)
+    }
+    fn audio_input_apps(&self) -> Vec<InputApp> {
+        if self.manager().is_none() {
+            return Vec::new();
+        }
+        guidy_core::meetings::native::audio_input_apps()
     }
     fn set_recording_paused(&self, paused: bool) -> bool {
         self.manager()
@@ -956,6 +966,9 @@ impl MeetingsBackend for NoMeetings {
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         Err(unavailable())
     }
+    fn audio_input_apps(&self) -> Vec<InputApp> {
+        Vec::new()
+    }
     fn set_recording_paused(&self, _: bool) -> bool {
         false
     }
@@ -1125,6 +1138,8 @@ pub mod fake {
         pub supported: bool,
         pub permissions: PermissionReport,
         pub recorder: RecorderState,
+        /// What `audio_input_apps` reports.
+        pub input_apps: Vec<InputApp>,
         pub upcoming: Vec<CalendarEvent>,
         pub meetings: Vec<Meeting>,
         pub segments: HashMap<MeetingId, Vec<Segment>>,
@@ -1156,6 +1171,7 @@ pub mod fake {
                 supported: true,
                 permissions: PermissionReport::default(),
                 recorder: RecorderState::Idle,
+                input_apps: Vec::new(),
                 upcoming: Vec::new(),
                 meetings: Vec::new(),
                 segments: HashMap::new(),
@@ -1242,6 +1258,9 @@ pub mod fake {
         }
         fn recorder_state(&self) -> RecorderState {
             self.data.lock().recorder.clone()
+        }
+        fn audio_input_apps(&self) -> Vec<InputApp> {
+            self.data.lock().input_apps.clone()
         }
         fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId> {
             self.rec(format!(
