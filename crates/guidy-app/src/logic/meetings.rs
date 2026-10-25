@@ -8,9 +8,10 @@ use guidy_core::meetings::settings::{MeetingSettings, UserEmail};
 use guidy_core::meetings::types::{
     events, ActionItem, CloudTranscriptionOption, Meeting, MeetingId, MeetingSpeaker,
     MeetingStatus, Person, ProcessingProgress, ProvisionalLine, RecorderState, Segment, SpeakerId,
-    StoredSummary, TranscriptionEngine,
+    StoredSummary, Track, TranscriptionEngine,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// `meetings://summary-progress` (core `meetings::summarize::events`).
 pub const SUMMARY_PROGRESS_EVENT: &str = guidy_core::meetings::summarize::events::SUMMARY_PROGRESS;
@@ -392,6 +393,209 @@ pub fn talk_time(segments: &[Segment], duration_ms: Option<i64>) -> TalkTime {
             .map(|s| s.text.split_whitespace().count())
             .sum(),
         speakers,
+    }
+}
+
+/// How one speaker's label moved when a transcript or the speakers were redone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpeakerShift {
+    Renamed { from: String, to: String },
+    Merged { from: String, into: String },
+    Added { label: String },
+    Removed { label: String },
+}
+
+/// One speaker's share of the talking, before and after a redo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShareShift {
+    pub label: String,
+    pub before: f32,
+    pub after: f32,
+}
+
+/// What a redo changed: talk-time share, speaker labels, and lines whose
+/// speaker label differs on the same span.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RedoDiff {
+    pub shares: Vec<ShareShift>,
+    pub speakers: Vec<SpeakerShift>,
+    pub lines_changed: usize,
+    /// Segment ids in `after` whose speaker label differs from the line on
+    /// the same `(track, t0, t1)` before.
+    pub changed_lines: Vec<i64>,
+}
+
+impl RedoDiff {
+    pub fn is_empty(&self) -> bool {
+        self.lines_changed == 0
+            && self.speakers.is_empty()
+            && self
+                .shares
+                .iter()
+                .all(|s| (s.before - s.after).abs() < 0.005)
+    }
+}
+
+fn speaker_label(
+    id: Option<SpeakerId>,
+    speakers: &[MeetingSpeaker],
+    people: &[Person],
+    you: &str,
+) -> String {
+    let Some(id) = id else {
+        return String::new();
+    };
+    speakers
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| speaker_name(s, people, None, you))
+        .unwrap_or_default()
+}
+
+fn share_by_label(
+    segments: &[Segment],
+    speakers: &[MeetingSpeaker],
+    people: &[Person],
+    you: &str,
+    duration_ms: Option<i64>,
+) -> Vec<(String, f32)> {
+    let mut out: Vec<(String, f32)> = Vec::new();
+    for talk in talk_time(segments, duration_ms).speakers {
+        let label = speaker_label(talk.speaker_id, speakers, people, you);
+        if label.is_empty() {
+            continue;
+        }
+        if let Some(row) = out.iter_mut().find(|(l, _)| l == &label) {
+            row.1 += talk.share;
+        } else {
+            out.push((label, talk.share));
+        }
+    }
+    out
+}
+
+/// Diff a transcript before and after a redo.
+///
+/// Lines match on `(track, t0_ms, t1_ms)`. Each before-speaker maps to the
+/// after-speaker who received the most of their matched speech. When several
+/// before-speakers land on one after-speaker, the largest keeps or renames
+/// and the rest merged into it.
+pub fn redo_diff(
+    before_segments: &[Segment],
+    after_segments: &[Segment],
+    before_speakers: &[MeetingSpeaker],
+    after_speakers: &[MeetingSpeaker],
+    people: &[Person],
+    you: &str,
+    duration_ms: Option<i64>,
+) -> RedoDiff {
+    let mut before_at: HashMap<(Track, i64, i64), &Segment> = HashMap::new();
+    for segment in before_segments {
+        before_at
+            .entry((segment.track, segment.t0_ms, segment.t1_ms))
+            .or_insert(segment);
+    }
+    let mut votes: HashMap<(String, String), i64> = HashMap::new();
+    let mut changed_lines = Vec::new();
+    for after in after_segments {
+        let Some(before) = before_at.get(&(after.track, after.t0_ms, after.t1_ms)) else {
+            continue;
+        };
+        let from = speaker_label(before.speaker_id, before_speakers, people, you);
+        let to = speaker_label(after.speaker_id, after_speakers, people, you);
+        if from.is_empty() || to.is_empty() {
+            continue;
+        }
+        let spoken = (after.t1_ms - after.t0_ms).max(0);
+        *votes.entry((from.clone(), to.clone())).or_default() += spoken;
+        if from != to {
+            changed_lines.push(after.id);
+        }
+    }
+    let mut dominant: HashMap<String, (String, i64)> = HashMap::new();
+    for ((from, to), ms) in &votes {
+        let slot = dominant.entry(from.clone()).or_insert((to.clone(), *ms));
+        if *ms > slot.1 || (*ms == slot.1 && to < &slot.0) {
+            *slot = (to.clone(), *ms);
+        }
+    }
+    let mut landed: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+    for (from, (to, ms)) in &dominant {
+        landed
+            .entry(to.clone())
+            .or_default()
+            .push((from.clone(), *ms));
+    }
+    let mut speakers = Vec::new();
+    let mut targets: Vec<String> = landed.keys().cloned().collect();
+    targets.sort();
+    for to in targets {
+        let mut sources = landed.remove(&to).unwrap_or_default();
+        sources.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        if let Some((primary, _)) = sources.first() {
+            if primary != &to {
+                speakers.push(SpeakerShift::Renamed {
+                    from: primary.clone(),
+                    to: to.clone(),
+                });
+            }
+            for (from, _) in sources.iter().skip(1) {
+                speakers.push(SpeakerShift::Merged {
+                    from: from.clone(),
+                    into: to.clone(),
+                });
+            }
+        }
+    }
+    let before_labels: Vec<String> =
+        share_by_label(before_segments, before_speakers, people, you, duration_ms)
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
+    let after_labels = share_by_label(after_segments, after_speakers, people, you, duration_ms);
+    for label in &before_labels {
+        if !dominant.contains_key(label) {
+            speakers.push(SpeakerShift::Removed {
+                label: label.clone(),
+            });
+        }
+    }
+    for (label, _) in &after_labels {
+        if !dominant.values().any(|(to, _)| to == label) {
+            speakers.push(SpeakerShift::Added {
+                label: label.clone(),
+            });
+        }
+    }
+    let before_shares = share_by_label(before_segments, before_speakers, people, you, duration_ms);
+    let mut shares = Vec::new();
+    for (label, after) in &after_labels {
+        let before = before_shares
+            .iter()
+            .find(|(l, _)| l == label)
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0);
+        shares.push(ShareShift {
+            label: label.clone(),
+            before,
+            after: *after,
+        });
+    }
+    for (label, before) in &before_shares {
+        if shares.iter().any(|s| s.label == *label) {
+            continue;
+        }
+        shares.push(ShareShift {
+            label: label.clone(),
+            before: *before,
+            after: 0.0,
+        });
+    }
+    RedoDiff {
+        shares,
+        speakers,
+        lines_changed: changed_lines.len(),
+        changed_lines,
     }
 }
 
@@ -1776,6 +1980,62 @@ mod tests {
             text: text.into(),
             ..seg(id, t0, spk)
         }
+    }
+
+    #[test]
+    fn a_redo_reports_renames_merges_and_lines_that_moved() {
+        let spk = |id, label: &str| MeetingSpeaker {
+            id,
+            meeting_id: 1,
+            cluster_label: label.into(),
+            person_id: None,
+            match_confidence: None,
+            confirmed: false,
+            is_user: false,
+        };
+        let line = |id, t0, t1, spk| Segment {
+            t1_ms: t1,
+            ..seg(id, t0, Some(spk))
+        };
+        let before_speakers = vec![
+            spk(1, "Speaker 1"),
+            spk(2, "Speaker 2"),
+            spk(3, "Speaker 3"),
+        ];
+        let after_speakers = vec![spk(1, "Speaker 1"), spk(2, "Alice")];
+        // Speaker 2's line is now Alice. Speaker 3's line joined Speaker 1.
+        let before = vec![
+            line(1, 0, 4_000, 1),
+            line(2, 5_000, 8_000, 2),
+            line(3, 9_000, 10_000, 3),
+        ];
+        let after = vec![
+            line(1, 0, 4_000, 1),
+            line(2, 5_000, 8_000, 2),
+            line(3, 9_000, 10_000, 1),
+        ];
+        let diff = redo_diff(
+            &before,
+            &after,
+            &before_speakers,
+            &after_speakers,
+            &[],
+            "You",
+            None,
+        );
+        assert_eq!(diff.lines_changed, 2);
+        assert_eq!(diff.changed_lines, vec![2, 3]);
+        assert!(diff.speakers.iter().any(|s| matches!(
+            s,
+            SpeakerShift::Renamed { from, to } if from == "Speaker 2" && to == "Alice"
+        )));
+        assert!(diff.speakers.iter().any(|s| matches!(
+            s,
+            SpeakerShift::Merged { from, into } if from == "Speaker 3" && into == "Speaker 1"
+        )));
+        let alice = diff.shares.iter().find(|s| s.label == "Alice").unwrap();
+        assert_eq!(alice.before, 0.0);
+        assert!(alice.after > 0.0);
     }
 
     #[test]

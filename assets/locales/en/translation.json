@@ -976,6 +976,16 @@
       "speakersToName": "{{count}} to name",
       "notesTab": "Notes"
     },
+    "changed": {
+      "title": "What changed",
+      "dismiss": "Dismiss",
+      "renamed": "{{from}} → {{to}}",
+      "merged": "{{from}} merged into {{into}}",
+      "added": "{{label}} joined",
+      "removed": "{{label}} left",
+      "lines_one": "{{count}} line changed speaker",
+      "lines_other": "{{count}} lines changed speaker"
+    },
     "speaker": {
       "rename": "Name this speaker",
       "confirm": "Confirm?",

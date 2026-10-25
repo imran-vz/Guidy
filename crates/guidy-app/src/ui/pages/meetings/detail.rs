@@ -5,9 +5,9 @@
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
     can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker, line_near,
-    line_range, needs_confirmation, non_empty, progress_label, select_lines, speaker_name,
-    status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice, SpeakerBlock,
-    SpeakerRedoChoice, TalkTime, TranscriptIssue,
+    line_range, needs_confirmation, non_empty, progress_label, redo_diff, select_lines,
+    speaker_name, status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice,
+    RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime, TranscriptIssue,
 };
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
@@ -56,6 +56,13 @@ pub enum DetailTab {
 pub enum PickTarget {
     Speaker(SpeakerId),
     Lines(Vec<i64>),
+}
+
+/// The transcript a redo started from.
+struct RedoSnapshot {
+    segments: Vec<Segment>,
+    speakers: Vec<MeetingSpeaker>,
+    duration_ms: Option<i64>,
 }
 
 pub struct MeetingDetail {
@@ -120,6 +127,10 @@ pub struct MeetingDetail {
     summary_view: Option<Entity<super::summary::SummaryView>>,
     /// Lines announced while this meeting is still transcribing, in time order.
     provisional: Vec<ProvisionalLine>,
+    /// Transcript and speakers at the moment a redo started.
+    before_redo: Option<RedoSnapshot>,
+    /// Shown after that redo finishes, until dismissed.
+    what_changed: Option<RedoDiff>,
     ticking: bool,
     _subs: Vec<Subscription>,
 }
@@ -199,6 +210,8 @@ impl MeetingDetail {
             titling: false,
             summary_view: None,
             provisional: Vec::new(),
+            before_redo: None,
+            what_changed: None,
             ticking: false,
             _subs: subs,
         };
@@ -217,6 +230,16 @@ impl MeetingDetail {
             MeetingsEvent::Progress(p) if p.meeting_id == self.meeting_id => {
                 let done = p.fraction >= 1.0;
                 self.progress = Some(p.clone());
+                // The first progress of a run that already has a transcript
+                // is the "before" of What changed.
+                if !done && self.before_redo.is_none() && !self.segments.is_empty() {
+                    let duration_ms = self.meeting.as_ref().and_then(|m| m.duration_ms());
+                    self.before_redo = Some(RedoSnapshot {
+                        segments: self.segments.clone(),
+                        speakers: self.speakers.clone(),
+                        duration_ms,
+                    });
+                }
                 if let Some(m) = &mut self.meeting {
                     if !done {
                         m.status = MeetingStatus::Processing;
@@ -228,6 +251,35 @@ impl MeetingDetail {
                 cx.notify();
             }
             _ => {}
+        }
+    }
+
+    /// A finished redo becomes the What changed card. A load that arrives
+    /// while the run is still going keeps the snapshot.
+    fn settle_redo(&mut self) {
+        let Some(snap) = self.before_redo.take() else {
+            return;
+        };
+        let processing = self
+            .meeting
+            .as_ref()
+            .is_some_and(|m| m.status == MeetingStatus::Processing);
+        if processing {
+            self.before_redo = Some(snap);
+            return;
+        }
+        let you = t("meetings.detail.you").to_string();
+        let diff = redo_diff(
+            &snap.segments,
+            &self.segments,
+            &snap.speakers,
+            &self.speakers,
+            &self.people,
+            &you,
+            snap.duration_ms,
+        );
+        if !diff.is_empty() {
+            self.what_changed = Some(diff);
         }
     }
 
@@ -274,6 +326,7 @@ impl MeetingDetail {
                         }
                         this.speakers = speakers;
                         this.people = people;
+                        this.settle_redo();
                         if progress.is_some() {
                             this.progress = progress;
                         }
@@ -355,6 +408,19 @@ impl MeetingDetail {
     #[cfg(test)]
     pub fn speakers(&self) -> &[MeetingSpeaker] {
         &self.speakers
+    }
+
+    #[cfg(test)]
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    #[cfg(test)]
+    pub fn redo_state(&self) -> (bool, Option<usize>) {
+        (
+            self.before_redo.is_some(),
+            self.what_changed.as_ref().map(|d| d.lines_changed),
+        )
     }
 
     // -- speaker naming -------------------------------------------------------
@@ -1962,6 +2028,14 @@ impl MeetingDetail {
                             .cursor_pointer()
                             .relative()
                             .when(active, |d| d.bg(tone.accent_soft))
+                            .when(
+                                !active
+                                    && self
+                                        .what_changed
+                                        .as_ref()
+                                        .is_some_and(|d| d.changed_lines.contains(&seg_id)),
+                                |d| d.bg(tone.accent_soft),
+                            )
                             .when(self.flash == Some(seg_id) && !selected, |d| {
                                 d.bg(tone.accent.opacity(0.18))
                             })
@@ -2475,6 +2549,125 @@ impl MeetingDetail {
             })
     }
 
+    fn render_what_changed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let diff = self.what_changed.as_ref()?;
+        let tone = design::tone(cx);
+        let count = diff.lines_changed.to_string();
+        let line_count = t_args("meetings.changed.lines", &[("count", &count)]);
+        let shifts: Vec<_> = diff
+            .speakers
+            .iter()
+            .enumerate()
+            .map(|(i, shift)| {
+                let text = match shift {
+                    SpeakerShift::Renamed { from, to } => {
+                        t_args("meetings.changed.renamed", &[("from", from), ("to", to)])
+                    }
+                    SpeakerShift::Merged { from, into } => {
+                        t_args("meetings.changed.merged", &[("from", from), ("into", into)])
+                    }
+                    SpeakerShift::Added { label } => {
+                        t_args("meetings.changed.added", &[("label", label)])
+                    }
+                    SpeakerShift::Removed { label } => {
+                        t_args("meetings.changed.removed", &[("label", label)])
+                    }
+                };
+                div()
+                    .id(SharedString::from(format!("what-changed-shift-{i}")))
+                    .text_size(dp(12.5))
+                    .text_color(tone.text)
+                    .child(text)
+                    .test_support()
+            })
+            .collect::<Vec<_>>();
+        let bars: Vec<_> = diff
+            .shares
+            .iter()
+            .enumerate()
+            .map(|(i, share)| {
+                let before = share.before;
+                let after = share.after;
+                let id = SharedString::from(format!("what-changed-bar-{i}"));
+                h_flex()
+                    .id(SharedString::from(format!("what-changed-share-{i}")))
+                    .w_full()
+                    .gap(dp(8.))
+                    .items_center()
+                    .child(
+                        div()
+                            .w(dp(120.))
+                            .flex_none()
+                            .min_w_0()
+                            .text_size(dp(12.))
+                            .text_color(tone.text)
+                            .child(share.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(dp(8.))
+                            .rounded_full()
+                            .bg(tone.raised)
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(tone.accent)
+                                    .with_animation(
+                                        id,
+                                        Animation::new(Duration::from_millis(700)),
+                                        move |el, delta| {
+                                            let w = before + (after - before) * delta;
+                                            el.w(relative(w.clamp(0.0, 1.0)))
+                                        },
+                                    ),
+                            ),
+                    )
+                    .test_support()
+            })
+            .collect();
+        Some(
+            design::panel(cx)
+                .id("what-changed")
+                .child(
+                    design::section(false, cx).child(
+                        v_flex()
+                            .w_full()
+                            .gap(dp(8.))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(design::eyebrow(t("meetings.changed.title"), cx))
+                                    .child(
+                                        Button::new("what-changed-dismiss")
+                                            .ghost()
+                                            .xsmall()
+                                            .label(t("meetings.changed.dismiss"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.what_changed = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(design::TEXT_BODY)
+                                    .text_color(tone.text)
+                                    .child(line_count),
+                            )
+                            .children(shifts)
+                            .children(bars),
+                    ),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = match self.detail_tab {
             DetailTab::Notes => 0,
@@ -2548,6 +2741,7 @@ impl Render for MeetingDetail {
             .w_full()
             .gap(dp(22.))
             .child(self.render_header(cx))
+            .children(self.render_what_changed(cx))
             .children(self.render_quality_notice(cx))
             .child(self.render_tabs(cx))
             .child(body)

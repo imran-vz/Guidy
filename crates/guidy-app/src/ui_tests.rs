@@ -1768,6 +1768,62 @@ mod meetings_page {
     }
 
     #[gpui_kit::test]
+    fn what_changed_appears_after_a_redo(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture();
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        let detail = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("detail");
+        let n = detail.read_with(cx, |d, _| d.segment_count());
+        assert!(n > 0, "transcript not loaded");
+        let p = ProcessingProgress {
+            meeting_id: 1,
+            stage: ProcessingStage::Cluster,
+            fraction: 0.4,
+            message: None,
+            done: None,
+            total: None,
+        };
+        dispatch(
+            cx,
+            &state,
+            events::PROCESSING_PROGRESS,
+            serde_json::to_value(&p).unwrap(),
+        );
+        let after_progress = detail.read_with(cx, |d, _| d.redo_state());
+        assert!(
+            after_progress.0,
+            "snapshot missing after progress: {after_progress:?}"
+        );
+        {
+            let mut data = meetings.data.lock();
+            let speaker = &mut data.speakers.get_mut(&1).unwrap()[1];
+            // Ada is linked by person id, so a label change has to drop that.
+            speaker.person_id = None;
+            speaker.cluster_label = "Alice".into();
+        }
+        dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
+        let detail = page
+            .read_with(cx, |p, _| p.detail().cloned())
+            .expect("detail");
+        let info = detail.read_with(cx, |d, _| {
+            format!(
+                "redo {:?} labels {:?}",
+                d.redo_state(),
+                d.speakers()
+                    .iter()
+                    .map(|s| s.cluster_label.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+        assert!(exists(cx, w, "what-changed"), "{info}");
+        with_window(cx, w, |window, cx| window.click("what-changed-dismiss", cx));
+        assert!(!exists(cx, w, "what-changed"));
+    }
+
+    #[gpui_kit::test]
     fn a_provisional_line_renders_while_processing(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         meetings.data.lock().meetings[1].status = MeetingStatus::Processing;
