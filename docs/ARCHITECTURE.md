@@ -97,13 +97,13 @@ Guidy uses the identifier **`dev.guidy.app`** (`host::APP_IDENTIFIER`), which na
 ### 3.2 Rules
 - 0 failures in gating jobs, and no `#[ignore]` without an `IGNORE-REASON:` comment.
 - Tests that need a model or real hardware are `#[ignore]`d and run with `cargo xtask test --full`, which builds the `guidy` binary and passes the model via `GUIDY_TEST_MODEL`.
-- CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy -D warnings`, and `cargo xtask gate` in one job, then builds an unsigned macOS package. Jobs run on a self-hosted mac-mini runner (an ephemeral Tart VM booted per job by [sand](https://github.com/khoi/sand), label `guidy`); pull requests from forks and Dependabot use GitHub's `macos-latest` instead. Windows and Linux are left out until there are machines to test them on.
+- CI and self-hosted runners are retired. Run `fmt`, `clippy -D warnings`, and `cargo xtask gate` on the development device before submitting changes. Verify unsigned macOS packaging locally when relevant. See [local verification](LOCAL_CHECKS.md); platform and hardware coverage must be recorded explicitly.
 
 ### 3.3 `cargo xtask parity`
 - Every test listed in `docs/baseline/tests.txt` must still exist. Tests that only build on some platforms are listed in `docs/baseline/platform-tests.txt` and are required only where they build.
 - Every command in `docs/baseline/commands.txt` must have an implementation, and every event in `docs/baseline/events.txt` must still be emitted.
 - Every row in `docs/PARITY.md` has an ID (e.g. `G-07`) and a cover of `test: <path::name>` or `manual: HW-xx`. The check fails on unknown tests, unknown manual checks, or uncovered rows.
-- `cargo xtask gate` runs `test` then `parity`; this is what CI runs.
+- `cargo xtask gate` runs `test` then `parity`; run it locally before submitting changes.
 
 ### 3.4 Manual hardware matrix
 Run on macOS 14+ (Apple Silicon), Windows 11 x64, Ubuntu X11, and Fedora/GNOME Wayland, and sign off the PARITY §HW rows per release:
