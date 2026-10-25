@@ -2386,7 +2386,13 @@ impl MeetingDetail {
                 ))
                 .item(
                     PopupMenuItem::new(t("meetings.copy.summaryOnly")).on_click(move |_, _, cx| {
-                        weak_summary.update(cx, |this, cx| this.copy_notes(cx)).ok();
+                        weak_summary
+                            .update(cx, |this, cx| {
+                                if let Some(v) = this.summary_view.clone() {
+                                    v.update(cx, |v, cx| v.copy_summary_only(cx));
+                                }
+                            })
+                            .ok();
                     }),
                 )
             })

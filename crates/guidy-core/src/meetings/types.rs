@@ -274,6 +274,19 @@ pub struct VoiceSample {
     pub has_audio: bool,
 }
 
+/// One section of the minutes, in meeting order.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct NoteSection {
+    pub heading: String,
+    /// `mm:ss` when this part starts, as the model wrote it.
+    pub start: String,
+    /// `start` parsed to milliseconds, when it is a timestamp.
+    #[serde(default)]
+    pub start_ms: Option<i64>,
+    pub points: Vec<String>,
+    pub outcome: Option<String>,
+}
+
 /// Fixed JSON structure produced by the summarizer (plan §2.3).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct MeetingSummary {
@@ -282,6 +295,11 @@ pub struct MeetingSummary {
     pub decisions: Vec<String>,
     pub topics: Vec<String>,
     pub action_items: Vec<ActionItemDraft>,
+    /// Minutes, in time order. Chunks are concatenated in code.
+    #[serde(default)]
+    pub notes: Vec<NoteSection>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
 /// An action item as the model returns it (before it is stored).
@@ -380,6 +398,11 @@ pub struct StoredSummary {
     /// models and summaries made before costs were recorded.
     #[serde(default)]
     pub usage: Option<crate::llm::usage::MeterTotals>,
+    /// Minutes sections, JSON in `meeting_summaries.notes`.
+    #[serde(default)]
+    pub notes: Vec<NoteSection>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
 /// Processing stages, in order. Stored as `Meeting::processing_stage` after

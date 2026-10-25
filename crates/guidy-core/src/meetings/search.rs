@@ -699,6 +699,9 @@ mod tests {
                 generated_by: "test/model".into(),
                 generated_at: 1,
                 usage: None,
+
+                notes: vec![],
+                open_questions: vec![],
             })
             .unwrap();
     }

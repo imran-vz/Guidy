@@ -837,6 +837,19 @@ pub fn summary_markdown(
     user_display_name: &str,
     date: &str,
 ) -> String {
+    summary_markdown_parts(summary, items, people, user_display_name, date, true)
+}
+
+/// `minutes` includes the minutes and open questions. Copy summary only
+/// leaves them out.
+pub fn summary_markdown_parts(
+    summary: &StoredSummary,
+    items: &[ActionItem],
+    people: &[Person],
+    user_display_name: &str,
+    date: &str,
+    minutes: bool,
+) -> String {
     let mut out = format!(
         "# {}
 ",
@@ -891,6 +904,38 @@ pub fn summary_markdown(
             })
             .collect(),
     );
+    drop(list);
+    if minutes {
+        if !summary.notes.is_empty() {
+            out.push_str("\n## Minutes\n");
+            for section in &summary.notes {
+                let when = if section.start.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", section.start)
+                };
+                out.push_str(&format!("\n### {}{when}\n", section.heading));
+                for point in &section.points {
+                    out.push_str(&format!("- {point}\n"));
+                }
+                if let Some(outcome) = &section.outcome {
+                    out.push_str(&format!("\nOutcome: {outcome}\n"));
+                }
+            }
+        }
+        let questions: Vec<String> = summary
+            .open_questions
+            .iter()
+            .filter(|q| !q.trim().is_empty())
+            .cloned()
+            .collect();
+        if !questions.is_empty() {
+            out.push_str("\n## Open questions\n\n");
+            for q in questions {
+                out.push_str(&format!("- {}\n", q.trim()));
+            }
+        }
+    }
     out
 }
 
@@ -1213,6 +1258,9 @@ mod tests {
             generated_by: "groq/x".into(),
             generated_at: 0,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         let mut mine = action_item_fixture(1, 1, "Write the release notes");
         mine.owner_is_user = true;

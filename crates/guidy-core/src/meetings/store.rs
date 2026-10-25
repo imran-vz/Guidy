@@ -328,6 +328,13 @@ pub(crate) static MIGRATIONS: &[M] = &[
             AND substr(title, -5) = strftime('%H:%M', started_at / 1000, 'unixepoch', 'localtime')
         );",
     ),
+    // 14: minutes of the meeting, and questions it left open. Kept out of
+    // summaries_fts: that index is external-content with triggers on the
+    // old columns, and rewriting them is a separate migration.
+    M::up(
+        "ALTER TABLE meeting_summaries ADD COLUMN notes TEXT NOT NULL DEFAULT '[]';
+         ALTER TABLE meeting_summaries ADD COLUMN open_questions TEXT NOT NULL DEFAULT '[]';",
+    ),
 ];
 
 /// File name of the database inside the app data dir.
@@ -485,6 +492,8 @@ fn map_summary(row: &Row<'_>) -> rusqlite::Result<StoredSummary> {
                 })
             })
             .transpose()?,
+        notes: from_json(12, &row.get::<_, String>(12)?)?,
+        open_questions: from_json(13, &row.get::<_, String>(13)?)?,
     })
 }
 
@@ -1802,7 +1811,7 @@ impl MeetingsStore {
             .query_row(
                 "SELECT meeting_id, title, short_summary, decisions, topics, generated_by,
                     generated_at, llm_calls, input_tokens, output_tokens, cost_usd,
-                    cost_estimated
+                    cost_estimated, notes, open_questions
                  FROM meeting_summaries WHERE meeting_id = ?1",
                 [meeting_id],
                 map_summary,
@@ -2170,14 +2179,15 @@ fn put_summary_tx(conn: &Connection, s: &StoredSummary) -> Result<()> {
     conn.execute(
         "INSERT INTO meeting_summaries (meeting_id, title, short_summary, decisions, topics,
             generated_by, generated_at, llm_calls, input_tokens, output_tokens, cost_usd,
-            cost_estimated)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            cost_estimated, notes, open_questions)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(meeting_id) DO UPDATE SET title = excluded.title,
             short_summary = excluded.short_summary, decisions = excluded.decisions,
             topics = excluded.topics, generated_by = excluded.generated_by,
             generated_at = excluded.generated_at, llm_calls = excluded.llm_calls,
             input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
-            cost_usd = excluded.cost_usd, cost_estimated = excluded.cost_estimated",
+            cost_usd = excluded.cost_usd, cost_estimated = excluded.cost_estimated,
+            notes = excluded.notes, open_questions = excluded.open_questions",
         params![
             s.meeting_id,
             s.title,
@@ -2191,6 +2201,8 @@ fn put_summary_tx(conn: &Connection, s: &StoredSummary) -> Result<()> {
             s.usage.map(|u| u.output_tokens as i64),
             s.usage.and_then(|u| u.cost_usd),
             s.usage.is_some_and(|u| u.estimated),
+            to_json(&s.notes)?,
+            to_json(&s.open_questions)?,
         ],
     )?;
     Ok(())
@@ -2235,6 +2247,36 @@ pub(crate) mod tests {
 
     fn store() -> MeetingsStore {
         MeetingsStore::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn summary_notes_round_trip() {
+        let s = store();
+        let m = s.insert_meeting(&meeting("t", 0)).unwrap();
+        s.put_summary(&StoredSummary {
+            meeting_id: m,
+            title: "Sync".into(),
+            short_summary: "We planned it.".into(),
+            decisions: vec!["Ship".into()],
+            topics: vec![],
+            generated_by: "local".into(),
+            generated_at: 1,
+            usage: None,
+            notes: vec![NoteSection {
+                heading: "Plan".into(),
+                start: "01:00".into(),
+                start_ms: Some(60_000),
+                points: vec!["Ship Friday".into()],
+                outcome: Some("Agreed".into()),
+            }],
+            open_questions: vec!["Who writes the notes?".into()],
+        })
+        .unwrap();
+        let got = s.summary(m).unwrap().unwrap();
+        assert_eq!(got.notes[0].heading, "Plan");
+        assert_eq!(got.notes[0].start_ms, Some(60_000));
+        assert_eq!(got.notes[0].outcome.as_deref(), Some("Agreed"));
+        assert_eq!(got.open_questions, vec!["Who writes the notes?"]);
     }
 
     fn meeting(title: &str, started_at: i64) -> Meeting {
@@ -2586,6 +2628,9 @@ pub(crate) mod tests {
             generated_by: "x/y".into(),
             generated_at: 1,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         })
         .unwrap();
         s.insert_action_item(&item(m, "a")).unwrap();
@@ -2750,6 +2795,9 @@ pub(crate) mod tests {
             generated_by: "guidy_local/qwen".into(),
             generated_at: 5,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         s.put_summary(&sum).unwrap();
         assert_eq!(s.summary(m).unwrap(), Some(sum.clone()));
@@ -2772,6 +2820,9 @@ pub(crate) mod tests {
             generated_by: "a".into(),
             generated_at: 1,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         let items = s
             .put_summary_and_action_items(&old, &[item(m, "old item")], &[], |_, _| false)
@@ -2827,6 +2878,9 @@ pub(crate) mod tests {
             generated_by: "a".into(),
             generated_at: 1,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         let owned = |text: &str, owner: PersonId| ActionItem {
             owner_person_id: Some(owner),

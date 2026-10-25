@@ -898,13 +898,22 @@ impl SummaryView {
         )
     }
 
-    /// Copy the summary and action items as Markdown.
+    /// Copy the notes (summary, decisions, action items, minutes).
     pub(crate) fn copy(&mut self, cx: &mut Context<Self>) {
+        self.copy_markdown(true, cx);
+    }
+
+    /// Copy the summary without the minutes.
+    pub(crate) fn copy_summary_only(&mut self, cx: &mut Context<Self>) {
+        self.copy_markdown(false, cx);
+    }
+
+    fn copy_markdown(&mut self, minutes: bool, cx: &mut Context<Self>) {
         let id = self.meeting_id;
         super::run(
             cx,
             move |b| b.get_meeting(id),
-            |this: &mut Self, meeting, cx| {
+            move |this: &mut Self, meeting, cx| {
                 let Some(summary) = &this.summary else { return };
                 let date = match meeting {
                     Ok(Some(m)) => crate::logic::meetings::format_meeting_date(
@@ -913,12 +922,13 @@ impl SummaryView {
                     ),
                     _ => String::new(),
                 };
-                let text = crate::logic::meetings::summary_markdown(
+                let text = crate::logic::meetings::summary_markdown_parts(
                     summary,
                     &this.items,
                     &this.people,
                     &super::meeting_settings(cx).user_display_name,
                     &date,
+                    minutes,
                 );
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 this.copied = true;
@@ -1304,6 +1314,111 @@ impl SummaryView {
             .into_any_element()]
     }
 
+    /// Minutes and open questions are read-only. Editing each point would be
+    /// a second editor; regenerate replaces them.
+    fn minutes_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(s) = &self.summary else {
+            return Vec::new();
+        };
+        if s.notes.is_empty() && s.open_questions.is_empty() {
+            return Vec::new();
+        }
+        let tone = design::tone(cx);
+        let mut rows = Vec::new();
+        if !s.notes.is_empty() {
+            let sections: Vec<AnyElement> =
+                s.notes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, section)| {
+                        let seek = section.start_ms.map(|t_ms| {
+                            Button::new(SharedString::from(format!("minute-seek-{i}")))
+                                .link()
+                                .xsmall()
+                                .label(SharedString::from(if section.start.is_empty() {
+                                    format_timestamp(t_ms)
+                                } else {
+                                    section.start.clone()
+                                }))
+                                .tooltip(t("meetingsAi.summary.jumpToMoment"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.seek(t_ms, window, cx)
+                                }))
+                        });
+                        v_flex()
+                            .id(SharedString::from(format!("minute-{i}")))
+                            .w_full()
+                            .gap(dp(4.))
+                            .px(design::SECTION_X)
+                            .py(dp(10.))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_baseline()
+                                    .child(
+                                        div()
+                                            .text_size(design::TEXT_BODY)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(section.heading.clone()),
+                                    )
+                                    .children(seek),
+                            )
+                            .children(section.points.iter().map(|point| {
+                                div()
+                                    .text_size(dp(13.))
+                                    .text_color(tone.text)
+                                    .child(format!("• {point}"))
+                            }))
+                            .when_some(section.outcome.clone(), |d, outcome| {
+                                d.child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
+                                    format!("{}: {outcome}", t("meetingsAi.summary.outcome")),
+                                ))
+                            })
+                            .test_support()
+                            .into_any_element()
+                    })
+                    .collect();
+            rows.push(
+                v_flex()
+                    .id("meeting-minutes")
+                    .w_full()
+                    .gap(dp(8.))
+                    .child(design::eyebrow(t("meetingsAi.summary.minutes"), cx))
+                    .child(group(None, sections, cx))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        if !s.open_questions.is_empty() {
+            let questions: Vec<AnyElement> = s
+                .open_questions
+                .iter()
+                .enumerate()
+                .map(|(i, q)| {
+                    div()
+                        .id(SharedString::from(format!("open-question-{i}")))
+                        .px(design::SECTION_X)
+                        .py(dp(8.))
+                        .text_size(design::TEXT_BODY)
+                        .child(q.clone())
+                        .test_support()
+                        .into_any_element()
+                })
+                .collect();
+            rows.push(
+                v_flex()
+                    .id("meeting-open-questions")
+                    .w_full()
+                    .gap(dp(8.))
+                    .child(design::eyebrow(t("meetingsAi.summary.openQuestions"), cx))
+                    .child(group(None, questions, cx))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        rows
+    }
+
     fn item_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
@@ -1461,6 +1576,8 @@ fn empty_summary(meeting_id: MeetingId) -> StoredSummary {
         generated_by: String::new(),
         generated_at: 0,
         usage: None,
+        notes: vec![],
+        open_questions: vec![],
     }
 }
 
@@ -1518,6 +1635,7 @@ impl Render for SummaryView {
                 item_rows,
                 cx,
             ))
+            .children(self.minutes_section(cx))
             .test_support()
     }
 }
@@ -1641,6 +1759,9 @@ mod ui {
                     generated_by: "guidy_local/qwen3-4b".into(),
                     generated_at: 1,
                     usage: None,
+
+                    notes: vec![],
+                    open_questions: vec![],
                 },
             );
             d.ai.items = vec![action_item_fixture(7, 1, "send the notes")];

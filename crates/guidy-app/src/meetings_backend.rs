@@ -1633,6 +1633,9 @@ pub mod fake {
                 generated_by: by,
                 generated_at: 1,
                 usage: None,
+
+                notes: vec![],
+                open_questions: vec![],
             };
             d.ai.summaries.insert(id, s.clone());
             Ok(s)

@@ -238,6 +238,9 @@ mod tests {
             generated_by: "x/y".into(),
             generated_at: 0,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         let m = title_messages(&summary, &[], Some("Daily stand-up"));
         assert!(m[0].content.contains("Daily stand-up"));
@@ -272,6 +275,9 @@ mod tests {
             generated_by: String::new(),
             generated_at: 0,
             usage: None,
+
+            notes: vec![],
+            open_questions: vec![],
         };
         let p = Fixed(r#"{"title": "Courier delays", "description": "Chased DTDC."}"#);
         let g = generate(&p, &summary, &[], None, &ChatOptions::default()).unwrap();

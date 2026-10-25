@@ -1284,7 +1284,10 @@
         "none": "No owner",
         "me": "Me",
         "meNamed": "Me ({{name}})"
-      }
+      },
+      "minutes": "Minutes",
+      "openQuestions": "Open questions",
+      "outcome": "Outcome"
     },
     "tickets": {
       "heading": "Linear tickets",

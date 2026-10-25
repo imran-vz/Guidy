@@ -2119,6 +2119,9 @@ mod meetings_page {
                 generated_by: "x/y".into(),
                 generated_at: 1,
                 usage: None,
+
+                notes: vec![],
+                open_questions: vec![],
             },
         );
     }
@@ -2711,6 +2714,9 @@ mod meetings_fixes {
                     generated_by: "x".into(),
                     generated_at: 1,
                     usage: None,
+
+                    notes: vec![],
+                    open_questions: vec![],
                 },
             );
             d.ai.items = vec![action_item_fixture(7, 1, "send notes")];
@@ -3710,6 +3716,9 @@ mod redo_transcript {
                 generated_by: "groq/x".into(),
                 generated_at: 0,
                 usage: None,
+
+                notes: vec![],
+                open_questions: vec![],
             },
         );
         setup_meetings(cx, backend, meetings);
