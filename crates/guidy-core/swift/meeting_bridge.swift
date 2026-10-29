@@ -521,6 +521,7 @@ private final class MicCapture {
                     "could not choose the input device (OSStatus \(status)), recording the default input")
             }
         }
+        try matchClientRateToHardware(input)
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw BridgeError("no microphone input is available")
@@ -556,6 +557,31 @@ private final class MicCapture {
         if let error = startError {
             removeTap()
             throw BridgeError("starting the microphone failed: \(error)")
+        }
+    }
+
+    /// The engine's input and output nodes share one I/O unit, and the input
+    /// side's client format keeps the output device's sample rate. When the
+    /// recorded device runs at another rate (built-in mic at 48 kHz while
+    /// AirPods in a call play at 24 kHz) the unit does not convert on input
+    /// and `start` fails with -10868. Recording at the device's own rate
+    /// avoids that; `MonoResampler` converts afterwards.
+    private func matchClientRateToHardware(_ input: AVAudioInputNode) throws {
+        let hardware = input.inputFormat(forBus: 0)
+        let client = input.outputFormat(forBus: 0)
+        guard hardware.sampleRate > 0, hardware.channelCount > 0,
+              client.sampleRate != hardware.sampleRate
+        else { return }
+        guard let unit = input.audioUnit else {
+            throw BridgeError("the microphone has no audio unit to set its format on")
+        }
+        var description = hardware.streamDescription.pointee
+        let status = AudioUnitSetProperty(
+            unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &description,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+        if status != noErr {
+            throw BridgeError(
+                "setting the microphone format to \(hardware.sampleRate) Hz failed (OSStatus \(status))")
         }
     }
 
