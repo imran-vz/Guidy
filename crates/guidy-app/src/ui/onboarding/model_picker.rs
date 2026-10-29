@@ -1,311 +1,265 @@
-//! First-run model picker.
+//! "Choose Another…": every speech model in one compact list, filtered by
+//! language (the dictation language first) and a search. Used by the setup
+//! step and the retired-model migration; it only picks, the caller decides
+//! what happens (select now, or download in the background).
 
-use crate::logic::models::{picked_model_ready, picker_groups, ModelCardStatus};
+use super::assistant::{continue_button, row, rows, trailing_text, Assistant};
+use crate::logic::languages::{capability_languages, language_label, unique_capability_languages};
+use crate::logic::onboarding::picker_models;
 use crate::state::AppState;
-use crate::ui::brand::wordmark;
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, t, t_args};
-use crate::ui::main_window::MainWindow;
-use crate::ui::model_card::ModelCard;
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{model_description, model_name, t, t_args, Dropdown, DropdownOption};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::notification::NotificationType;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::radio::Radio;
+use gpui_kit::component::{h_flex, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::managers::model::ModelInfo;
+use std::rc::Rc;
+
+const ALL_LANGUAGES: &str = "all";
+
+type OnDone = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 
 pub struct ModelPicker {
-    main: WeakEntity<MainWindow>,
-    preview: bool,
     state: Entity<AppState>,
-    /// The model the user picked (downloading or about to be selected).
+    search: Entity<InputState>,
+    /// Language filter (`None`: all languages).
+    language: Option<String>,
     pub selected: Option<String>,
-    selecting: bool,
-    show_all: bool,
+    on_done: OnDone,
+    focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
 
 impl ModelPicker {
+    /// `on_done(Some(id))` when a model is chosen, `None` on Cancel.
     pub fn new(
-        main: WeakEntity<MainWindow>,
-        preview: bool,
+        selected: Option<String>,
+        language: Option<String>,
+        on_done: impl Fn(Option<String>, &mut Window, &mut App) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        use crate::ui::kit::LocalizedPlaceholder;
         let state = AppState::global(cx);
-        let subs = vec![cx.observe_in(&state, window, |this, _, window, cx| {
-            this.maybe_select(window, cx);
-            cx.notify();
-        })];
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "onboarding.picker.search",
+                window,
+                cx,
+            )
+        });
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let subs = vec![
+            cx.observe(&state, |_, _, cx| cx.notify()),
+            cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+                if let InputEvent::Change = ev {
+                    cx.notify();
+                }
+            }),
+        ];
+        // A language no model speaks would show an empty list.
+        let language = language.filter(|l| {
+            let st = state.read(cx);
+            !picker_models(&st.models.models, Some(l), "").is_empty()
+        });
         Self {
-            main,
-            preview,
             state,
-            selected: None,
-            selecting: false,
-            show_all: false,
+            search,
+            language,
+            selected,
+            on_done: Rc::new(on_done),
+            focus,
             _subs: subs,
         }
     }
 
-    /// Once the picked model is downloaded and verified, select it and move on.
-    fn maybe_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.preview || self.selecting {
-            return;
-        }
-        let Some(id) = self.selected.clone() else {
-            return;
+    pub fn select(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.selected = Some(id.to_string());
+        cx.notify();
+    }
+
+    fn done(&mut self, chosen: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let on_done = self.on_done.clone();
+        cx.defer_in(window, move |_, window, cx| on_done(chosen, window, cx));
+    }
+
+    fn model_row(&self, m: &ModelInfo, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.selected.as_deref() == Some(m.id.as_str());
+        let langs = unique_capability_languages(&m.supported_languages);
+        let languages = match langs.as_slice() {
+            [one] => t_args(
+                "modelSelector.capabilities.languageOnly",
+                &[("language", language_label(one).unwrap_or(one))],
+            ),
+            _ => t_args(
+                "modelSelector.capabilities.languageCount",
+                &[("total", &langs.len().to_string())],
+            ),
         };
-        let st = self.state.read(cx);
-        if !picked_model_ready(
-            &st.models.models,
-            &id,
-            &st.models.downloading,
-            &st.models.verifying,
-        ) {
-            return;
+        let mut description = model_description(m);
+        if !description.is_empty() {
+            description.push_str(" · ");
         }
-        self.selecting = true;
-        let weak = cx.entity().downgrade();
-        let window_handle = window.window_handle();
-        self.state.update(cx, |s, cx| {
-            s.select_model(&id, cx, move |s, ok, cx| {
-                if ok {
-                    s.on_model_selected(cx);
-                } else {
-                    let _ = cx.update_window(window_handle, |_, window, cx| {
-                        window.push_notification(
-                            (NotificationType::Error, t("onboarding.errors.selectModel")),
-                            cx,
-                        );
-                    });
-                    weak.update(cx, |this, cx| {
-                        this.selecting = false;
-                        this.selected = None;
-                        cx.notify();
-                    })
-                    .ok();
+        description.push_str(&languages);
+        let id = m.id.clone();
+        let radio = Radio::new(SharedString::from(format!("picker-radio-{}", m.id)))
+            .checked(selected)
+            .on_click(cx.listener({
+                let id = id.clone();
+                move |this, _: &bool, _, cx| {
+                    cx.stop_propagation();
+                    this.select(&id, cx);
                 }
-            });
-        });
-    }
-
-    fn download(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.preview {
-            return;
-        }
-        self.selected = Some(id.to_string());
-        let weak = cx.entity().downgrade();
-        let failed_id = id.to_string();
-        self.state.update(cx, |s, cx| {
-            s.download_model_then(id, cx, move |_, result, cx| {
-                // Unlock the cards so the user can pick again (the failure
-                // itself is toasted from the download-failed event).
-                if result.is_err() {
-                    weak.update(cx, |this, cx| {
-                        if this.selected.as_deref() == Some(failed_id.as_str()) {
-                            this.selected = None;
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                }
+            }));
+        let title = h_flex()
+            .gap(dp(6.))
+            .child(model_name(m))
+            .when(m.is_recommended, |d| {
+                d.child(design::chip(t("onboarding.recommended"), true, cx))
             })
-        });
-        self.maybe_select(window, cx);
-        cx.notify();
-    }
-
-    fn pick_existing(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.preview {
-            return;
-        }
-        self.selected = Some(id.to_string());
-        self.maybe_select(window, cx);
-        cx.notify();
-    }
-
-    fn cancel(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.preview {
-            return;
-        }
-        self.state.update(cx, |s, cx| s.cancel_download(id, cx));
-        self.selected = None;
-        cx.notify();
+            .when(m.is_downloaded, |d| {
+                d.child(design::chip(t("onboarding.picker.downloaded"), false, cx))
+            });
+        let size = if m.is_downloaded {
+            String::new()
+        } else {
+            guidy_core::downloads::format_bytes(m.size_mb * 1024 * 1024)
+        };
+        let tone = design::tone(cx);
+        row(
+            SharedString::from(format!("picker-model-{}", m.id)),
+            Some(radio.into_any_element()),
+            title,
+            Some(description.into()),
+            Some(trailing_text(size, cx)),
+            cx,
+        )
+        .when(selected, |d| d.bg(tone.selection))
+        .on_click(cx.listener(move |this, _, _, cx| this.select(&id, cx)))
+        .test_support()
+        .into_any_element()
     }
 }
 
 impl Render for ModelPicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity().downgrade();
         let st = self.state.read(cx);
-        let theme = cx.theme().clone();
-        let m = st.models.clone();
-        let groups = picker_groups(&m.models);
-        let busy = self.selected.is_some();
-        let has_recommended = !groups.top_picks.is_empty() || !groups.other_recommended.is_empty();
-        let show_rest = self.show_all || !has_recommended;
-        let from_migration = self
-            .main
-            .upgrade()
-            .is_some_and(|main| main.read(cx).has_migration(cx));
-
-        let download_card = |model: &guidy_core::managers::model::ModelInfo, featured: bool| {
-            let status = if m.verifying.contains(&model.id) {
-                ModelCardStatus::Verifying
-            } else if m.downloading.contains(&model.id) {
-                ModelCardStatus::Downloading
-            } else {
-                ModelCardStatus::Downloadable
-            };
-            let (e1, e2, e3) = (entity.clone(), entity.clone(), entity.clone());
-            ModelCard::new(model.clone(), status)
-                .featured(featured)
-                .disabled(busy)
-                .show_recommended(false)
-                .progress(
-                    m.progress.get(&model.id).map(|p| p.percentage),
-                    m.stats.get(&model.id).map(|s| s.speed),
-                )
-                .on_download(move |id, window, cx| {
-                    e1.update(cx, |this, cx| this.download(id, window, cx)).ok();
-                })
-                .on_select(move |id, window, cx| {
-                    e2.update(cx, |this, cx| this.download(id, window, cx)).ok();
-                })
-                .on_cancel(move |id, _, cx| {
-                    e3.update(cx, |this, cx| this.cancel(id, cx)).ok();
-                })
-                .into_any_element()
-        };
-
-        let existing: Vec<AnyElement> = groups
-            .existing
-            .iter()
-            .map(|model| {
-                let status = if self.selected.as_deref() == Some(model.id.as_str()) {
-                    ModelCardStatus::Switching
-                } else {
-                    ModelCardStatus::Available
-                };
-                let e = entity.clone();
-                ModelCard::new((*model).clone(), status)
-                    .disabled(busy)
-                    .show_recommended(false)
-                    .on_select(move |id, window, cx| {
-                        e.update(cx, |this, cx| this.pick_existing(id, window, cx))
-                            .ok();
-                    })
-                    .into_any_element()
-            })
+        let models = st.models.models.clone();
+        let query = self.search.read(cx).value().to_string();
+        let list: Vec<ModelInfo> = picker_models(&models, self.language.as_deref(), &query)
+            .into_iter()
+            .cloned()
             .collect();
+        let tone = design::tone(cx);
 
-        let section_title = |key: &str| div().px(dp(2.)).child(design::eyebrow(t(key), cx));
-        let mut download_section = v_flex().gap(dp(10.));
-        if !groups.downloadable.is_empty() {
-            download_section = download_section
-                .child(section_title("onboarding.downloadModelsTitle"))
-                .children(groups.top_picks.iter().map(|m| download_card(m, true)))
-                .children(
-                    groups
-                        .other_recommended
-                        .iter()
-                        .map(|m| download_card(m, false)),
-                );
-            if has_recommended && !groups.rest.is_empty() {
-                let label = if self.show_all {
-                    t("onboarding.showFewerModels")
-                } else {
-                    t_args(
-                        "onboarding.showAllModels",
-                        &[("total", &groups.downloadable.len().to_string())],
-                    )
-                };
-                download_section = download_section.child(
-                    h_flex().justify_center().child(
-                        Button::new("show-all-models")
-                            .ghost()
-                            .pill()
-                            .small()
-                            .label(label)
-                            .icon(icon(if self.show_all {
-                                "chevron-up"
-                            } else {
-                                "chevron-down"
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_all = !this.show_all;
-                                cx.notify();
-                            })),
-                    ),
-                );
-            }
-            if show_rest {
-                download_section =
-                    download_section.children(groups.rest.iter().map(|m| download_card(m, false)));
-            }
-        }
-
-        let main = self.main.clone();
-        v_flex()
-            .id("model-picker")
-            .size_full()
-            .relative()
-            .p_6()
-            .gap_4()
-            .when(from_migration, |d| {
-                d.child(
-                    div().absolute().top_4().left_4().child(
-                        Button::new("picker-back")
-                            .ghost()
-                            .pill()
-                            .small()
-                            .icon(icon("chevron-left"))
-                            .label(t("common.back"))
-                            .disabled(busy)
-                            .on_click(move |_, _, cx| {
-                                main.update(cx, |m, cx| m.back_to_migration(cx)).ok();
-                            }),
-                    ),
-                )
-            })
-            .child(
-                v_flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_none()
-                    .child(wordmark(dp(28.), cx))
-                    .child(
-                        div()
-                            .text_size(design::TEXT_BODY)
-                            .text_color(theme.muted_foreground)
-                            .child(t("onboarding.subtitle")),
-                    ),
-            )
+        let mut options = vec![DropdownOption::new(
+            ALL_LANGUAGES,
+            t("onboarding.picker.allLanguages"),
+        )];
+        options
+            .extend(capability_languages().map(|(code, label)| DropdownOption::new(code, label)));
+        let weak = cx.entity().downgrade();
+        let filter = h_flex()
+            .w_full()
+            .gap(dp(8.))
             .child(
                 div()
-                    .id("model-picker-scroll")
+                    .id("picker-search")
                     .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        v_flex()
-                            .max_w(dp(600.))
-                            .w_full()
-                            .mx_auto()
-                            .gap_6()
-                            .pb_6()
-                            .when(!existing.is_empty(), |d| {
-                                d.child(
-                                    v_flex()
-                                        .gap(dp(10.))
-                                        .child(section_title("onboarding.existingModelsTitle"))
-                                        .children(existing),
-                                )
-                            })
-                            .child(download_section),
-                    ),
+                    .min_w_0()
+                    .child(Input::new(&self.search).small().cleanable(true))
+                    .test_support(),
             )
-            .test_support()
+            .child(
+                Dropdown::new("picker-language")
+                    .options(options)
+                    .selected(Some(
+                        self.language
+                            .clone()
+                            .unwrap_or_else(|| ALL_LANGUAGES.to_string()),
+                    ))
+                    .min_width(dp(150.))
+                    .menu_width(dp(200.))
+                    .on_select(move |v, _, cx| {
+                        let v = v.to_string();
+                        weak.update(cx, |this, cx| {
+                            this.language = (v != ALL_LANGUAGES).then_some(v);
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            );
+
+        let body: AnyElement = if list.is_empty() {
+            div()
+                .id("picker-empty")
+                .py(dp(24.))
+                .w_full()
+                .text_center()
+                .text_size(design::TEXT_BODY)
+                .text_color(tone.text_muted)
+                .child(t("onboarding.picker.empty"))
+                .into_any_element()
+        } else {
+            let items = list.iter().map(|m| self.model_row(m, cx)).collect();
+            rows(None, items, cx).into_any_element()
+        };
+
+        let chosen = self
+            .selected
+            .clone()
+            .filter(|id| list.iter().any(|m| &m.id == id));
+        let has_choice = chosen.is_some();
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                let k = &ev.keystroke;
+                if k.modifiers.modified() {
+                    return;
+                }
+                if k.key == "escape" {
+                    this.done(None, window, cx);
+                } else if k.key == "enter" && this.focus.is_focused(window) {
+                    if let Some(id) = this.selected.clone() {
+                        this.done(Some(id), window, cx);
+                    }
+                }
+            }))
+            .child(
+                Assistant::new("model-picker", t("onboarding.picker.title"))
+                    .icon("audio-lines")
+                    .description(t("onboarding.picker.description"))
+                    .child(filter)
+                    .child(body)
+                    .footer_start(
+                        Button::new("picker-cancel")
+                            .outline()
+                            .label(t("common.cancel"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.done(None, window, cx)),
+                            ),
+                    )
+                    .note(t_args(
+                        "onboarding.picker.count",
+                        &[("count", &list.len().to_string())],
+                    ))
+                    .action(continue_button(
+                        "picker-use",
+                        t("onboarding.picker.use"),
+                        has_choice,
+                        cx.listener(move |this, _, window, cx| {
+                            let chosen = this.selected.clone();
+                            if chosen.is_some() {
+                                this.done(chosen, window, cx);
+                            }
+                        }),
+                    )),
+            )
     }
 }

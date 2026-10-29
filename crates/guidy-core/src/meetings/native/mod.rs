@@ -1,6 +1,6 @@
 //! macOS bridges for meeting notes (docs/MEETING_NOTES_ARCH.md, workstream B):
-//! EventKit calendar, the Voice Processing I/O microphone, the Core Audio
-//! process tap for system audio, and user notifications.
+//! EventKit calendar, the microphone, the Core Audio process tap for system
+//! audio, echo cancellation of the mic ([`aec`]), and user notifications.
 //!
 //! The Swift side lives in `swift/meeting_bridge.swift` (built by
 //! `build_meeting_bridge()` in build.rs); [`macos`] holds the FFI. Everything
@@ -28,8 +28,11 @@ use std::sync::mpsc;
 use crate::meetings::manager::PermissionReport;
 use crate::meetings::types::{Attendee, CalendarEvent, Track};
 
+mod aec;
 #[cfg(target_os = "macos")]
 mod macos;
+
+use aec::EchoCanceller;
 
 /// Sample rate of every buffer delivered by [`start_capture`].
 pub const CAPTURE_SAMPLE_RATE: u32 = 16_000;
@@ -373,14 +376,41 @@ pub(crate) enum CaptureMsg {
     Event(CaptureEvent),
 }
 
-/// Runs the callbacks until every sender is gone.
-pub(crate) fn deliver(rx: mpsc::Receiver<CaptureMsg>, mut callbacks: CaptureCallbacks) {
+/// Runs the callbacks until every sender is gone. With `echo`, the mic
+/// reaches `on_mic` echo-cancelled against the system track (a little later
+/// than it was captured: each mic frame waits for its system frame).
+pub(crate) fn deliver(
+    rx: mpsc::Receiver<CaptureMsg>,
+    mut callbacks: CaptureCallbacks,
+    mut echo: Option<EchoCanceller>,
+) {
     while let Ok(msg) = rx.recv() {
-        match msg {
-            CaptureMsg::Audio(Track::Mic, samples, rate) => (callbacks.on_mic)(samples, rate),
-            CaptureMsg::Audio(Track::System, samples, rate) => (callbacks.on_system)(samples, rate),
-            CaptureMsg::Event(event) => (callbacks.on_event)(event),
+        match (msg, echo.as_mut()) {
+            (CaptureMsg::Audio(Track::Mic, samples, _), Some(aec)) => {
+                cleaned_mic(&mut callbacks, aec.push_mic(&samples))
+            }
+            (CaptureMsg::Audio(Track::System, samples, rate), Some(aec)) => {
+                let cleaned = aec.push_system(&samples);
+                (callbacks.on_system)(samples, rate);
+                cleaned_mic(&mut callbacks, cleaned);
+            }
+            (CaptureMsg::Audio(Track::Mic, samples, rate), None) => {
+                (callbacks.on_mic)(samples, rate)
+            }
+            (CaptureMsg::Audio(Track::System, samples, rate), None) => {
+                (callbacks.on_system)(samples, rate)
+            }
+            (CaptureMsg::Event(event), _) => (callbacks.on_event)(event),
         }
+    }
+    if let Some(aec) = echo.as_mut() {
+        cleaned_mic(&mut callbacks, aec.finish());
+    }
+}
+
+fn cleaned_mic(callbacks: &mut CaptureCallbacks, samples: Vec<f32>) {
+    if !samples.is_empty() {
+        (callbacks.on_mic)(samples, CAPTURE_SAMPLE_RATE);
     }
 }
 
@@ -422,9 +452,11 @@ impl Drop for CaptureHandle {
 /// Start the mic (echo-cancelled) and system-audio streams. Fails, with
 /// nothing left running, if either cannot start or mic access is not granted.
 ///
-/// - Mic: AVAudioEngine with Voice Processing I/O and minimal ducking of other
-///   apps. If VPIO cannot start, the plain mic is recorded and a
-///   [`CaptureEvent`] says so. Restarts itself on audio device changes.
+/// - Mic: AVAudioEngine, the plain input (the built-in mic instead of a
+///   Bluetooth headset's). It never touches the output device or other apps'
+///   audio. Restarts itself on audio device changes. With the system stream
+///   too, the echo of the meeting playing through the speakers is removed
+///   from it ([`aec`], AEC3 with the system track as reference).
 /// - System: a process tap of all output except Guidy's own process. The
 ///   stream is continuous and wall-clock aligned: silence is filled in while
 ///   nothing plays (the tap itself delivers nothing then), and it is rebuilt
@@ -453,9 +485,10 @@ pub fn start_capture_streams(
         }
         let (tx, rx) = mpsc::channel();
         let inner = macos::Capture::start(streams, tx)?;
+        let echo = (streams.mic && streams.system).then(EchoCanceller::new);
         let delivery = std::thread::Builder::new()
             .name("meeting-capture".into())
-            .spawn(move || deliver(rx, callbacks))?;
+            .spawn(move || deliver(rx, callbacks, echo))?;
         Ok(CaptureHandle {
             inner: Some(inner),
             delivery: Some(delivery),

@@ -35,6 +35,14 @@ pub struct FakeData {
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
     pub usage: guidy_core::llm::usage::UsageReport,
+    /// The download tracker's list (`Backend::downloads`).
+    pub downloads: Vec<guidy_core::downloads::DownloadItem>,
+    /// LLMs and speaker models (`Backend::other_models`).
+    pub other_models: Vec<guidy_core::downloads::OtherModel>,
+    pub disk_usage: guidy_core::downloads::DiskUsage,
+    pub ram_gb: Option<u32>,
+    pub providers_with_keys: Vec<String>,
+    pub apple_intelligence: bool,
 }
 
 /// Records calls as `"name arg1 arg2"` strings.
@@ -66,6 +74,12 @@ impl FakeBackend {
 
     fn rec(&self, call: impl Into<String>) {
         self.calls.lock().push(call.into());
+    }
+
+    /// Whether `name` is listed in `fail_settings` (also used to make
+    /// non-setting calls fail in tests).
+    pub fn fails(&self, name: &str) -> bool {
+        self.data.lock().fail_settings.iter().any(|k| k == name)
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -222,6 +236,9 @@ impl Backend for FakeBackend {
     }
     fn update_post_process_prompt(&self, id: &str, name: &str, _prompt: &str) -> BackendResult<()> {
         self.rec(format!("update_post_process_prompt {id} {name}"));
+        if self.fails("update_post_process_prompt") {
+            return Err("settings file is read-only".into());
+        }
         Ok(())
     }
     fn delete_post_process_prompt(&self, id: &str) -> BackendResult<()> {
@@ -229,7 +246,7 @@ impl Backend for FakeBackend {
         Ok(())
     }
     fn check_apple_intelligence_available(&self) -> bool {
-        false
+        self.data.lock().apple_intelligence
     }
     fn get_available_accelerators(&self) -> AvailableAccelerators {
         AvailableAccelerators {
@@ -265,10 +282,16 @@ impl Backend for FakeBackend {
         Ok(())
     }
     fn llm_usage_report(&self) -> BackendResult<guidy_core::llm::usage::UsageReport> {
+        if self.fails("llm_usage_report") {
+            return Err("usage database is locked".into());
+        }
         Ok(self.data.lock().usage.clone())
     }
     fn clear_llm_usage(&self) -> BackendResult<()> {
         self.rec("clear_llm_usage");
+        if self.fails("clear_llm_usage") {
+            return Err("usage store is read-only".into());
+        }
         self.data.lock().usage = Default::default();
         Ok(())
     }
@@ -404,6 +427,17 @@ impl Backend for FakeBackend {
     fn get_transcription_model_status(&self) -> BackendResult<Option<String>> {
         Ok(self.data.lock().loaded_model.clone())
     }
+    fn complete_onboarding(&self) -> BackendResult<()> {
+        self.rec("complete_onboarding");
+        if let Some(s) = self.data.lock().settings.as_mut() {
+            s.onboarding_completed = true;
+        }
+        Ok(())
+    }
+    fn warm_up_model(&self) -> bool {
+        self.rec("warm_up_model");
+        true
+    }
     fn get_retired_models(&self) -> Vec<RetiredModel> {
         self.data.lock().retired.clone()
     }
@@ -412,12 +446,49 @@ impl Backend for FakeBackend {
         self.data.lock().retired.retain(|m| m.id != model_id);
         Ok(())
     }
+    fn downloads(&self) -> Vec<guidy_core::downloads::DownloadItem> {
+        self.data.lock().downloads.clone()
+    }
+    fn request_download(&self, id: &str) -> BackendResult<()> {
+        self.rec(format!("request_download {id}"));
+        if self.data.lock().fail_download {
+            return Err("network down".into());
+        }
+        Ok(())
+    }
+    fn cancel_tracked_download(&self, id: &str) -> BackendResult<()> {
+        self.rec(format!("cancel_tracked_download {id}"));
+        Ok(())
+    }
+    fn retry_download(&self, id: &str) -> BackendResult<()> {
+        self.rec(format!("retry_download {id}"));
+        Ok(())
+    }
+    fn delete_tracked_model(&self, id: &str) -> BackendResult<()> {
+        self.rec(format!("delete_tracked_model {id}"));
+        Ok(())
+    }
+    fn other_models(&self) -> Vec<guidy_core::downloads::OtherModel> {
+        self.data.lock().other_models.clone()
+    }
+    fn disk_usage(&self) -> guidy_core::downloads::DiskUsage {
+        self.data.lock().disk_usage
+    }
+    fn system_ram_gb(&self) -> Option<u32> {
+        self.data.lock().ram_gb
+    }
+    fn providers_with_api_keys(&self) -> Vec<String> {
+        self.data.lock().providers_with_keys.clone()
+    }
     fn get_history_entries(
         &self,
         cursor: Option<i64>,
         limit: usize,
     ) -> BackendResult<PaginatedHistory> {
         self.rec(format!("get_history_entries {cursor:?} {limit}"));
+        if self.fails("get_history_entries") {
+            return Err("database is locked".into());
+        }
         let all = self.data.lock().history.clone();
         let start = match cursor {
             Some(c) => all

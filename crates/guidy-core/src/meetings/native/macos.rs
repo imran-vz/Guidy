@@ -411,7 +411,7 @@ mod aligner_tests {
 
     #[test]
     fn late_start_is_padded_with_leading_silence() {
-        // The mic's VPIO unit took 200 ms to deliver its first buffer.
+        // The mic took 200 ms to deliver its first buffer.
         let mut a = Aligner::new();
         assert_eq!(a.audio(200.0, 160, 1.0), samples_at(200) + 160);
         assert!(a.track[..samples_at(200)].iter().all(|&s| s == 0.0));
@@ -430,7 +430,7 @@ mod aligner_tests {
 
     #[test]
     fn a_restart_gap_becomes_silence_at_the_right_place() {
-        // 100 ms of audio, then the device changed and VPIO restarted: the
+        // 100 ms of audio, then the device changed and the mic restarted: the
         // next buffer was captured 2 s after the origin.
         let mut a = Aligner::new();
         a.audio(0.0, 1_600, 1.0);

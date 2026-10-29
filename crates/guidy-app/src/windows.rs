@@ -19,13 +19,13 @@ use guidy_core::meetings::settings::RecordingControls;
 use guidy_core::AppHandle;
 use std::sync::Arc;
 
-/// The main window's smallest design size (scaled by [`dp`]).
-pub const MAIN_WIDTH: f32 = 680.;
-pub const MAIN_HEIGHT: f32 = 570.;
-/// Its design size when it first opens: roomier than the minimum, still
-/// inside a 13" display at the default resolution.
-const MAIN_DEFAULT_WIDTH: f32 = 800.;
-const MAIN_DEFAULT_HEIGHT: f32 = 620.;
+/// The main window's smallest size in points (scaled by [`dp`]): every
+/// page still lays out at it.
+pub const MAIN_WIDTH: f32 = 720.;
+pub const MAIN_HEIGHT: f32 = 480.;
+/// Its size when it first opens (later launches restore the saved frame).
+pub const MAIN_DEFAULT_WIDTH: f32 = 900.;
+pub const MAIN_DEFAULT_HEIGHT: f32 = 600.;
 
 #[derive(Default)]
 pub struct Windows {
@@ -59,15 +59,39 @@ fn set_main_visible(visible: bool, cx: &mut App) {
 }
 
 pub fn main_window_options(cx: &App) -> WindowOptions {
-    WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+    let min = size(dp(MAIN_WIDTH), dp(MAIN_HEIGHT));
+    // The frame it had last (this session, else the saved one) when it
+    // still fits a display; else centered at the default size.
+    let displays: Vec<_> = cx.displays().iter().map(|d| d.bounds()).collect();
+    let last = cx
+        .try_global::<crate::window_state::MainFrame>()
+        .map(|f| f.0)
+        .or_else(|| crate::window_state::load(cx).and_then(|s| s.bounds()))
+        .and_then(|b| crate::window_state::usable_bounds(b, min, &displays));
+    let bounds = last.unwrap_or_else(|| {
+        Bounds::centered(
             None,
             size(dp(MAIN_DEFAULT_WIDTH), dp(MAIN_DEFAULT_HEIGHT)),
             cx,
-        ))),
-        window_min_size: Some(size(dp(MAIN_WIDTH), dp(MAIN_HEIGHT))),
+        )
+    });
+    let mut titlebar = TitleBar::title_bar_options();
+    // Centered on the unified title bar's height.
+    titlebar.traffic_light_position = Some(point(dp(12.), dp(12.)));
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(min),
         app_id: Some(guidy_core::host::APP_IDENTIFIER.into()),
+        titlebar: Some(titlebar),
         ..TitleBar::window_options()
+    }
+}
+
+/// Show the settings window on `section` (menu bar, ⌘1…⌘9, Settings…).
+pub fn show_section(section: crate::ui::main_window::Section, cx: &mut App) {
+    show_main(cx);
+    if let Some(main) = main_window_entity(cx) {
+        main.update(cx, |m, cx| m.show_section(section, cx));
     }
 }
 
@@ -88,6 +112,15 @@ pub fn show_main(cx: &mut App) {
         windows(cx).main = None;
     }
 
+    // The section it showed when the app last quit.
+    if !cx.has_global::<crate::ui::main_window::LastSection>() {
+        if let Some(section) = crate::window_state::load(cx)
+            .and_then(|s| s.section)
+            .and_then(|id| crate::ui::main_window::Section::from_id(&id))
+        {
+            cx.set_global(crate::ui::main_window::LastSection(section));
+        }
+    }
     let options = main_window_options(cx);
     match gpui_kit::open_window(options, cx, |window, cx| {
         window.set_window_title(guidy_core::host::PRODUCT_NAME);
@@ -95,6 +128,7 @@ pub fn show_main(cx: &mut App) {
             on_main_closed(cx);
             true
         });
+        crate::window_state::record(window, cx);
         cx.new(|cx| MainWindow::new(window, cx))
     }) {
         Ok((handle, view)) => {
@@ -110,6 +144,7 @@ pub fn show_main(cx: &mut App) {
 /// The close button hides the app into the tray (macOS: drops the Dock
 /// icon when a tray is available).
 pub fn on_main_closed(cx: &mut App) {
+    crate::window_state::save(cx);
     windows(cx).main = None;
     windows(cx).main_view = None;
     set_main_visible(false, cx);
@@ -127,12 +162,38 @@ pub fn on_main_closed(cx: &mut App) {
     }
 }
 
+/// ⌘W in the settings window: close an open dialog or sheet first (like a
+/// sheet on macOS), otherwise close (hide) the window like its close button.
+pub fn close_main(window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::WindowExt;
+    if window.has_active_dialog(cx) {
+        window.close_dialog(cx);
+        return;
+    }
+    if window.has_active_sheet(cx) {
+        window.close_sheet(cx);
+        return;
+    }
+    on_main_closed(cx);
+    window.remove_window();
+}
+
+/// ⌘W with the focus outside the window's views (in a dialog, which lives
+/// in the window root's overlay layer): act on the active window.
+pub fn close_active_window(cx: &mut App) {
+    let Some(handle) = cx.active_window().or_else(|| windows(cx).main) else {
+        return;
+    };
+    let _ = handle.update(cx, |_, window, cx| close_main(window, cx));
+}
+
 /// The live settings-window view, if open.
 pub fn main_window_entity(cx: &App) -> Option<Entity<MainWindow>> {
     cx.try_global::<Windows>()?.main_view.as_ref()?.upgrade()
 }
 
 pub fn hide_main(cx: &mut App) {
+    crate::window_state::save(cx);
     if let Some(handle) = windows(cx).main.take() {
         let _ = cx.update_window(handle, |_, window, _| window.remove_window());
     }
@@ -334,7 +395,7 @@ fn sync_recording_widget(cx: &mut App) {
     let open = windows(cx).recording_widget.clone();
     let current = open.len() == screens.len()
         && RecordingWidgetState::global(cx).is_some_and(|s| {
-            s.read(cx).desk == Desk::from_screens(&screens, crate::ui::design::SCALE)
+            s.read(cx).desk == Desk::from_screens(&screens, crate::ui::design::HUD_SCALE)
         });
     if visible && current {
         let alive = open.iter().all(|h| {
@@ -352,7 +413,7 @@ fn sync_recording_widget(cx: &mut App) {
         return;
     }
     if let Some(state) = RecordingWidgetState::global(cx) {
-        let desk = Desk::from_screens(&screens, crate::ui::design::SCALE);
+        let desk = Desk::from_screens(&screens, crate::ui::design::HUD_SCALE);
         state.update(cx, |s, cx| {
             s.set_desk(desk);
             cx.notify();
@@ -787,6 +848,18 @@ pub fn sync_system_appearance(cx: &mut App) {
 pub fn watch_displays(cx: &mut App) {
     cx.observe_displays(|_, cx| cx.defer(sync_recording_controls))
         .detach();
+}
+
+/// Save the main window's frame and section when the app quits with the
+/// window open.
+pub fn save_state_on_quit(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        if windows(cx).main.is_some() {
+            crate::window_state::save(cx);
+        }
+        async {}
+    })
+    .detach();
 }
 
 pub fn spawn_appearance_watch(cx: &mut App) {

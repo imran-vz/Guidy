@@ -1,5 +1,10 @@
 //! Shortcut recorder row (picking the system or
 //! native-keys implementation from the `keyboard_implementation` setting).
+//!
+//! The key caps are a Tab stop with a focus ring. Click, Enter or Space
+//! starts recording; Esc cancels (it is never recorded); leaving the field,
+//! clicking elsewhere or switching to another app cancels too, so global
+//! shortcuts are never left suspended.
 
 use crate::logic::flows::SECURE_INPUT_HELP_URL;
 use crate::logic::keyboard::{
@@ -31,6 +36,8 @@ pub struct ShortcutInput {
     system: SystemRecorder,
     native_keys: NativeKeysRecorder,
     held_modifiers: Vec<&'static str>,
+    /// Why the last change failed, shown under the row.
+    error: Option<SharedString>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -42,11 +49,22 @@ impl ShortcutInput {
         cx: &mut Context<Self>,
     ) -> Self {
         let state = AppState::global(cx);
+        let focus = cx.focus_handle().tab_stop(true);
         let mut subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| {
                 if let AppEvent::NativeKeys(k) = event {
                     if this.mode == Mode::NativeKeys {
+                        // Esc alone cancels instead of becoming the shortcut.
+                        let esc = k.key.as_deref().is_some_and(|key| {
+                            matches!(key.to_ascii_lowercase().as_str(), "escape" | "esc")
+                        });
+                        if esc && k.modifiers.is_empty() {
+                            if k.is_key_down {
+                                this.cancel(window, cx);
+                            }
+                            return;
+                        }
                         let input = NativeKeysInput {
                             modifiers: &k.modifiers,
                             key: k.key.as_deref(),
@@ -61,6 +79,13 @@ impl ShortcutInput {
                 }
             }),
         ];
+        // Leaving the field or the app mid-recording cancels it.
+        subs.push(cx.on_blur(&focus, window, |this, window, cx| this.cancel(window, cx)));
+        subs.push(cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.cancel(window, cx);
+            }
+        }));
         // Closing the window mid-recording must not leave every shortcut
         // suspended (or the native-keys recorder running).
         subs.push(cx.on_release(|this: &mut Self, cx: &mut App| {
@@ -75,7 +100,8 @@ impl ShortcutInput {
             system: SystemRecorder::default(),
             native_keys: NativeKeysRecorder::default(),
             held_modifiers: Vec::new(),
-            focus: cx.focus_handle(),
+            error: None,
+            focus,
             _subs: subs,
         }
     }
@@ -96,6 +122,7 @@ impl ShortcutInput {
         if self.is_recording() {
             return;
         }
+        self.error = None;
         let id = self.binding_id.to_string();
         self.original = self
             .state
@@ -111,7 +138,10 @@ impl ShortcutInput {
                 let backend = self.state.read(cx).backend.clone();
                 let result = backend.start_native_keys_recording(&id);
                 match result {
-                    Ok(()) => self.mode = Mode::NativeKeys,
+                    Ok(()) => {
+                        self.mode = Mode::NativeKeys;
+                        window.focus(&self.focus, cx);
+                    }
                     Err(e) if e.contains("secure-input-active") => {
                         window.push_notification(
                             Notification::new()
@@ -125,13 +155,12 @@ impl ShortcutInput {
                             cx,
                         );
                     }
-                    Err(e) => window.push_notification(
-                        (
-                            NotificationType::Error,
-                            t_args("settings.general.shortcut.errors.set", &[("error", &e)]),
-                        ),
-                        cx,
-                    ),
+                    Err(e) => {
+                        self.error = Some(t_args(
+                            "settings.general.shortcut.errors.set",
+                            &[("error", &e)],
+                        ))
+                    }
                 }
             }
             KeyboardImplementation::Tauri => {
@@ -182,7 +211,8 @@ impl ShortcutInput {
         cx: &mut Context<Self>,
     ) {
         let id = self.binding_id.to_string();
-        let window_handle = window.window_handle();
+        let _ = window;
+        let this = cx.entity().downgrade();
         let backend = self.state.read(cx).backend.clone();
         let mode = self.reset(cx);
         let id_cb = id.clone();
@@ -198,7 +228,8 @@ impl ShortcutInput {
                 } else {
                     t(error_key)
                 };
-                notify_error(window_handle, message, cx);
+                let show = this.clone();
+                show_error(&show, message, cx);
                 let Some(original) = rollback.filter(|o| !o.is_empty()) else {
                     release(mode, backend, cx);
                     return;
@@ -207,11 +238,7 @@ impl ShortcutInput {
                 s.update_binding(&id, &original, cx, move |_, r, cx| {
                     if r.is_err() {
                         log::error!("Failed to reset binding {id_cb}");
-                        notify_error(
-                            window_handle,
-                            t("settings.general.shortcut.errors.reset"),
-                            cx,
-                        );
+                        show_error(&this, t("settings.general.shortcut.errors.reset"), cx);
                     }
                     release(mode, backend, cx);
                 });
@@ -248,8 +275,28 @@ impl ShortcutInput {
         );
     }
 
-    fn on_key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::System {
+    fn on_key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = e.keystroke.modifiers;
+        let bare = !m.control && !m.alt && !m.shift && !m.platform && !m.function;
+        match self.mode {
+            Mode::Idle => {
+                // Enter or Space starts recording, like clicking.
+                if bare && matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                    self.start(window, cx);
+                    cx.stop_propagation();
+                }
+                return;
+            }
+            Mode::NativeKeys => {
+                // The backend listener records; keep keys from acting here.
+                cx.stop_propagation();
+                return;
+            }
+            Mode::System => {}
+        }
+        if e.keystroke.key == "escape" && bare && self.held_modifiers.is_empty() {
+            self.cancel(window, cx);
+            cx.stop_propagation();
             return;
         }
         let key = gpui_key_name(&e.keystroke.key, OsType::current());
@@ -259,7 +306,7 @@ impl ShortcutInput {
     }
 
     fn on_key_up(&mut self, e: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::System {
+        if self.mode != Mode::System || e.keystroke.key == "escape" {
             return;
         }
         let key = gpui_key_name(&e.keystroke.key, OsType::current());
@@ -377,13 +424,14 @@ impl Render for ShortcutInput {
         };
         let tone = design::tone(cx);
         let input_border = theme.input;
+        let ring = theme.ring;
         // One key cap per key; while recording, a single highlighted cap
         // shows what's held so far.
         let cap = move |text: SharedString| {
             div()
-                .px(dp(8.))
-                .py(dp(5.))
-                .rounded(dp(6.))
+                .px(dp(6.))
+                .py(dp(2.))
+                .rounded(design::RADIUS_CHIP)
                 .border_1()
                 .border_color(input_border)
                 .bg(tone.raised)
@@ -404,12 +452,12 @@ impl Render for ShortcutInput {
         let chip = h_flex()
             .id(SharedString::from(format!("shortcut-chip-{id}")))
             .aria_label(title.clone())
+            .aria_description(t("settings.general.shortcut.recordHint"))
             .track_focus(&self.focus)
             .gap(dp(4.))
             .p(dp(2.))
-            .rounded(dp(8.))
+            .rounded(design::RADIUS_CONTROL)
             .border_1()
-            .cursor_pointer()
             .children(caps.into_iter().map(move |k| {
                 cap(k).when(recording, |d| {
                     d.border_color(tone.accent_text)
@@ -422,6 +470,7 @@ impl Render for ShortcutInput {
                 d.border_color(gpui_kit::transparent_black())
                     .hover(move |s| s.border_color(tone.accent_soft))
             })
+            .focus_visible(move |s| s.border_color(ring))
             .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
             .on_mouse_down_out(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
             .on_key_down(cx.listener(Self::on_key_down))
@@ -432,14 +481,20 @@ impl Render for ShortcutInput {
         let reset_id = id.clone();
         SettingRow::new(row_id, title)
             .description(desc)
-            .control(h_flex().gap_1().child(chip).child(reset_button(
-                SharedString::from(format!("shortcut-reset-{id}")),
-                updating,
-                move |_, cx| {
-                    let id = reset_id.clone();
-                    AppState::global(cx).update(cx, |s, cx| s.reset_binding(&id, cx));
-                },
-            )))
+            .error(self.error.clone())
+            .control(
+                h_flex()
+                    .gap_1()
+                    .child(reset_button(
+                        SharedString::from(format!("shortcut-reset-{id}")),
+                        updating,
+                        move |_, cx| {
+                            let id = reset_id.clone();
+                            AppState::global(cx).update(cx, |s, cx| s.reset_binding(&id, cx));
+                        },
+                    ))
+                    .child(chip),
+            )
             .into_any_element()
     }
 }
@@ -476,9 +531,10 @@ fn release(mode: Mode, backend: crate::backend::SharedBackend, cx: &mut App) {
     }
 }
 
-fn notify_error(window: AnyWindowHandle, message: SharedString, cx: &mut App) {
-    let _ = cx.update_window(window, |_, window, cx| {
-        window.push_notification((NotificationType::Error, message), cx);
+fn show_error(this: &WeakEntity<ShortcutInput>, message: SharedString, cx: &mut App) {
+    let _ = this.update(cx, |this, cx| {
+        this.error = Some(message);
+        cx.notify();
     });
 }
 

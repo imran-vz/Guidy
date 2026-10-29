@@ -36,23 +36,12 @@
     "about": "O aplikaci"
   },
   "usage": {
-    "title": "Využití",
-    "description": "Kolik stáli cloudoví poskytovatelé AI a jakou práci odvedly modely na tomto Macu.",
-    "cloud": "Cloud",
     "local": "Na tomto Macu",
     "refresh": "Obnovit",
     "total": "Celkem utraceno",
     "last30Days": "Posledních 30 dní",
     "callsTitle": "Volání",
-    "byModel": "Podle modelu",
-    "byFeature": "Podle funkce",
     "empty": "Zatím žádná volání cloudové AI.",
-    "calls_one": "{{count}} volání",
-    "calls_other": "{{count}} volání",
-    "average": "průměr {{cost}}",
-    "highest": "nejvíce {{cost}}",
-    "tokens": "tokeny: {{input}} vstup / {{output}} výstup",
-    "unknownPrice": "cena neznámá",
     "feature": {
       "dictation": "Diktování",
       "meetingTranscription": "Přepis schůzek",
@@ -61,37 +50,17 @@
       "other": "Ostatní"
     },
     "localAudio": "Přepsaný zvuk",
-    "localWords": "Slova",
-    "localTokens": "Tokeny LLM",
-    "localCloudEquivalent": "Ekvivalent v cloudu",
     "localEmpty": "Na lokálním modelu zatím nic neběželo.",
-    "localByModel": "Lokální modely",
-    "localByFeature": "Lokální práce podle funkce",
     "kind": {
       "transcription": "Přepis",
       "llm": "Vestavěný LLM"
     },
-    "runs_one": "{{count}} spuštění",
-    "runs_other": "{{count}} spuštění",
-    "audio": "{{duration}} zvuku",
-    "words": "Slova: {{count}}",
-    "realtime": "{{speed}} reálného času",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "generování {{speed}}",
-    "loadTime": "načtení za {{time}}",
-    "localNote": "Rychlost vůči reálnému času je délka zvuku ÷ doba zpracování, bez načítání; diktování dekódované živě během mluvení se neměří. Ekvivalent v cloudu počítá zvuk za ${{price}} za minutu (OpenAI Whisper).",
     "estimateNote": "~ označuje částky odhadnuté z veřejných cen za token; u poskytovatelů, kteří hlásí vlastní cenu (např. OpenRouter), jsou přesné. Vyúčtování najdete na nástěnce svého poskytovatele.",
     "reportedNote": "Částky odpovídají údajům poskytovatelů. Vyúčtování najdete na nástěnce svého poskytovatele.",
-    "clear": "Vymazat historii",
     "clearTitle": "Vymazat historii využití?",
     "clearConfirm": "Zaznamenaná volání, náklady a spuštění lokálních modelů budou smazány. Využití zobrazené u shrnutí schůzek zůstane."
   },
   "onboarding": {
-    "subtitle": "Pro začátek vyberte model pro přepis",
-    "existingModelsTitle": "Kompatibilní modely",
-    "downloadModelsTitle": "Dostupné ke stažení",
-    "showAllModels": "Zobrazit všech {{total}} modelů",
-    "showFewerModels": "Zobrazit méně modelů",
     "recommended": "Doporučeno",
     "customModelDescription": "Oficiálně nepodporováno",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Starý formát",
       "failed": "Stahování selhalo",
       "retry": "Zkusit znovu",
-      "chooseAnother": "Vybrat jiný model",
       "download": "Stáhnout modely ({{size}})",
       "continue": "Pokračovat",
       "timeRemaining": "Zbývá {{time}}"
@@ -150,7 +118,6 @@
       "grant": "Udělit oprávnění",
       "granted": "Uděleno",
       "waiting": "Čekání...",
-      "allGranted": "Vše připraveno!",
       "errors": {
         "checkFailed": "Nepodařilo se zkontrolovat oprávnění. Zkuste to prosím znovu.",
         "requestFailed": "Nepodařilo se požádat o oprávnění. Zkuste to prosím znovu."
@@ -162,10 +129,6 @@
     "streaming": "Streaming",
     "active": "Aktivní",
     "noModelsAvailable": "Nejsou dostupné žádné modely",
-    "verifying": "Ověřování {{modelName}}...",
-    "verifyingGeneric": "Ověřování...",
-    "downloading": "Stahování {{percentage}}%",
-    "downloadingMultiple": "Stahování {{count}} modelů...",
     "modelReady": "Model připraven",
     "loading": "Načítám {{modelName}}...",
     "loadingGeneric": "Načítání...",
@@ -176,29 +139,18 @@
     "switching": "Přepínání...",
     "downloadSpeed": "{{speed}} MB/s",
     "capabilities": {
-      "languageSelection": "Podporuje více vstupních jazyků",
       "languageCount": "{{total}} jazyků",
-      "translation": "Umí překládat do angličtiny",
       "translate": "Přeložit do angličtiny",
-      "singleLanguage": "Podporuje pouze tento jazyk",
-      "languageOnly": "Pouze {{language}}",
-      "streaming": "Zobrazuje přepis živě, jak mluvíte"
+      "languageOnly": "Pouze {{language}}"
     },
     "download": "Stáhnout",
     "use": "Použít",
-    "cancel": "Zrušit",
     "cancelDownload": "Zrušit stahování",
     "legacy": "Zastaralé"
   },
   "settings": {
-    "modelSettings": {
-      "title": "Nastavení {{model}}"
-    },
     "models": {
-      "title": "Modely přepisu",
-      "description": "Vyberte model přepisu nebo stáhněte další modely. Různé modely nabízejí různé úrovně přesnosti a rychlosti.",
       "deleteConfirm": "Opravdu chcete smazat {{modelName}}? Pro opětovné použití jej budete muset znovu stáhnout.",
-      "deleteActiveConfirm": "{{modelName}} je váš aktivní model. Jeho smazáním se zastaví přepisy, dokud nevyberete nový model. Opravdu chcete pokračovat?",
       "deleteTitle": "Smazat model",
       "retiredNotice": {
         "title": "Staré modely už s Guidy nefungují",
@@ -213,17 +165,12 @@
         "translation": "Filtrovat modely podporující překlad do angličtiny"
       },
       "noModelsMatch": "Tomuto filtru neodpovídají žádné modely.",
-      "yourModels": "Stažené modely",
-      "availableModels": "Dostupné ke stažení",
       "searchPlaceholder": "Hledat modely podle názvu…",
       "rescan": {
-        "label": "Znovu prohledat",
         "tooltip": "Znovu prohledat modely přidané do složky modelů nebo mezipaměti Hugging Face mimo Guidy"
       }
     },
     "general": {
-      "title": "Obecné",
-      "description": "Jak spouštíte diktování, jaký jazyk poslouchá a co uslyšíte.",
       "shortcutsGroup": "Zkratky",
       "shortcut": {
         "title": "Zkratky Guidy",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "Jazyk",
-        "description": "Vyberte jazyk rozpoznávání řeči. Auto jazyk určí automaticky, zatímco výběr konkrétního jazyka může zlepšit přesnost.",
         "searchPlaceholder": "Hledat jazyky...",
         "noResults": "Žádné jazyky nenalezeny",
         "auto": "Automaticky"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "Zvuk",
       "microphone": {
         "title": "Mikrofon",
-        "description": "Vyberte preferované zařízení mikrofonu",
         "placeholder": "Vyberte mikrofon...",
         "loading": "Načítání..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Výstupní zařízení",
-        "description": "Vyberte preferované výstupní zařízení pro zvuky odezvy",
         "placeholder": "Vyberte výstupní zařízení...",
         "loading": "Načítání..."
       },
       "volume": {
-        "title": "Hlasitost",
-        "description": "Upravte hlasitost zvukové odezvy"
+        "title": "Hlasitost"
       }
     },
     "advanced": {
-      "title": "Pokročilé",
-      "description": "Spouštění, vkládání, ladění přepisu a historie.",
       "groups": {
         "app": "Aplikace",
         "output": "Výstup",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Spouštět skrytě",
-        "description": "Spustit do systémové lišty bez otevření okna."
+        "description": "Spustit do systémové lišty bez otevření okna.",
+        "descriptionMac": "Spustit do řádku nabídek bez otevření okna."
       },
       "autostart": {
         "label": "Spouštět při startu",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Zobrazit ikonu v systémové liště",
-        "description": "Zobrazit ikonu Guidy v systémové liště."
+        "description": "Zobrazit ikonu Guidy v systémové liště.",
+        "descriptionMac": "Zobrazit ikonu Guidy v řádku nabídek."
       },
       "overlay": {
         "style": {
-          "title": "Překryv",
           "description": "Vyberte překryv při nahrávání: „Žádné“ jej skryje, „Minimální“ zobrazí kompaktní indikátor, „Živě“ zobrazuje přepis v reálném čase, když mluvíte (pouze modely podporující streaming — hledejte odznak „Streaming“ ve výběru modelů). Na Linuxu se doporučuje „Žádné“.",
+          "descriptionMac": "Vyberte překryv při nahrávání: „Žádné“ jej skryje, „Minimální“ zobrazí kompaktní indikátor, „Živě“ zobrazuje přepis v reálném čase, když mluvíte (pouze modely podporující streaming — hledejte odznak „Streaming“ ve výběru modelů).",
           "options": {
             "none": "Žádné",
             "minimal": "Minimální",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Automatické odeslání",
         "description": "Automaticky odešle vybranou kombinaci kláves po vložení textu. Cmd+Enter platí pro macOS, zatímco Windows/Linux používají Super+Enter.",
+        "descriptionMac": "Automaticky odešle vybranou kombinaci kláves po vložení textu.",
         "options": {
           "off": "Vypnuto",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Následné zpracování",
-      "description": "Před vložením přepis vyčistí nebo přepíše pomocí AI modelu.",
       "hotkey": {
         "title": "Klávesová zkratka"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Poskytovatel",
-          "description": "Vyberte poskytovatele kompatibilního s OpenAI nebo Anthropic."
+          "title": "Poskytovatel"
         },
         "builtin": {
           "label": "Vestavěný model (na tomto Macu)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "Formát API",
-          "description": "Formát požadavku očekávaný vaším vlastním endpointem.",
           "options": {
             "openai": "Kompatibilní s OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "Základní URL",
-          "description": "Základní URL API pro vybraného poskytovatele. Upravitelné je pouze u vlastního poskytovatele.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API klíč",
-          "description": "API klíč pro vybraného poskytovatele.",
           "placeholder": "sk-...",
           "saveFailed": "API klíč se nepodařilo uložit"
         },
@@ -500,54 +437,33 @@
           "title": "Model",
           "descriptionCustom": "Zadejte identifikátor modelu očekávaný vaším vlastním endpointem.",
           "descriptionDefault": "Vyberte model dostupný u vybraného poskytovatele.",
-          "placeholderWithOptions": "Vyhledejte nebo vyberte model",
           "placeholderNoOptions": "Zadejte název modelu",
           "refreshModels": "Obnovit modely"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Vybraný prompt",
-          "description": "Vyberte šablonu pro zpřesnění přepisu nebo vytvořte novou. V textu promptu použijte ${output} pro vložení zachyceného přepisu."
-        },
-        "noPrompts": "Nejsou k dispozici žádné prompty",
-        "selectPrompt": "Vyberte prompt",
         "createNew": "Vytvořit nový prompt",
         "promptLabel": "Název promptu",
         "promptLabelPlaceholder": "Zadejte název promptu",
         "promptInstructions": "Instrukce promptu",
         "promptInstructionsPlaceholder": "Napište instrukce, které se mají spustit po přepisu. Příklad: Zlepšete gramatiku a srozumitelnost následujícího textu: ${output}",
         "promptTip": "Tip: Použijte <code>${output}</code> pro vložení přepsaného textu do promptu.",
-        "updatePrompt": "Aktualizovat prompt",
-        "deletePrompt": "Smazat prompt",
-        "createPrompt": "Vytvořit prompt",
-        "cancel": "Zrušit",
-        "selectToEdit": "Vyberte výše prompt, abyste zobrazili a upravili jeho podrobnosti.",
-        "createFirst": "Klikněte nahoře na 'Vytvořit nový prompt' a vytvořte svůj první prompt pro následné zpracování."
+        "deletePrompt": "Smazat prompt"
       }
     },
     "history": {
-      "title": "Historie",
-      "openFolder": "Otevřít složku nahrávek",
-      "loading": "Načítám historii...",
-      "empty": "Zatím žádné přepisy. Začněte nahrávat a vytvořte si historii!",
       "copyToClipboard": "Kopírovat přepis do schránky",
       "copyError": "Přepis se nepodařilo zkopírovat do schránky.",
       "save": "Uložit přepis",
       "unsave": "Odebrat z uložených",
       "delete": "Smazat záznam",
-      "deleteError": "Nepodařilo se smazat záznam. Zkuste to prosím znovu.",
       "retranscribe": "Přepsat znovu",
-      "retranscribeError": "Opětovný přepis se nezdařil. Zkuste to prosím znovu.",
       "transcribing": "Přepisuji...",
       "transcriptionFailed": "Přepis selhal. Můžete zkusit přepis znovu pomocí ikony opakování."
     },
     "debug": {
-      "title": "Ladění",
       "logDirectory": {
-        "title": "Složka protokolů",
-        "description": "Umístění, kde jsou uloženy soubory protokolu"
+        "title": "Složka protokolů"
       },
       "logLevel": {
         "title": "Úroveň logování",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Živé logy",
-        "description": "Sledujte logy aplikace v reálném čase a diagnostikujte problémy bez otevírání souboru logu. Zobrazují se pouze logy vytvořené, když je tento panel otevřený; respektuje nastavení Úroveň logování výše.",
         "live": "Živě",
         "paused": "Pozastaveno",
         "pause": "Pozastavit",
@@ -617,11 +532,6 @@
         "description": "Zvolte backend pro klávesové zkratky.",
         "bindingsReset": "Klávesové zkratky byly nekompatibilní a byly obnoveny na výchozí hodnoty"
       },
-      "paths": {
-        "appData": "Data aplikace:",
-        "models": "Modely:",
-        "settings": "Nastavení:"
-      },
       "pasteDelay": {
         "title": "Zpoždění vložení (před)",
         "description": "Zpoždění (v milisekundách) po zkopírování textu, před odesláním klávesy pro vložení. Zvyšte, pokud se nic nevloží."
@@ -666,8 +576,7 @@
         "title": "Náhled novinek",
         "description": "Otevřít nejnovější přibalené poznámky k vydání bez označení jako zobrazené",
         "button": "Náhled",
-        "noNotes": "Nebyly nalezeny žádné přibalené poznámky k vydání",
-        "error": "Nepodařilo se zobrazit náhled poznámek k vydání"
+        "noNotes": "Nebyly nalezeny žádné přibalené poznámky k vydání"
       },
       "onboardingPreview": {
         "title": "Náhled úvodního nastavení",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "O aplikaci",
-      "version": {
-        "title": "Verze",
-        "description": "Aktuální verze Guidy"
-      },
       "author": {
         "title": "Vytvořil",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "Adresář dat aplikace",
-        "description": "Umístění, kde Guidy ukládá data"
-      },
-      "sourceCode": {
-        "title": "Zdrojový kód",
-        "description": "Zobrazit zdrojový kód a přispět",
-        "button": "Zobrazit na GitHubu"
-      },
-      "supportDevelopment": {
-        "title": "Podpořte vývoj",
-        "description": "Pomozte nám pokračovat ve vývoji Guidy",
-        "button": "Přispět"
+        "title": "Adresář dat aplikace"
       },
       "acknowledgments": {
         "title": "Poděkování",
@@ -708,12 +601,6 @@
           "description": "Vysoce výkonné inferenční zpracování modelu automatického rozpoznávání řeči Whisper od OpenAI",
           "details": "Guidy používá ggml pro rychlé lokální zpracování řeči na text. Díky skvělé práci Georgiho Gerganova a přispěvatelů."
         }
-      },
-      "hero": {
-        "headline": "Převod řeči na text, který zůstává na tomto Macu",
-        "lede": "Stiskněte zkratku, mluvte a Guidy píše do aktivní aplikace. Přepis probíhá lokálně.",
-        "engine": "Engine",
-        "model": "Model"
       },
       "whatsNewUpdates": {
         "label": "Zobrazovat novinky",
@@ -741,7 +628,6 @@
     "delete": "Smazat",
     "back": "Zpět",
     "close": "Zavřít",
-    "open": "Otevřít",
     "copy": "Kopírovat",
     "clear": "Vymazat",
     "noOptionsFound": "Nenalezeny žádné možnosti"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "Přepis selhal"
   },
   "appLanguage": {
-    "title": "Jazyk aplikace",
-    "description": "Změňte jazyk rozhraní Guidy"
+    "title": "Jazyk aplikace"
   },
   "theme": {
     "title": "Motiv aplikace",
-    "description": "Zvolte, zda má Guidy sledovat motiv systému, nebo zůstat světlý či tmavý",
     "options": {
       "system": "Systém",
       "light": "Světlý",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Schůzky",
     "selection": {
-      "hint": "Přetažením nebo Shift-kliknutím označíte více řádků",
       "count_one": "Vybrán {{count}} řádek",
       "count_other": "Vybrané řádky: {{count}}",
       "keys": "Shift-klik: rozsah · ⌘-klik: přidat nebo odebrat · Esc: zrušit výběr",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Znovu určit mluvčí",
-      "tooltip": "Znovu rozlišit mluvčí pomocí {{model}}. Přepis zůstane. Řádky, které jste označili, a mluvčí, které jste pojmenovali, si ponechají svou osobu; ostatní se znovu přiřadí podle hlasu.",
       "standard": "Standardní model mluvčích",
       "download": "Jednorázové stažení {{size}}",
       "error": "Mluvčí se nepodařilo znovu určit",
@@ -826,7 +708,6 @@
       "yesterday": "Včera"
     },
     "copy": {
-      "summary": "Kopírovat",
       "transcript": "Kopírovat přepis",
       "copied": "Zkopírováno",
       "notes": "Kopírovat poznámky",
@@ -866,7 +747,6 @@
       "openNotes": "Otevřít poznámky",
       "expand": "Zobrazit živý přepis",
       "collapse": "Sbalit",
-      "liveTitle": "Živý přepis",
       "liveHint": "Co zatím zaznělo. Úplný přepis se jmény mluvčích vznikne po skončení schůzky.",
       "callTitle": "Hovor {{app}}",
       "callPrompt": "Psát poznámky ze schůzky?",
@@ -875,7 +755,6 @@
       "startFailed": "Nepodařilo se spustit. Zkusit znovu?",
       "dismiss": "Teď ne"
     },
-    "description": "Nahrajte schůzku na tomto Macu a pak si přečtěte přepis s pojmenovanými mluvčími.",
     "init": {
       "starting": "Spouštění poznámek ze schůzek...",
       "failed": "Poznámky ze schůzek se nepodařilo spustit",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Nejprve vytvořte shrnutí schůzky: název se píše podle něj."
     },
     "model": {
-      "download": "Stáhnout model pro schůzky",
       "downloadError": "Model pro schůzky se nepodařilo stáhnout"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Spustit poznámky ze schůzky",
       "stop": "Zastavit poznámky ze schůzky",
-      "recording": "Nahrávání",
-      "idle": "Nenahrává se",
       "startError": "Nahrávání se nepodařilo spustit",
       "stopError": "Nahrávání se nepodařilo zastavit",
       "disabled": "Pro nahrávání zapněte poznámky ze schůzek v Nastavení."
     },
-    "upcoming": {
-      "title": "Nadcházející",
-      "empty": "Žádné nadcházející schůzky v kalendáři s odkazem na hovor.",
-      "start": "Spustit"
-    },
     "list": {
-      "title": "Nahrávky",
-      "empty": "Zatím žádné schůzky. Spusťte poznámky ze schůzky a nějakou nahrajte.",
       "loading": "Načítání schůzek...",
       "loadError": "Schůzky se nepodařilo načíst",
-      "speakerModelMissing": "Nahrávky se nezpracují, dokud nestáhnete model rozpoznávání mluvčích.",
       "minutes": "{{count}} min",
-      "open": "Otevřít",
       "rename": "Přejmenovat",
       "delete": "Smazat",
       "process": "Zpracovat",
       "retry": "Zkusit znovu",
       "cancelProcessing": "Zrušit zpracování",
-      "save": "Uložit",
       "cancel": "Zrušit",
       "titlePlaceholder": "Název schůzky",
       "deleteTitle": "Smazat schůzku?",
@@ -979,7 +845,6 @@
       "share": "Podíl",
       "youSpoke": "Vy jste mluvili",
       "minutes": "Min",
-      "speakersToName": "{{count}} k pojmenování",
       "notesTab": "Poznámky"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Lidé",
-      "description": "Lidé, které jste pojmenovali ve schůzkách. Guidy rozpozná jejich hlasy v dalších schůzkách.",
       "empty": "Zatím žádní lidé. Pojmenujte mluvčího ve schůzce a přidejte ho.",
       "loadError": "Lidi se nepodařilo načíst",
       "voiceprints_one": "{{count}} hlasový otisk",
       "voiceprints_other": "Hlasové otisky: {{count}}",
-      "edit": "Upravit",
       "merge": "Sloučit",
       "mergeInto": "Sloučit do...",
       "mergeHint": "Vyberte osobu, která zůstane. Hlasové otisky a jména mluvčích přejdou na ni.",
@@ -1035,7 +898,6 @@
       "renameError": "Osobu se nepodařilo upravit",
       "namePlaceholder": "Jméno",
       "emailPlaceholder": "E-mail (volitelné)",
-      "save": "Uložit",
       "cancel": "Zrušit",
       "voice": {
         "title": "Váš hlas",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Poznámky ze schůzek",
       "enabled": {
         "title": "Poznámky ze schůzek",
         "description": "Nahrávejte schůzky mikrofonem a zvukem počítače. Po zapnutí budete požádáni o přístup ke kalendáři, systémovému zvuku a oznámením."
@@ -1077,7 +938,6 @@
         "requestAgain": "Požádat znovu",
         "openSettings": "Otevřít Nastavení systému"
       },
-      "you": "Vy",
       "userName": {
         "title": "Vaše jméno",
         "description": "Stopa vašeho mikrofonu je vždy označena tímto jménem.",
@@ -1128,7 +988,6 @@
         "description": "Rozlišuje hlasy a rozpoznává dříve pojmenované osoby. Používá {{name}} ({{trainedOn}}), {{size}}. Stáhne se, až když kliknete na Stáhnout.",
         "ready": "Staženo",
         "download": "Stáhnout ({{size}})",
-        "retry": "Zkusit stáhnout znovu",
         "failed": "Stahování selhalo: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} min"
       },
       "advanced": {
-        "title": "Pokročilé",
-        "show": "Zobrazit pokročilá nastavení",
-        "hide": "Skrýt pokročilá nastavení",
         "matchThreshold": {
           "title": "Práh automatické shody",
           "description": "Podobnost hlasu, od které se mluvčí pojmenuje automaticky. Pod ní se shoda zeptá „Potvrdit?“."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Rozpoznání střídání mluvčích",
         "description": "Rozdělí řádky tam, kde se mění hlas ({{size}}). Dokud nejsou staženy, řádky se dělí v pauzách.",
-        "ready": "Připraveno",
-        "downloading": "Stahování",
-        "download": "Stáhnout ({{size}})"
+        "descriptionReady": "Rozdělí řádky tam, kde se mění hlas."
       },
       "callSuggestions": {
         "title": "Navrhovat poznámky při hovorech",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Hledat v názvech, shrnutích a přepisech",
       "searching": "Hledání...",
       "empty": "Hledání „{{query}}“ neodpovídá žádná schůzka.",
       "count_one": "1 schůzka",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Nastavení",
-      "models": "Modely",
-      "note": "Nahrávat můžete ještě před dokončením stahování modelů. Zpracování počká, až budou připraveny.",
-      "downloading": "Stahování",
-      "downloadingPercent": "Stahování {{percent}}%",
-      "ready": "Připraveno",
-      "notDownloaded": "Nestaženo",
-      "download": "Stáhnout",
-      "dismiss": "Zavřít",
-      "optional": "Volitelné"
-    },
     "downloads": {
       "activity": "Stahování {{name}} · {{percent}}%",
       "activityFailed": "Stahování selhalo · {{name}}",
-      "multiple": "Stahování {{count}} modelů",
-      "cancel": "Zrušit",
       "retry": "Zkusit znovu",
       "done": "{{name}} stažen",
       "failed": "{{name}} se nepodařilo stáhnout",
       "startError": "Stahování se nepodařilo spustit",
       "empty": "Žádná stahování",
-      "queued": "Ve frontě",
-      "doneShort": "Hotovo",
       "failedShort": "Selhalo",
       "cancelled": "Zrušeno"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Úkoly",
       "generate": "Vytvořit shrnutí",
       "regenerate": "Vytvořit znovu",
-      "regenerateWith": "Vytvořit znovu pomocí...",
       "generateWith": "Vytvořit pomocí {{model}}",
       "otherModels": "Další modely",
       "otherModel": "Jiný model…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Shrnutí",
-      "provider": "Poskytovatel",
-      "providerDescription": "Model používaný pro shrnutí schůzek a úkoly. Následné zpracování diktování si ponechává vlastního poskytovatele.",
       "builtin": "Vestavěný (na tomto Macu)",
       "builtinDescription": "Spouští lokální model pomocí llama.cpp. Nic neopustí váš Mac.",
-      "model": "Model",
-      "modelDescription": "Zaškrtnutím přidáte model mezi své modely. Zobrazují se jen modely s textovým výstupem. „Vhodné pro shrnutí“ znamená, že model podporuje strukturovaný výstup, na kterém shrnutí závisí.",
       "modelPlaceholder": "ID modelu",
       "pickModel": "Vyberte model",
-      "noLocalModels": "Stáhněte model níže",
-      "usingPostProcessModel": "Používá se model následného zpracování ({{model}})",
       "refreshModels": "Obnovit",
       "testConnection": "Otestovat připojení",
-      "testDescription": "Ověří, že poskytovatel, klíč a model fungují.",
       "apple": "Apple Intelligence",
       "appleDescription": "Model přímo v zařízení na Macích s Apple Silicon a zapnutým Apple Intelligence.",
-      "appleAvailable": "K dispozici",
       "appleUnavailable": "Apple Intelligence není na tomto Macu k dispozici",
       "activeHeading": "Shrnutí vytváří",
-      "place": "Kde shrnutí běží",
-      "placeDescription": "Použije se pouze vybraná možnost.",
       "tabCloud": "Cloudový poskytovatel",
       "tabLocal": "Na tomto Macu",
       "onThisMac": "Tento Mac · offline",
       "apiKey": "API klíč",
       "apiKeyDescription": "Uložen v Klíčence a sdílen s Následným zpracováním.",
       "getKey": "Získat klíč {{provider}}",
-      "modelDescriptionCustom": "Zadejte ID modelu, které váš endpoint očekává, a stiskem Enter jej přidejte, nebo zaškrtněte některý z nabízených.",
       "searchModels": "Hledat modely",
       "goodOnly": "Vhodné pro shrnutí",
       "goodForSummaries": "shrnutí",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Na tomto Macu není k dispozici. Zapněte ho v Nastavení systému > Apple Intelligence a Siri.",
       "unavailable": "nedostupné",
       "yourModels": "Vaše modely",
-      "yourModelsDescription": "Vytvořit shrnutí nabízí všechny modely zde, takže můžete pro každou schůzku zvolit jiný. Vybraný je výchozí.",
       "yourModelsEmpty": "Zatím žádné cloudové modely. Níže vyberte poskytovatele, přidejte jeho API klíč a zaškrtněte požadované modely.",
       "default": "výchozí",
       "removeModel": "Odebrat z vašich modelů",
-      "addFrom": "Přidat modely od",
-      "addFromDescription": "Vyberte poskytovatele, zadejte jeho klíč a zaškrtněte modely k přidání. Výchozí model se nezmění."
+      "addFrom": "Přidat modely od"
     },
     "local": {
       "heading": "Lokální modely",
@@ -1438,9 +1260,7 @@
       "default": "Výchozí",
       "recommendedRam": "Doporučeno pro {{gb}} GB+ RAM",
       "notEnoughRam": "Tento Mac má méně paměti, než je pro tento model doporučeno.",
-      "downloaded": "Staženo",
-      "download": "Stáhnout",
-      "downloading": "Stahování {{percentage}}%"
+      "downloaded": "Staženo"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Připojeno jako {{name}}"
     },
     "byok": {
-      "testConnection": "Otestovat připojení",
-      "testDescription": "Ověří základní URL, API klíč a model malým požadavkem.",
-      "baseUrlEditable": "Základní URL API pro tohoto poskytovatele. Nahraďte každý {placeholder} (např. ID svého účtu Cloudflare).",
-      "cloudflareHint": "Cloudflare: do základní URL vložte ID svého účtu (a pro AI Gateway i ID brány)."
+      "testDescription": "Ověří základní URL, API klíč a model malým požadavkem."
     }
   }
 }

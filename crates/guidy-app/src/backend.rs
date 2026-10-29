@@ -6,6 +6,7 @@
 //! views call them from background tasks.
 
 use guidy_core::commands::audio::{AudioDevice, CustomSounds, WindowsMicrophonePermissionStatus};
+use guidy_core::downloads::{DiskUsage, DownloadItem, OtherModel};
 use guidy_core::managers::history::PaginatedHistory;
 use guidy_core::managers::model::{ModelInfo, RetiredModel};
 use guidy_core::managers::transcription::AvailableAccelerators;
@@ -109,6 +110,58 @@ pub trait Backend: Send + Sync + 'static {
     fn get_transcription_model_status(&self) -> BackendResult<Option<String>>;
     fn get_retired_models(&self) -> Vec<RetiredModel>;
     fn delete_retired_model(&self, model_id: &str) -> BackendResult<()>;
+    /// Mark first-run setup as done (with or without a model).
+    fn complete_onboarding(&self) -> BackendResult<()> {
+        self.update_setting("onboarding_completed", Value::Bool(true))
+    }
+    /// Load the selected speech model in the background so the first
+    /// dictation doesn't wait (no-op when it unloads immediately or nothing
+    /// is downloaded). True when a load started.
+    fn warm_up_model(&self) -> bool {
+        false
+    }
+
+    // -- downloads: every model kind (guidy_core::downloads) ----------------
+    // Ids are tracker ids: `stt:<model id>`, `llm:<catalog id>`,
+    // `speaker:resnet34`, `separation:<id>`, `segmentation:pyannote`.
+    /// The download tracker's list (queued, running, finished, failed).
+    fn downloads(&self) -> Vec<DownloadItem> {
+        Vec::new()
+    }
+    /// Queue a download (returns at once; progress arrives as
+    /// `downloads://changed`). Fails when it won't fit on disk.
+    fn request_download(&self, _id: &str) -> BackendResult<()> {
+        Err("downloads are not available".into())
+    }
+    /// Stop a queued or running download (a partial file is kept).
+    fn cancel_tracked_download(&self, _id: &str) -> BackendResult<()> {
+        Ok(())
+    }
+    /// Start a failed or cancelled download again (resuming it).
+    fn retry_download(&self, id: &str) -> BackendResult<()> {
+        self.request_download(id)
+    }
+    /// Delete a downloaded LLM or speaker model (blocking). Speech-to-text
+    /// models go through [`Backend::delete_model`].
+    fn delete_tracked_model(&self, _id: &str) -> BackendResult<()> {
+        Err("not supported".into())
+    }
+    /// The LLMs and speaker models with their state on disk.
+    fn other_models(&self) -> Vec<OtherModel> {
+        Vec::new()
+    }
+    /// Bytes models use, and what's free (walks the model dirs).
+    fn disk_usage(&self) -> DiskUsage {
+        DiskUsage::default()
+    }
+    /// Physical memory, for recommending a local LLM.
+    fn system_ram_gb(&self) -> Option<u32> {
+        None
+    }
+    /// LLM providers (post-processing / summaries) with an API key saved.
+    fn providers_with_api_keys(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     // -- history ----------------------------------------------------------
     fn get_history_entries(
@@ -616,27 +669,16 @@ impl Backend for CoreBackend {
         block_on(guidy_core::commands::models::rescan_local_models(mm))
     }
 
+    /// Queues the download and returns at once: the download runs on the
+    /// core runtime and reports through events (`model-download-*`,
+    /// `downloads://changed`), never holding a UI background thread.
     fn download_model(&self, model_id: &str) -> BackendResult<()> {
-        let mm = self
-            .app
-            .try_state::<Arc<guidy_core::managers::model::ModelManager>>()
-            .ok_or("Model manager not ready")?;
-        block_on(guidy_core::commands::models::download_model(
-            self.a(),
-            mm,
-            model_id.into(),
-        ))
+        self.request_download(&guidy_core::downloads::stt_id(model_id))
     }
 
     fn cancel_download(&self, model_id: &str) -> BackendResult<()> {
-        let mm = self
-            .app
-            .try_state::<Arc<guidy_core::managers::model::ModelManager>>()
-            .ok_or("Model manager not ready")?;
-        block_on(guidy_core::commands::models::cancel_download(
-            mm,
-            model_id.into(),
-        ))
+        guidy_core::downloads::cancel(&self.app, &guidy_core::downloads::stt_id(model_id));
+        Ok(())
     }
 
     fn delete_model(&self, model_id: &str) -> BackendResult<()> {
@@ -681,6 +723,15 @@ impl Backend for CoreBackend {
         block_on(guidy_core::commands::models::get_transcription_model_status(tm))
     }
 
+    fn complete_onboarding(&self) -> BackendResult<()> {
+        guidy_core::commands::models::complete_onboarding(&self.app);
+        Ok(())
+    }
+
+    fn warm_up_model(&self) -> bool {
+        guidy_core::commands::models::warm_up_selected_model(&self.app)
+    }
+
     fn get_retired_models(&self) -> Vec<RetiredModel> {
         match self
             .app
@@ -700,6 +751,67 @@ impl Backend for CoreBackend {
             mm,
             model_id.into(),
         ))
+    }
+
+    fn downloads(&self) -> Vec<DownloadItem> {
+        guidy_core::downloads::global().list()
+    }
+
+    fn request_download(&self, id: &str) -> BackendResult<()> {
+        use guidy_core::downloads::DownloadError;
+        match guidy_core::downloads::request(&self.app, id) {
+            Ok(()) => Ok(()),
+            // Already there: refresh the lists instead of failing.
+            Err(DownloadError::AlreadyInstalled(_)) => {
+                let _ = self.app.emit("models-updated", ());
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn cancel_tracked_download(&self, id: &str) -> BackendResult<()> {
+        guidy_core::downloads::cancel(&self.app, id);
+        Ok(())
+    }
+
+    fn retry_download(&self, id: &str) -> BackendResult<()> {
+        guidy_core::downloads::retry(&self.app, id).map_err(|e| e.to_string())
+    }
+
+    fn delete_tracked_model(&self, id: &str) -> BackendResult<()> {
+        guidy_core::downloads::delete(&self.app, id).map_err(|e| format!("{e:#}"))?;
+        let _ = self.app.emit("models-updated", ());
+        Ok(())
+    }
+
+    fn other_models(&self) -> Vec<OtherModel> {
+        guidy_core::downloads::other_models(&self.app)
+    }
+
+    fn disk_usage(&self) -> DiskUsage {
+        guidy_core::downloads::disk_usage(&self.app)
+    }
+
+    fn system_ram_gb(&self) -> Option<u32> {
+        guidy_core::llm::local_models::system_ram_gb()
+    }
+
+    fn providers_with_api_keys(&self) -> Vec<String> {
+        let Ok(settings) = self.get_app_settings() else {
+            return Vec::new();
+        };
+        settings
+            .post_process_providers
+            .iter()
+            .filter(|p| p.id != guidy_core::settings::APPLE_INTELLIGENCE_PROVIDER_ID)
+            .filter(|p| {
+                !guidy_core::settings::provider_api_key(&p.id)
+                    .trim()
+                    .is_empty()
+            })
+            .map(|p| p.id.clone())
+            .collect()
     }
 
     fn get_history_entries(

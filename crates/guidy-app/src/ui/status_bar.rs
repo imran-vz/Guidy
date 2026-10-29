@@ -1,21 +1,24 @@
-//! Zed-style status bar: model status + switcher on the
-//! left, update status and version on the right.
+//! The status bar (22 pt): model status + switcher on the
+//! left, download activity and update status on the right (the version is
+//! on the About page).
 
-use crate::logic::meetings::MeetingsEvent;
 use crate::logic::models::SelectorStatus;
-use crate::logic::settings_store::{ToastKind, ToastSpec};
+
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{model_name, t, t_args};
+use crate::ui::design::{self, dp};
+use crate::ui::download_control::{progress_line, DownloadView};
+use crate::ui::kit::{icon, model_name, t, t_args};
 use crate::updater::{self, UpdateAction, UpdateStatus};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::v_flex;
 use gpui_kit::component::{h_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use guidy_core::downloads::{DownloadItem, DownloadState};
+use guidy_core::downloads::{format_bytes, DownloadItem, DownloadState, DownloadSummary};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,9 +27,6 @@ pub struct StatusBar {
     update: UpdateStatus,
     portable_installer_url: String,
     started: bool,
-    /// Model downloads the tracker is showing (active or failed keep the
-    /// indicator up).
-    downloads: Vec<DownloadItem>,
     _subs: Vec<Subscription>,
 }
 
@@ -53,21 +53,17 @@ impl StatusBar {
                 this.sync_enabled(cx);
                 cx.notify();
             }),
-            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
-                AppEvent::CheckForUpdates => this.manual_check(cx),
-                AppEvent::Meetings(MeetingsEvent::DownloadsChanged(items)) => {
-                    this.on_downloads(items.clone(), cx);
+            cx.subscribe(&state, |this, _, ev: &AppEvent, cx| {
+                if let AppEvent::CheckForUpdates = ev {
+                    this.manual_check(cx)
                 }
-                _ => {}
             }),
         ];
-        let downloads = state.read(cx).meetings.downloads();
         let mut this = Self {
             state,
             update: UpdateStatus::default(),
             portable_installer_url: crate::logic::flows::PORTABLE_RELEASES_URL.into(),
             started: false,
-            downloads,
             _subs: subs,
         };
         this.sync_enabled(cx);
@@ -106,6 +102,7 @@ impl StatusBar {
             return;
         }
         self.update.checking = true;
+        self.update.failed = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx.background_spawn(async move { updater::check() }).await;
@@ -123,7 +120,9 @@ impl StatusBar {
                     Ok(None) => false,
                     Err(e) => {
                         log::error!("Failed to check for updates: {e}");
-                        false
+                        this.update.fail_check();
+                        cx.notify();
+                        return;
                     }
                 };
                 let manual = this.update.manual;
@@ -166,6 +165,7 @@ impl StatusBar {
         }
         self.update.installing = true;
         self.update.progress = 0;
+        self.update.failed = None;
         cx.notify();
         let (tx, rx) = smol::channel::unbounded::<u32>();
         cx.spawn(async move |this, cx| {
@@ -194,8 +194,7 @@ impl StatusBar {
                 Err(e) => {
                     log::error!("Failed to install update: {e}");
                     this.update(cx, |this, cx| {
-                        this.update.installing = false;
-                        this.update.progress = 0;
+                        this.update.fail_install();
                         cx.notify();
                     })
                     .ok();
@@ -221,21 +220,16 @@ impl StatusBar {
                 .footer(
                     DialogFooter::new()
                         .child(
-                            DialogClose::new()
-                                .trigger(|b| b.secondary().pill().label(t("common.close"))),
+                            DialogClose::new().trigger(|b| b.secondary().label(t("common.close"))),
                         )
                         .when(!url.is_empty(), |f| {
-                            f.child(
-                                DialogAction::new().child(
-                                    Button::new("portable-open").primary().pill().label(
-                                        if direct {
-                                            t("footer.portableUpdateButton")
-                                        } else {
-                                            t("footer.portableUpdateBrowseButton")
-                                        },
-                                    ),
-                                ),
-                            )
+                            f.child(DialogAction::new().child(
+                                Button::new("portable-open").primary().label(if direct {
+                                    t("footer.portableUpdateButton")
+                                } else {
+                                    t("footer.portableUpdateBrowseButton")
+                                }),
+                            ))
                         }),
                 )
                 .on_ok(move |_, _, cx| {
@@ -269,38 +263,10 @@ impl StatusBar {
             .unwrap_or_else(|| m.current_model.clone());
         let current = m.model(&display_id);
 
-        let status = if !m.verifying.is_empty() {
-            SelectorStatus::Verifying
-        } else if !m.progress.is_empty() {
-            SelectorStatus::Downloading
-        } else {
-            st.selector_status
-        };
-        let text: SharedString = if !m.verifying.is_empty() {
-            if m.verifying.len() == 1 {
-                let id = m.verifying.iter().next().unwrap();
-                let name = m.model(id).map(model_name).unwrap_or_else(|| {
-                    guidy_i18n::t("modelSelector.verifyingGeneric").replace("...", "")
-                });
-                t_args("modelSelector.verifying", &[("modelName", &name)])
-            } else {
-                t("modelSelector.verifyingGeneric")
-            }
-        } else if !m.progress.is_empty() {
-            if m.progress.len() == 1 {
-                let p = m.progress.values().next().unwrap();
-                let pct = p.percentage.round().clamp(0.0, 100.0) as u32;
-                t_args(
-                    "modelSelector.downloading",
-                    &[("percentage", &pct.to_string())],
-                )
-            } else {
-                t_args(
-                    "modelSelector.downloadingMultiple",
-                    &[("count", &m.progress.len().to_string())],
-                )
-            }
-        } else {
+        // Downloads (of any model, for any feature) show in the downloads
+        // indicator, not here: this is the dictation model's state only.
+        let status = st.selector_status;
+        let text: SharedString = {
             match (status, current) {
                 (SelectorStatus::Ready, Some(c)) => model_name(c).into(),
                 (SelectorStatus::Ready, None) => t("modelSelector.modelReady"),
@@ -314,33 +280,28 @@ impl StatusBar {
                     .map(SharedString::from)
                     .unwrap_or_else(|| t("modelSelector.modelError")),
                 (SelectorStatus::None, _) => t("modelSelector.noModelDownloadRequired"),
+                (SelectorStatus::Unknown, None) => "—".into(),
                 (_, Some(c)) => model_name(c).into(),
                 (_, None) => t("modelSelector.modelUnloaded"),
             }
         };
         let tone = design::tone(cx);
-        // Ready and busy states use the signal color; busy ones pulse.
+        // Ready is green, busy states pulse in the accent, missing or
+        // failed is red, unloaded is neutral.
         let (dot, pulse) = match status {
-            SelectorStatus::Ready => (tone.accent, false),
+            SelectorStatus::Ready => (theme.success, false),
             SelectorStatus::Loading | SelectorStatus::Downloading | SelectorStatus::Verifying => {
                 (tone.accent, true)
             }
             SelectorStatus::Error | SelectorStatus::None => (theme.danger, false),
-            SelectorStatus::Unloaded => (tone.text_faint, false),
-        };
-        let halo = if dot == tone.accent {
-            tone.accent_soft
-        } else {
-            dot.opacity(0.)
+            SelectorStatus::Unloaded | SelectorStatus::Unknown => (tone.text_faint, false),
         };
         let dot_el = div()
-            .size(dp(14.))
+            .id("model-status-dot")
+            .flex_none()
+            .size(dp(7.))
             .rounded_full()
-            .bg(halo)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(div().size(dp(7.)).rounded_full().bg(dot));
+            .bg(dot);
         let dot_el: AnyElement = if pulse {
             dot_el
                 .with_animation(
@@ -356,224 +317,100 @@ impl StatusBar {
         let downloaded: Vec<_> = m.downloaded_models().into_iter().cloned().collect();
         let entity = cx.entity().downgrade();
         let display_id_for_menu = display_id.clone();
-        let progress = m.progress.clone();
-        let stats = m.stats.clone();
 
-        h_flex()
-            .gap_2()
-            .child(
-                Button::new("model-selector")
-                    .ghost()
-                    .xsmall()
-                    .child(
-                        h_flex()
-                            .gap(dp(7.))
-                            .child(dot_el)
-                            .child(div().text_size(dp(12.)).text_color(tone.text).child(text)),
-                    )
-                    .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
-                        let mut menu = menu.min_w(dp(256.)).max_h(dp(320.)).scrollable(true);
-                        if downloaded.is_empty() {
-                            return menu
-                                .item(PopupMenuItem::label(t("modelSelector.noModelsAvailable")));
+        h_flex().gap_2().child(
+            Button::new("model-selector")
+                .ghost()
+                .xsmall()
+                .child(
+                    h_flex().gap(dp(6.)).child(dot_el).child(
+                        div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text)
+                            .child(text),
+                    ),
+                )
+                .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, _| {
+                    let mut menu = menu.min_w(dp(256.)).max_h(dp(320.)).scrollable(true);
+                    if downloaded.is_empty() {
+                        return menu
+                            .item(PopupMenuItem::label(t("modelSelector.noModelsAvailable")));
+                    }
+                    for model in &downloaded {
+                        let id = model.id.clone();
+                        let active = id == display_id_for_menu;
+                        let name = model_name(model);
+                        let mut tags = Vec::new();
+                        if model.is_custom {
+                            tags.push(guidy_i18n::t("modelSelector.custom"));
                         }
-                        for model in &downloaded {
-                            let id = model.id.clone();
-                            let active = id == display_id_for_menu;
-                            let name = model_name(model);
-                            let mut tags = Vec::new();
-                            if model.is_custom {
-                                tags.push(guidy_i18n::t("modelSelector.custom"));
-                            }
-                            if model.supports_streaming {
-                                tags.push(guidy_i18n::t("modelSelector.streaming"));
-                            }
-                            if active {
-                                tags.push(guidy_i18n::t("modelSelector.active"));
-                            }
-                            let label: SharedString = if tags.is_empty() {
-                                name.into()
-                            } else {
-                                format!("{name}  ·  {}", tags.join(" · ")).into()
-                            };
-                            let entity = entity.clone();
-                            menu = menu.item(PopupMenuItem::new(label).checked(active).on_click(
-                                move |_, _, cx| {
-                                    let id = id.clone();
-                                    entity.update(cx, |this, cx| this.select_model(id, cx)).ok();
-                                },
-                            ));
+                        if model.supports_streaming {
+                            tags.push(guidy_i18n::t("modelSelector.streaming"));
                         }
-                        menu
-                    }),
-            )
-            .when(!progress.is_empty(), |d| {
-                if progress.len() == 1 {
-                    let (id, p) = progress.iter().next().unwrap();
-                    let speed = stats.get(id).map(|s| s.speed).unwrap_or(0.0);
-                    d.child(div().w(dp(80.)).child(design::track(
-                        "dl-progress",
-                        Some((p.percentage as f32) / 100.0),
-                        cx,
-                    )))
-                    .when(speed > 0.0, |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(t_args(
-                                    "modelSelector.downloadSpeed",
-                                    &[("speed", &format!("{speed:.1}"))],
-                                )),
-                        )
-                    })
-                } else {
-                    d.children(progress.iter().map(|(id, p)| {
-                        div().w(dp(32.)).child(design::track(
-                            SharedString::from(format!("dl-{id}")),
-                            Some((p.percentage as f32) / 100.0),
-                            cx,
-                        ))
-                    }))
-                }
-            })
+                        if active {
+                            tags.push(guidy_i18n::t("modelSelector.active"));
+                        }
+                        let label: SharedString = if tags.is_empty() {
+                            name.into()
+                        } else {
+                            format!("{name}  ·  {}", tags.join(" · ")).into()
+                        };
+                        let entity = entity.clone();
+                        menu = menu.item(PopupMenuItem::new(label).checked(active).on_click(
+                            move |_, _, cx| {
+                                let id = id.clone();
+                                entity.update(cx, |this, cx| this.select_model(id, cx)).ok();
+                            },
+                        ));
+                    }
+                    menu
+                }),
+        )
     }
 
-    fn on_downloads(&mut self, items: Vec<DownloadItem>, cx: &mut Context<Self>) {
-        for item in &items {
-            let prev = self
-                .downloads
-                .iter()
-                .find(|d| d.id == item.id)
-                .map(|d| d.state);
-            if prev.is_none() || prev == Some(item.state) {
-                continue;
-            }
-            let spec = match item.state {
-                DownloadState::Done => Some(ToastSpec {
-                    kind: ToastKind::Success,
-                    title: t_args("meetings.downloads.done", &[("name", &item.name)]).to_string(),
-                    description: None,
-                }),
-                DownloadState::Failed => Some(ToastSpec {
-                    kind: ToastKind::Error,
-                    title: t_args("meetings.downloads.failed", &[("name", &item.name)]).to_string(),
-                    description: item.error.clone(),
-                }),
-                _ => None,
-            };
-            if let Some(spec) = spec {
-                self.state.update(cx, |s, cx| s.toast(spec, cx));
-            }
-        }
-        self.downloads = items;
-        cx.notify();
-    }
-
-    fn attention_downloads(&self) -> Vec<&DownloadItem> {
-        self.downloads
+    fn attention_downloads(&self, cx: &App) -> Vec<DownloadItem> {
+        self.state
+            .read(cx)
+            .models
+            .downloads
             .iter()
             .filter(|d| d.state.needs_attention())
+            .cloned()
             .collect()
     }
 
+    /// Every model download (speech, LLM, speaker): one button with the
+    /// count and overall percent; it opens the list with cancel / retry.
     fn render_downloads(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let attention = self.attention_downloads();
-        let active: Vec<_> = attention
-            .iter()
-            .copied()
-            .filter(|d| d.state.is_active())
-            .collect();
-        let label: SharedString = if active.len() == 1 {
-            let item = active[0];
-            let pct = item
-                .percent()
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "…".into());
-            t_args(
-                "meetings.downloads.activity",
-                &[("name", &item.name), ("percent", &pct)],
+        let attention = self.attention_downloads(cx);
+        let label = activity_label(&attention).unwrap_or_default();
+        let summary = DownloadSummary::of(&attention);
+        let tone = design::tone(cx);
+        Popover::new("download-activity-popover")
+            .anchor(Anchor::BottomRight)
+            .trigger(
+                Button::new("download-activity").ghost().xsmall().child(
+                    h_flex()
+                        .gap(dp(6.))
+                        .when(summary.active > 0, |d| {
+                            d.child(div().w(dp(40.)).child(design::track(
+                                "download-activity-track",
+                                summary.percent().map(|p| p as f32 / 100.0),
+                                cx,
+                            )))
+                        })
+                        .when(summary.active == 0, |d| {
+                            d.child(icon("circle-alert").xsmall().text_color(cx.theme().danger))
+                        })
+                        .child(
+                            div()
+                                .text_size(design::TEXT_SECONDARY)
+                                .text_color(tone.text_muted)
+                                .child(label),
+                        ),
+                ),
             )
-        } else if active.len() > 1 {
-            t_args(
-                "meetings.downloads.multiple",
-                &[("count", &active.len().to_string())],
-            )
-        } else {
-            let name = attention.first().map(|d| d.name.as_str()).unwrap_or("");
-            t_args("meetings.downloads.activityFailed", &[("name", name)])
-        };
-        let items = self.downloads.clone();
-        let weak = cx.entity().downgrade();
-        Button::new("download-activity")
-            .ghost()
-            .xsmall()
-            .label(label)
-            .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu.min_w(dp(280.));
-                if items.is_empty() {
-                    return menu.item(PopupMenuItem::label(t("meetings.downloads.empty")));
-                }
-                for item in &items {
-                    let pct = item
-                        .percent()
-                        .map(|p| format!("{p}%"))
-                        .unwrap_or_else(|| "…".into());
-                    let size = format_bytes(item.downloaded_bytes, item.total_bytes);
-                    let state = match item.state {
-                        DownloadState::Queued => t("meetings.downloads.queued"),
-                        DownloadState::Downloading => pct.into(),
-                        DownloadState::Done => t("meetings.downloads.doneShort"),
-                        DownloadState::Failed => t("meetings.downloads.failedShort"),
-                        DownloadState::Cancelled => t("meetings.downloads.cancelled"),
-                    };
-                    let text: SharedString = format!("{} · {} · {}", item.name, size, state).into();
-                    menu = menu.item(PopupMenuItem::new(text).disabled(true));
-                    let id = item.id.clone();
-                    let weak = weak.clone();
-                    if item.state.is_active() && item.cancellable {
-                        menu =
-                            menu.item(PopupMenuItem::new(t("meetings.downloads.cancel")).on_click(
-                                move |_, _, cx| {
-                                    let id = id.clone();
-                                    weak.update(cx, |this, cx| {
-                                        let meetings = this.state.read(cx).meetings.clone();
-                                        cx.spawn(async move |_, cx| {
-                                            cx.background_spawn(async move {
-                                                meetings.cancel_download(&id)
-                                            })
-                                            .await
-                                            .ok();
-                                        })
-                                        .detach();
-                                    })
-                                    .ok();
-                                },
-                            ));
-                    } else if matches!(item.state, DownloadState::Failed | DownloadState::Cancelled)
-                    {
-                        menu =
-                            menu.item(PopupMenuItem::new(t("meetings.downloads.retry")).on_click(
-                                move |_, _, cx| {
-                                    let id = id.clone();
-                                    weak.update(cx, |this, cx| {
-                                        let meetings = this.state.read(cx).meetings.clone();
-                                        cx.spawn(async move |_, cx| {
-                                            cx.background_spawn(async move {
-                                                meetings.retry_download(&id)
-                                            })
-                                            .await
-                                            .ok();
-                                        })
-                                        .detach();
-                                    })
-                                    .ok();
-                                },
-                            ));
-                    }
-                }
-                menu
-            })
+            .content(|_, _, cx| downloads_list(cx))
     }
 
     fn render_update_checker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -584,33 +421,35 @@ impl StatusBar {
             Some(p) => t_args(key, &[("progress", &p)]),
             None => t(key),
         };
-        let available = self.update.available;
-        let color = if available {
+        let color = if self.update.is_error() {
+            theme.danger
+        } else if self.update.available {
             accent
         } else {
             theme.muted_foreground
         };
-        let label = div().text_size(dp(12.)).text_color(color).child(text);
         h_flex()
             .gap_2()
             .child(if self.update.clickable() {
                 let action = self.update.action();
-                div()
-                    .id("update-status")
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.8))
-                    .child(label)
+                Button::new("update-status")
+                    .ghost()
+                    .xsmall()
+                    .text_color(color)
+                    .when(self.update.is_error(), |b| b.icon(icon("rotate-ccw")))
+                    .label(text)
                     .on_click(cx.listener(move |this, _, window, cx| match action {
                         Some(UpdateAction::Install) => this.install(window, cx),
                         Some(UpdateAction::Check) => this.manual_check(cx),
                         None => {}
                     }))
-                    .test_support()
                     .into_any_element()
             } else {
                 div()
                     .id("update-status")
-                    .child(label)
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(color)
+                    .child(text)
                     .test_support()
                     .into_any_element()
             })
@@ -627,50 +466,177 @@ impl StatusBar {
     }
 }
 
-fn format_bytes(done: u64, total: u64) -> String {
-    let mb = |n: u64| n as f64 / (1024.0 * 1024.0);
-    if total == 0 {
-        format!("{:.1} MB", mb(done))
-    } else {
-        format!("{:.1} / {:.1} MB", mb(done), mb(total))
+/// The downloads indicator's text, for the status bar (and anything else
+/// that wants one line about downloads): "Qwen3 4B · 34%", "Downloading 3
+/// models · 41%", "Download failed · Qwen3 4B". `None` when nothing needs
+/// attention.
+pub fn activity_label(items: &[DownloadItem]) -> Option<SharedString> {
+    let active: Vec<&DownloadItem> = items.iter().filter(|d| d.state.is_active()).collect();
+    let summary = DownloadSummary::of(items);
+    let pct = |p: Option<u32>| p.map(|p| p.to_string()).unwrap_or_else(|| "…".into());
+    match active.as_slice() {
+        [one] if one.state == DownloadState::Queued => {
+            Some(t_args("models.statusBar.queued", &[("name", &one.name)]))
+        }
+        [one] => Some(t_args(
+            "meetings.downloads.activity",
+            &[("name", &one.name), ("percent", &pct(one.percent()))],
+        )),
+        [] => items
+            .iter()
+            .find(|d| d.state == DownloadState::Failed)
+            .map(|d| t_args("meetings.downloads.activityFailed", &[("name", &d.name)])),
+        many => Some(t_args(
+            "models.statusBar.multiple",
+            &[
+                ("count", &many.len().to_string()),
+                ("percent", &pct(summary.percent())),
+            ],
+        )),
     }
+}
+
+/// The downloads popover: every download with its progress and controls.
+fn downloads_list(cx: &mut App) -> impl IntoElement {
+    let items = AppState::global(cx).read(cx).models.downloads.clone();
+    let tone = design::tone(cx);
+    let danger = cx.theme().danger;
+    let success = cx.theme().success;
+    let rows = items.iter().rev().map(|item| {
+        let view = DownloadView::of(Some(item), item.state == DownloadState::Done, 0, 0);
+        let size = if item.total_bytes > 0 && item.state.is_active() {
+            format!(
+                "{} / {}",
+                format_bytes(item.downloaded_bytes),
+                format_bytes(item.total_bytes)
+            )
+        } else {
+            format_bytes(item.total_bytes)
+        };
+        let state: AnyElement = match item.state {
+            DownloadState::Queued | DownloadState::Downloading | DownloadState::Verifying => {
+                progress_line(&item.id, &view, dp(64.), cx)
+            }
+            DownloadState::Failed => {
+                let id = item.id.clone();
+                h_flex()
+                    .gap(dp(6.))
+                    .child(
+                        div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(danger)
+                            .child(t("meetings.downloads.failedShort")),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("dl-retry-{}", item.id)))
+                            .ghost()
+                            .xsmall()
+                            .icon(icon("rotate-ccw"))
+                            .tooltip(t("meetings.downloads.retry"))
+                            .on_click(move |_, _, cx| crate::ui::download_control::retry(&id, cx)),
+                    )
+                    .into_any_element()
+            }
+            DownloadState::Done => icon("check").small().text_color(success).into_any_element(),
+            DownloadState::Cancelled => div()
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(tone.text_muted)
+                .child(t("meetings.downloads.cancelled"))
+                .into_any_element(),
+        };
+        h_flex()
+            .id(SharedString::from(format!("download-item-{}", item.id)))
+            .w_full()
+            .gap(dp(10.))
+            .py(dp(4.))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(design::TEXT_BODY)
+                            .text_color(tone.text)
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(if item.state == DownloadState::Failed {
+                                danger
+                            } else {
+                                tone.text_muted
+                            })
+                            .child(match (&item.error, item.state) {
+                                (Some(e), DownloadState::Failed) => e.clone(),
+                                _ => size,
+                            }),
+                    ),
+            )
+            .child(state)
+    });
+    v_flex()
+        .id("downloads-list")
+        .w(dp(340.))
+        .gap(dp(2.))
+        .child(
+            div()
+                .pb(dp(4.))
+                .child(design::section_header(t("models.statusBar.title"), cx)),
+        )
+        .children(rows)
+        .when(items.is_empty(), |d| {
+            d.child(
+                div()
+                    .py(dp(6.))
+                    .text_size(design::TEXT_BODY)
+                    .text_color(tone.text_muted)
+                    .child(t("meetings.downloads.empty")),
+            )
+        })
+        .child(
+            h_flex().pt(dp(6.)).justify_end().child(
+                Button::new("downloads-show-models")
+                    .ghost()
+                    .xsmall()
+                    .label(t("models.statusBar.showModels"))
+                    .on_click(|_, _, cx| {
+                        crate::windows::show_section(crate::ui::main_window::Section::Models, cx)
+                    }),
+            ),
+        )
 }
 
 impl Render for StatusBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
+        let downloads = !self.attention_downloads(cx).is_empty();
         h_flex()
             .id("status-bar")
             .w_full()
-            .h(dp(30.))
+            .h(design::STATUS_BAR_H)
             .flex_none()
-            .px(dp(8.))
+            .px(dp(6.))
             .justify_between()
+            .border_t_1()
+            .border_color(tone.hairline)
             .bg(tone.frame)
+            .text_size(design::TEXT_SECONDARY)
             .child(self.render_model_selector(cx))
             .child(
                 h_flex()
-                    .gap(dp(8.))
-                    .pr(dp(6.))
-                    .text_size(dp(12.))
+                    .gap(dp(6.))
+                    .pr(dp(4.))
                     .text_color(tone.text_muted)
-                    .when(!self.attention_downloads().is_empty(), |d| {
-                        d.child(self.render_downloads(cx))
-                            .child(div().text_color(tone.text_faint).child("·"))
+                    .when(downloads, |d| d.child(self.render_downloads(cx)))
+                    .when(self.update.enabled && downloads, |d| {
+                        d.child(div().text_color(tone.text_faint).child("·"))
                     })
                     .when(self.update.enabled, |d| {
                         d.child(self.render_update_checker(cx))
-                            .child(div().text_color(tone.text_faint).child("·"))
-                    })
-                    .child(
-                        div()
-                            .id("app-version")
-                            .font_family(crate::theme::MONO_FONT)
-                            .text_size(dp(11.))
-                            .text_color(tone.text_faint)
-                            .child(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .test_support(),
-                    ),
+                    }),
             )
     }
 }

@@ -33,9 +33,26 @@ pub enum AppEvent {
     CheckForUpdates,
     /// Auto-select candidate (ModelSelector), already delayed 500 ms.
     ModelDownloadCompleted(String),
+    /// A speech model finished downloading and wasn't picked for
+    /// dictation: the window offers "Use for Dictation" (model id, name).
+    ModelReady {
+        id: String,
+        name: String,
+    },
     LanguageChanged,
     /// A meeting-notes core event (recorder state, progress, changes).
     Meetings(MeetingsEvent),
+}
+
+/// Whether the core (model registry, history, recorder) has started. It
+/// starts off the main thread while the window shows a skeleton.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CoreStatus {
+    #[default]
+    Ready,
+    Starting,
+    /// It couldn't start; the window explains why (Show Logs, Quit).
+    Failed(String),
 }
 
 /// The startup step machine (onboarding state). Lives on
@@ -47,6 +64,13 @@ pub struct Startup {
     pub step: Option<OnboardingStep>,
     pub returning_user: bool,
     pub migration_model_id: Option<String>,
+    pub core: CoreStatus,
+    /// The last session finished onboarding: while the startup check runs
+    /// the window draws the app's shell, not the setup assistant.
+    pub expect_app: bool,
+    /// What the user picked during onboarding (kept across Back and window
+    /// reopening).
+    pub choices: crate::logic::onboarding::Choices,
     checked: bool,
     initialized_after_onboarding: bool,
 }
@@ -62,6 +86,9 @@ pub struct AppState {
     /// Meeting-model downloads started from the meetings UI: they must not
     /// switch the dictation model when they finish.
     pub meeting_model_downloads: std::collections::HashSet<String>,
+    /// Speech models picked for dictation before they finished downloading
+    /// (Models page "Use for Dictation", a setup): selected when done.
+    pub select_on_download: std::collections::HashSet<String>,
     pub startup: Startup,
     pub settings: SettingsStore,
     pub models: ModelsStore,
@@ -122,10 +149,11 @@ impl AppState {
             meetings_supported: false,
             meetings_init: MeetingsInit::Ready,
             meeting_model_downloads: Default::default(),
+            select_on_download: Default::default(),
             startup: Startup::default(),
             settings: SettingsStore::default(),
             models: ModelsStore::default(),
-            selector_status: SelectorStatus::None,
+            selector_status: SelectorStatus::Unknown,
             selector_error: None,
             pending_model: None,
             audio_devices: Vec::new(),
@@ -152,6 +180,47 @@ impl AppState {
 
     pub fn install(backend: SharedBackend, cx: &mut App) -> Entity<AppState> {
         Self::install_with_meetings(backend, std::sync::Arc::new(NoMeetings), cx)
+    }
+
+    /// Install the state while the core is still starting (off the main
+    /// thread): nothing calls the backend until [`Self::core_ready`].
+    /// `expect_app` (the last session finished onboarding) picks the
+    /// skeleton the window draws meanwhile.
+    pub fn install_starting(
+        backend: SharedBackend,
+        meetings: SharedMeetingsBackend,
+        expect_app: bool,
+        cx: &mut App,
+    ) -> Entity<AppState> {
+        let entity = cx.new(|_| {
+            let mut s = AppState::new(backend);
+            s.meetings_supported = meetings.is_supported();
+            s.meetings = meetings;
+            s.startup.core = CoreStatus::Starting;
+            s.startup.expect_app = expect_app;
+            s
+        });
+        cx.set_global(GlobalAppState(entity.clone()));
+        entity
+    }
+
+    /// The core started: load everything and run the startup check.
+    pub fn core_ready(&mut self, cx: &mut Context<Self>) {
+        self.startup.core = CoreStatus::Ready;
+        self.meetings_init = if self.meetings_supported {
+            self.meetings.init_status()
+        } else {
+            MeetingsInit::Ready
+        };
+        self.initialize(cx);
+        self.check_onboarding(cx);
+        cx.notify();
+    }
+
+    /// The core couldn't start: the window shows `error`.
+    pub fn core_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.startup.core = CoreStatus::Failed(error);
+        cx.notify();
     }
 
     pub fn install_with_meetings(
@@ -250,6 +319,8 @@ impl AppState {
             },
         );
         self.load_models(cx);
+        self.load_library(cx);
+        self.load_disk_usage(cx);
         self.load_current_model(cx);
         self.refresh_selector_status(cx);
         self.call(
@@ -283,9 +354,9 @@ impl AppState {
     }
 
     /// Decide the first step (returning vs new user, permissions, retired
-    /// model). Runs once per session.
+    /// model). Runs once per session, once the core has started.
     pub fn check_onboarding(&mut self, cx: &mut Context<Self>) {
-        if self.startup.checked {
+        if self.startup.checked || self.startup.core != CoreStatus::Ready {
             return;
         }
         self.startup.checked = true;
@@ -341,10 +412,15 @@ impl AppState {
         if step == OnboardingStep::Done && !self.startup.initialized_after_onboarding {
             self.startup.initialized_after_onboarding = true;
             // Enigo + shortcuts only after onboarding (avoids early macOS
-            // permission prompts), then load devices.
+            // permission prompts), then load devices. The selected model
+            // loads now, so the first dictation doesn't wait for it.
             self.call(
                 cx,
-                |b| (b.initialize_enigo(), b.initialize_shortcuts()),
+                |b| {
+                    let input = (b.initialize_enigo(), b.initialize_shortcuts());
+                    b.warm_up_model();
+                    input
+                },
                 |s, (enigo, shortcuts), cx| {
                     if let Err(e) = enigo {
                         log::warn!("Failed to initialize input: {e}");
@@ -366,6 +442,98 @@ impl AppState {
             self.startup.migration_model_id.as_deref(),
         );
         self.set_step(o.step, cx);
+    }
+
+    /// Back from an onboarding step (no-op on the first one).
+    pub fn onboarding_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(step) = self
+            .startup
+            .step
+            .and_then(|step| crate::logic::flows::step_back(step, self.startup.returning_user))
+        {
+            self.set_step(step, cx);
+        }
+    }
+
+    /// Change what the user is setting up (Welcome and setup steps).
+    pub fn update_onboarding_choices(
+        &mut self,
+        f: impl FnOnce(&mut crate::logic::onboarding::Choices),
+        cx: &mut Context<Self>,
+    ) {
+        f(&mut self.startup.choices);
+        cx.notify();
+    }
+
+    /// What the onboarding choices need (`None` until settings load).
+    pub fn onboarding_plan(&self) -> Option<crate::logic::onboarding::Plan> {
+        use crate::logic::onboarding::{plan, plan_language};
+        use crate::logic::requirements::Inputs;
+        let settings = self.app_settings()?;
+        let language = plan_language(settings, &guidy_i18n::language());
+        let m = &self.models;
+        let inputs = Inputs {
+            stt_models: &m.models,
+            other_models: &m.other,
+            settings,
+            providers_with_keys: &m.providers_with_keys,
+            apple_intelligence: m.apple_intelligence,
+            language: &language,
+            ram_gb: m.ram_gb,
+        };
+        Some(plan(&inputs, &self.startup.choices))
+    }
+
+    /// Finish onboarding without waiting for anything: write the settings
+    /// the choices need (meetings on, summaries provider), select the
+    /// speech model now or when its download finishes, queue the downloads
+    /// (they continue in the background, shown in the status bar), mark
+    /// onboarding complete and show the app. `skip` finishes with nothing
+    /// set up ("Set Up Later").
+    pub fn finish_onboarding(&mut self, skip: bool, cx: &mut Context<Self>) {
+        let choices = self.startup.choices.clone();
+        if let Some(plan) = self.onboarding_plan().filter(|_| !skip) {
+            self.update_settings_in_order(
+                crate::logic::onboarding::setting_writes(&choices, &plan),
+                cx,
+            );
+            if let Some(id) = plan.speech_model.clone() {
+                let downloaded = self.models.model(&id).is_some_and(|m| m.is_downloaded);
+                if choices.dictation && downloaded {
+                    self.select_model(&id, cx, |_, _, _| {});
+                } else if choices.dictation {
+                    self.select_on_download.insert(id);
+                } else if choices.meetings && !downloaded {
+                    self.meeting_model_downloads.insert(id);
+                }
+            }
+            let ids = plan.download_ids();
+            if !ids.is_empty() {
+                self.request_downloads(ids, cx);
+            }
+        }
+        self.call(
+            cx,
+            |b| b.complete_onboarding(),
+            |_, r, _| {
+                if let Err(e) = r {
+                    log::warn!("Failed to save onboarding as complete: {e}");
+                }
+            },
+        );
+        self.set_step(OnboardingStep::Done, cx);
+    }
+
+    /// Migration "Later": use the app now, ask again next launch.
+    pub fn postpone_migration(&mut self, cx: &mut Context<Self>) {
+        self.set_step(OnboardingStep::Done, cx);
+    }
+
+    /// Migration "Choose Another…": use `id` for dictation (now, or when
+    /// its download finishes), remove the retired models, open the app.
+    pub fn migrate_to_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.use_for_dictation(id, cx);
+        self.on_model_selected(cx);
     }
 
     pub fn on_model_selected(&mut self, cx: &mut Context<Self>) {
@@ -586,6 +754,9 @@ impl AppState {
                     if let (Some(prev), Some(settings)) = (previous, s.settings.settings.as_mut()) {
                         settings.post_process_provider_id = prev;
                     }
+                    s.settings.set_error(&key, e);
+                } else {
+                    s.settings.clear_error(&key);
                 }
                 s.settings.updating.remove(&key);
                 s.refresh_settings(cx);
@@ -646,8 +817,11 @@ impl AppState {
                         done(s, &r, cx);
                         return;
                     }
-                    Ok(()) => {}
-                    Err(e) => log::error!("Failed to update post-process {what}: {e}"),
+                    Ok(()) => s.settings.clear_error(&key),
+                    Err(e) => {
+                        log::error!("Failed to update post-process {what}: {e}");
+                        s.settings.set_error(&key, e.clone());
+                    }
                 }
                 s.settings.updating.remove(&key);
                 s.refresh_settings(cx);
@@ -664,15 +838,17 @@ impl AppState {
         self.call(
             cx,
             move |b| b.fetch_post_process_models(&pid),
-            move |s, r, cx| {
+            move |s, r, _| {
                 s.settings.updating.remove(&key);
                 match r {
                     Ok(models) => {
+                        s.settings.clear_error(&key);
                         s.pp_model_options.insert(pid2, models);
                     }
                     Err(e) => {
+                        // Shown under the Model row (Post Process page).
                         log::error!("Failed to fetch models: {e}");
-                        s.toast_error(e, cx);
+                        s.settings.set_error(&key, e);
                     }
                 }
             },
@@ -803,6 +979,139 @@ impl AppState {
         );
     }
 
+    // -- downloads: every model kind ---------------------------------------
+
+    /// Reload the LLM and speaker models, the download list and what the
+    /// requirements plan needs about this Mac (memory, Apple Intelligence,
+    /// saved API keys).
+    pub fn load_library(&mut self, cx: &mut Context<Self>) {
+        self.call(
+            cx,
+            |b| {
+                (
+                    b.other_models(),
+                    b.downloads(),
+                    b.system_ram_gb(),
+                    b.check_apple_intelligence_available(),
+                    b.providers_with_api_keys(),
+                )
+            },
+            |s, (other, downloads, ram, ai, keys), cx| {
+                s.models.other = other;
+                s.models.other_loaded = true;
+                for fx in s.models.set_downloads(downloads) {
+                    s.run_models_effect(fx, cx);
+                }
+                s.models.ram_gb = ram;
+                s.models.apple_intelligence = ai;
+                s.models.providers_with_keys = keys;
+            },
+        );
+    }
+
+    /// Re-measure the disk use of models (walks the model folders).
+    pub fn load_disk_usage(&mut self, cx: &mut Context<Self>) {
+        self.call(
+            cx,
+            |b| b.disk_usage(),
+            |s, disk, _| s.models.disk = Some(disk),
+        );
+    }
+
+    /// Queue a download of any kind by tracker id (`stt:…`, `llm:…`,
+    /// `speaker:resnet34`, …). Errors (e.g. not enough disk space) land in
+    /// `models.error` and a toast.
+    pub fn request_download(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.request_downloads(vec![id.to_string()], cx);
+    }
+
+    /// Queue several downloads in order (a setup). Stops at the first that
+    /// can't be queued.
+    pub fn request_downloads(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        self.models.error = None;
+        cx.notify();
+        self.call(
+            cx,
+            move |b| {
+                for id in &ids {
+                    b.request_download(id)?;
+                }
+                Ok::<(), String>(())
+            },
+            |s, r, cx| {
+                if let Err(e) = r {
+                    s.models.error = Some(e.clone());
+                    s.toast(
+                        ToastSpec::error(guidy_i18n::t("models.downloadNotStarted"), Some(e)),
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    pub fn cancel_tracked_download(&mut self, id: &str, cx: &mut Context<Self>) {
+        let id = id.to_string();
+        self.call(cx, move |b| b.cancel_tracked_download(&id), |_, _, _| {});
+    }
+
+    /// Start a failed or cancelled download again, resuming its partial.
+    pub fn retry_download(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.models.error = None;
+        let id = id.to_string();
+        self.call(
+            cx,
+            move |b| b.retry_download(&id),
+            |s, r, cx| {
+                if let Err(e) = r {
+                    s.models.error = Some(e.clone());
+                    s.toast(
+                        ToastSpec::error(guidy_i18n::t("models.downloadNotStarted"), Some(e)),
+                        cx,
+                    );
+                }
+            },
+        );
+    }
+
+    /// Delete a downloaded LLM or speaker model.
+    pub fn delete_tracked_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        let id = id.to_string();
+        self.call(
+            cx,
+            move |b| b.delete_tracked_model(&id),
+            |s, r, cx| {
+                match r {
+                    Ok(()) => {}
+                    Err(e) => s.models.error = Some(format!("Failed to delete model: {e}")),
+                }
+                s.load_library(cx);
+                s.load_disk_usage(cx);
+            },
+        );
+    }
+
+    /// Make `id` the dictation model: now when it is downloaded, else
+    /// queue it and select it when it finishes.
+    pub fn use_for_dictation(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.models.model(id).is_some_and(|m| m.is_downloaded) {
+            self.select_model(id, cx, |_, _, _| {});
+            return;
+        }
+        self.select_on_download.insert(id.to_string());
+        self.request_download(&guidy_core::downloads::stt_id(id), cx);
+    }
+
+    /// Transcribe meetings with `id` (queued when it isn't downloaded yet;
+    /// the dictation model stays as it is).
+    pub fn use_for_meetings(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.update_setting("meetings", serde_json::json!({ "meeting_model": id }), cx);
+        if !self.models.model(id).is_some_and(|m| m.is_downloaded) {
+            self.meeting_model_downloads.insert(id.to_string());
+            self.request_download(&guidy_core::downloads::stt_id(id), cx);
+        }
+    }
+
     /// Download the meeting transcription model (the Models page download
     /// path) without making it the dictation model afterwards.
     pub fn download_meeting_model(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -923,13 +1232,42 @@ impl AppState {
         match fx {
             ModelsEffect::ReloadModels => self.load_models(cx),
             ModelsEffect::ReloadCurrentModel => self.load_current_model(cx),
+            ModelsEffect::ReloadOther => self.load_library(cx),
+            ModelsEffect::ReloadDisk => self.load_disk_usage(cx),
             ModelsEffect::ToastError(e) => self.toast_error(e, cx),
+            ModelsEffect::DownloadDone { name } => self.toast_kind(
+                ToastKind::Success,
+                guidy_i18n::t_args("meetings.downloads.done", &[("name", &name)]),
+                cx,
+            ),
+            ModelsEffect::DownloadFailed { name, error } => self.toast(
+                ToastSpec::error(
+                    guidy_i18n::t_args("meetings.downloads.failed", &[("name", &name)]),
+                    error,
+                ),
+                cx,
+            ),
             // A meeting model: keep the dictation model as it is. Checked
             // first so the set is cleaned up during onboarding too.
-            ModelsEffect::DownloadCompleted(id) if self.meeting_model_downloads.remove(&id) => {}
+            ModelsEffect::DownloadCompleted(id) if self.meeting_model_downloads.remove(&id) => {
+                self.select_on_download.remove(&id);
+            }
             // ModelSelector (mounted only once onboarding is done): during
             // onboarding and migration those screens pick the model.
             ModelsEffect::DownloadCompleted(_) if !self.onboarding_done() => {}
+            // Not picked for dictation while there is a dictation model:
+            // offer it instead of switching on its own.
+            ModelsEffect::DownloadCompleted(id)
+                if !self.select_on_download.remove(&id)
+                    && !self.models.current_model.is_empty() =>
+            {
+                let name = self
+                    .models
+                    .model(&id)
+                    .map(crate::ui::kit::model_name)
+                    .unwrap_or_else(|| id.clone());
+                cx.emit(AppEvent::ModelReady { id, name });
+            }
             ModelsEffect::DownloadCompleted(id) => {
                 // ModelSelector: auto-select the finished download after
                 // 500 ms unless a recording is running.

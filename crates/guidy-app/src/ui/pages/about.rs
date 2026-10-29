@@ -1,17 +1,19 @@
-//! About page: language, theme, version, author, what's-new toggle,
-//! data/log dirs, acknowledgments.
+//! About page: a compact header (icon, name, version · engine · model,
+//! Check for Updates), then the author, the What's New toggle, the data and
+//! log folders, and acknowledgments. Theme and app language live in
+//! General → Appearance.
 
-use crate::state::AppState;
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{
-    group, icon, page, path_display, t, t_args, toggle, Dropdown, DropdownOption, SettingRow,
-};
+use crate::state::{AppEvent, AppState};
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{group, icon, page, t, t_args, toggle, SettingRow};
+use crate::ui::pages::advanced::save_error;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{h_flex, ActiveTheme, Sizable};
+use gpui_kit::component::{h_flex, v_flex, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::json;
+use std::sync::{Arc, OnceLock};
 
 const AUTHOR_SITE: &str = "https://imran.codes";
 const AUTHOR_GITHUB: &str = "https://github.com/imran-vz";
@@ -21,6 +23,42 @@ pub struct AboutPage {
     app_dir: Option<Result<String, String>>,
     log_dir: Option<Result<String, String>>,
     _subs: Vec<Subscription>,
+}
+
+/// The app icon, 48 pt. Its tile is near-black, so on a dark window it
+/// gets a light hairline edge (as macOS draws around dark icons) to keep
+/// its shape. The PNG's tile sits 4 pt inside the image (the icon grid).
+fn app_icon_tile(cx: &App) -> Div {
+    let tone = design::tone(cx);
+    div()
+        .flex_none()
+        .relative()
+        .size(dp(48.))
+        .child(img(app_icon()).size_full())
+        .when(tone.dark, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(dp(4.))
+                    .left(dp(4.))
+                    .size(dp(40.))
+                    .rounded(dp(9.))
+                    .border_1()
+                    .border_color(gpui_kit::white().opacity(0.22)),
+            )
+        })
+}
+
+/// The app icon (decoded once).
+fn app_icon() -> Arc<Image> {
+    static ICON: OnceLock<Arc<Image>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../../../../../assets/icons/app/guidy.png").to_vec(),
+        ))
+    })
+    .clone()
 }
 
 impl AboutPage {
@@ -49,77 +87,121 @@ impl AboutPage {
             _subs: subs,
         }
     }
-}
 
-/// The path, "Loading…", or "Error loading directory: …".
-fn dir_label(dir: &Option<Result<String, String>>) -> SharedString {
-    match dir {
-        None => t("common.loading"),
-        Some(Ok(path)) => path.clone().into(),
-        Some(Err(e)) => t_args("errors.loadDirectory", &[("error", e)]),
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tone = design::tone(cx);
+        let st = self.state.read(cx);
+        let model = st
+            .models
+            .models
+            .iter()
+            .find(|m| m.id == st.models.current_model)
+            .map(crate::ui::kit::model_name);
+        let mut facts = vec![
+            t_args(
+                "settings.about.versionLabel",
+                &[("version", env!("CARGO_PKG_VERSION"))],
+            )
+            .to_string(),
+            "transcribe.cpp".to_string(),
+        ];
+        facts.extend(model);
+        // Updates are off in builds without an update endpoint.
+        let can_check = st.update_checks_locked == Some(false);
+        let state = self.state.clone();
+        h_flex()
+            .id("about-header")
+            .w_full()
+            .gap(dp(12.))
+            .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+            .child(app_icon_tile(cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(dp(2.))
+                    .child(
+                        div()
+                            .text_size(design::TEXT_HEADLINE)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Guidy"),
+                    )
+                    .child(
+                        div()
+                            .id("version-value")
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_muted)
+                            .truncate()
+                            .child(facts.join(" · "))
+                            .test_support(),
+                    ),
+            )
+            .child(
+                Button::new("check-for-updates")
+                    .outline()
+                    .small()
+                    .label(t("settings.about.checkForUpdates"))
+                    .disabled(!can_check)
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |_, cx| cx.emit(AppEvent::CheckForUpdates));
+                    }),
+            )
+            .test_support()
     }
 }
 
+/// A folder row: the path (or why it can't be shown) with Show in Finder.
+fn folder_row(
+    id: &'static str,
+    button_id: &'static str,
+    title: SharedString,
+    dir: &Option<Result<String, String>>,
+    open: fn(&dyn crate::backend::Backend) -> Result<(), String>,
+) -> AnyElement {
+    let (path, error): (SharedString, bool) = match dir {
+        None => (t("common.loading"), false),
+        Some(Ok(p)) => (p.clone().into(), false),
+        Some(Err(e)) => (t_args("errors.loadDirectory", &[("error", e)]), true),
+    };
+    SettingRow::new(id, title)
+        .description(path.clone())
+        .control(
+            Button::new(button_id)
+                .outline()
+                .small()
+                .label(t("settings.about.showInFinder"))
+                .disabled(!matches!(dir, Some(Ok(_))))
+                .on_click(move |_, _, cx| {
+                    let b = AppState::global(cx).read(cx).backend.clone();
+                    cx.background_spawn(async move {
+                        if let Err(e) = open(&*b) {
+                            log::error!("Failed to open folder: {e}");
+                        }
+                    })
+                    .detach();
+                }),
+        )
+        .when(error, |r| r.error(Some(path)))
+        .into_any_element()
+}
+
 impl Render for AboutPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::ui::kit::scroll_page("about-scroll", self.render_body(window, cx))
+    }
+}
+
+impl crate::ui::pages::Page for AboutPage {}
+
+impl AboutPage {
+    fn render_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = self.header(cx);
         let st = self.state.read(cx);
         let Some(s) = st.app_settings().cloned() else {
-            return page().into_any_element();
+            return page().id("page-about").child(header).into_any_element();
         };
-        let up = |k: &str| st.settings.is_updating(k);
-        let language_options = guidy_i18n::supported_languages()
-            .into_iter()
-            .map(|l| DropdownOption::new(l.code, format!("{} ({})", l.native_name, l.name)))
-            .collect();
-        let current_lang = guidy_i18n::language();
-        let theme_value = serde_json::to_value(s.theme)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string));
-        let muted = cx.theme().muted_foreground;
-
+        let tone = design::tone(cx);
         let rows = vec![
-            SettingRow::new("app-language", t("appLanguage.title"))
-                .description(t("appLanguage.description"))
-                .control(
-                    Dropdown::new("app-language-dropdown")
-                        .options(language_options)
-                        .selected(Some(current_lang))
-                        .menu_width(dp(260.))
-                        .disabled(up("app_language"))
-                        .on_select(|v, _, cx| {
-                            AppState::global(cx)
-                                .update(cx, |s, cx| s.update_setting("app_language", json!(v), cx))
-                        }),
-                )
-                .into_any_element(),
-            SettingRow::new("theme", t("theme.title"))
-                .description(t("theme.description"))
-                .control(
-                    Dropdown::new("theme-dropdown")
-                        .options(
-                            ["system", "light", "dark"]
-                                .into_iter()
-                                .map(|v| DropdownOption::new(v, t(&format!("theme.options.{v}"))))
-                                .collect(),
-                        )
-                        .selected(theme_value)
-                        .disabled(up("theme"))
-                        .on_select(|v, _, cx| {
-                            AppState::global(cx)
-                                .update(cx, |s, cx| s.update_setting("theme", json!(v), cx))
-                        }),
-                )
-                .into_any_element(),
-            SettingRow::new("version", t("settings.about.version.title"))
-                .description(t("settings.about.version.description"))
-                .control(
-                    div()
-                        .id("version-value")
-                        .text_size(design::TEXT_MONO)
-                        .font_family(crate::theme::MONO_FONT)
-                        .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-                )
-                .into_any_element(),
             SettingRow::new("author", t("settings.about.author.title"))
                 .description(t("settings.about.author.description"))
                 .control(
@@ -128,7 +210,6 @@ impl Render for AboutPage {
                         .child(
                             Button::new("author-site")
                                 .ghost()
-                                .pill()
                                 .small()
                                 .icon(icon("globe"))
                                 .label("imran.codes")
@@ -137,7 +218,6 @@ impl Render for AboutPage {
                         .child(
                             Button::new("author-github")
                                 .ghost()
-                                .pill()
                                 .small()
                                 .icon(icon("github"))
                                 .label("GitHub")
@@ -150,10 +230,11 @@ impl Render for AboutPage {
                 t("settings.about.whatsNewUpdates.label"),
             )
             .description(t("settings.about.whatsNewUpdates.description"))
+            .error(save_error(st, "show_whats_new_on_update"))
             .control(toggle(
                 "whats-new-toggle",
                 s.show_whats_new_on_update,
-                up("show_whats_new_on_update"),
+                false,
                 |v, _, cx| {
                     AppState::global(cx).update(cx, |s, cx| {
                         s.update_setting("show_whats_new_on_update", json!(v), cx)
@@ -161,116 +242,39 @@ impl Render for AboutPage {
                 },
             ))
             .into_any_element(),
-            SettingRow::new("app-data-dir", t("settings.about.appDataDirectory.title"))
-                .description(t("settings.about.appDataDirectory.description"))
-                .stacked()
-                .control(path_display(
-                    "open-app-data",
-                    dir_label(&self.app_dir),
-                    matches!(self.app_dir, Some(Ok(_))),
-                    |_, cx| {
-                        let b = AppState::global(cx).read(cx).backend.clone();
-                        cx.background_spawn(async move {
-                            let _ = b.open_app_data_dir();
-                        })
-                        .detach();
-                    },
-                    cx,
-                ))
-                .into_any_element(),
-            SettingRow::new("log-dir", t("settings.debug.logDirectory.title"))
-                .description(t("settings.debug.logDirectory.description"))
-                .stacked()
-                .control(path_display(
-                    "open-log-dir",
-                    dir_label(&self.log_dir),
-                    matches!(self.log_dir, Some(Ok(_))),
-                    |_, cx| {
-                        let b = AppState::global(cx).read(cx).backend.clone();
-                        cx.background_spawn(async move {
-                            let _ = b.open_log_dir();
-                        })
-                        .detach();
-                    },
-                    cx,
-                ))
-                .into_any_element(),
+            folder_row(
+                "app-data-dir",
+                "open-app-data",
+                t("settings.about.appDataDirectory.title"),
+                &self.app_dir,
+                |b| b.open_app_data_dir(),
+            ),
+            folder_row(
+                "log-dir",
+                "open-log-dir",
+                t("settings.debug.logDirectory.title"),
+                &self.log_dir,
+                |b| b.open_log_dir(),
+            ),
         ];
         let ack = vec![
             SettingRow::new("ack-ggml", t("settings.about.acknowledgments.ggml.title"))
                 .description(t("settings.about.acknowledgments.ggml.description"))
-                .inline_description()
                 .stacked()
                 .control(
                     div()
-                        .text_size(dp(12.))
-                        .line_height(relative(1.55))
-                        .text_color(muted)
+                        .max_w(design::PROSE_MAX_W)
+                        .text_size(design::TEXT_SECONDARY)
+                        .line_height(dp(15.))
+                        .text_color(tone.text_muted)
                         .child(t("settings.about.acknowledgments.ggml.details")),
                 )
                 .into_any_element(),
         ];
-        // The one place the product introduces itself: a drawing of what it
-        // does (voice in), what it is, and the facts about this install.
-        let model = st
-            .models
-            .models
-            .iter()
-            .find(|m| m.id == st.models.current_model)
-            .map(crate::ui::kit::model_name)
-            .unwrap_or_else(|| "—".into());
-        let hero = design::panel(cx)
-            .child(
-                design::blueprint(dp(150.), cx).child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(design::illustration("waveform", dp(260.), dp(113.), cx)),
-                ),
-            )
-            .child(
-                design::section(false, cx)
-                    .pt_0()
-                    .gap(dp(6.))
-                    .child(
-                        div()
-                            .text_size(design::TEXT_HEADLINE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t("settings.about.hero.headline")),
-                    )
-                    .child(
-                        div()
-                            .text_size(design::TEXT_BODY)
-                            .line_height(relative(1.55))
-                            .text_color(muted)
-                            .child(t("settings.about.hero.lede")),
-                    ),
-            )
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(design::tone(cx).hairline)
-                    .child(design::stat_grid(
-                        vec![
-                            design::Stat::new(
-                                t("settings.about.version.title"),
-                                format!("v{}", env!("CARGO_PKG_VERSION")),
-                            )
-                            .accent(true),
-                            design::Stat::new(t("settings.about.hero.engine"), "transcribe.cpp"),
-                            design::Stat::new(t("settings.about.hero.model"), model),
-                        ],
-                        3,
-                        cx,
-                    )),
-            );
         page()
             .id("page-about")
-            .child(hero)
-            .child(group(Some(t("settings.about.title")), rows, cx))
+            .child(header)
+            .child(group(None, rows, cx))
             .child(group(
                 Some(t("settings.about.acknowledgments.title")),
                 ack,

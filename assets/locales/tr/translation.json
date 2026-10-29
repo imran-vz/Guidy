@@ -36,23 +36,12 @@
     "about": "Hakkında"
   },
   "usage": {
-    "title": "Kullanım",
-    "description": "Bulut yapay zekâ sağlayıcılarının maliyeti ve modellerin bu Mac'te yaptığı işler.",
-    "cloud": "Bulut",
     "local": "Bu Mac'te",
     "refresh": "Yenile",
     "total": "Toplam harcama",
     "last30Days": "Son 30 gün",
     "callsTitle": "Çağrılar",
-    "byModel": "Modele göre",
-    "byFeature": "Özelliğe göre",
     "empty": "Henüz bulut yapay zekâ çağrısı yok.",
-    "calls_one": "{{count}} çağrı",
-    "calls_other": "{{count}} çağrı",
-    "average": "ort. {{cost}}",
-    "highest": "en yüksek {{cost}}",
-    "tokens": "{{input}} giriş / {{output}} çıkış token",
-    "unknownPrice": "fiyat bilinmiyor",
     "feature": {
       "dictation": "Dikte",
       "meetingTranscription": "Toplantı transkripsiyonu",
@@ -61,37 +50,17 @@
       "other": "Diğer"
     },
     "localAudio": "Transkribe edilen ses",
-    "localWords": "Kelime",
-    "localTokens": "LLM token",
-    "localCloudEquivalent": "Bulut karşılığı",
     "localEmpty": "Henüz yerel bir modelde hiçbir şey çalışmadı.",
-    "localByModel": "Yerel modeller",
-    "localByFeature": "Özelliğe göre yerel iş",
     "kind": {
       "transcription": "Transkripsiyon",
       "llm": "Yerleşik LLM"
     },
-    "runs_one": "{{count}} çalıştırma",
-    "runs_other": "{{count}} çalıştırma",
-    "audio": "{{duration}} ses",
-    "words": "{{count}} kelime",
-    "realtime": "{{speed}} gerçek zaman",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "üretim {{speed}}",
-    "loadTime": "{{time}} içinde yüklenir",
-    "localNote": "Gerçek zaman hızı, ses uzunluğu ÷ işleme süresidir (yükleme hariç); siz konuşurken canlı çözülen dikte ölçülmez. Bulut karşılığı, sesi dakika başına ${{price}} üzerinden fiyatlandırır (OpenAI Whisper).",
     "estimateNote": "~ işareti, yayımlanan token başı fiyatlardan tahmin edilen tutarları gösterir; kendi maliyetini bildiren sağlayıcılar (OpenRouter gibi) kesindir. Faturalandırma için sağlayıcınızın panosuna bakın.",
     "reportedNote": "Tutarlar sağlayıcıların bildirdiği şekildedir. Faturalandırma için sağlayıcınızın panosuna bakın.",
-    "clear": "Geçmişi temizle",
     "clearTitle": "Kullanım geçmişi temizlensin mi?",
     "clearConfirm": "Kaydedilen çağrılar, maliyetler ve yerel model çalıştırmaları silinecek. Toplantı özetlerinde gösterilen kullanım kalır."
   },
   "onboarding": {
-    "subtitle": "Başlamak için bir transkripsiyon modeli seçin",
-    "existingModelsTitle": "Uyumlu Modeller",
-    "downloadModelsTitle": "İndirilebilir",
-    "showAllModels": "{{total}} modelin tümünü göster",
-    "showFewerModels": "Daha az model göster",
     "recommended": "Önerilen",
     "customModelDescription": "Resmi olarak desteklenmiyor",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Eski format",
       "failed": "İndirme başarısız oldu",
       "retry": "Tekrar dene",
-      "chooseAnother": "Farklı bir model seçin",
       "download": "Modelleri indir ({{size}})",
       "continue": "Devam et",
       "timeRemaining": "{{time}} kaldı"
@@ -150,7 +118,6 @@
       "grant": "İzin Ver",
       "granted": "Verildi",
       "waiting": "Bekleniyor...",
-      "allGranted": "Her şey hazır!",
       "errors": {
         "checkFailed": "İzinler kontrol edilemedi. Lütfen tekrar deneyin.",
         "requestFailed": "İzin isteği başarısız oldu. Lütfen tekrar deneyin."
@@ -162,10 +129,6 @@
     "streaming": "Akış",
     "active": "Aktif",
     "noModelsAvailable": "Kullanılabilir model yok",
-    "verifying": "{{modelName}} doğrulanıyor...",
-    "verifyingGeneric": "Doğrulanıyor...",
-    "downloading": "%{{percentage}} indiriliyor",
-    "downloadingMultiple": "{{count}} model indiriliyor...",
     "modelReady": "Model Hazır",
     "loading": "{{modelName}} yükleniyor...",
     "loadingGeneric": "Yükleniyor...",
@@ -176,29 +139,18 @@
     "switching": "Değiştiriliyor...",
     "downloadSpeed": "{{speed}} MB/s",
     "capabilities": {
-      "languageSelection": "Birden fazla giriş dilini destekler",
       "languageCount": "{{total}} dil",
-      "translation": "İngilizce'ye çevirebilir",
       "translate": "İngilizce'ye çevir",
-      "singleLanguage": "Yalnızca bu dili destekler",
-      "languageOnly": "Yalnızca {{language}}",
-      "streaming": "Konuşurken canlı transkripsiyon gösterir"
+      "languageOnly": "Yalnızca {{language}}"
     },
     "download": "İndir",
     "use": "Kullan",
-    "cancel": "İptal",
     "cancelDownload": "İndirmeyi iptal et",
     "legacy": "Eski"
   },
   "settings": {
-    "modelSettings": {
-      "title": "{{model}} Ayarları"
-    },
     "models": {
-      "title": "Transkripsiyon Modelleri",
-      "description": "Bir transkripsiyon modeli seçin veya ek modeller indirin. Farklı modeller değişen doğruluk ve hız seviyeleri sunar.",
       "deleteConfirm": "{{modelName}} modelini silmek istediğinizden emin misiniz? Kullanmak için tekrar indirmeniz gerekecek.",
-      "deleteActiveConfirm": "{{modelName}} aktif modelinizdir. Silmek, yeni bir model seçene kadar transkripsiyonları durduracaktır. Emin misiniz?",
       "deleteTitle": "Modeli Sil",
       "retiredNotice": {
         "title": "Eski modeller artık Guidy ile çalışmıyor",
@@ -213,17 +165,12 @@
         "translation": "İngilizce'ye çeviriyi destekleyen modelleri filtrele"
       },
       "noModelsMatch": "Bu filtreyle eşleşen model yok.",
-      "yourModels": "İndirilen Modeller",
-      "availableModels": "İndirilebilir",
       "searchPlaceholder": "Modelleri ada göre ara…",
       "rescan": {
-        "label": "Yeniden Tara",
         "tooltip": "Guidy dışında modeller klasörüne veya Hugging Face önbelleğine eklenen modelleri yeniden tara"
       }
     },
     "general": {
-      "title": "Genel",
-      "description": "Dikteyi nasıl başlattığınız, dinlediği dil ve duyduklarınız.",
       "shortcutsGroup": "Kısayollar",
       "shortcut": {
         "title": "Guidy Kısayolları",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "Dil",
-        "description": "Konuşma tanıma dilini seçin. 'Otomatik' seçeneği dili kendisi belirler, ancak belirli bir dil seçmek o dildeki doğruluğu artırabilir.",
         "searchPlaceholder": "Dil ara...",
         "noResults": "Dil bulunamadı",
         "auto": "Otomatik"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "Ses",
       "microphone": {
         "title": "Mikrofon",
-        "description": "Tercih ettiğiniz mikrofon cihazını seçin",
         "placeholder": "Mikrofon seçin...",
         "loading": "Yükleniyor..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Çıkış Cihazı",
-        "description": "Geri bildirim sesleri için ses çıkış cihazını seçin",
         "placeholder": "Çıkış cihazı seçin...",
         "loading": "Yükleniyor..."
       },
       "volume": {
-        "title": "Ses Seviyesi",
-        "description": "Sesli geri bildirimlerin ses seviyesini ayarlayın"
+        "title": "Ses Seviyesi"
       }
     },
     "advanced": {
-      "title": "Gelişmiş",
-      "description": "Başlangıç, yapıştırma, transkripsiyon ayarları ve geçmiş.",
       "groups": {
         "app": "Uygulama",
         "output": "Çıktı",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Gizli Başlat",
-        "description": "Pencereyi açmadan sistem tepsisinde başlatır."
+        "description": "Pencereyi açmadan sistem tepsisinde başlatır.",
+        "descriptionMac": "Pencereyi açmadan menü çubuğunda başlat."
       },
       "autostart": {
         "label": "Başlangıçta Çalıştır",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Tepsi Simgesini Göster",
-        "description": "Guidy simgesini sistem tepsisinde göster."
+        "description": "Guidy simgesini sistem tepsisinde göster.",
+        "descriptionMac": "Guidy simgesini menü çubuğunda göster."
       },
       "overlay": {
         "style": {
-          "title": "Ekran Katmanı",
           "description": "Kayıt sırasında gösterilecek ekran katmanını seçin: 'Yok' katmanı gizler, 'Sade' küçük bir gösterge gösterir, 'Canlı' siz konuşurken transkripsiyonu gerçek zamanlı gösterir (yalnızca akış destekli modeller — model seçicide 'Akış' rozetini arayın). Linux'ta 'Yok' önerilir.",
+          "descriptionMac": "Kayıt sırasında gösterilecek ekran katmanını seçin: 'Yok' katmanı gizler, 'Sade' küçük bir gösterge gösterir, 'Canlı' siz konuşurken transkripsiyonu gerçek zamanlı gösterir (yalnızca akış destekli modeller — model seçicide 'Akış' rozetini arayın).",
           "options": {
             "none": "Yok",
             "minimal": "Sade",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Otomatik Gönder",
         "description": "Metin eklendikten sonra seçilen tuş kombinasyonunu otomatik olarak gönderir. macOS'ta Cmd+Enter, Windows/Linux'ta Super+Enter geçerlidir.",
+        "descriptionMac": "Metin eklendikten sonra seçilen tuş kombinasyonunu otomatik olarak gönderir.",
         "options": {
           "off": "Kapalı",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Son İşlem",
-      "description": "Transkripsiyonu yapıştırılmadan önce bir yapay zekâ modeliyle düzeltin veya yeniden yazın.",
       "hotkey": {
         "title": "Kısayol Tuşu"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Sağlayıcı",
-          "description": "OpenAI veya Anthropic uyumlu bir sağlayıcı seçin."
+          "title": "Sağlayıcı"
         },
         "builtin": {
           "label": "Yerleşik model (bu Mac'te)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "API Biçimi",
-          "description": "Özel uç noktanızın beklediği istek biçimi.",
           "options": {
             "openai": "OpenAI Uyumlu (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "Temel URL",
-          "description": "Seçili sağlayıcı için API temel URL'si. Yalnızca özel sağlayıcı düzenlenebilir.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API Anahtarı",
-          "description": "Seçili sağlayıcı için API anahtarı.",
           "placeholder": "sk-...",
           "saveFailed": "API anahtarı kaydedilemedi"
         },
@@ -500,54 +437,33 @@
           "title": "Model",
           "descriptionCustom": "Özel uç noktanızın beklediği model tanımlayıcısını girin.",
           "descriptionDefault": "Seçili sağlayıcının sunduğu bir modeli seçin.",
-          "placeholderWithOptions": "Model ara veya seç",
           "placeholderNoOptions": "Model adı yazın",
           "refreshModels": "Modelleri Yenile"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Seçili Prompt",
-          "description": "Transkripsiyonları iyileştirmek için bir şablon seçin veya yeni bir tane oluşturun. Yakalanan transkripte referans vermek için prompt metni içinde ${output} kullanın."
-        },
-        "noPrompts": "Kullanılabilir prompt yok",
-        "selectPrompt": "Prompt Seç",
         "createNew": "Yeni Prompt Oluştur",
         "promptLabel": "Prompt Etiketi",
         "promptLabelPlaceholder": "Prompt adı girin",
         "promptInstructions": "Prompt Talimatları",
         "promptInstructionsPlaceholder": "Transkripsiyondan sonra çalıştırılacak talimatları yazın. Örnek: Aşağıdaki metnin dilbilgisini ve açıklığını iyileştir: ${output}",
         "promptTip": "İpucu: Transkribe edilen metni promptunuza eklemek için <code>${output}</code> kullanın.",
-        "updatePrompt": "Promptu Güncelle",
-        "deletePrompt": "Promptu Sil",
-        "createPrompt": "Prompt Oluştur",
-        "cancel": "İptal",
-        "selectToEdit": "Ayrıntılarını görüntülemek ve düzenlemek için yukarıdan bir prompt seçin.",
-        "createFirst": "İlk son işlem promptunuzu oluşturmak için yukarıdaki “Yeni Prompt Oluştur” seçeneğine tıklayın."
+        "deletePrompt": "Promptu Sil"
       }
     },
     "history": {
-      "title": "Geçmiş",
-      "openFolder": "Kayıtlar Klasörünü Aç",
-      "loading": "Geçmiş yükleniyor...",
-      "empty": "Henüz transkripsiyon yok. Geçmişinizi oluşturmak için kayda başlayın!",
       "copyToClipboard": "Transkripsiyonu panoya kopyala",
       "copyError": "Transkripsiyon panoya kopyalanamadı.",
       "save": "Transkripsiyonu kaydet",
       "unsave": "Kaydedilenlerden kaldır",
       "delete": "Kaydı sil",
-      "deleteError": "Kayıt silinemedi. Lütfen tekrar deneyin.",
       "retranscribe": "Yeniden transkribe et",
-      "retranscribeError": "Yeniden transkripsiyon başarısız oldu. Lütfen tekrar deneyin.",
       "transcribing": "Transkribe ediliyor...",
       "transcriptionFailed": "Transkripsiyon başarısız oldu. Yeniden deneme simgesini kullanarak tekrar transkribe edebilirsiniz."
     },
     "debug": {
-      "title": "Hata Ayıklama",
       "logDirectory": {
-        "title": "Log Dizini",
-        "description": "Log dosyalarının saklandığı konum"
+        "title": "Log Dizini"
       },
       "logLevel": {
         "title": "Log Seviyesi",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Canlı Loglar",
-        "description": "Sorunları log dosyasını açmadan teşhis etmek için uygulama loglarını gerçek zamanlı olarak akıtın. Yalnızca bu panel açıkken oluşturulan loglar gösterilir; yukarıdaki Log Seviyesi ayarına uyar.",
         "live": "Canlı",
         "paused": "Duraklatıldı",
         "pause": "Duraklat",
@@ -617,11 +532,6 @@
         "description": "Klavye kısayolları için kullanılacak altyapıyı seçin.",
         "bindingsReset": "Klavye kısayolları uyumsuzdu ve varsayılan ayarlara sıfırlandı"
       },
-      "paths": {
-        "appData": "Uygulama Verileri:",
-        "models": "Modeller:",
-        "settings": "Ayarlar:"
-      },
       "pasteDelay": {
         "title": "Yapıştırma Gecikmesi (Önce)",
         "description": "Metin kopyalandıktan sonra, yapıştırma tuşu gönderilmeden önceki gecikme (milisaniye cinsinden). Hiçbir şey yapıştırılmıyorsa artırın."
@@ -666,8 +576,7 @@
         "title": "Yenilikleri Önizle",
         "description": "En son paketlenmiş sürüm notunu görüldü olarak işaretlemeden aç",
         "button": "Önizle",
-        "noNotes": "Paketlenmiş sürüm notu bulunamadı",
-        "error": "Sürüm notları önizlenemedi"
+        "noNotes": "Paketlenmiş sürüm notu bulunamadı"
       },
       "onboardingPreview": {
         "title": "İlk kurulum önizlemesi",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "Hakkında",
-      "version": {
-        "title": "Sürüm",
-        "description": "Guidy'nin mevcut sürümü"
-      },
       "author": {
         "title": "Geliştiren",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "Uygulama Veri Dizini",
-        "description": "Guidy'nin verilerini sakladığı konum"
-      },
-      "sourceCode": {
-        "title": "Kaynak Kodu",
-        "description": "Kaynak kodunu görüntüle ve katkıda bulun",
-        "button": "GitHub'da Görüntüle"
-      },
-      "supportDevelopment": {
-        "title": "Geliştirmeyi Destekle",
-        "description": "Guidy'yi geliştirmeye devam etmemize yardımcı olun",
-        "button": "Bağış Yap"
+        "title": "Uygulama Veri Dizini"
       },
       "acknowledgments": {
         "title": "Teşekkürler",
@@ -708,12 +601,6 @@
           "description": "Cihaz üzerinde makine öğrenmesi çıkarımı için yüksek performanslı tensör kütüphanesi",
           "details": "Guidy'nin yerel konuşmadan metne dönüştürme özelliği transcribe.cpp ve ggml üzerine kuruludur. Georgi Gerganov'a ve katkıda bulunanlara harika çalışmaları için teşekkür ederiz."
         }
-      },
-      "hero": {
-        "headline": "Bu Mac'te kalan konuşmadan metne dönüştürme",
-        "lede": "Bir kısayola basın, konuşun; Guidy odaktaki uygulamaya yazsın. Transkripsiyon yerelde çalışır.",
-        "engine": "Motor",
-        "model": "Model"
       },
       "whatsNewUpdates": {
         "label": "Yenilikleri Göster",
@@ -741,7 +628,6 @@
     "delete": "Sil",
     "back": "Geri",
     "close": "Kapat",
-    "open": "Aç",
     "copy": "Kopyala",
     "clear": "Temizle",
     "noOptionsFound": "Seçenek bulunamadı"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "Transkripsiyon başarısız oldu"
   },
   "appLanguage": {
-    "title": "Uygulama Dili",
-    "description": "Guidy arayüzünün dilini değiştirin"
+    "title": "Uygulama Dili"
   },
   "theme": {
     "title": "Uygulama Teması",
-    "description": "Guidy'nin sistem temasını izlemesini ya da açık veya koyu kalmasını seçin",
     "options": {
       "system": "Sistem",
       "light": "Açık",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Toplantılar",
     "selection": {
-      "hint": "Birkaç satırı etiketlemek için sürükleyin veya Shift ile tıklayın",
       "count_one": "{{count}} satır seçildi",
       "count_other": "{{count}} satır seçildi",
       "keys": "Shift-tıklama: aralık · ⌘-tıklama: ekle veya çıkar · Esc: temizle",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Konuşmacıları yeniden bul",
-      "tooltip": "Konuşmacıları {{model}} ile yeniden ayırt edin. Transkript olduğu gibi kalır. Etiketlediğiniz satırlar ve adlandırdığınız konuşmacılar kişilerini korur; geri kalanı sese göre yeniden eşleştirilir.",
       "standard": "Standart konuşmacı modeli",
       "download": "{{size}} indirme, bir kez",
       "error": "Konuşmacılar yeniden bulunamadı",
@@ -826,7 +708,6 @@
       "yesterday": "Dün"
     },
     "copy": {
-      "summary": "Kopyala",
       "transcript": "Transkripti kopyala",
       "copied": "Kopyalandı",
       "notes": "Notları kopyala",
@@ -866,7 +747,6 @@
       "openNotes": "Notları aç",
       "expand": "Canlı transkripti göster",
       "collapse": "Daralt",
-      "liveTitle": "Canlı transkript",
       "liveHint": "Şu ana kadar duyulanlar. Konuşmacı adlarıyla tam transkript toplantı bittiğinde oluşturulur.",
       "callTitle": "{{app}} görüşmesi",
       "callPrompt": "Toplantı notu alınsın mı?",
@@ -875,7 +755,6 @@
       "startFailed": "Başlatılamadı. Tekrar denensin mi?",
       "dismiss": "Şimdi değil"
     },
-    "description": "Bu Mac'te bir toplantıyı kaydedin, ardından transkripti adlandırılmış konuşmacılarla okuyun.",
     "init": {
       "starting": "Toplantı notları başlatılıyor...",
       "failed": "Toplantı notları başlatılamadı",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Önce toplantının özetini oluşturun: başlık özetten yazılır."
     },
     "model": {
-      "download": "Toplantı modelini indir",
       "downloadError": "Toplantı modeli indirilemedi"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Toplantı notlarını başlat",
       "stop": "Toplantı notlarını durdur",
-      "recording": "Kaydediliyor",
-      "idle": "Kayıt yapılmıyor",
       "startError": "Kayıt başlatılamadı",
       "stopError": "Kayıt durdurulamadı",
       "disabled": "Kayıt yapmak için Ayarlar'dan toplantı notlarını açın."
     },
-    "upcoming": {
-      "title": "Yaklaşan",
-      "empty": "Görüşme bağlantısı olan yaklaşan takvim toplantısı yok.",
-      "start": "Başlat"
-    },
     "list": {
-      "title": "Kayıtlar",
-      "empty": "Henüz toplantı yok. Kaydetmek için toplantı notlarını başlatın.",
       "loading": "Toplantılar yükleniyor...",
       "loadError": "Toplantılar yüklenemedi",
-      "speakerModelMissing": "Konuşmacı tanıma modeli indirilene kadar kayıtlar işlenmez.",
       "minutes": "{{count}} dk",
-      "open": "Aç",
       "rename": "Yeniden adlandır",
       "delete": "Sil",
       "process": "İşle",
       "retry": "Tekrar dene",
       "cancelProcessing": "İşlemeyi iptal et",
-      "save": "Kaydet",
       "cancel": "İptal",
       "titlePlaceholder": "Toplantı başlığı",
       "deleteTitle": "Toplantı silinsin mi?",
@@ -979,7 +845,6 @@
       "share": "Pay",
       "youSpoke": "Konuştuğunuz",
       "minutes": "Dk",
-      "speakersToName": "{{count}} adlandırılacak",
       "notesTab": "Notlar"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Kişiler",
-      "description": "Toplantılarda adlandırdığınız kişiler. Guidy sonraki toplantılarda seslerini tanır.",
       "empty": "Henüz kişi yok. Eklemek için bir toplantıda bir konuşmacıyı adlandırın.",
       "loadError": "Kişiler yüklenemedi",
       "voiceprints_one": "{{count}} ses izi",
       "voiceprints_other": "{{count}} ses izi",
-      "edit": "Düzenle",
       "merge": "Birleştir",
       "mergeInto": "Şununla birleştir...",
       "mergeHint": "Tutulacak kişiyi seçin. Ses izleri ve konuşmacı adları bu kişiye taşınır.",
@@ -1035,7 +898,6 @@
       "renameError": "Kişi güncellenemedi",
       "namePlaceholder": "Ad",
       "emailPlaceholder": "E-posta (isteğe bağlı)",
-      "save": "Kaydet",
       "cancel": "İptal",
       "voice": {
         "title": "Sesiniz",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Toplantı notları",
       "enabled": {
         "title": "Toplantı notları",
         "description": "Toplantıları mikrofonunuz ve bilgisayarınızın sesiyle kaydedin. Bunu açmak takvim, sistem sesi ve bildirim erişimi ister."
@@ -1077,7 +938,6 @@
         "requestAgain": "Yeniden iste",
         "openSettings": "Sistem Ayarları'nı Aç"
       },
-      "you": "Siz",
       "userName": {
         "title": "Adınız",
         "description": "Mikrofon kanalınız her zaman bu adla etiketlenir.",
@@ -1128,7 +988,6 @@
         "description": "Sesleri ayırt eder ve daha önce adlandırdığınız kişileri tanır. {{name}} ({{trainedOn}}), {{size}} kullanır. Yalnızca İndir'e tıkladığınızda indirilir.",
         "ready": "İndirildi",
         "download": "İndir ({{size}})",
-        "retry": "İndirmeyi tekrar dene",
         "failed": "İndirme başarısız: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} dk"
       },
       "advanced": {
-        "title": "Gelişmiş",
-        "show": "Gelişmiş ayarları göster",
-        "hide": "Gelişmiş ayarları gizle",
         "matchThreshold": {
           "title": "Otomatik eşleşme eşiği",
           "description": "Bir konuşmacının otomatik olarak adlandırılması için gereken en düşük ses benzerliği. Bunun altında eşleşme \"Onaylansın mı?\" diye sorar."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Konuşmacı değişimi algılama",
         "description": "Ses değiştiğinde satırları böler ({{size}}). Bunlar indirilene kadar satırlar duraklamalarda bölünür.",
-        "ready": "Hazır",
-        "downloading": "İndiriliyor",
-        "download": "İndir ({{size}})"
+        "descriptionReady": "Ses değiştiğinde satırları böler."
       },
       "callSuggestions": {
         "title": "Görüşmelerde not öner",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Başlıklarda, özetlerde ve transkriptlerde ara",
       "searching": "Aranıyor...",
       "empty": "\"{{query}}\" ile eşleşen toplantı yok.",
       "count_one": "1 toplantı",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Kurulum",
-      "models": "Modeller",
-      "note": "Modellerin indirilmesi bitmeden kayıt yapabilirsiniz. İşleme, modeller hazır olana kadar bekler.",
-      "downloading": "İndiriliyor",
-      "downloadingPercent": "İndiriliyor %{{percent}}",
-      "ready": "Hazır",
-      "notDownloaded": "İndirilmedi",
-      "download": "İndir",
-      "dismiss": "Kapat",
-      "optional": "İsteğe bağlı"
-    },
     "downloads": {
       "activity": "{{name}} indiriliyor · %{{percent}}",
       "activityFailed": "İndirme başarısız · {{name}}",
-      "multiple": "{{count}} model indiriliyor",
-      "cancel": "İptal",
       "retry": "Tekrar dene",
       "done": "{{name}} indirildi",
       "failed": "{{name}} indirilemedi",
       "startError": "İndirme başlatılamadı",
       "empty": "İndirme yok",
-      "queued": "Sırada",
-      "doneShort": "Bitti",
       "failedShort": "Başarısız",
       "cancelled": "İptal edildi"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Yapılacaklar",
       "generate": "Özet oluştur",
       "regenerate": "Yeniden oluştur",
-      "regenerateWith": "Şununla yeniden oluştur...",
       "generateWith": "{{model}} ile oluştur",
       "otherModels": "Diğer modeller",
       "otherModel": "Başka model…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Özetler",
-      "provider": "Sağlayıcı",
-      "providerDescription": "Toplantı özetleri ve yapılacaklar için kullanılan model. Dikte son işlemi kendi sağlayıcısını korur.",
       "builtin": "Yerleşik (bu Mac'te)",
       "builtinDescription": "llama.cpp ile yerel bir model çalıştırır. Hiçbir şey Mac'inizden çıkmaz.",
-      "model": "Model",
-      "modelDescription": "Modellerinize eklemek için bir modeli işaretleyin. Yalnızca metin üreten modeller listelenir. \"Özetler için iyi\", modelin özetlerin dayandığı yapılandırılmış çıktıyı desteklediği anlamına gelir.",
       "modelPlaceholder": "Model kimliği",
       "pickModel": "Model seçin",
-      "noLocalModels": "Aşağıdan bir model indirin",
-      "usingPostProcessModel": "Son işlem modeli kullanılıyor ({{model}})",
       "refreshModels": "Yenile",
       "testConnection": "Bağlantıyı test et",
-      "testDescription": "Sağlayıcının, anahtarın ve modelin çalıştığını kontrol edin.",
       "apple": "Apple Intelligence",
       "appleDescription": "Apple Intelligence'ın açık olduğu Apple silicon Mac'lerde cihaz üzerinde çalışan model.",
-      "appleAvailable": "Kullanılabilir",
       "appleUnavailable": "Apple Intelligence bu Mac'te kullanılamıyor",
       "activeHeading": "Özetleri oluşturan",
-      "place": "Özetlerin çalıştığı yer",
-      "placeDescription": "Yalnızca seçili seçenek kullanılır.",
       "tabCloud": "Bulut sağlayıcısı",
       "tabLocal": "Bu Mac'te",
       "onThisMac": "Bu Mac · çevrimdışı",
       "apiKey": "API anahtarı",
       "apiKeyDescription": "Anahtar Zinciri'nizde saklanır ve Son İşlem ile paylaşılır.",
       "getKey": "{{provider}} anahtarı alın",
-      "modelDescriptionCustom": "Uç noktanızın beklediği model kimliğini yazıp eklemek için Enter'a basın veya listelediklerinden birini işaretleyin.",
       "searchModels": "Model ara",
       "goodOnly": "Özetler için iyi",
       "goodForSummaries": "özetler",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Bu Mac'te kullanılamıyor. Sistem Ayarları > Apple Intelligence ve Siri'den açın.",
       "unavailable": "kullanılamıyor",
       "yourModels": "Modelleriniz",
-      "yourModelsDescription": "Özet oluştur buradaki tüm modelleri sunar, böylece her toplantı için birini seçebilirsiniz. Seçili olan varsayılandır.",
       "yourModelsEmpty": "Henüz bulut modeli yok. Aşağıdan bir sağlayıcı seçin, API anahtarını ekleyin ve istediğiniz modelleri işaretleyin.",
       "default": "varsayılan",
       "removeModel": "Modellerinizden kaldır",
-      "addFrom": "Şuradan model ekle",
-      "addFromDescription": "Anahtarını girmek ve eklenecek modelleri işaretlemek için bir sağlayıcı seçin. Bu, varsayılanı değiştirmez."
+      "addFrom": "Şuradan model ekle"
     },
     "local": {
       "heading": "Yerel modeller",
@@ -1438,9 +1260,7 @@
       "default": "Varsayılan",
       "recommendedRam": "{{gb}} GB+ RAM için önerilir",
       "notEnoughRam": "Bu Mac'in belleği bu model için önerilenden az.",
-      "downloaded": "İndirildi",
-      "download": "İndir",
-      "downloading": "%{{percentage}} indiriliyor"
+      "downloaded": "İndirildi"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "{{name}} olarak bağlandı"
     },
     "byok": {
-      "testConnection": "Bağlantıyı test et",
-      "testDescription": "Temel URL'yi, API anahtarını ve modeli küçük bir istekle kontrol edin.",
-      "baseUrlEditable": "Bu sağlayıcının API temel URL'si. Tüm {placeholder} alanlarını değiştirin (ör. Cloudflare hesap kimliğiniz).",
-      "cloudflareHint": "Cloudflare: hesap kimliğinizi (AI Gateway için ağ geçidi kimliğini de) temel URL'ye girin."
+      "testDescription": "Temel URL'yi, API anahtarını ve modeli küçük bir istekle kontrol edin."
     }
   }
 }

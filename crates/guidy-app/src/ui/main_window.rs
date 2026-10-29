@@ -1,15 +1,21 @@
-//! The settings window: startup step machine, onboarding,
-//! sidebar navigation, banners, status bar, and global toasts.
+//! The settings window: startup step machine, onboarding, and the window
+//! shell around the pages: a full-height source-list sidebar (the traffic
+//! lights sit over its top), a unified title bar over the content (page
+//! title left, page actions right), pinned banners, the page area, the
+//! status bar, and global toasts.
 
 use crate::logic::flows::OnboardingStep;
 use crate::logic::settings_store::ToastKind;
+use crate::state::CoreStatus;
 use crate::state::{AppEvent, AppState};
 use crate::ui::banners::{AccessibilityBanner, SecureInputBanner};
-use crate::ui::design::{self, dp, Pill};
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, t};
 use crate::ui::onboarding::{
-    migration::ModelMigration, model_picker::ModelPicker, permissions::PermissionsOnboarding,
+    migration::ModelMigration, permissions::PermissionsOnboarding, setup::SetupStep, startup,
+    welcome::Welcome,
 };
+use crate::ui::pages::Page;
 use crate::ui::pages::{
     about::AboutPage, advanced::AdvancedPage, debug::DebugPage, general::GeneralPage,
     history::HistoryPage, meetings::MeetingsPage, models::ModelsPage,
@@ -17,11 +23,11 @@ use crate::ui::pages::{
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
-use crate::ui::{CloseWindow, ToggleDebugMode};
+use crate::ui::{CloseWindow, SelectNextSection, SelectPreviousSection, ToggleDebugMode};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::{Notification, NotificationType};
-use gpui_kit::component::{h_flex, v_flex, Sizable, TitleBar, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, TitleBar, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -68,7 +74,8 @@ impl Section {
         })
     }
 
-    fn label_key(self) -> &'static str {
+    /// The translation key of the section's name.
+    pub fn label_key(self) -> &'static str {
         match self {
             Section::General => "sidebar.general",
             Section::History => "sidebar.history",
@@ -98,14 +105,33 @@ impl Section {
 }
 
 /// The section survives the window being closed (GPUI destroys the window
-/// rather than hiding it).
-struct LastSection(Section);
+/// rather than hiding it); `windows` also saves it across launches.
+pub struct LastSection(pub Section);
 impl Global for LastSection {}
 
-/// The page well's scroll, for pages that scroll to something of theirs
-/// (the meeting transcript, from its talk-time chart).
-pub struct PageScroll(pub ScrollHandle);
-impl Global for PageScroll {}
+/// The macOS traffic lights' width plus margins: space kept clear at the
+/// left of the title bar (they are not drawn in offscreen snapshots).
+const TRAFFIC_LIGHTS_W: Pixels = dp(78.);
+
+/// A page as the shell shows it: body plus title-bar content.
+struct ShownPage {
+    body: AnyElement,
+    title: Option<SharedString>,
+    leading: Option<AnyElement>,
+    toolbar: Option<AnyElement>,
+}
+
+fn show<P: Page>(page: &Entity<P>, window: &mut Window, cx: &mut App) -> ShownPage {
+    let (title, leading, toolbar) = page.update(cx, |p, cx| {
+        (p.title(cx), p.leading(window, cx), p.toolbar(window, cx))
+    });
+    ShownPage {
+        body: page.clone().into_any_element(),
+        title,
+        leading,
+        toolbar,
+    }
+}
 
 #[derive(Default)]
 struct Pages {
@@ -126,18 +152,19 @@ pub struct MainWindow {
     /// Debug: render an onboarding step with no side effects.
     pub preview: Option<OnboardingStep>,
     pages: Pages,
-    permissions: Option<Entity<PermissionsOnboarding>>,
-    picker: Option<Entity<ModelPicker>>,
-    migration: Option<Entity<ModelMigration>>,
+    /// The onboarding screen shown and its step (and whether a preview):
+    /// rebuilt when the step changes, so Back starts a screen afresh.
+    onboarding: Option<(OnboardingStep, bool, AnyView)>,
     status_bar: Entity<StatusBar>,
     whats_new: Entity<WhatsNewGate>,
     accessibility_banner: Entity<AccessibilityBanner>,
     secure_banner: Entity<SecureInputBanner>,
-    scroll: ScrollHandle,
     focus: FocusHandle,
+    /// The sidebar list (Tab stop; ↑/↓ move the selection).
+    sidebar_focus: FocusHandle,
     /// A `guidy://meetings/<id>` link to open once the Meetings page renders.
     pending_meeting: Option<crate::logic::meetings::MeetingLink>,
-    /// Show the Meetings > Settings tab once the Meetings page renders.
+    /// Show Meetings › Settings › AI once the Meetings page renders.
     pending_meetings_settings: bool,
     _subs: Vec<Subscription>,
 }
@@ -147,7 +174,7 @@ impl MainWindow {
         let state = AppState::global(cx);
         let mut subs = vec![cx.observe(&state, |this, _, cx| this.on_state_changed(cx))];
         subs.push(
-            cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| {
+            cx.subscribe_in(&state, window, |_, _, event: &AppEvent, window, cx| {
                 if let AppEvent::Toast(spec) = event {
                     let kind = match spec.kind {
                         ToastKind::Error => NotificationType::Error,
@@ -163,10 +190,17 @@ impl MainWindow {
                     }
                     window.push_notification(n, cx);
                 }
+                if let AppEvent::ModelReady { id, name } = event {
+                    window.push_notification(
+                        crate::ui::download_control::model_ready_notification(id, name),
+                        cx,
+                    );
+                }
                 if let AppEvent::LanguageChanged = event {
-                    // Pages cache translated strings (slider titles, input
-                    // placeholders): rebuild them in the new language.
-                    this.pages = Pages::default();
+                    // Pages translate as they render, and text field
+                    // placeholders follow the language on their own
+                    // (`kit::LocalizedPlaceholder`): the pages, and drafts
+                    // in them, stay.
                     cx.notify();
                 }
             }),
@@ -176,13 +210,17 @@ impl MainWindow {
                 .read(cx)
                 .app_settings()
                 .map(|s| s.theme)
-                .unwrap_or(guidy_core::settings::Theme::System);
+                .unwrap_or_else(|| crate::theme::applied_setting(cx));
             gpui_kit::component::Theme::change(
                 crate::theme::mode_for(setting, window.appearance()),
                 Some(window),
                 cx,
             );
             crate::windows::sync_system_appearance(cx);
+        }));
+
+        subs.push(cx.observe_window_bounds(window, |_, window, cx| {
+            crate::window_state::record(window, cx)
         }));
 
         let section = cx
@@ -199,20 +237,18 @@ impl MainWindow {
             section,
             preview: None,
             pages: Pages::default(),
-            permissions: None,
-            picker: None,
-            migration: None,
+            onboarding: None,
             status_bar: StatusBar::global(cx),
             whats_new: cx.new(|cx| WhatsNewGate::new(window, cx)),
             accessibility_banner: cx.new(|cx| AccessibilityBanner::new(window, cx)),
             secure_banner: cx.new(SecureInputBanner::new),
-            scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            sidebar_focus: cx.focus_handle().tab_stop(true),
             pending_meeting: None,
             pending_meetings_settings: false,
             _subs: subs,
         };
-        cx.set_global(PageScroll(this.scroll.clone()));
+        crate::ui::sync_app_menus(cx);
         // Window-level shortcuts (debug toggle, close) need a focused node.
         window.focus(&this.focus, cx);
         // No-op once it has run for this session (normally from startup).
@@ -222,11 +258,7 @@ impl MainWindow {
 
     /// Sidebar sections in order; Meetings only where supported.
     fn visible_sections(&self, cx: &App) -> Vec<&'static str> {
-        let state = self.state.read(cx);
-        crate::logic::meetings::with_meetings_section(
-            crate::logic::flows::sidebar_sections(state.app_settings()),
-            state.meetings_supported,
-        )
+        crate::ui::visible_sections(cx)
     }
 
     /// The startup step (`None` while the startup check runs).
@@ -240,6 +272,8 @@ impl MainWindow {
         if !visible.contains(&self.section.id()) {
             self.section = Section::General;
         }
+        // The View menu lists the visible sections.
+        crate::ui::sync_app_menus(cx);
         cx.notify();
     }
 
@@ -263,23 +297,17 @@ impl MainWindow {
         cx.defer(move |cx| state.update(cx, |s, cx| s.on_model_selected(cx)));
     }
 
-    pub fn open_model_picker_from_migration(&mut self, cx: &mut Context<Self>) {
-        self.set_step(OnboardingStep::Model, cx);
-    }
-
-    pub fn back_to_migration(&mut self, cx: &mut Context<Self>) {
-        self.set_step(OnboardingStep::Migration, cx);
-    }
-
-    pub fn has_migration(&self, cx: &App) -> bool {
-        self.state.read(cx).startup.migration_model_id.is_some()
+    /// The onboarding screen shown, if it is a `T` (tests drive it).
+    pub fn onboarding_view<T: 'static>(&self) -> Option<Entity<T>> {
+        self.onboarding
+            .as_ref()
+            .and_then(|(_, _, view)| view.clone().downcast::<T>().ok())
     }
 
     pub fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
         if self.section != section {
             self.section = section;
             cx.set_global(LastSection(section));
-            self.scroll.set_offset(point(px(0.), px(0.)));
         }
         // Spend changes with every cloud call: show the latest on each visit.
         if section == Section::Usage {
@@ -305,7 +333,7 @@ impl MainWindow {
         self.select_section(Section::Meetings, cx);
     }
 
-    /// Meetings > Settings (built-in LLM model downloads live there).
+    /// Meetings › Settings › AI (built-in LLM model downloads live there).
     pub fn open_meetings_settings(&mut self, cx: &mut Context<Self>) {
         if !self.visible_sections(cx).contains(&Section::Meetings.id()) {
             return;
@@ -314,23 +342,69 @@ impl MainWindow {
         self.select_section(Section::Meetings, cx);
     }
 
+    /// The Meetings page, once it has been shown.
+    #[cfg(test)]
+    pub fn meetings_page(&self) -> Option<Entity<MeetingsPage>> {
+        self.pages.meetings.clone()
+    }
+
+    /// Select the visible section `step` places above (-1) or below (1) the
+    /// current one, stopping at the ends.
+    fn step_section(&mut self, step: isize, cx: &mut Context<Self>) {
+        let visible = self.visible_sections(cx);
+        let Some(at) = visible.iter().position(|id| *id == self.section.id()) else {
+            return;
+        };
+        let next = at as isize + step;
+        if let Some(section) = usize::try_from(next)
+            .ok()
+            .and_then(|i| visible.get(i))
+            .and_then(|id| Section::from_id(id))
+        {
+            self.select_section(section, cx);
+        }
+    }
+
+    /// Show `section` if the sidebar lists it (⌘1…⌘9, the View menu).
+    pub fn show_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.step(cx) == Some(OnboardingStep::Done)
+            && self.preview.is_none()
+            && self.visible_sections(cx).contains(&section.id())
+        {
+            self.select_section(section, cx);
+        }
+    }
+
     pub fn start_preview(&mut self, step: OnboardingStep, cx: &mut Context<Self>) {
         self.preview = Some(step);
         cx.notify();
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The source list: one row per visible section. Selection is tinted
+    /// with the accent while the list has keyboard focus.
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
         let visible = self.visible_sections(cx);
+        let focused = self.sidebar_focus.is_focused(window);
+        let selection = if focused {
+            tone.selection_focused
+        } else {
+            tone.selection
+        };
         v_flex()
             .id("sidebar")
-            .w(dp(176.))
-            .h_full()
-            .flex_none()
-            .bg(tone.frame)
+            .track_focus(&self.sidebar_focus)
+            .key_context(crate::ui::SIDEBAR_CONTEXT)
+            .on_action(
+                cx.listener(|this, _: &SelectPreviousSection, _, cx| this.step_section(-1, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SelectNextSection, _, cx| this.step_section(1, cx)))
+            .size_full()
             .px(dp(8.))
-            .pt(dp(4.))
-            .gap(dp(2.))
+            .pt(dp(2.))
+            .pb(dp(8.))
+            .gap(px(1.))
+            .overflow_y_scroll()
             .children(
                 visible
                     .into_iter()
@@ -340,39 +414,30 @@ impl MainWindow {
                         h_flex()
                             .id(SharedString::from(format!("nav-{}", section.id())))
                             .aria_label(t(section.label_key()))
-                            .relative()
-                            .gap(dp(10.))
-                            .px(dp(10.))
-                            .h(dp(32.))
-                            .rounded(dp(9.))
-                            .cursor_pointer()
+                            .flex_none()
+                            .gap(dp(8.))
+                            .px(dp(8.))
+                            .h(design::SIDEBAR_ITEM_H)
+                            .rounded(design::RADIUS_CHIP)
                             .text_size(design::TEXT_BODY)
-                            .when(active, |d| {
-                                d.bg(tone.raised)
-                                    .text_color(tone.text)
-                                    .shadow_xs()
-                                    .child(design::rim_light(cx))
-                            })
-                            .when(!active, |d| {
-                                d.text_color(tone.text_muted).hover(move |s| {
-                                    s.bg(tone.raised.opacity(0.55)).text_color(tone.text)
-                                })
-                            })
-                            .child(
-                                icon(section.icon())
-                                    .small()
-                                    .when(active, |i| i.text_color(tone.accent_text)),
-                            )
+                            .text_color(tone.text)
+                            .when(active, |d| d.bg(selection))
+                            .child(icon(section.icon()).small().text_color(if active {
+                                tone.accent_text
+                            } else {
+                                tone.text_muted
+                            }))
                             .child(div().truncate().child(t(section.label_key())))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.select_section(section, cx)),
-                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                window.focus(&this.sidebar_focus, cx);
+                                this.select_section(section, cx)
+                            }))
                             .test_support()
                     }),
             )
     }
 
-    fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> ShownPage {
         macro_rules! page {
             ($field:ident, $ty:ty) => {{
                 let entity = self
@@ -380,7 +445,7 @@ impl MainWindow {
                     .$field
                     .get_or_insert_with(|| cx.new(|cx| <$ty>::new(window, cx)))
                     .clone();
-                entity.into_any_element()
+                show(&entity, window, cx)
             }};
         }
         match self.section {
@@ -394,8 +459,10 @@ impl MainWindow {
                     .clone();
                 if std::mem::take(&mut self.pending_meetings_settings) {
                     page.update(cx, |p, cx| {
-                        p.close_meeting(cx);
-                        p.set_tab(crate::ui::pages::meetings::MeetingsTab::Settings, cx)
+                        p.show_settings(
+                            crate::ui::pages::meetings::settings::SettingsCategory::Ai,
+                            cx,
+                        )
                     });
                 }
                 if let Some(link) = self.pending_meeting.take() {
@@ -403,7 +470,7 @@ impl MainWindow {
                         p.open_meeting_at(link.meeting_id, link.t_ms, window, cx)
                     });
                 }
-                page.into_any_element()
+                show(&page, window, cx)
             }
             Section::Models => page!(models, ModelsPage),
             Section::Advanced => page!(advanced, AdvancedPage),
@@ -414,6 +481,84 @@ impl MainWindow {
         }
     }
 
+    /// The unified title bar of the app: over the sidebar it is empty
+    /// sidebar (the traffic lights sit there); over the content it holds the
+    /// page title and the page's actions. Dragging moves the window and a
+    /// double click zooms it (`TitleBar`).
+    fn render_title_bar(
+        &self,
+        title: SharedString,
+        leading: Option<AnyElement>,
+        toolbar: Option<AnyElement>,
+        sidebar: bool,
+        rtl: bool,
+        cx: &App,
+    ) -> TitleBar {
+        let tone = design::tone(cx);
+        let border = cx.theme().sidebar_border;
+        // Without the sidebar (onboarding), the traffic lights sit over the
+        // content: keep their space clear.
+        let clear_lights = !sidebar || rtl;
+        let bar = h_flex()
+            .id("toolbar")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .gap(dp(8.))
+            .pr(dp(12.))
+            .when(clear_lights, |d| d.pl(TRAFFIC_LIGHTS_W))
+            .when(!clear_lights, |d| d.pl(design::PAGE_X))
+            .when(sidebar, |d| d.border_b_1().border_color(tone.hairline))
+            .bg(tone.ink)
+            .map(|d| match leading {
+                // A page's own switcher takes the title's place; the spacer
+                // keeps it put while the toolbar's width changes.
+                Some(leading) => d
+                    .child(h_flex().flex_none().child(leading))
+                    .child(div().flex_1().min_w_0()),
+                None => d.child(
+                    div()
+                        .id("toolbar-title")
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(design::TEXT_TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(tone.text)
+                        .child(title)
+                        .test_support(),
+                ),
+            })
+            .when_some(toolbar, |d, actions| {
+                d.child(h_flex().flex_none().gap(dp(6.)).child(actions))
+            })
+            .test_support();
+        TitleBar::new()
+            .pl_0()
+            .h(design::TOOLBAR_H)
+            .border_b_0()
+            .bg(tone.ink)
+            .child(
+                h_flex()
+                    .size_full()
+                    .items_stretch()
+                    .when(rtl, |d| d.flex_row_reverse())
+                    .when(sidebar, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .w(design::SIDEBAR_W)
+                                .h_full()
+                                .bg(tone.frame)
+                                .when(!rtl, |d| d.border_r_1())
+                                .when(rtl, |d| d.border_l_1())
+                                .border_color(border),
+                        )
+                    })
+                    .child(bar),
+            )
+    }
+
     fn render_onboarding(
         &mut self,
         step: OnboardingStep,
@@ -421,27 +566,68 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let main = cx.entity().downgrade();
-        match step {
-            OnboardingStep::Accessibility => self
-                .permissions
-                .get_or_insert_with(|| {
-                    cx.new(|cx| PermissionsOnboarding::new(main, preview, window, cx))
-                })
-                .clone()
-                .into_any_element(),
-            OnboardingStep::Model => self
-                .picker
-                .get_or_insert_with(|| cx.new(|cx| ModelPicker::new(main, preview, window, cx)))
-                .clone()
-                .into_any_element(),
-            OnboardingStep::Migration => self
-                .migration
-                .get_or_insert_with(|| cx.new(|cx| ModelMigration::new(main, window, cx)))
-                .clone()
-                .into_any_element(),
-            OnboardingStep::Done => div().into_any_element(),
+        let current = matches!(&self.onboarding, Some((s, p, _)) if *s == step && *p == preview);
+        if !current {
+            let main = cx.entity().downgrade();
+            let view: AnyView = match step {
+                OnboardingStep::Welcome => cx.new(|cx| Welcome::new(preview, window, cx)).into(),
+                OnboardingStep::Permissions => cx
+                    .new(|cx| PermissionsOnboarding::new(main, preview, window, cx))
+                    .into(),
+                OnboardingStep::Setup => cx.new(|cx| SetupStep::new(preview, window, cx)).into(),
+                OnboardingStep::Migration => {
+                    cx.new(|cx| ModelMigration::new(main, window, cx)).into()
+                }
+                OnboardingStep::Done => {
+                    self.onboarding = None;
+                    return div().into_any_element();
+                }
+            };
+            self.onboarding = Some((step, preview, view));
         }
+        match &self.onboarding {
+            Some((_, _, view)) => view.clone().into_any_element(),
+            None => div().into_any_element(),
+        }
+    }
+
+    /// While the core starts and the startup check runs: the shell of the
+    /// screen that follows (the app for a returning user, the assistant for
+    /// a new one), or why Guidy couldn't start.
+    fn render_startup(&self, rtl: bool, cx: &mut Context<Self>) -> AnyElement {
+        let st = self.state.read(cx);
+        if let CoreStatus::Failed(e) = &st.startup.core {
+            return startup::startup_error(e, cx);
+        }
+        if !st.startup.expect_app {
+            return startup::assistant_skeleton(cx);
+        }
+        let tone = design::tone(cx);
+        let border = cx.theme().sidebar_border;
+        h_flex()
+            .size_full()
+            .items_stretch()
+            .when(rtl, |d| d.flex_row_reverse())
+            .child(
+                div()
+                    .flex_none()
+                    .w(design::SIDEBAR_W)
+                    .h_full()
+                    .bg(tone.frame)
+                    .when(!rtl, |d| d.border_r_1())
+                    .when(rtl, |d| d.border_l_1())
+                    .border_color(border)
+                    .child(startup::sidebar_skeleton()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(tone.ink)
+                    .child(startup::page_skeleton(cx)),
+            )
+            .into_any_element()
     }
 
     fn toggle_debug_mode(&mut self, _: &ToggleDebugMode, _: &mut Window, cx: &mut Context<Self>) {
@@ -462,116 +648,115 @@ impl Render for MainWindow {
         let tone = design::tone(cx);
         let rtl = guidy_i18n::is_rtl(&guidy_i18n::language());
         let in_app = self.step(cx) == Some(OnboardingStep::Done) && self.preview.is_none();
+        // While starting, a returning user sees the app's shell at once:
+        // nothing jumps when it is ready.
+        let starting_app = {
+            let st = self.state.read(cx);
+            self.preview.is_none()
+                && st.startup.step.is_none()
+                && st.startup.expect_app
+                && !matches!(st.startup.core, CoreStatus::Failed(_))
+        };
 
-        // "Guidy / General": the product, then where you are.
-        let title_bar = TitleBar::new()
-            .bg(tone.frame)
-            .border_color(tone.frame)
-            .child(
-                h_flex()
-                    .gap(dp(8.))
-                    .items_center()
-                    .text_size(design::TEXT_BODY)
-                    .child(icon("audio-lines").small().text_color(tone.accent_text))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(tone.text)
-                            .child(guidy_core::host::PRODUCT_NAME),
-                    )
-                    .when(in_app, |d| {
-                        d.child(div().text_color(tone.text_faint).child("/")).child(
-                            div()
-                                .text_color(tone.text_muted)
-                                .child(t(self.section.label_key())),
-                        )
-                    }),
-            );
-
+        // Onboarding has no title: its screens name themselves.
+        let mut title = SharedString::default();
+        let mut toolbar = None;
+        let mut leading = None;
         let content: AnyElement = if let Some(step) = self.preview {
             let body = self.render_onboarding(step, true, window, cx);
-            div()
-                .size_full()
-                .relative()
-                .child(body)
-                .child(
-                    div().absolute().top_2().right_2().child(
-                        Button::new("exit-preview")
-                            .secondary()
-                            .pill()
-                            .small()
-                            .label(t("settings.debug.onboardingPreview.exitButton"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preview = None;
-                                this.permissions = None;
-                                this.picker = None;
-                                cx.notify();
-                            })),
-                    ),
-                )
-                .into_any_element()
+            toolbar = Some(
+                Button::new("exit-preview")
+                    .secondary()
+                    .small()
+                    .label(t("settings.debug.onboardingPreview.exitButton"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.preview = None;
+                        this.onboarding = None;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            div().size_full().child(body).into_any_element()
         } else {
             match self.step(cx) {
-                None => div().size_full().into_any_element(),
+                None => self.render_startup(rtl, cx),
                 Some(OnboardingStep::Done) => {
                     let page = self.render_page(window, cx);
-                    // Pages sit in an ink well inset into the window frame.
-                    let well = div()
-                        .id("page-scroll")
+                    title = page.title.unwrap_or_else(|| t(self.section.label_key()));
+                    toolbar = page.toolbar;
+                    leading = page.leading;
+                    let border = cx.theme().sidebar_border;
+                    let sidebar = div()
+                        .flex_none()
+                        .w(design::SIDEBAR_W)
+                        .h_full()
+                        .bg(tone.frame)
+                        .when(!rtl, |d| d.border_r_1())
+                        .when(rtl, |d| d.border_l_1())
+                        .border_color(border)
+                        .child(self.render_sidebar(window, cx));
+                    // Banners stay pinned above the page; the page gets the
+                    // rest of the height and owns its scrolling.
+                    let main = v_flex()
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .when(rtl, |d| d.ml(design::WELL_INSET))
-                        .when(!rtl, |d| d.mr(design::WELL_INSET))
-                        .rounded(design::RADIUS_WELL)
-                        .border_1()
-                        .border_color(tone.hairline)
                         .bg(tone.ink)
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
+                        .child(self.accessibility_banner.clone())
+                        .child(self.secure_banner.clone())
+                        .children(startup::no_model_banner(
+                            cx.entity().downgrade(),
+                            self.section,
+                            cx,
+                        ))
                         .child(
-                            v_flex()
+                            div()
+                                .id("page-area")
+                                .flex_1()
+                                .min_h_0()
                                 .w_full()
-                                .min_w_0()
-                                .px(dp(20.))
-                                .pt(dp(20.))
-                                .pb(dp(28.))
-                                .items_center()
-                                .child(self.accessibility_banner.clone())
-                                .child(self.secure_banner.clone())
-                                .child(page),
+                                .child(page.body),
                         );
                     h_flex()
                         .size_full()
-                        .min_h_0()
-                        .bg(tone.frame)
+                        .items_stretch()
                         .when(rtl, |d| d.flex_row_reverse())
-                        .child(self.render_sidebar(cx))
-                        .child(well)
+                        .child(sidebar)
+                        .child(main)
                         .into_any_element()
                 }
                 Some(step) => self.render_onboarding(step, false, window, cx),
             }
         };
+        let title_bar =
+            self.render_title_bar(title, leading, toolbar, in_app || starting_app, rtl, cx);
 
         v_flex()
             .id("main-window")
             .track_focus(&self.focus)
             .size_full()
-            .bg(if in_app { tone.frame } else { tone.ink })
+            .bg(tone.ink)
             .text_color(tone.text)
             .font_family(crate::theme::UI_FONT)
             .on_action(cx.listener(Self::toggle_debug_mode))
-            .on_action(|_: &CloseWindow, window, cx| {
-                // Same as the close button: hide into the tray.
-                crate::windows::on_main_closed(cx);
-                window.remove_window();
-            })
+            .on_action(|_: &CloseWindow, window, cx| crate::windows::close_main(window, cx))
             .child(title_bar)
             .child(div().flex_1().min_h_0().child(content))
             .when(in_app, |d| {
                 d.child(self.status_bar.clone())
                     .child(self.whats_new.clone())
+            })
+            .when(starting_app, |d| {
+                // The status bar's place, empty until the app is ready.
+                d.child(
+                    div()
+                        .id("status-bar-skeleton")
+                        .flex_none()
+                        .h(design::STATUS_BAR_H)
+                        .border_t_1()
+                        .border_color(cx.theme().sidebar_border)
+                        .bg(tone.frame),
+                )
             })
     }
 }

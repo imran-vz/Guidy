@@ -422,6 +422,12 @@ impl HfDownloadProgress {
     }
 
     fn emit(&self, downloaded: u64, total: u64) {
+        crate::downloads::global().progress(
+            &self.app_handle,
+            &crate::downloads::stt_id(&self.model_id),
+            downloaded,
+            total,
+        );
         let percentage = if total > 0 {
             (downloaded as f64 / total as f64) * 100.0
         } else {
@@ -833,9 +839,6 @@ impl ModelManager {
             is_rescanning: Arc::new(AtomicBool::new(false)),
         };
 
-        // Migrate any bundled models to user directory
-        manager.migrate_bundled_models()?;
-
         // Check which models are already downloaded
         manager.update_download_status()?;
 
@@ -989,33 +992,6 @@ impl ModelManager {
                 model.supported_languages = supported_languages;
             }
         }
-    }
-
-    fn migrate_bundled_models(&self) -> Result<()> {
-        // Check for bundled models and copy them to user directory
-        let bundled_models = ["ggml-small.bin"]; // Add other bundled models here if any
-
-        for filename in &bundled_models {
-            let bundled_path = self.app_handle.path().resolve(
-                format!("resources/models/{}", filename),
-                crate::host::path::BaseDirectory::Resource,
-            );
-
-            if let Ok(bundled_path) = bundled_path {
-                if bundled_path.exists() {
-                    let user_path = self.models_dir.join(filename);
-
-                    // Only copy if user doesn't already have the model
-                    if !user_path.exists() {
-                        info!("Migrating bundled model {} to user directory", filename);
-                        fs::copy(&bundled_path, &user_path)?;
-                        info!("Successfully migrated {}", filename);
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn is_retired_on_disk(&self, model: &RetiredOnnxModel) -> bool {
@@ -1571,6 +1547,7 @@ impl ModelManager {
         model_info: &ModelInfo,
         repo_id: String,
         revision: String,
+        cancel_token: CancellationToken,
     ) -> Result<()> {
         let model_id = model_info.id.clone();
         let filename = model_info.filename.clone();
@@ -1593,9 +1570,9 @@ impl ModelManager {
             }
         }
 
-        // Register a cancellation token so `cancel_download` can abort this
-        // transfer promptly. The guard removes it on every exit path.
-        let cancel_token = CancellationToken::new();
+        // Register the tracker's cancellation token so `cancel_download` (and
+        // the download tracker) can abort this transfer promptly. The guard
+        // removes it on every exit path.
         {
             let mut flags = self.cancel_flags.lock().unwrap();
             flags.insert(model_id.clone(), cancel_token.clone());
@@ -1866,7 +1843,91 @@ impl ModelManager {
         }
     }
 
+    /// Download (or resume) a model, reporting to the download tracker
+    /// (`downloads::global()`, id `stt:<model_id>`) as well as the
+    /// `model-download-*` events. Returns `Ok(())` when done or cancelled
+    /// (check `is_downloaded`). A second call while it runs is a no-op.
     pub async fn download_model(&self, model_id: &str) -> Result<()> {
+        if self.is_downloading(model_id) {
+            return Ok(());
+        }
+        let info = self.get_model_info(model_id);
+        let tracker = crate::downloads::global();
+        let tracker_id = crate::downloads::stt_id(model_id);
+        let token = tracker.begin(
+            &self.app_handle,
+            &tracker_id,
+            info.as_ref()
+                .map(|m| m.name.clone())
+                .unwrap_or_else(|| model_id.to_string()),
+            info.as_ref().map(|m| m.size_mb * 1024 * 1024).unwrap_or(0),
+        );
+        let result = self.download_model_inner(model_id, token).await;
+        match &result {
+            Ok(())
+                if self
+                    .get_model_info(model_id)
+                    .is_some_and(|m| m.is_downloaded) =>
+            {
+                tracker.finish(&self.app_handle, &tracker_id)
+            }
+            Ok(()) => tracker.cancelled(&self.app_handle, &tracker_id),
+            Err(e) => tracker.fail(&self.app_handle, &tracker_id, format!("{e:#}")),
+        }
+        result
+    }
+
+    /// Whether a download of `model_id` is in flight.
+    pub fn is_downloading(&self, model_id: &str) -> bool {
+        self.cancel_flags.lock().unwrap().contains_key(model_id)
+    }
+
+    /// The directory a model's download lands in (for the free-space
+    /// check): the shared Hugging Face cache, or the models dir.
+    pub fn download_dir(&self, model: &ModelInfo) -> PathBuf {
+        match model.source {
+            ModelSource::HuggingFace { .. } => Cache::from_env().path().clone(),
+            _ => self.models_dir.clone(),
+        }
+    }
+
+    /// Bytes the downloaded models take on disk (wherever they live: the
+    /// models dir or the shared Hugging Face cache).
+    pub fn downloaded_bytes(&self) -> u64 {
+        let models: Vec<ModelInfo> = self
+            .available_models
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|m| m.is_downloaded)
+            .cloned()
+            .collect();
+        models
+            .iter()
+            .filter_map(|m| {
+                let path = match &m.source {
+                    ModelSource::HuggingFace { repo_id, revision } => {
+                        hf_cached_path(repo_id, revision, &m.filename)
+                            .unwrap_or_else(|| self.models_dir.join(&m.filename))
+                    }
+                    _ => self.models_dir.join(&m.filename),
+                };
+                fs::metadata(&path).ok().map(|meta| {
+                    if meta.is_dir() {
+                        crate::downloads::dir_size(&path)
+                    } else {
+                        meta.len()
+                    }
+                })
+            })
+            .sum()
+    }
+
+    async fn download_model_inner(
+        &self,
+        model_id: &str,
+        cancel_token: CancellationToken,
+    ) -> Result<()> {
         let model_info = {
             let models = self.available_models.lock().unwrap();
             models.get(model_id).cloned()
@@ -1879,7 +1940,7 @@ impl ModelManager {
             ModelSource::Url { url, sha256 } => (url.clone(), sha256.clone()),
             ModelSource::HuggingFace { repo_id, revision } => {
                 return self
-                    .download_hf_model(&model_info, repo_id.clone(), revision.clone())
+                    .download_hf_model(&model_info, repo_id.clone(), revision.clone(), cancel_token)
                     .await;
             }
             ModelSource::Local => {
@@ -1909,8 +1970,7 @@ impl ModelManager {
             }
         }
 
-        // Create cancellation token for this download
-        let cancel_token = CancellationToken::new();
+        // Register the tracker's cancellation token for this download
         {
             let mut flags = self.cancel_flags.lock().unwrap();
             flags.insert(model_id.to_string(), cancel_token.clone());
@@ -2215,6 +2275,8 @@ impl ModelManager {
 
         // Update download status to reflect current state
         self.update_download_status()?;
+
+        crate::downloads::global().cancel(&self.app_handle, &crate::downloads::stt_id(model_id));
 
         // Emit cancellation event so all UI components can clear their state
         let _ = self.app_handle.emit("model-download-cancelled", model_id);

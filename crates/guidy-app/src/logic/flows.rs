@@ -1,5 +1,5 @@
 //! Small UI rules: startup step
-//! machine, option matrices, banners, release notes, updater fallbacks.
+//! machine (onboarding screens), option matrices, banners, release notes, updater fallbacks.
 
 use guidy_core::commands::audio::{PermissionAccess, WindowsMicrophonePermissionStatus};
 use guidy_core::llm::ProviderRef;
@@ -13,11 +13,19 @@ use super::keyboard::OsType;
 // Startup / onboarding step machine (App.tsx)
 // ---------------------------------------------------------------------------
 
+/// A screen of the startup flow. New users: Welcome → Permissions → Setup
+/// → Done. Returning users: Permissions (when one was revoked) and/or
+/// Migration (a retired model is selected) → Done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardingStep {
-    Accessibility,
+    /// What Guidy is; which features to set up.
+    Welcome,
+    /// Microphone and (for dictation, macOS) Accessibility.
+    Permissions,
+    /// "Choose your setup": the models (or cloud) each chosen feature needs.
+    Setup,
+    /// A retired model is selected: download its replacement (or later).
     Migration,
-    Model,
     Done,
 }
 
@@ -44,10 +52,12 @@ pub struct StartupOutcome {
 
 pub fn initial_step(f: &StartupFacts, os: OsType) -> StartupOutcome {
     if f.onboarding_completed != Some(true) {
+        // A new user must see the setup even when launched hidden (login
+        // item, `--start-hidden`): nothing works before it.
         return StartupOutcome {
-            step: OnboardingStep::Accessibility,
+            step: OnboardingStep::Welcome,
             returning_user: false,
-            reveal_window: false,
+            reveal_window: true,
         };
     }
     let needs_permissions = match os {
@@ -60,7 +70,7 @@ pub fn initial_step(f: &StartupFacts, os: OsType) -> StartupOutcome {
     };
     if needs_permissions {
         return StartupOutcome {
-            step: OnboardingStep::Accessibility,
+            step: OnboardingStep::Permissions,
             returning_user: true,
             reveal_window: true,
         };
@@ -86,10 +96,19 @@ pub fn after_permissions(returning_user: bool, migration_model_id: Option<&str>)
         finish_returning_user(migration_model_id.is_some())
     } else {
         StartupOutcome {
-            step: OnboardingStep::Model,
+            step: OnboardingStep::Setup,
             returning_user: false,
             reveal_window: false,
         }
+    }
+}
+
+/// Where Back goes from `step` (`None`: no Back, the step is the first).
+pub fn step_back(step: OnboardingStep, returning_user: bool) -> Option<OnboardingStep> {
+    match step {
+        OnboardingStep::Permissions if !returning_user => Some(OnboardingStep::Welcome),
+        OnboardingStep::Setup => Some(OnboardingStep::Permissions),
+        _ => None,
     }
 }
 
@@ -654,11 +673,33 @@ mod tests {
     }
 
     #[test]
-    fn new_users_start_with_permissions_then_models() {
+    fn new_users_go_welcome_permissions_setup() {
         let o = initial_step(&StartupFacts::default(), OsType::MacOs);
-        assert_eq!(o.step, OnboardingStep::Accessibility);
+        assert_eq!(o.step, OnboardingStep::Welcome);
         assert!(!o.returning_user);
-        assert_eq!(after_permissions(false, None).step, OnboardingStep::Model);
+        assert_eq!(after_permissions(false, None).step, OnboardingStep::Setup);
+        assert_eq!(
+            step_back(OnboardingStep::Setup, false),
+            Some(OnboardingStep::Permissions)
+        );
+        assert_eq!(
+            step_back(OnboardingStep::Permissions, false),
+            Some(OnboardingStep::Welcome)
+        );
+        assert_eq!(step_back(OnboardingStep::Welcome, false), None);
+        // A returning user only sees permissions: no Back.
+        assert_eq!(step_back(OnboardingStep::Permissions, true), None);
+    }
+
+    #[test]
+    fn a_new_user_launched_hidden_sees_the_window() {
+        let o = initial_step(&StartupFacts::default(), OsType::MacOs);
+        assert!(o.reveal_window);
+        let unreadable = StartupFacts {
+            onboarding_completed: None,
+            ..Default::default()
+        };
+        assert!(initial_step(&unreadable, OsType::Linux).reveal_window);
     }
 
     #[test]
@@ -688,7 +729,7 @@ mod tests {
             ..Default::default()
         };
         let o = initial_step(&f, OsType::MacOs);
-        assert_eq!(o.step, OnboardingStep::Accessibility);
+        assert_eq!(o.step, OnboardingStep::Permissions);
         assert!(o.returning_user && o.reveal_window);
         // A failed check proceeds to the app.
         let f = StartupFacts {
@@ -704,7 +745,7 @@ mod tests {
         };
         assert_eq!(
             initial_step(&f, OsType::Windows).step,
-            OnboardingStep::Accessibility
+            OnboardingStep::Permissions
         );
         let f = StartupFacts {
             onboarding_completed: Some(true),

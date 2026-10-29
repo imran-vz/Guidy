@@ -36,23 +36,12 @@
     "about": "O programie"
   },
   "usage": {
-    "title": "Użycie",
-    "description": "Ile kosztowali dostawcy AI w chmurze i jaką pracę wykonały modele na tym Macu.",
-    "cloud": "Chmura",
     "local": "Na tym Macu",
     "refresh": "Odśwież",
     "total": "Łącznie wydano",
     "last30Days": "Ostatnie 30 dni",
     "callsTitle": "Wywołania",
-    "byModel": "Według modelu",
-    "byFeature": "Według funkcji",
     "empty": "Brak wywołań AI w chmurze.",
-    "calls_one": "{{count}} wywołanie",
-    "calls_other": "Wywołania: {{count}}",
-    "average": "śr. {{cost}}",
-    "highest": "maks. {{cost}}",
-    "tokens": "Tokeny: {{input}} wej. / {{output}} wyj.",
-    "unknownPrice": "cena nieznana",
     "feature": {
       "dictation": "Dyktowanie",
       "meetingTranscription": "Transkrypcja spotkań",
@@ -61,37 +50,17 @@
       "other": "Inne"
     },
     "localAudio": "Transkrybowane audio",
-    "localWords": "Słowa",
-    "localTokens": "Tokeny LLM",
-    "localCloudEquivalent": "Odpowiednik w chmurze",
     "localEmpty": "Nic jeszcze nie działało na lokalnym modelu.",
-    "localByModel": "Modele lokalne",
-    "localByFeature": "Praca lokalna według funkcji",
     "kind": {
       "transcription": "Transkrypcja",
       "llm": "Wbudowany LLM"
     },
-    "runs_one": "{{count}} uruchomienie",
-    "runs_other": "Uruchomienia: {{count}}",
-    "audio": "{{duration}} audio",
-    "words": "Słowa: {{count}}",
-    "realtime": "{{speed}} czasu rzeczywistego",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "generowanie {{speed}}",
-    "loadTime": "wczytuje się w {{time}}",
-    "localNote": "Szybkość względem czasu rzeczywistego to długość audio ÷ czas przetwarzania, bez wczytywania; dyktowanie dekodowane na żywo podczas mówienia nie jest mierzone. Odpowiednik w chmurze wycenia audio na ${{price}} za minutę (OpenAI Whisper).",
     "estimateNote": "~ oznacza kwoty oszacowane na podstawie publikowanych cen za token; dostawcy, którzy sami podają koszt (np. OpenRouter), są dokładni. Rozliczenia sprawdzisz w panelu dostawcy.",
     "reportedNote": "Kwoty są takie, jak podali dostawcy. Rozliczenia sprawdzisz w panelu dostawcy.",
-    "clear": "Wyczyść historię",
     "clearTitle": "Wyczyścić historię użycia?",
     "clearConfirm": "Zapisane wywołania, koszty i uruchomienia modeli lokalnych zostaną usunięte. Użycie pokazane przy podsumowaniach spotkań pozostanie."
   },
   "onboarding": {
-    "subtitle": "Aby rozpocząć, wybierz model transkrypcji",
-    "existingModelsTitle": "Zgodne modele",
-    "downloadModelsTitle": "Dostępne do pobrania",
-    "showAllModels": "Pokaż wszystkie modele ({{total}})",
-    "showFewerModels": "Pokaż mniej modeli",
     "recommended": "Polecane",
     "customModelDescription": "Nieoficjalnie wspierane",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Stary format",
       "failed": "Pobieranie nie powiodło się",
       "retry": "Spróbuj ponownie",
-      "chooseAnother": "Wybierz inny model",
       "download": "Pobierz modele ({{size}})",
       "continue": "Kontynuuj",
       "timeRemaining": "Pozostało {{time}}"
@@ -150,7 +118,6 @@
       "grant": "Przyznaj uprawnienie",
       "granted": "Przyznano",
       "waiting": "Oczekiwanie...",
-      "allGranted": "Wszystko gotowe!",
       "errors": {
         "checkFailed": "Nie udało się sprawdzić uprawnień. Spróbuj ponownie.",
         "requestFailed": "Nie udało się poprosić o uprawnienie. Spróbuj ponownie."
@@ -163,10 +130,6 @@
     "active": "Aktywny",
     "switching": "Przełączanie...",
     "noModelsAvailable": "Brak dostępnych modeli",
-    "verifying": "Weryfikacja {{modelName}}...",
-    "verifyingGeneric": "Weryfikacja...",
-    "downloading": "Pobieranie {{percentage}}%",
-    "downloadingMultiple": "Pobieranie {{count}} modeli...",
     "modelReady": "Model gotowy",
     "loading": "Wczytywanie {{modelName}}...",
     "loadingGeneric": "Wczytywanie...",
@@ -176,29 +139,18 @@
     "deleteModel": "Usuń {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
     "capabilities": {
-      "languageSelection": "Obsługuje wiele języków wejściowych",
       "languageCount": "{{total}} języków",
-      "translation": "Może tłumaczyć na angielski",
       "translate": "Tłumacz na angielski",
-      "singleLanguage": "Obsługuje tylko ten język",
-      "languageOnly": "Tylko {{language}}",
-      "streaming": "Pokazuje transkrypcję na żywo podczas mówienia"
+      "languageOnly": "Tylko {{language}}"
     },
     "download": "Pobierz",
     "use": "Użyj",
-    "cancel": "Anuluj",
     "cancelDownload": "Anuluj pobieranie",
     "legacy": "Przestarzałe"
   },
   "settings": {
-    "modelSettings": {
-      "title": "Ustawienia {{model}}"
-    },
     "models": {
-      "title": "Modele transkrypcji",
-      "description": "Wybierz model transkrypcji lub pobierz dodatkowe modele. Różne modele oferują różne poziomy dokładności i szybkości.",
       "deleteConfirm": "Czy na pewno chcesz usunąć {{modelName}}? Będziesz musiał pobrać go ponownie, aby go użyć.",
-      "deleteActiveConfirm": "{{modelName}} jest Twoim aktywnym modelem. Usunięcie go zatrzyma transkrypcje, dopóki nie wybierzesz nowego modelu. Czy na pewno chcesz kontynuować?",
       "deleteTitle": "Usuń model",
       "retiredNotice": {
         "title": "Stare modele nie działają już z Guidy",
@@ -213,17 +165,12 @@
         "translation": "Filtruj modele obsługujące tłumaczenie na język angielski"
       },
       "noModelsMatch": "Żadne modele nie pasują do tego filtra.",
-      "yourModels": "Pobrane modele",
-      "availableModels": "Dostępne do pobrania",
       "searchPlaceholder": "Szukaj modeli według nazwy…",
       "rescan": {
-        "label": "Skanuj ponownie",
         "tooltip": "Skanuj ponownie w poszukiwaniu modeli dodanych do folderu modeli lub pamięci podręcznej Hugging Face poza Guidy"
       }
     },
     "general": {
-      "title": "Ogólne",
-      "description": "Jak uruchamiasz dyktowanie, jakiego języka nasłuchuje i co słyszysz.",
       "shortcutsGroup": "Skróty",
       "shortcut": {
         "title": "Skróty Guidy",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "Język",
-        "description": "Wybierz język rozpoznawania mowy. Opcja Auto automatycznie określi język, a wybór konkretnego języka może poprawić dokładność.",
         "searchPlaceholder": "Szukaj języka...",
         "noResults": "Nie znaleziono języków",
         "auto": "Automatycznie"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "Dźwięk",
       "microphone": {
         "title": "Mikrofon",
-        "description": "Wybierz preferowane urządzenie mikrofonowe",
         "placeholder": "Wybierz mikrofon...",
         "loading": "Wczytywanie..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Urządzenie wyjściowe",
-        "description": "Wybierz preferowane urządzenie audio do odtwarzania dźwięków",
         "placeholder": "Wybierz urządzenie wyjściowe...",
         "loading": "Wczytywanie..."
       },
       "volume": {
-        "title": "Głośność",
-        "description": "Dostosuj głośność dźwięków informacyjnych"
+        "title": "Głośność"
       }
     },
     "advanced": {
-      "title": "Zaawansowane",
-      "description": "Uruchamianie, wklejanie, dostrajanie transkrypcji i historia.",
       "groups": {
         "app": "Aplikacja",
         "output": "Wyjście",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Uruchom ukryty",
-        "description": "Uruchom w zasobniku systemowym bez otwierania okna."
+        "description": "Uruchom w zasobniku systemowym bez otwierania okna.",
+        "descriptionMac": "Uruchamiaj na pasku menu bez otwierania okna."
       },
       "autostart": {
         "label": "Uruchamiaj przy starcie",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Pokaż ikonę w zasobniku",
-        "description": "Wyświetlaj ikonę Guidy w zasobniku systemowym."
+        "description": "Wyświetlaj ikonę Guidy w zasobniku systemowym.",
+        "descriptionMac": "Pokazuj ikonę Guidy na pasku menu."
       },
       "overlay": {
         "style": {
-          "title": "Nakładka",
           "description": "Wybierz nakładkę nagrywania: „Brak“ ją ukrywa, „Minimalna“ pokazuje kompaktowy wskaźnik, „Na żywo“ wyświetla transkrypcję w czasie rzeczywistym podczas mówienia (tylko modele obsługujące streaming — poszukaj etykiety „Streaming“ w selektorze modeli). W systemie Linux zalecana jest opcja „Brak“.",
+          "descriptionMac": "Wybierz nakładkę nagrywania: „Brak“ ją ukrywa, „Minimalna“ pokazuje kompaktowy wskaźnik, „Na żywo“ wyświetla transkrypcję w czasie rzeczywistym podczas mówienia (tylko modele obsługujące streaming — poszukaj etykiety „Streaming“ w selektorze modeli).",
           "options": {
             "none": "Brak",
             "minimal": "Minimalna",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Automatyczne wysyłanie",
         "description": "Automatycznie wysyła wybraną kombinację klawiszy po wstawieniu tekstu. Cmd+Enter dotyczy macOS, natomiast Windows/Linux używają Super+Enter.",
+        "descriptionMac": "Automatycznie wysyła wybraną kombinację klawiszy po wstawieniu tekstu.",
         "options": {
           "off": "Wyłączone",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Postproces",
-      "description": "Popraw lub przepisz transkrypcję modelem AI, zanim zostanie wklejona.",
       "hotkey": {
         "title": "Skrót klawiszowy"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Dostawca",
-          "description": "Wybierz dostawcę zgodnego z OpenAI lub Anthropic."
+          "title": "Dostawca"
         },
         "builtin": {
           "label": "Wbudowany model (na tym Macu)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "Format API",
-          "description": "Format żądania wymagany przez Twój niestandardowy endpoint.",
           "options": {
             "openai": "Zgodne z OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "Adres bazowy",
-          "description": "Bazowy adres API dla wybranego dostawcy. Tylko dostawca niestandardowy może być edytowany.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "Klucz API",
-          "description": "Klucz API dla wybranego dostawcy.",
           "placeholder": "sk-...",
           "saveFailed": "Nie udało się zapisać klucza API"
         },
@@ -500,54 +437,33 @@
           "title": "Model",
           "descriptionCustom": "Podaj identyfikator modelu wymagany przez Twój niestandardowy endpoint.",
           "descriptionDefault": "Wybierz model udostępniony przez wybranego dostawcę.",
-          "placeholderWithOptions": "Wyszukaj lub wybierz model",
           "placeholderNoOptions": "Wpisz nazwę modelu",
           "refreshModels": "Odśwież modele"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Wybrany prompt",
-          "description": "Wybierz szablon do ulepszania transkrypcji lub utwórz nowy. Użyj ${output} w treści, aby odwołać się do przechwyconej transkrypcji."
-        },
-        "noPrompts": "Brak dostępnych promptów",
-        "selectPrompt": "Wybierz prompt",
         "createNew": "Utwórz nowy prompt",
         "promptLabel": "Etykieta promptu",
         "promptLabelPlaceholder": "Wpisz nazwę promptu",
         "promptInstructions": "Instrukcje promptu",
         "promptInstructionsPlaceholder": "Wpisz instrukcje do wykonania po transkrypcji. Przykład: Popraw gramatykę i jasność dla następującego tekstu: ${output}",
         "promptTip": "Wskazówka: użyj <code>${output}</code>, aby wstawić transkrybowany tekst do promptu.",
-        "updatePrompt": "Zaktualizuj prompt",
-        "deletePrompt": "Usuń prompt",
-        "createPrompt": "Utwórz prompt",
-        "cancel": "Anuluj",
-        "selectToEdit": "Wybierz prompt powyżej, aby zobaczyć i edytować jego szczegóły.",
-        "createFirst": "Kliknij 'Utwórz nowy prompt' powyżej, aby utworzyć pierwszy prompt postprocessingu."
+        "deletePrompt": "Usuń prompt"
       }
     },
     "history": {
-      "title": "Historia",
-      "openFolder": "Otwórz folder nagrań",
-      "loading": "Wczytywanie historii...",
-      "empty": "Brak transkrypcji. Rozpocznij nagrywanie, aby zbudować historię!",
       "copyToClipboard": "Kopiuj transkrypcję do schowka",
       "copyError": "Nie udało się skopiować transkrypcji do schowka.",
       "save": "Zapisz transkrypcję",
       "unsave": "Usuń z zapisanych",
       "delete": "Usuń wpis",
-      "deleteError": "Nie udało się usunąć wpisu. Spróbuj ponownie.",
       "retranscribe": "Transkrybuj ponownie",
-      "retranscribeError": "Nie udało się ponownie transkrybować. Spróbuj ponownie.",
       "transcribing": "Transkrybuję...",
       "transcriptionFailed": "Transkrypcja nie powiodła się. Możesz transkrybować ponownie za pomocą ikony ponowienia."
     },
     "debug": {
-      "title": "Debugowanie",
       "logDirectory": {
-        "title": "Katalog logów",
-        "description": "Miejsce przechowywania plików logów"
+        "title": "Katalog logów"
       },
       "logLevel": {
         "title": "Poziom logów",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Logi na żywo",
-        "description": "Przesyłaj logi aplikacji na żywo, aby diagnozować problemy bez otwierania pliku logów. Wyświetlane są tylko logi utworzone, gdy ten panel jest otwarty; uwzględnia ustawienie Poziom logów powyżej.",
         "live": "Na żywo",
         "paused": "Wstrzymano",
         "pause": "Wstrzymaj",
@@ -617,11 +532,6 @@
         "description": "Wybierz backend dla skrótów klawiaturowych.",
         "bindingsReset": "Skróty klawiaturowe były niekompatybilne i zostały zresetowane do wartości domyślnych"
       },
-      "paths": {
-        "appData": "Dane aplikacji:",
-        "models": "Modele:",
-        "settings": "Ustawienia:"
-      },
       "pasteDelay": {
         "title": "Opóźnienie wklejania (przed)",
         "description": "Opóźnienie (w milisekundach) po skopiowaniu tekstu, przed wysłaniem klawisza wklejania. Zwiększ, jeśli nic nie jest wklejane."
@@ -666,8 +576,7 @@
         "title": "Podgląd nowości",
         "description": "Otwórz najnowsze dołączone informacje o wydaniu bez oznaczania ich jako wyświetlone",
         "button": "Podgląd",
-        "noNotes": "Nie znaleziono dołączonych informacji o wydaniu",
-        "error": "Nie udało się wyświetlić podglądu informacji o wydaniu"
+        "noNotes": "Nie znaleziono dołączonych informacji o wydaniu"
       },
       "onboardingPreview": {
         "title": "Podgląd konfiguracji początkowej",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "O programie",
-      "version": {
-        "title": "Wersja",
-        "description": "Aktualna wersja Guidy"
-      },
       "author": {
         "title": "Autor",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "Katalog danych aplikacji",
-        "description": "Miejsce, gdzie Guidy przechowuje swoje dane"
-      },
-      "sourceCode": {
-        "title": "Kod źródłowy",
-        "description": "Zobacz kod źródłowy i współtwórz",
-        "button": "Zobacz na GitHub"
-      },
-      "supportDevelopment": {
-        "title": "Wspieraj rozwój",
-        "description": "Pomóż nam dalej rozwijać Guidy",
-        "button": "Wesprzyj"
+        "title": "Katalog danych aplikacji"
       },
       "acknowledgments": {
         "title": "Podziękowania",
@@ -708,12 +601,6 @@
           "description": "Wydajne wykonywanie modelu rozpoznawania mowy Whisper od OpenAI",
           "details": "Guidy używa ggml do szybkiego, lokalnego przetwarzania mowy na tekst. Dzięki niesamowitej pracy Georgi Gerganova i współtwórców."
         }
-      },
-      "hero": {
-        "headline": "Mowa na tekst, która zostaje na tym Macu",
-        "lede": "Naciśnij skrót, mów, a Guidy wpisze tekst w aktywnej aplikacji. Transkrypcja działa lokalnie.",
-        "engine": "Silnik",
-        "model": "Model"
       },
       "whatsNewUpdates": {
         "label": "Pokaż nowości",
@@ -741,7 +628,6 @@
     "delete": "Usuń",
     "back": "Wstecz",
     "close": "Zamknij",
-    "open": "Otwórz",
     "copy": "Kopiuj",
     "clear": "Wyczyść",
     "noOptionsFound": "Nie znaleziono opcji"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "Transkrypcja nie powiodła się"
   },
   "appLanguage": {
-    "title": "Język aplikacji",
-    "description": "Zmień język interfejsu Guidy"
+    "title": "Język aplikacji"
   },
   "theme": {
     "title": "Motyw aplikacji",
-    "description": "Wybierz, czy Guidy ma podążać za motywem systemu, czy pozostać jasny lub ciemny",
     "options": {
       "system": "System",
       "light": "Jasny",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Spotkania",
     "selection": {
-      "hint": "Przeciągnij lub kliknij z Shift, aby oznaczyć kilka wierszy",
       "count_one": "Zaznaczono {{count}} wiersz",
       "count_other": "Zaznaczone wiersze: {{count}}",
       "keys": "Shift-klik: zakres · ⌘-klik: dodaj lub usuń · Esc: wyczyść",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Ponów mówców",
-      "tooltip": "Rozróżnij mówców ponownie za pomocą {{model}}. Transkrypcja pozostaje. Oznaczone przez Ciebie wiersze i nazwani mówcy zachowują swoją osobę; reszta jest ponownie dopasowywana po głosie.",
       "standard": "Standardowy model mówców",
       "download": "Jednorazowe pobranie {{size}}",
       "error": "Nie udało się ponowić mówców",
@@ -826,7 +708,6 @@
       "yesterday": "Wczoraj"
     },
     "copy": {
-      "summary": "Kopiuj",
       "transcript": "Kopiuj transkrypcję",
       "copied": "Skopiowano",
       "notes": "Kopiuj notatki",
@@ -866,7 +747,6 @@
       "openNotes": "Otwórz notatki",
       "expand": "Pokaż transkrypcję na żywo",
       "collapse": "Zwiń",
-      "liveTitle": "Transkrypcja na żywo",
       "liveHint": "Tak, jak usłyszano do tej pory. Pełna transkrypcja z nazwami mówców powstanie po zakończeniu spotkania.",
       "callTitle": "Rozmowa {{app}}",
       "callPrompt": "Robić notatki ze spotkania?",
@@ -875,7 +755,6 @@
       "startFailed": "Nie udało się uruchomić. Spróbować ponownie?",
       "dismiss": "Nie teraz"
     },
-    "description": "Nagraj spotkanie na tym Macu, a potem przeczytaj transkrypcję z nazwanymi mówcami.",
     "init": {
       "starting": "Uruchamianie notatek ze spotkań...",
       "failed": "Nie udało się uruchomić notatek ze spotkań",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Najpierw wygeneruj podsumowanie spotkania: tytuł powstaje na jego podstawie."
     },
     "model": {
-      "download": "Pobierz model spotkań",
       "downloadError": "Nie udało się pobrać modelu spotkań"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Rozpocznij notatki ze spotkania",
       "stop": "Zatrzymaj notatki ze spotkania",
-      "recording": "Nagrywanie",
-      "idle": "Nie nagrywa",
       "startError": "Nie udało się rozpocząć nagrywania",
       "stopError": "Nie udało się zatrzymać nagrywania",
       "disabled": "Włącz notatki ze spotkań w Ustawieniach, aby nagrywać."
     },
-    "upcoming": {
-      "title": "Nadchodzące",
-      "empty": "Brak nadchodzących spotkań w kalendarzu z linkiem do rozmowy.",
-      "start": "Rozpocznij"
-    },
     "list": {
-      "title": "Nagrania",
-      "empty": "Brak spotkań. Rozpocznij notatki ze spotkania, aby je nagrać.",
       "loading": "Wczytywanie spotkań...",
       "loadError": "Nie udało się wczytać spotkań",
-      "speakerModelMissing": "Nagrania nie są przetwarzane, dopóki model rozpoznawania mówców nie zostanie pobrany.",
       "minutes": "{{count}} min",
-      "open": "Otwórz",
       "rename": "Zmień nazwę",
       "delete": "Usuń",
       "process": "Przetwórz",
       "retry": "Spróbuj ponownie",
       "cancelProcessing": "Anuluj przetwarzanie",
-      "save": "Zapisz",
       "cancel": "Anuluj",
       "titlePlaceholder": "Tytuł spotkania",
       "deleteTitle": "Usunąć spotkanie?",
@@ -979,7 +845,6 @@
       "share": "Udział",
       "youSpoke": "Twój czas mówienia",
       "minutes": "Min",
-      "speakersToName": "Do nazwania: {{count}}",
       "notesTab": "Notatki"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Osoby",
-      "description": "Osoby nazwane przez Ciebie w spotkaniach. Guidy rozpoznaje ich głosy w kolejnych spotkaniach.",
       "empty": "Brak osób. Nazwij mówcę w spotkaniu, aby dodać osobę.",
       "loadError": "Nie udało się wczytać osób",
       "voiceprints_one": "{{count}} odcisk głosu",
       "voiceprints_other": "Odciski głosu: {{count}}",
-      "edit": "Edytuj",
       "merge": "Scal",
       "mergeInto": "Scal z...",
       "mergeHint": "Wybierz osobę do zachowania. Odciski głosu i nazwy mówców zostaną do niej przeniesione.",
@@ -1035,7 +898,6 @@
       "renameError": "Nie udało się zaktualizować osoby",
       "namePlaceholder": "Imię i nazwisko",
       "emailPlaceholder": "E-mail (opcjonalnie)",
-      "save": "Zapisz",
       "cancel": "Anuluj",
       "voice": {
         "title": "Twój głos",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Notatki ze spotkań",
       "enabled": {
         "title": "Notatki ze spotkań",
         "description": "Nagrywaj spotkania mikrofonem i dźwiękiem komputera. Włączenie poprosi o dostęp do kalendarza, dźwięku systemowego i powiadomień."
@@ -1077,7 +938,6 @@
         "requestAgain": "Poproś ponownie",
         "openSettings": "Otwórz Ustawienia systemowe"
       },
-      "you": "Ty",
       "userName": {
         "title": "Twoje imię",
         "description": "Ścieżka Twojego mikrofonu jest zawsze oznaczana tym imieniem.",
@@ -1128,7 +988,6 @@
         "description": "Rozróżnia głosy i rozpoznaje osoby, które już nazwałeś. Używa {{name}} ({{trainedOn}}), {{size}}. Pobierany tylko po kliknięciu Pobierz.",
         "ready": "Pobrano",
         "download": "Pobierz ({{size}})",
-        "retry": "Ponów pobieranie",
         "failed": "Pobieranie nie powiodło się: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} min"
       },
       "advanced": {
-        "title": "Zaawansowane",
-        "show": "Pokaż ustawienia zaawansowane",
-        "hide": "Ukryj ustawienia zaawansowane",
         "matchThreshold": {
           "title": "Próg automatycznego dopasowania",
           "description": "Podobieństwo głosu, od którego mówca jest nazywany automatycznie. Poniżej tego progu dopasowanie pyta „Potwierdzić?”."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Wykrywanie zmiany mówcy",
         "description": "Dzieli wiersze tam, gdzie zmienia się głos ({{size}}). Dopóki modele nie zostaną pobrane, wiersze są dzielone na pauzach.",
-        "ready": "Gotowe",
-        "downloading": "Pobieranie",
-        "download": "Pobierz ({{size}})"
+        "descriptionReady": "Dzieli wiersze tam, gdzie zmienia się głos."
       },
       "callSuggestions": {
         "title": "Proponuj notatki podczas rozmów",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Szukaj w tytułach, podsumowaniach i transkrypcjach",
       "searching": "Wyszukiwanie...",
       "empty": "Brak spotkań pasujących do „{{query}}”.",
       "count_one": "1 spotkanie",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Konfiguracja",
-      "models": "Modele",
-      "note": "Możesz nagrywać, zanim modele się pobiorą. Przetwarzanie zaczeka, aż będą gotowe.",
-      "downloading": "Pobieranie",
-      "downloadingPercent": "Pobieranie {{percent}}%",
-      "ready": "Gotowe",
-      "notDownloaded": "Nie pobrano",
-      "download": "Pobierz",
-      "dismiss": "Odrzuć",
-      "optional": "Opcjonalne"
-    },
     "downloads": {
       "activity": "Pobieranie {{name}} · {{percent}}%",
       "activityFailed": "Pobieranie nie powiodło się · {{name}}",
-      "multiple": "Pobieranie modeli: {{count}}",
-      "cancel": "Anuluj",
       "retry": "Ponów",
       "done": "Pobrano {{name}}",
       "failed": "Nie udało się pobrać {{name}}",
       "startError": "Nie udało się rozpocząć pobierania",
       "empty": "Brak pobrań",
-      "queued": "W kolejce",
-      "doneShort": "Gotowe",
       "failedShort": "Błąd",
       "cancelled": "Anulowano"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Zadania do wykonania",
       "generate": "Generuj podsumowanie",
       "regenerate": "Generuj ponownie",
-      "regenerateWith": "Generuj ponownie za pomocą...",
       "generateWith": "Generuj za pomocą {{model}}",
       "otherModels": "Inne modele",
       "otherModel": "Inny model…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Podsumowania",
-      "provider": "Dostawca",
-      "providerDescription": "Model używany do podsumowań spotkań i zadań. Postprocessing dyktowania zachowuje własnego dostawcę.",
       "builtin": "Wbudowany (na tym Macu)",
       "builtinDescription": "Uruchamia lokalny model za pomocą llama.cpp. Nic nie opuszcza Twojego Maca.",
-      "model": "Model",
-      "modelDescription": "Zaznacz model, aby dodać go do swoich modeli. Wyświetlane są tylko modele generujące tekst. „Dobre do podsumowań” oznacza, że model obsługuje ustrukturyzowane wyjście, na którym opierają się podsumowania.",
       "modelPlaceholder": "Identyfikator modelu",
       "pickModel": "Wybierz model",
-      "noLocalModels": "Pobierz model poniżej",
-      "usingPostProcessModel": "Używany jest model postprocessingu ({{model}})",
       "refreshModels": "Odśwież",
       "testConnection": "Testuj połączenie",
-      "testDescription": "Sprawdź, czy dostawca, klucz i model działają.",
       "apple": "Apple Intelligence",
       "appleDescription": "Model na urządzeniu, na Macach z Apple Silicon z włączonym Apple Intelligence.",
-      "appleAvailable": "Dostępne",
       "appleUnavailable": "Apple Intelligence nie jest dostępne na tym Macu",
       "activeHeading": "Podsumowania tworzy",
-      "place": "Gdzie tworzone są podsumowania",
-      "placeDescription": "Używana jest tylko wybrana opcja.",
       "tabCloud": "Dostawca w chmurze",
       "tabLocal": "Na tym Macu",
       "onThisMac": "Ten Mac · offline",
       "apiKey": "Klucz API",
       "apiKeyDescription": "Zapisany w Pęku kluczy i współdzielony z Postprocesem.",
       "getKey": "Uzyskaj klucz {{provider}}",
-      "modelDescriptionCustom": "Wpisz identyfikator modelu, którego oczekuje Twój endpoint, i naciśnij Enter, aby go dodać, lub zaznacz jeden z wyświetlanych.",
       "searchModels": "Szukaj modeli",
       "goodOnly": "Dobre do podsumowań",
       "goodForSummaries": "podsumowania",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Niedostępne na tym Macu. Włącz w Ustawienia systemowe > Apple Intelligence i Siri.",
       "unavailable": "niedostępny",
       "yourModels": "Twoje modele",
-      "yourModelsDescription": "Generuj podsumowanie oferuje każdy model z tej listy, więc możesz wybrać inny dla każdego spotkania. Zaznaczony jest domyślny.",
       "yourModelsEmpty": "Brak modeli w chmurze. Wybierz dostawcę poniżej, dodaj jego klucz API i zaznacz wybrane modele.",
       "default": "domyślny",
       "removeModel": "Usuń z Twoich modeli",
-      "addFrom": "Dodaj modele od",
-      "addFromDescription": "Wybierz dostawcę, aby wpisać jego klucz i zaznaczyć modele do dodania. Nie zmienia to modelu domyślnego."
+      "addFrom": "Dodaj modele od"
     },
     "local": {
       "heading": "Modele lokalne",
@@ -1438,9 +1260,7 @@
       "default": "Domyślny",
       "recommendedRam": "Zalecany dla {{gb}} GB+ RAM",
       "notEnoughRam": "Ten Mac ma mniej pamięci, niż zalecane dla tego modelu.",
-      "downloaded": "Pobrano",
-      "download": "Pobierz",
-      "downloading": "Pobieranie {{percentage}}%"
+      "downloaded": "Pobrano"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Połączono jako {{name}}"
     },
     "byok": {
-      "testConnection": "Testuj połączenie",
-      "testDescription": "Sprawdź adres bazowy, klucz API i model za pomocą małego żądania.",
-      "baseUrlEditable": "Bazowy adres API dla tego dostawcy. Zastąp każdy {placeholder} (np. identyfikatorem konta Cloudflare).",
-      "cloudflareHint": "Cloudflare: wpisz identyfikator konta (oraz identyfikator bramy dla AI Gateway) w adresie bazowym."
+      "testDescription": "Sprawdź adres bazowy, klucz API i model za pomocą małego żądania."
     }
   }
 }

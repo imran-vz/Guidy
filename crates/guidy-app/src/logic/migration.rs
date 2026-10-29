@@ -70,6 +70,9 @@ pub struct Migration {
     pub outcomes: HashMap<String, Outcome>,
     finalizing: HashSet<String>,
     wrapping_up: bool,
+    /// Download-tracker failures already counted, by replacement id (the
+    /// failed item's start time): a retry starts a new item.
+    failures_seen: HashMap<String, i64>,
 }
 
 impl Migration {
@@ -85,6 +88,7 @@ impl Migration {
             outcomes: HashMap::new(),
             finalizing: HashSet::new(),
             wrapping_up: false,
+            failures_seen: HashMap::new(),
         }
     }
 
@@ -163,16 +167,54 @@ impl Migration {
         RowState::Progress(100.0)
     }
 
-    /// Start: returns replacement ids to download (all at once).
-    pub fn start(&mut self, models: &[ModelInfo]) -> Vec<String> {
+    /// Start: returns replacement ids to download (all at once). Failures
+    /// the tracker shows from before don't count.
+    pub fn start(&mut self, models: &[ModelInfo], store: &ModelsStore) -> Vec<String> {
         self.phase = Phase::Migrating;
-        self.to_download(models)
+        let ids: Vec<String> = self
+            .to_download(models)
             .into_iter()
             .map(|p| p.replacement.id)
-            .collect()
+            .collect();
+        for id in &ids {
+            if let Some(item) = Self::failed_item(id, store) {
+                self.failures_seen.insert(id.clone(), item.started_at_ms);
+            }
+        }
+        ids
     }
 
-    /// A download command failed for this replacement.
+    fn failed_item<'a>(
+        replacement_id: &str,
+        store: &'a ModelsStore,
+    ) -> Option<&'a guidy_core::downloads::DownloadItem> {
+        store
+            .stt_download(replacement_id)
+            .filter(|d| d.state == guidy_core::downloads::DownloadState::Failed)
+    }
+
+    /// Mark rows whose replacement download failed (the download tracker
+    /// reports it; queuing it succeeded). Call after any store change.
+    pub fn note_failures(&mut self, models: &[ModelInfo], store: &ModelsStore) {
+        if self.phase != Phase::Migrating {
+            return;
+        }
+        for p in self.chosen(models) {
+            let id = &p.replacement.id;
+            let Some(item) = Self::failed_item(id, store) else {
+                continue;
+            };
+            if self.failures_seen.get(id) == Some(&item.started_at_ms) {
+                continue;
+            }
+            self.failures_seen.insert(id.clone(), item.started_at_ms);
+            if !self.outcomes.contains_key(&p.retired.id) {
+                self.outcomes.insert(p.retired.id.clone(), Outcome::Failed);
+            }
+        }
+    }
+
+    /// A download could not be queued for this replacement.
     pub fn download_failed(&mut self, replacement_id: &str, models: &[ModelInfo]) {
         if let Some(p) = self
             .rows(models)
@@ -352,7 +394,7 @@ mod tests {
     fn full_flow_selects_target_before_deleting_and_wraps_up() {
         let (mut models, mut m) = setup();
         let mut store = ModelsStore::default();
-        assert_eq!(m.start(&models), vec!["new-a".to_string()]);
+        assert_eq!(m.start(&models, &store), vec!["new-a".to_string()]);
         store.begin_download("new-a");
         assert!(m.next_actions(&models, &store).is_empty());
         assert!(matches!(
@@ -389,12 +431,36 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_tracker_download_fails_its_row_once() {
+        use guidy_core::downloads::{stt_id, DownloadItem, DownloadState};
+        let (models, mut m) = setup();
+        let mut store = ModelsStore::default();
+        // A failure from before the start doesn't count.
+        let mut old = DownloadItem::new(stt_id("new-a"), "New A", 10, DownloadState::Failed);
+        old.started_at_ms = 1;
+        store.downloads = vec![old];
+        m.start(&models, &store);
+        m.note_failures(&models, &store);
+        assert!(!m.target_failed(&models));
+        // The new attempt fails.
+        let mut failed = DownloadItem::new(stt_id("new-a"), "New A", 10, DownloadState::Failed);
+        failed.started_at_ms = 2;
+        store.downloads = vec![failed];
+        m.note_failures(&models, &store);
+        assert!(m.target_failed(&models));
+        // Retry clears it; the same failed item isn't counted again.
+        m.retry("old-a", &models, &store);
+        m.note_failures(&models, &store);
+        assert!(!m.target_failed(&models));
+    }
+
+    #[test]
     fn failed_target_can_retry() {
         let (mut models, mut m) = setup();
         models[0].is_downloaded = true;
         let mut store = ModelsStore::default();
         store.models = models.clone();
-        m.start(&models);
+        m.start(&models, &store);
         m.next_actions(&models, &store);
         m.finalized("old-a", false);
         assert!(m.target_failed(&models));
@@ -408,7 +474,7 @@ mod tests {
     fn eta_and_time_format() {
         let (models, mut m) = setup();
         let mut store = ModelsStore::default();
-        m.start(&models);
+        m.start(&models, &store);
         store.begin_download("new-a");
         store.progress.get_mut("new-a").unwrap().percentage = 50.0;
         store.stats.insert(

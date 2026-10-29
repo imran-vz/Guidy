@@ -2,6 +2,9 @@
 //! Pure: events in, effects out; the GPUI layer runs the effects.
 
 use super::models::{update_download_stats, DownloadStats};
+use guidy_core::downloads::{
+    DiskUsage, DownloadItem, DownloadKind, DownloadState, OtherModel, DOWNLOADS_CHANGED_EVENT,
+};
 use guidy_core::managers::model::{DownloadProgress, ModelInfo};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -10,12 +13,29 @@ use std::collections::{HashMap, HashSet};
 pub enum ModelsEffect {
     ReloadModels,
     ReloadCurrentModel,
+    /// Reload the LLM and speaker models (`Backend::other_models`).
+    ReloadOther,
+    /// Re-measure what models take on disk.
+    ReloadDisk,
     ToastError(String),
-    /// A download finished; the selector may auto-select it (500 ms later,
-    /// when not recording).
+    /// A speech model download finished: select it if it was picked for
+    /// dictation, else offer "Use for Dictation".
     DownloadCompleted(String),
+    /// Another kind of model finished downloading.
+    DownloadDone {
+        name: String,
+    },
+    /// A download of another kind failed (speech models toast through
+    /// `model-download-failed`).
+    DownloadFailed {
+        name: String,
+        error: Option<String>,
+    },
 }
 
+/// Speech-to-text models (`ModelManager`) plus the unified download list,
+/// the LLM and speaker models, and what the requirements plan needs about
+/// this Mac.
 #[derive(Clone, Debug, Default)]
 pub struct ModelsStore {
     pub models: Vec<ModelInfo>,
@@ -27,12 +47,77 @@ pub struct ModelsStore {
     pub loading: bool,
     pub initialized: bool,
     pub rescanning: bool,
+    /// The last model operation's error (shown on the Models page).
     pub error: Option<String>,
+    /// The download tracker's list (every kind).
+    pub downloads: Vec<DownloadItem>,
+    /// LLMs and speaker models.
+    pub other: Vec<OtherModel>,
+    pub other_loaded: bool,
+    pub disk: Option<DiskUsage>,
+    pub ram_gb: Option<u32>,
+    pub apple_intelligence: bool,
+    pub providers_with_keys: Vec<String>,
 }
 
 impl ModelsStore {
     pub fn model(&self, id: &str) -> Option<&ModelInfo> {
         self.models.iter().find(|m| m.id == id)
+    }
+
+    /// The tracker's entry for a download id.
+    pub fn download(&self, id: &str) -> Option<&DownloadItem> {
+        self.downloads.iter().find(|d| d.id == id)
+    }
+
+    /// The tracker's entry for a speech model, when active.
+    pub fn stt_download(&self, model_id: &str) -> Option<&DownloadItem> {
+        self.download(&guidy_core::downloads::stt_id(model_id))
+    }
+
+    pub fn other_model(&self, id: &str) -> Option<&OtherModel> {
+        self.other.iter().find(|m| m.id == id)
+    }
+
+    /// A new download list: effects for the downloads that just settled.
+    pub fn set_downloads(&mut self, items: Vec<DownloadItem>) -> Vec<ModelsEffect> {
+        let mut fx = Vec::new();
+        for item in &items {
+            let prev = self
+                .downloads
+                .iter()
+                .find(|d| d.id == item.id)
+                .map(|d| d.state);
+            if prev == Some(item.state) || !prev.is_some_and(DownloadState::is_active) {
+                continue;
+            }
+            let stt = item.kind == DownloadKind::Stt;
+            match item.state {
+                DownloadState::Done if !stt => {
+                    fx.push(ModelsEffect::DownloadDone {
+                        name: item.name.clone(),
+                    });
+                    fx.push(ModelsEffect::ReloadOther);
+                    fx.push(ModelsEffect::ReloadDisk);
+                }
+                DownloadState::Failed if !stt => {
+                    fx.push(ModelsEffect::DownloadFailed {
+                        name: item.name.clone(),
+                        error: item.error.clone(),
+                    });
+                    fx.push(ModelsEffect::ReloadOther);
+                }
+                DownloadState::Cancelled | DownloadState::Failed if stt => {
+                    // The partial's size changed.
+                    fx.push(ModelsEffect::ReloadModels);
+                }
+                DownloadState::Cancelled => fx.push(ModelsEffect::ReloadOther),
+                _ => {}
+            }
+        }
+        self.downloads = items;
+        fx.dedup();
+        fx
     }
 
     fn clear_download(&mut self, id: &str) {
@@ -91,6 +176,15 @@ impl ModelsStore {
     pub fn apply_event(&mut self, name: &str, payload: &Value, now_ms: u64) -> Vec<ModelsEffect> {
         let id_payload = || payload.as_str().map(str::to_string);
         match name {
+            DOWNLOADS_CHANGED_EVENT => {
+                match serde_json::from_value::<Vec<DownloadItem>>(payload.clone()) {
+                    Ok(items) => self.set_downloads(items),
+                    Err(_) => vec![],
+                }
+            }
+            "llm-models://changed" | "meetings://speaker-model-status" => {
+                vec![ModelsEffect::ReloadOther]
+            }
             "model-download-progress" => {
                 if let Ok(p) = serde_json::from_value::<DownloadProgress>(payload.clone()) {
                     let stats = update_download_stats(
@@ -110,6 +204,7 @@ impl ModelsStore {
                 self.clear_download(&id);
                 vec![
                     ModelsEffect::ReloadModels,
+                    ModelsEffect::ReloadDisk,
                     ModelsEffect::DownloadCompleted(id),
                 ]
             }
@@ -138,7 +233,13 @@ impl ModelsStore {
                 }
                 vec![]
             }
-            "model-deleted" | "model-state-changed" | "models-updated" => {
+            "model-deleted" | "models-updated" => vec![
+                ModelsEffect::ReloadModels,
+                ModelsEffect::ReloadCurrentModel,
+                ModelsEffect::ReloadOther,
+                ModelsEffect::ReloadDisk,
+            ],
+            "model-state-changed" => {
                 vec![ModelsEffect::ReloadModels, ModelsEffect::ReloadCurrentModel]
             }
             _ => vec![],
@@ -179,6 +280,7 @@ mod tests {
             fx,
             vec![
                 ModelsEffect::ReloadModels,
+                ModelsEffect::ReloadDisk,
                 ModelsEffect::DownloadCompleted("m".into())
             ]
         );
@@ -210,12 +312,19 @@ mod tests {
     #[test]
     fn reload_events() {
         let mut s = ModelsStore::default();
-        for name in ["model-deleted", "model-state-changed", "models-updated"] {
-            assert_eq!(
-                s.apply_event(name, &Value::Null, 0),
-                vec![ModelsEffect::ReloadModels, ModelsEffect::ReloadCurrentModel]
-            );
+        assert_eq!(
+            s.apply_event("model-state-changed", &Value::Null, 0),
+            vec![ModelsEffect::ReloadModels, ModelsEffect::ReloadCurrentModel]
+        );
+        for name in ["model-deleted", "models-updated"] {
+            let fx = s.apply_event(name, &Value::Null, 0);
+            assert!(fx.contains(&ModelsEffect::ReloadOther));
+            assert!(fx.contains(&ModelsEffect::ReloadDisk));
         }
+        assert_eq!(
+            s.apply_event("llm-models://changed", &Value::Null, 0),
+            vec![ModelsEffect::ReloadOther]
+        );
         assert!(s.apply_event("unrelated", &Value::Null, 0).is_empty());
     }
 
@@ -235,6 +344,65 @@ mod tests {
         assert!(
             !s.downloading.contains("stale"),
             "dropped: backend idle, no progress"
+        );
+    }
+
+    #[test]
+    fn tracker_transitions_toast_other_kinds_once() {
+        use guidy_core::downloads::{DownloadItem, DownloadState};
+        let mut s = ModelsStore::default();
+        let item = |id: &str, state| DownloadItem::new(id, id.to_uppercase(), 10, state);
+        let list = |items: Vec<DownloadItem>| serde_json::to_value(items).unwrap();
+        let fx = s.apply_event(
+            DOWNLOADS_CHANGED_EVENT,
+            &list(vec![
+                item("llm:q", DownloadState::Downloading),
+                item("stt:m", DownloadState::Downloading),
+            ]),
+            0,
+        );
+        assert!(fx.is_empty());
+        assert!(s.download("llm:q").is_some());
+        assert!(s.stt_download("m").is_some());
+        let mut failed = item("speaker:resnet34", DownloadState::Failed);
+        failed.error = Some("offline".into());
+        // Unknown before: settled items arriving first don't toast.
+        let fx = s.apply_event(
+            DOWNLOADS_CHANGED_EVENT,
+            &list(vec![
+                item("llm:q", DownloadState::Done),
+                item("stt:m", DownloadState::Done),
+                failed.clone(),
+            ]),
+            0,
+        );
+        assert_eq!(
+            fx,
+            vec![
+                ModelsEffect::DownloadDone {
+                    name: "LLM:Q".into()
+                },
+                ModelsEffect::ReloadOther,
+                ModelsEffect::ReloadDisk,
+            ]
+        );
+        // Same state again: nothing.
+        let fx = s.apply_event(
+            DOWNLOADS_CHANGED_EVENT,
+            &list(vec![item("llm:q", DownloadState::Done)]),
+            0,
+        );
+        assert!(fx.is_empty());
+        let mut running = failed.clone();
+        running.state = DownloadState::Downloading;
+        s.set_downloads(vec![running]);
+        let fx = s.set_downloads(vec![failed]);
+        assert_eq!(
+            fx[0],
+            ModelsEffect::DownloadFailed {
+                name: "SPEAKER:RESNET34".into(),
+                error: Some("offline".into())
+            }
         );
     }
 

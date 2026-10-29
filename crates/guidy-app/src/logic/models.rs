@@ -74,12 +74,80 @@ pub fn split_sections<'a>(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelCardStatus {
+    /// Waiting for a download slot.
+    Queued,
     Verifying,
     Downloading,
+    /// A cancelled or interrupted download left a partial file: Resume.
+    Paused,
+    /// The last download failed: Retry.
+    Failed,
     Switching,
     Downloadable,
     Active,
     Available,
+}
+
+/// A row's status from the model, its download-tracker entry and the
+/// selection. The tracker wins over the model's own flags while it has the
+/// download; a partial file on disk with no running download is Paused.
+pub fn model_row_status(
+    model: &ModelInfo,
+    download: Option<&guidy_core::downloads::DownloadItem>,
+    verifying: bool,
+    switching: Option<&str>,
+    current_model: &str,
+) -> ModelCardStatus {
+    use guidy_core::downloads::DownloadState;
+    match download.map(|d| d.state) {
+        Some(DownloadState::Queued) => return ModelCardStatus::Queued,
+        Some(DownloadState::Verifying) => return ModelCardStatus::Verifying,
+        Some(DownloadState::Downloading) if verifying => return ModelCardStatus::Verifying,
+        Some(DownloadState::Downloading) => return ModelCardStatus::Downloading,
+        Some(DownloadState::Failed) if !model.is_downloaded => return ModelCardStatus::Failed,
+        _ => {}
+    }
+    if verifying {
+        return ModelCardStatus::Verifying;
+    }
+    if model.is_downloading && !model.is_downloaded {
+        return ModelCardStatus::Downloading;
+    }
+    if switching == Some(model.id.as_str()) {
+        return ModelCardStatus::Switching;
+    }
+    if !model.is_downloaded {
+        return if model.partial_size > 0 {
+            ModelCardStatus::Paused
+        } else {
+            ModelCardStatus::Downloadable
+        };
+    }
+    if model.id == current_model {
+        return ModelCardStatus::Active;
+    }
+    ModelCardStatus::Available
+}
+
+/// "12 s", "4 min", "1 h 5 min" left.
+pub fn format_eta(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} s")
+    } else if secs < 3600 {
+        format!("{} min", secs.div_ceil(60))
+    } else {
+        format!("{} h {} min", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// "12.3 MB/s", "850 KB/s".
+pub fn format_rate(bytes_per_sec: u64) -> String {
+    let b = bytes_per_sec as f64;
+    if b >= 1e6 {
+        format!("{:.1} MB/s", b / 1e6)
+    } else {
+        format!("{:.0} KB/s", (b / 1e3).max(1.0))
+    }
 }
 
 pub fn model_card_status(
@@ -115,6 +183,13 @@ impl ModelCardStatus {
         matches!(
             self,
             ModelCardStatus::Downloadable | ModelCardStatus::Available
+        )
+    }
+    /// A download is queued, running or verifying.
+    pub fn is_busy(self) -> bool {
+        matches!(
+            self,
+            ModelCardStatus::Queued | ModelCardStatus::Downloading | ModelCardStatus::Verifying
         )
     }
     pub fn can_delete(self) -> bool {
@@ -208,6 +283,8 @@ pub enum SelectorStatus {
     Error,
     Unloaded,
     None,
+    /// Not checked yet (startup): neutral, never "download required".
+    Unknown,
 }
 
 /// Apply a `model-state-changed` event type to the selector status.
@@ -422,6 +499,51 @@ mod tests {
         assert!(ModelCardStatus::Downloadable.is_clickable());
         assert!(!ModelCardStatus::Active.is_clickable());
         assert!(ModelCardStatus::Active.can_delete());
+    }
+
+    #[test]
+    fn row_status_follows_the_tracker_and_partials() {
+        use guidy_core::downloads::{DownloadItem, DownloadState};
+        let mut m = test_model("m");
+        let item = |state| DownloadItem::new("stt:m", "M", 10, state);
+        let st = |m: &ModelInfo, d: Option<&DownloadItem>| model_row_status(m, d, false, None, "x");
+        assert_eq!(st(&m, None), ModelCardStatus::Downloadable);
+        assert_eq!(
+            st(&m, Some(&item(DownloadState::Queued))),
+            ModelCardStatus::Queued
+        );
+        assert_eq!(
+            st(&m, Some(&item(DownloadState::Downloading))),
+            ModelCardStatus::Downloading
+        );
+        assert_eq!(
+            model_row_status(&m, Some(&item(DownloadState::Downloading)), true, None, "x"),
+            ModelCardStatus::Verifying
+        );
+        assert_eq!(
+            st(&m, Some(&item(DownloadState::Failed))),
+            ModelCardStatus::Failed
+        );
+        m.partial_size = 5;
+        assert_eq!(
+            st(&m, Some(&item(DownloadState::Cancelled))),
+            ModelCardStatus::Paused
+        );
+        assert_eq!(st(&m, None), ModelCardStatus::Paused);
+        m.is_downloaded = true;
+        assert_eq!(
+            st(&m, Some(&item(DownloadState::Done))),
+            ModelCardStatus::Available
+        );
+        assert_eq!(
+            model_row_status(&m, None, false, None, "m"),
+            ModelCardStatus::Active
+        );
+        assert_eq!(format_eta(42), "42 s");
+        assert_eq!(format_eta(61), "2 min");
+        assert_eq!(format_eta(3_900), "1 h 5 min");
+        assert_eq!(format_rate(12_340_000), "12.3 MB/s");
+        assert_eq!(format_rate(850_000), "850 KB/s");
     }
 
     #[test]

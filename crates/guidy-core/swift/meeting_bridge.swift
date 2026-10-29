@@ -1,4 +1,4 @@
-// Meeting-notes bridge: EventKit calendar, Voice Processing I/O microphone,
+// Meeting-notes bridge: EventKit calendar, plain microphone (AVAudioEngine),
 // Core Audio process tap (system audio) and user notifications.
 //
 // Compiled by `build_meeting_bridge()` in build.rs into a static library and
@@ -289,18 +289,23 @@ private final class MonoResampler {
     }
 }
 
-// MARK: - Capture: microphone (AVAudioEngine + Voice Processing I/O)
+// MARK: - Capture: microphone (AVAudioEngine, plain input)
 
-// Which microphone, and whether echo cancellation is worth it.
+// The microphone is recorded as it is: no Voice Processing I/O. Echo of the
+// meeting playing through speakers is removed afterwards in Rust (AEC3, with
+// the system-audio track as the reference; `meetings::native::aec`).
+//
+// VPIO was tried first and dropped: it failed to initialize on common setups
+// (-10875 on the output node, e.g. built-in mic and speakers on macOS 27),
+// and where it starts it takes over the output device, ducks other apps and
+// can cut off a call app's own input. A passive recorder must leave the
+// output and the call alone.
 //
 // Opening a Bluetooth headset's microphone switches it from its music
 // profile (A2DP) to the hands-free one: about a second of silence for
 // everything playing, narrowband mono audio until the mic is released (and
-// a second gap then), and extra latency that puts video out of sync.
-// Voice Processing I/O also takes over the output device, which interrupts
-// what plays as it starts and stops. Echo cancellation is only needed when
-// the meeting plays through speakers, so with headphones the plain built-in
-// microphone is recorded and the output is left alone.
+// a second gap then), and extra latency that puts video out of sync. So with
+// a Bluetooth input the Mac's built-in microphone is recorded instead.
 
 private func audioProperty<T>(
     _ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
@@ -367,42 +372,19 @@ private func builtInMicrophone() -> AudioObjectID? {
     }
 }
 
-/// Whether the default output is headphones: Bluetooth (AirPods and the
-/// like), or the headphone jack. Speakers (and anything unknown) aren't.
-private func outputIsHeadphones() -> Bool {
-    guard let output = defaultDevice(input: false) else { return false }
-    if isBluetooth(output) { return true }
-    if transportType(output) == kAudioDeviceTransportTypeBuiltIn {
-        // 'hdpn': the built-in output's headphone data source.
-        let source: UInt32? = audioProperty(
-            output, kAudioDevicePropertyDataSource, kAudioObjectPropertyScopeOutput, UInt32(0))
-        return source == 0x6864_706E
-    }
-    return false
-}
-
-/// How to record the microphone right now.
+/// Which microphone to record right now.
 private struct MicPlan {
-    /// Echo cancellation (Voice Processing I/O, default devices only).
-    let voiceProcessing: Bool
-    /// The device to record, when not the default input.
     let device: AudioObjectID?
     let note: String?
 
     static func current() -> MicPlan {
-        guard outputIsHeadphones() else {
-            return MicPlan(voiceProcessing: true, device: nil, note: nil)
-        }
-        if let input = defaultDevice(input: true), isBluetooth(input),
-           let builtIn = builtInMicrophone()
-        {
+        let input = defaultDevice(input: true)
+        if let input = input, isBluetooth(input), let builtIn = builtInMicrophone() {
             return MicPlan(
-                voiceProcessing: false, device: builtIn,
-                note: "headphones: recording the built-in microphone, so the Bluetooth headset keeps its high-quality audio")
+                device: builtIn,
+                note: "Bluetooth input: recording the built-in microphone, so the headset keeps its high-quality audio")
         }
-        return MicPlan(
-            voiceProcessing: false, device: nil,
-            note: "headphones: recording the microphone without echo cancellation")
+        return MicPlan(device: input, note: nil)
     }
 }
 
@@ -420,18 +402,12 @@ private final class MicCapture {
     private var observer: NSObjectProtocol?
     private var stopped = false
     /// Restart bookkeeping, on `controlQueue`: device changes arrive in
-    /// bursts, so each one bumps the generation and stale retries drop out.
+    /// bursts, so each one bumps the generation and stale restarts drop out.
     private var restartGeneration = 0
-    private var voiceProcessing = false
-    /// The default input and output when echo cancellation last failed to
-    /// start. On the same devices it isn't tried again this recording: each
-    /// failed attempt reconfigures the hardware, which posts another
-    /// configuration change, whose restart tried again (the mic flickered
-    /// on and off for the whole meeting and recorded little but silence).
-    private var voiceProcessingFailedOn: (input: AudioObjectID?, output: AudioObjectID?)?
-    /// The input device recorded instead of the default one (headphones:
-    /// the built-in mic). `nil`: the default input.
+    /// The input device being recorded (`nil`: whatever the unit defaults to).
     private var device: AudioObjectID?
+    /// The last plan's note, so a restart only repeats it when it changed.
+    private var note: String?
     /// Puts the mic on the session timeline (shared origin with the system
     /// stream). Guarded by `alignLock`: the tap block and the silence timer
     /// both use it. The lock is held only while converting/forwarding one
@@ -450,36 +426,19 @@ private final class MicCapture {
     func start() throws {
         let plan = MicPlan.current()
         device = plan.device
+        note = plan.note
         if let note = plan.note {
             sink.event(GUIDY_MB_STREAM_MIC, note)
         }
-        if !plan.voiceProcessing {
-            try startPlain()
-        } else {
-            do {
-                try startVoiceProcessing()
-                voiceProcessing = true
-            } catch {
-                // Echo cancellation is preferred, not required: record the
-                // plain mic rather than nothing, and say so. The failed
-                // attempt already replaced the engine.
-                voiceProcessingFailedOn = currentDevices()
-                try startPlain()
-                sink.event(
-                    GUIDY_MB_STREAM_MIC,
-                    "echo cancellation unavailable, recording the plain microphone: \(error)")
-            }
-        }
-
+        try startWithRetries()
         observeConfigurationChanges()
         startSilenceTimer()
     }
 
-    /// Start the plain microphone, retrying briefly on a fresh engine. Right
-    /// after a failed echo cancellation attempt (or while a call app
-    /// reconfigures the device) the input can refuse its format for a
+    /// Start the microphone, retrying briefly on a fresh engine: while a call
+    /// app reconfigures the device the input can refuse its format for a
     /// moment (-10868); giving up then failed the whole recording.
-    private func startPlain() throws {
+    private func startWithRetries() throws {
         let delays: [Double] = [0.25, 0.5, 1.0]
         var attempt = 0
         while true {
@@ -495,18 +454,9 @@ private final class MicCapture {
         }
     }
 
-    private func currentDevices() -> (input: AudioObjectID?, output: AudioObjectID?) {
-        (defaultDevice(input: true), defaultDevice(input: false))
-    }
-
-    /// Echo cancellation already failed on the devices in use now.
-    private func voiceProcessingFailedHere() -> Bool {
-        guard let failed = voiceProcessingFailedOn else { return false }
-        let now = currentDevices()
-        return failed.input == now.input && failed.output == now.output
-    }
-
-    /// Restart on device changes of the current engine.
+    /// Restart on device changes of the current engine. Notifications come
+    /// in bursts (a device switch posts several), so the restart waits for
+    /// the burst to settle.
     private func observeConfigurationChanges() {
         if let observer = observer {
             NotificationCenter.default.removeObserver(observer)
@@ -517,29 +467,26 @@ private final class MicCapture {
             guard let self = self else { return }
             self.controlQueue.async {
                 self.restartGeneration += 1
-                self.restart(generation: self.restartGeneration, attempt: 0)
+                let generation = self.restartGeneration
+                self.controlQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.restart(generation: generation, attempt: 0)
+                }
             }
         }
     }
 
-    /// Swap in a fresh engine for the plain microphone. Voice processing
-    /// (even a failed attempt) leaves the engine's output side configured:
-    /// the main mixer connected to the output node, the VPIO output unit
-    /// half set up. Starting that engine again then fails on the output's
-    /// format (-10875, `IsFormatSampleRateAndChannelCountValid(outputHWFormat)`)
-    /// although nothing plays. The plain path never touches the output, so a
-    /// new engine has none to fail on.
+    /// Swap in a fresh engine: one whose start failed can keep failing on
+    /// the state it was left in.
     private func replaceEngine() {
         stopEngine()
-        disableVoiceProcessing()
         engine = AVAudioEngine()
         if observer != nil {
             observeConfigurationChanges()
         }
     }
 
-    /// While the mic delivers nothing (a VPIO restart in progress, a restart
-    /// that failed), keep the track on the wall clock with silence.
+    /// While the mic delivers nothing (a restart in progress, a restart that
+    /// failed), keep the track on the wall clock with silence.
     private func startSilenceTimer() {
         let timer = DispatchSource.makeTimerSource(queue: tickQueue)
         timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
@@ -556,45 +503,9 @@ private final class MicCapture {
         silenceTimer = timer
     }
 
-    private func startVoiceProcessing() throws {
-        let input = engine.inputNode
-        var enableError: Error?
-        try objcTry("enabling voice processing") {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-            } catch {
-                enableError = error
-            }
-        }
-        if let error = enableError {
-            replaceEngine()
-            throw BridgeError("enabling voice processing (echo cancellation) failed: \(error)")
-        }
-        if #available(macOS 14.0, *) {
-            // Keep other apps (the meeting itself) as loud as possible.
-            input.voiceProcessingOtherAudioDuckingConfiguration =
-                AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
-                    enableAdvancedDucking: false, duckingLevel: .min)
-        }
-        // VPIO runs input and output as one unit; give the engine an output
-        // path (silent) so it renders.
-        engine.mainMixerNode.outputVolume = 0
-
-        do {
-            try installTapAndStart()
-        } catch {
-            // `voiceProcessing` (set only on success) stays false, so the
-            // next plain start must get an engine without voice processing.
-            replaceEngine()
-            throw error
-        }
-    }
-
     private func installTapAndStart() throws {
         let input = engine.inputNode
-        // Without echo cancellation the device is chosen here (an earlier
-        // start may have chosen another one on this unit).
-        if !voiceProcessing, var id = device ?? defaultDevice(input: true) {
+        if var id = device {
             // Before the format is read: it is the chosen device's.
             guard let unit = input.audioUnit else {
                 throw BridgeError("the microphone has no audio unit to choose a device on")
@@ -603,11 +514,11 @@ private final class MicCapture {
                 unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
                 UInt32(MemoryLayout<AudioObjectID>.size))
             if status != noErr {
-                // Recording the default input is still better than nothing.
+                // Recording the unit's default input is still better than nothing.
                 device = nil
                 sink.event(
                     GUIDY_MB_STREAM_MIC,
-                    "could not choose the built-in microphone (OSStatus \(status)), recording the default input")
+                    "could not choose the input device (OSStatus \(status)), recording the default input")
             }
         }
         let format = input.outputFormat(forBus: 0)
@@ -659,12 +570,6 @@ private final class MicCapture {
         try? objcTry("removing the microphone tap") { self.engine.inputNode.removeTap(onBus: 0) }
     }
 
-    private func disableVoiceProcessing() {
-        try? objcTry("disabling voice processing") {
-            try? self.engine.inputNode.setVoiceProcessingEnabled(false)
-        }
-    }
-
     private func handle(_ buffer: AVAudioPCMBuffer, _ when: AVAudioTime) {
         stateLock.lock()
         let resampler = self.resampler
@@ -683,8 +588,8 @@ private final class MicCapture {
               let mono = resampler.makeInputBuffer(frames: frames),
               let destination = mono.floatChannelData?[0]
         else { return }
-        // With voice processing the first channel carries the processed voice;
-        // extra channels (some Macs report several) are not mixed in.
+        // The first channel only: the built-in array's extra channels are
+        // other capsules of the same mic, not worth mixing in.
         if buffer.format.isInterleaved {
             let stride = max(buffer.stride, 1)
             let src = source[0]
@@ -707,47 +612,33 @@ private final class MicCapture {
         }
     }
 
-    /// The input or output device changed: rebuild the tap with the new format.
-    /// The time the restart takes becomes silence on the track (the aligner
-    /// pads up to the first new buffer's timestamp). Devices often settle a
-    /// moment after the notification (Bluetooth profile switches, docks), so a
-    /// failed restart is retried with backoff for as long as the recording
-    /// runs; after a few failures, echo cancellation is given up for the
-    /// plain microphone. Runs on `controlQueue`.
+    /// The input device or its format changed: rebuild the tap. The time the
+    /// restart takes becomes silence on the track (the aligner pads up to the
+    /// first new buffer's timestamp). Devices often settle a moment after the
+    /// notification (Bluetooth profile switches, docks), so a failed restart
+    /// is retried with backoff for as long as the recording runs. Nothing is
+    /// done when the engine still runs on the device it should: reopening the
+    /// mic for nothing makes the system's mic indicator (and some call apps'
+    /// input) flicker. Runs on `controlQueue`.
     private func restart(generation: Int, attempt: Int) {
         if stopped || generation != restartGeneration { return }
-        stopEngine()
-        // Headphones may have been put on or taken off: plan again.
         let plan = MicPlan.current()
-        let wantVoiceProcessing =
-            plan.voiceProcessing && attempt < 3 && !voiceProcessingFailedHere()
-        if voiceProcessing && plan.voiceProcessing && attempt == 3 {
-            sink.event(
-                GUIDY_MB_STREAM_MIC,
-                "echo cancellation unavailable after a device change, recording the plain microphone")
+        if attempt == 0 && engine.isRunning && plan.device == device {
+            return
         }
-        if voiceProcessing && !wantVoiceProcessing {
-            replaceEngine()
-            voiceProcessing = false
-        }
-        device = wantVoiceProcessing ? nil : plan.device
-        do {
-            if wantVoiceProcessing && !voiceProcessing {
-                do {
-                    try startVoiceProcessing()
-                    voiceProcessing = true
-                } catch {
-                    // As at the start: the plain mic now, no retry of echo
-                    // cancellation (and no meeting error) for this failure.
-                    voiceProcessingFailedOn = currentDevices()
-                    sink.event(
-                        GUIDY_MB_STREAM_MIC,
-                        "echo cancellation unavailable after a device change, recording the plain microphone: \(error)")
-                    try installTapAndStart()
-                }
-            } else {
-                try installTapAndStart()
+        stopEngine()
+        device = plan.device
+        if plan.note != note {
+            note = plan.note
+            if let note = plan.note {
+                sink.event(GUIDY_MB_STREAM_MIC, note)
             }
+        }
+        do {
+            if attempt > 0 {
+                replaceEngine()
+            }
+            try installTapAndStart()
             sink.event(GUIDY_MB_STREAM_MIC, "microphone restarted after an audio device change")
         } catch {
             if attempt == 0 {
@@ -779,8 +670,6 @@ private final class MicCapture {
         }
         // Wait out a tick already running.
         tickQueue.sync {}
-        // Leave the shared input node in its normal mode for dictation.
-        disableVoiceProcessing()
     }
 }
 
@@ -819,7 +708,7 @@ private func nowNanos() -> UInt64 {
 /// - The chunk's first sample belongs at `target = (t - start) * 16 kHz`.
 /// - `target` more than `tolerance` ahead of what was emitted: a gap (the
 ///   stream started late, a process tap delivered nothing while no app played
-///   audio, the mic's VPIO unit restarted after a device or configuration
+///   audio, the mic restarted after a device or configuration
 ///   change, ...). Silence is padded up to `target`, then the chunk follows.
 /// - `target` more than `tolerance` behind: the chunk overlaps audio (or
 ///   padded silence) already emitted. The overlapping head is dropped and only
@@ -1295,7 +1184,7 @@ public func guidyMbCaptureStart(
         sink: CaptureSink(audio: audioCallback, event: eventCallback, context: context))
     // The one time origin of both tracks: sample n of either stream was
     // captured n / 16 kHz seconds after this instant (see TimelineAligner).
-    // Taken before either stream starts, so the VPIO start-up time becomes
+    // Taken before either stream starts, so the mic start-up time becomes
     // leading silence on the mic track and the system stream does not start
     // its clock late.
     let originNanos = nowNanos()

@@ -5,8 +5,8 @@ use crate::logic::flows::{
     find_latest_release_note, find_release_note_to_show, is_allowed_note_link,
 };
 use crate::state::AppState;
-use crate::ui::design::{dp, Pill};
-use crate::ui::kit::t_args;
+use crate::ui::design::dp;
+use crate::ui::kit::{t_args, ScrollTrap};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::{DialogAction, DialogFooter};
 use gpui_kit::component::text::TextView;
@@ -96,6 +96,8 @@ pub fn open_note_dialog(
     on_dismiss: impl Fn(String, &mut App) + 'static,
 ) {
     let on_dismiss = std::rc::Rc::new(on_dismiss);
+    // The notes scroll inside the dialog; the wheel stays in there.
+    let scroll = ScrollHandle::new();
     window.open_dialog(cx, move |dialog, _, _| {
         let v1 = version.clone();
         let v2 = version.clone();
@@ -109,6 +111,7 @@ pub fn open_note_dialog(
                     .id("whats-new-body")
                     .max_h(dp(360.))
                     .overflow_y_scroll()
+                    .scroll_trap(&scroll)
                     .child(
                         TextView::markdown("whats-new-markdown", markdown.clone()).on_link_click(
                             |url, _, _, cx| {
@@ -124,7 +127,6 @@ pub fn open_note_dialog(
                     DialogAction::new().child(
                         Button::new("whats-new-close")
                             .primary()
-                            .pill()
                             .label(crate::ui::kit::t("common.close")),
                     ),
                 ),

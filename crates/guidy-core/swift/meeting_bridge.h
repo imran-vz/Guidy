@@ -2,7 +2,7 @@
 #define meeting_bridge_h
 
 // C ABI between `swift/meeting_bridge.swift` and
-// `src/meetings/native/macos.rs` (meeting notes: EventKit, VPIO mic, Core
+// `src/meetings/native/macos.rs` (meeting notes: EventKit, microphone, Core
 // Audio process tap, user notifications). Every string returned by the bridge
 // is malloc'd and must be released with `guidy_mb_free_string`.
 
@@ -58,7 +58,7 @@ typedef void (*guidy_mb_event_cb)(void *ctx, int32_t stream, const char *message
 // Timeline: both streams share one time origin, the moment this function is
 // called. Sample n of either stream (counted from its first callback) was
 // captured n / 16000 seconds after that origin, within ~50 ms. Gaps (late
-// start, VPIO restarts after a device or configuration change, a process tap
+// start, mic restarts after a device or configuration change, a process tap
 // that is quiet while no app plays audio) are filled with silence, and
 // overlapping audio is dropped, so the two tracks can be laid side by side
 // without further alignment. Callbacks never block on anything but a short

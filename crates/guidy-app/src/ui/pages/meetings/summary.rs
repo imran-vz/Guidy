@@ -6,9 +6,10 @@
 use crate::logic::meetings::{cluster_label, summary_fraction, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{
-    foldable_group, group, icon, t, t_args, Dropdown, DropdownOption, SettingRow,
+    foldable_group, group, icon, t, t_args, Dropdown, DropdownOption, LocalizedPlaceholder,
+    SettingRow,
 };
 use crate::ui::pages::meetings::ai_settings::{
     error_box, model_label, provider_options, summary_choices, MeetingsLlmChoice, SummaryChoice,
@@ -52,6 +53,17 @@ pub fn view(meeting_id: MeetingId, window: &mut Window, cx: &mut App) -> Entity<
         cx,
         move |window, cx| SummaryView::new(meeting_id, window, cx),
     )
+}
+
+/// Which part of the notes a [`SummaryView`] shows: everything (on its
+/// own), or the notes or the action items (the meeting detail's tabs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SummarySection {
+    #[default]
+    All,
+    /// Summary, decisions, topics, minutes and open questions.
+    Notes,
+    ActionItems,
 }
 
 /// Called with a transcript time (ms from the recording start) when the user
@@ -231,6 +243,8 @@ pub struct SummaryView {
     clear_new_item: bool,
     /// The action items panel is folded.
     items_folded: bool,
+    /// What this view shows.
+    section: SummarySection,
     on_seek: Option<SeekHandler>,
     _subs: Vec<Subscription>,
 }
@@ -243,22 +257,29 @@ impl SummaryView {
         let backend = state.read(cx).meetings.clone();
         let apple_available = state.read(cx).backend.check_apple_intelligence_available();
         let title = cx.new(|cx| InputState::new(window, cx));
-        let area = |key: &str, window: &mut Window, cx: &mut Context<Self>| {
-            let ph = t(key);
+        let area = |key: &'static str, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(2, 12)
-                    .placeholder(ph)
+                    .localized_placeholder(key, window, cx)
             })
         };
         let short_summary = area("meetingsAi.summary.shortSummaryPlaceholder", window, cx);
         let decisions = area("meetingsAi.summary.linesPlaceholder", window, cx);
         let topics = area("meetingsAi.summary.linesPlaceholder", window, cx);
         let picker_model_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetingsAi.llm.modelPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetingsAi.llm.modelPlaceholder",
+                window,
+                cx,
+            )
         });
         let new_item = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetingsAi.summary.newItemPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetingsAi.summary.newItemPlaceholder",
+                window,
+                cx,
+            )
         });
         let subs = vec![
             cx.subscribe(&new_item, |this, _, ev: &InputEvent, cx| match ev {
@@ -318,6 +339,7 @@ impl SummaryView {
             new_item,
             clear_new_item: false,
             items_folded: true,
+            section: SummarySection::All,
             on_seek: None,
             _subs: subs,
         };
@@ -387,6 +409,29 @@ impl SummaryView {
     }
 
     /// Hook for the detail view: seek the transcript to `t_ms` and play.
+    /// Show only `section` (no notify: the parent sets it while rendering).
+    pub fn set_section(&mut self, section: SummarySection) {
+        self.section = section;
+    }
+
+    /// How many action items the meeting has.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// The notes as Markdown (as Copy writes them), once loaded.
+    pub fn markdown(&self, date: &str, minutes: bool, cx: &App) -> Option<String> {
+        let summary = self.summary.as_ref()?;
+        Some(crate::logic::meetings::summary_markdown_parts(
+            summary,
+            &self.items,
+            &self.people,
+            &super::meeting_settings(cx).user_display_name,
+            date,
+            minutes,
+        ))
+    }
+
     pub fn set_on_seek(&mut self, f: impl Fn(i64, &mut Window, &mut App) + 'static) {
         self.on_seek = Some(Rc::new(f));
     }
@@ -819,8 +864,11 @@ impl SummaryView {
                 s
             });
             let due = cx.new(|cx| {
-                let mut s =
-                    InputState::new(window, cx).placeholder(t("meetingsAi.summary.duePlaceholder"));
+                let mut s = InputState::new(window, cx).localized_placeholder(
+                    "meetingsAi.summary.duePlaceholder",
+                    window,
+                    cx,
+                );
                 s.set_value(item.due.clone().unwrap_or_default(), window, cx);
                 s
             });
@@ -885,7 +933,13 @@ impl SummaryView {
                 .id("summary-progress")
                 .w_full()
                 .gap_2()
-                .child(div().text_xs().text_color(muted).flex_none().child(label))
+                .child(
+                    div()
+                        .text_size(crate::ui::design::TEXT_SECONDARY)
+                        .text_color(muted)
+                        .flex_none()
+                        .child(label),
+                )
                 .child(div().flex_1().child(design::track(
                     "summary-progress-bar",
                     Some((fraction.unwrap_or(0.0) * 100.0) / 100.0),
@@ -894,7 +948,6 @@ impl SummaryView {
                 .child(
                     Button::new("summary-cancel-generate")
                         .ghost()
-                        .pill()
                         .xsmall()
                         .icon(icon("circle-x"))
                         .label(t("meetingsAi.common.cancel"))
@@ -968,7 +1021,7 @@ impl SummaryView {
         })
     }
 
-    /// The summary panel's heading row: the eyebrow, and Edit on the
+    /// The summary panel's heading row: the section header, and Edit on the
     /// right while a summary is shown and not being edited.
     fn summary_heading(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
@@ -976,12 +1029,11 @@ impl SummaryView {
             .px(dp(2.))
             .justify_between()
             .items_center()
-            .child(design::eyebrow(t("meetingsAi.summary.heading"), cx))
+            .child(design::section_header(t("meetingsAi.summary.heading"), cx))
             .when(self.summary.is_some() && !self.editing, |d| {
                 d.child(
                     Button::new("summary-edit")
                         .ghost()
-                        .pill()
                         .xsmall()
                         .icon(icon("pencil"))
                         .label(t("meetingsAi.summary.edit"))
@@ -999,7 +1051,6 @@ impl SummaryView {
         let main = Button::new("summary-generate")
             .primary()
             .when(self.generating, |b| b.secondary())
-            .pill()
             .small()
             .icon(icon("sparkles"))
             .label(t("meetingsAi.summary.generate"))
@@ -1131,7 +1182,6 @@ impl SummaryView {
                         Button::new("summary-picker-run")
                             .primary()
                             .when(!can_run || self.generating, |b| b.secondary())
-                            .pill()
                             .small()
                             .label(t("meetingsAi.summary.run"))
                             .disabled(!can_run || self.generating)
@@ -1179,7 +1229,7 @@ impl SummaryView {
                         ))
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(crate::ui::design::TEXT_SECONDARY)
                                 .text_color(muted)
                                 .child(t("meetingsAi.summary.onePerLine")),
                         )
@@ -1189,7 +1239,6 @@ impl SummaryView {
                                 .child(
                                     Button::new("summary-save")
                                         .primary()
-                                        .pill()
                                         .small()
                                         .label(t("meetingsAi.common.save"))
                                         .on_click(
@@ -1199,7 +1248,6 @@ impl SummaryView {
                                 .child(
                                     Button::new("summary-cancel")
                                         .secondary()
-                                        .pill()
                                         .small()
                                         .label(t("meetingsAi.common.cancel"))
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1232,30 +1280,17 @@ impl SummaryView {
         let list = |id: &'static str, title: SharedString, items: &[String]| {
             v_flex()
                 .id(id)
-                .gap_1()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(muted)
-                        .child(title),
-                )
+                .gap(dp(4.))
+                .child(note_heading(title))
                 .when(items.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_sm()
+                            .text_size(design::TEXT_BODY)
                             .text_color(muted)
                             .child(t("meetingsAi.summary.none")),
                     )
                 })
-                .children(items.iter().map(|i| {
-                    h_flex()
-                        .gap_2()
-                        .items_start()
-                        .text_sm()
-                        .child(div().text_color(muted).child("•"))
-                        .child(div().flex_1().min_w_0().child(i.clone()))
-                }))
+                .children(items.iter().map(|i| note_bullet(i.clone(), cx)))
         };
         let tokens = |u: &guidy_core::llm::usage::MeterTotals| {
             (
@@ -1299,22 +1334,20 @@ impl SummaryView {
                 &[("model", &s.generated_by)],
             ),
         };
+        // The meeting's title is the detail header; the summary's own
+        // title (which usually became it) would only repeat it.
         vec![v_flex()
             .id("summary-view")
-            .p_3()
-            .gap_3()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(if s.title.is_empty() {
-                        t("meetingsAi.summary.untitled")
-                    } else {
-                        s.title.clone().into()
-                    }),
-            )
+            .px(design::SECTION_X)
+            .py(dp(10.))
+            .gap(dp(10.))
             .when(!s.short_summary.is_empty(), |d| {
-                d.child(div().text_sm().child(s.short_summary.clone()))
+                d.child(
+                    div()
+                        .text_size(design::TEXT_BODY)
+                        .text_color(cx.theme().foreground)
+                        .child(s.short_summary.clone()),
+                )
             })
             .child(list(
                 "summary-decisions",
@@ -1327,7 +1360,12 @@ impl SummaryView {
                 &s.topics,
             ))
             .when(!s.generated_by.is_empty(), |d| {
-                d.child(div().text_xs().text_color(muted).child(generated))
+                d.child(
+                    div()
+                        .text_size(crate::ui::design::TEXT_SECONDARY)
+                        .text_color(muted)
+                        .child(generated),
+                )
             })
             .test_support()
             .into_any_element()]
@@ -1345,64 +1383,65 @@ impl SummaryView {
         let tone = design::tone(cx);
         let mut rows = Vec::new();
         if !s.notes.is_empty() {
-            let sections: Vec<AnyElement> =
-                s.notes
-                    .iter()
-                    .map(|section| {
-                        let key = minute_key(section);
-                        let seek = section.start_ms.map(|t_ms| {
-                            Button::new(SharedString::from(format!("minute-seek-{key}")))
-                                .link()
-                                .xsmall()
-                                .label(SharedString::from(if section.start.is_empty() {
-                                    format_timestamp(t_ms)
-                                } else {
-                                    section.start.clone()
-                                }))
-                                .tooltip(t("meetingsAi.summary.jumpToMoment"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.seek(t_ms, window, cx)
-                                }))
-                        });
-                        v_flex()
-                            .id(SharedString::from(format!("minute-{key}")))
-                            .w_full()
-                            .gap(dp(4.))
-                            .px(design::SECTION_X)
-                            .py(dp(10.))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_baseline()
-                                    .child(
-                                        div()
-                                            .text_size(design::TEXT_BODY)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(section.heading.clone()),
-                                    )
-                                    .children(seek),
-                            )
-                            .children(section.points.iter().map(|point| {
-                                div()
-                                    .text_size(dp(13.))
-                                    .text_color(tone.text)
-                                    .child(format!("• {point}"))
+            let sections: Vec<AnyElement> = s
+                .notes
+                .iter()
+                .map(|section| {
+                    let key = minute_key(section);
+                    let seek = section.start_ms.map(|t_ms| {
+                        Button::new(SharedString::from(format!("minute-seek-{key}")))
+                            .link()
+                            .xsmall()
+                            .label(SharedString::from(if section.start.is_empty() {
+                                format_timestamp(t_ms)
+                            } else {
+                                section.start.clone()
                             }))
-                            .when_some(section.outcome.clone(), |d, outcome| {
-                                d.child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
-                                    format!("{}: {outcome}", t("meetingsAi.summary.outcome")),
-                                ))
-                            })
-                            .test_support()
-                            .into_any_element()
-                    })
-                    .collect();
+                            .tooltip(t("meetingsAi.summary.jumpToMoment"))
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| this.seek(t_ms, window, cx)),
+                            )
+                    });
+                    v_flex()
+                        .id(SharedString::from(format!("minute-{key}")))
+                        .w_full()
+                        .gap(dp(4.))
+                        .px(design::SECTION_X)
+                        .py(dp(10.))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_baseline()
+                                .child(note_heading(section.heading.clone()))
+                                .children(seek),
+                        )
+                        .children(
+                            section
+                                .points
+                                .iter()
+                                .map(|point| note_bullet(point.clone(), cx)),
+                        )
+                        .when_some(section.outcome.clone(), |d, outcome| {
+                            d.child(
+                                div()
+                                    .text_size(design::TEXT_BODY)
+                                    .text_color(tone.text_muted)
+                                    .child(format!(
+                                        "{}: {outcome}",
+                                        t("meetingsAi.summary.outcome")
+                                    )),
+                            )
+                        })
+                        .test_support()
+                        .into_any_element()
+                })
+                .collect();
             rows.push(
                 v_flex()
                     .id("meeting-minutes")
                     .w_full()
                     .gap(dp(8.))
-                    .child(design::eyebrow(t("meetingsAi.summary.minutes"), cx))
+                    .child(design::section_header(t("meetingsAi.summary.minutes"), cx))
                     .child(group(None, sections, cx))
                     .test_support()
                     .into_any_element(),
@@ -1429,7 +1468,10 @@ impl SummaryView {
                     .id("meeting-open-questions")
                     .w_full()
                     .gap(dp(8.))
-                    .child(design::eyebrow(t("meetingsAi.summary.openQuestions"), cx))
+                    .child(design::section_header(
+                        t("meetingsAi.summary.openQuestions"),
+                        cx,
+                    ))
                     .child(group(None, questions, cx))
                     .test_support()
                     .into_any_element(),
@@ -1458,7 +1500,7 @@ impl SummaryView {
                 h_flex()
                     .gap_2()
                     .items_start()
-                    .text_xs()
+                    .text_size(crate::ui::design::TEXT_SECONDARY)
                     .text_color(muted)
                     .when_some(item.source_t_ms, |d, t_ms| {
                         d.child(
@@ -1514,7 +1556,7 @@ impl SummaryView {
                             .items_center()
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(crate::ui::design::TEXT_SECONDARY)
                                     .text_color(muted)
                                     .child(t("meetingsAi.summary.owner.title")),
                             )
@@ -1531,7 +1573,7 @@ impl SummaryView {
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(crate::ui::design::TEXT_SECONDARY)
                                     .text_color(muted)
                                     .child(t("meetingsAi.summary.due")),
                             )
@@ -1571,7 +1613,6 @@ impl SummaryView {
                 .child(
                     Button::new("action-item-add")
                         .secondary()
-                        .pill()
                         .small()
                         .icon(icon("plus"))
                         .label(t("meetingsAi.summary.addItem"))
@@ -1583,6 +1624,29 @@ impl SummaryView {
         );
         rows
     }
+}
+
+/// A sub-heading inside the summary and minutes panels (Decisions, a
+/// minutes topic): one style for both.
+fn note_heading(text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(design::TEXT_BODY)
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
+}
+
+/// A bulleted point in the summary and minutes panels: a muted bullet
+/// with the text wrapping beside it (not under it).
+fn note_bullet(text: impl Into<SharedString>, cx: &App) -> Div {
+    let tone = design::tone(cx);
+    h_flex()
+        .w_full()
+        .gap(dp(6.))
+        .items_start()
+        .text_size(design::TEXT_BODY)
+        .text_color(tone.text)
+        .child(div().flex_none().text_color(tone.text_muted).child("•"))
+        .child(div().flex_1().min_w_0().child(text.into()))
 }
 
 /// Stable id for a minute section: its start time plus a hash of the
@@ -1632,12 +1696,22 @@ impl Render for SummaryView {
                 .update(cx, |s, cx| s.set_value("", window, cx));
         }
         self.ensure_item_inputs(window, cx);
+        let section = self.section;
+        if section == SummarySection::ActionItems {
+            let item_rows = self.item_rows(cx);
+            return v_flex()
+                .id("meeting-summary")
+                .w_full()
+                .gap_4()
+                .child(group(None, item_rows, cx))
+                .test_support();
+        }
         let header = self.header(cx);
         let heading = self.summary_heading(cx);
         let progress = self.progress_row(cx);
         let picker = self.picker(cx);
         let summary_rows = self.summary_rows(cx);
-        let item_rows = self.item_rows(cx);
+        let item_rows = (section == SummarySection::All).then(|| self.item_rows(cx));
         v_flex()
             .id("meeting-summary")
             .w_full()
@@ -1653,18 +1727,20 @@ impl Render for SummaryView {
                 summary_rows,
                 cx,
             )))
-            .child(foldable_group(
-                "action-items-fold",
-                t("meetingsAi.summary.actionItems"),
-                self.items.len(),
-                !self.items_folded,
-                cx.listener(|this, _, _, cx| {
-                    this.items_folded = !this.items_folded;
-                    cx.notify();
-                }),
-                item_rows,
-                cx,
-            ))
+            .when_some(item_rows, |d, item_rows| {
+                d.child(foldable_group(
+                    "action-items-fold",
+                    t("meetingsAi.summary.actionItems"),
+                    self.items.len(),
+                    !self.items_folded,
+                    cx.listener(|this, _, _, cx| {
+                        this.items_folded = !this.items_folded;
+                        cx.notify();
+                    }),
+                    item_rows,
+                    cx,
+                ))
+            })
             .children(self.minutes_section(cx))
             .test_support()
     }

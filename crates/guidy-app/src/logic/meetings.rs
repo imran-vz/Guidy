@@ -797,6 +797,234 @@ pub fn upcoming_to_show(
 /// How long after its end a calendar event still shows as upcoming.
 pub const UPCOMING_GRACE_MS: i64 = 60 * 60 * 1000;
 
+/// The next calendar event to offer in the recorder: the first of
+/// [`upcoming_to_show`] that hasn't ended.
+pub fn next_event(
+    events: &[guidy_core::meetings::types::CalendarEvent],
+    now_ms: i64,
+) -> Option<guidy_core::meetings::types::CalendarEvent> {
+    upcoming_to_show(events, now_ms)
+        .into_iter()
+        .find(|e| e.end_at >= now_ms)
+}
+
+/// The day groups of the meeting list, newest first (as in Notes and Mail).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DayGroup {
+    Today,
+    Yesterday,
+    Previous7Days,
+    Previous30Days,
+    Earlier,
+}
+
+impl DayGroup {
+    /// The i18n key of the group header.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Today => "meetings.groups.today",
+            Self::Yesterday => "meetings.groups.yesterday",
+            Self::Previous7Days => "meetings.groups.previous7",
+            Self::Previous30Days => "meetings.groups.previous30",
+            Self::Earlier => "meetings.groups.earlier",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Today => "today",
+            Self::Yesterday => "yesterday",
+            Self::Previous7Days => "previous7",
+            Self::Previous30Days => "previous30",
+            Self::Earlier => "earlier",
+        }
+    }
+}
+
+/// The group of a meeting started at `at_ms`, by local calendar day
+/// relative to `now_ms`. Anything later than today counts as today.
+pub fn day_group(at_ms: i64, now_ms: i64) -> DayGroup {
+    use chrono::{Local, TimeZone};
+    let (Some(at), Some(now)) = (
+        Local.timestamp_millis_opt(at_ms).single(),
+        Local.timestamp_millis_opt(now_ms).single(),
+    ) else {
+        return DayGroup::Earlier;
+    };
+    match (now.date_naive() - at.date_naive()).num_days() {
+        ..=0 => DayGroup::Today,
+        1 => DayGroup::Yesterday,
+        2..=7 => DayGroup::Previous7Days,
+        8..=30 => DayGroup::Previous30Days,
+        _ => DayGroup::Earlier,
+    }
+}
+
+/// One row of the meeting list: a day header or a meeting (its index in
+/// the list's meetings).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListRow {
+    Header(DayGroup),
+    Meeting(usize),
+}
+
+/// The list's rows for meetings sorted newest first: each day group's
+/// header, then its meetings.
+pub fn list_rows(meetings: &[Meeting], now_ms: i64) -> Vec<ListRow> {
+    let mut rows = Vec::with_capacity(meetings.len() + 5);
+    let mut last = None;
+    for (i, m) in meetings.iter().enumerate() {
+        let group = day_group(m.started_at, now_ms);
+        if last != Some(group) {
+            rows.push(ListRow::Header(group));
+            last = Some(group);
+        }
+        rows.push(ListRow::Meeting(i));
+    }
+    rows
+}
+
+/// The meeting `step` places after `current` in `order` (clamped to the
+/// ends); the first one when nothing is selected.
+pub fn step_selection(
+    order: &[MeetingId],
+    current: Option<MeetingId>,
+    step: isize,
+) -> Option<MeetingId> {
+    if order.is_empty() {
+        return None;
+    }
+    let Some(at) = current.and_then(|id| order.iter().position(|m| *m == id)) else {
+        return order.first().copied();
+    };
+    let next = (at as isize + step).clamp(0, order.len() as isize - 1) as usize;
+    Some(order[next])
+}
+
+/// The meeting to select after `deleted` goes: the next one down, else the
+/// one above.
+pub fn after_delete(order: &[MeetingId], deleted: MeetingId) -> Option<MeetingId> {
+    let at = order.iter().position(|m| *m == deleted)?;
+    order
+        .get(at + 1)
+        .or_else(|| at.checked_sub(1).and_then(|i| order.get(i)))
+        .copied()
+}
+
+/// Where `query` occurs in `text`, ignoring case. Byte ranges into `text`.
+pub fn find_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let (hay, needle) = (text.to_lowercase(), query.to_lowercase());
+    // Lowercasing kept the byte offsets: search case-insensitively.
+    // Otherwise (rare scripts) fall back to an exact search.
+    let (hay, needle) = if hay.len() == text.len() {
+        (hay, needle)
+    } else {
+        (text.to_string(), query.to_string())
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = hay[from..].find(&needle) {
+        let start = from + at;
+        let end = start + needle.len();
+        if text.is_char_boundary(start) && text.is_char_boundary(end) {
+            out.push(start..end);
+        }
+        from = end.max(start + 1);
+        while from < hay.len() && !hay.is_char_boundary(from) {
+            from += 1;
+        }
+    }
+    out
+}
+
+/// Find in a transcript: each matching line's id with its ranges, in
+/// transcript order.
+pub fn find_in_segments(
+    segments: &[Segment],
+    query: &str,
+) -> Vec<(i64, Vec<std::ops::Range<usize>>)> {
+    segments
+        .iter()
+        .filter_map(|s| {
+            let ranges = find_ranges(&s.text, query);
+            (!ranges.is_empty()).then_some((s.id, ranges))
+        })
+        .collect()
+}
+
+/// A file name for an exported meeting: the title without characters that
+/// file systems refuse, and `ext`.
+pub fn export_file_name(title: &str, ext: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    let base = if cleaned.is_empty() {
+        "Meeting"
+    } else {
+        cleaned
+    };
+    format!("{base}.{ext}")
+}
+
+/// Notes and transcript in one Markdown document: the notes as they copy,
+/// then the transcript lines under a "Transcript" heading (its own title
+/// and date dropped, the notes already have them).
+pub fn export_markdown(notes: Option<&str>, transcript: Option<&str>) -> String {
+    let mut out = notes.map(|n| n.trim_end().to_string()).unwrap_or_default();
+    if let Some(transcript) = transcript {
+        let lines: Vec<&str> = transcript
+            .lines()
+            .skip_while(|l| !l.starts_with('['))
+            .collect();
+        if notes.is_none() {
+            return transcript.to_string();
+        }
+        if !lines.is_empty() {
+            out.push_str("\n\n## Transcript\n\n");
+            for l in lines {
+                out.push_str(l);
+                out.push_str("  \n");
+            }
+        }
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// The stretch of meeting audio loaded at a time for playback.
+pub const PLAYER_CHUNK_MS: i64 = 5 * 60 * 1000;
+
+/// The chunk of audio to load to play from `at_ms` in a meeting
+/// `duration_ms` long: `[at, at + PLAYER_CHUNK_MS)`, clipped to the end.
+pub fn player_chunk(at_ms: i64, duration_ms: i64) -> (i64, i64) {
+    let t0 = at_ms.clamp(0, duration_ms.max(0));
+    (t0, (t0 + PLAYER_CHUNK_MS).min(duration_ms.max(t0)))
+}
+
+/// Mix two mono tracks into one, padding the shorter one with silence and
+/// keeping the sum in range.
+pub fn mix_tracks(a: &[f32], b: &[f32]) -> Vec<f32> {
+    let n = a.len().max(b.len());
+    (0..n)
+        .map(|i| {
+            let s = a.get(i).copied().unwrap_or(0.0) + b.get(i).copied().unwrap_or(0.0);
+            s.clamp(-1.0, 1.0)
+        })
+        .collect()
+}
+
 /// Uncertain automatic match: shows "Confirm?".
 pub fn needs_confirmation(s: &MeetingSpeaker) -> bool {
     !s.confirmed && s.person_id.is_some()
@@ -1380,6 +1608,92 @@ mod tests {
             words: Vec::new(),
             speaker_id: None,
         }
+    }
+
+    #[test]
+    fn meetings_group_by_day() {
+        use chrono::{Local, TimeZone};
+        let noon = Local
+            .with_ymd_and_hms(2026, 10, 23, 12, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        let d = 24 * 3_600_000;
+        assert_eq!(day_group(noon + 3_600_000, noon), DayGroup::Today);
+        assert_eq!(day_group(noon - d, noon), DayGroup::Yesterday);
+        assert_eq!(day_group(noon - 3 * d, noon), DayGroup::Previous7Days);
+        assert_eq!(day_group(noon - 20 * d, noon), DayGroup::Previous30Days);
+        assert_eq!(day_group(noon - 90 * d, noon), DayGroup::Earlier);
+        let m = |id, at| {
+            let mut m = crate::testing::meeting_fixture(id, "m", MeetingStatus::Processed);
+            m.started_at = at;
+            m
+        };
+        let meetings = [m(1, noon), m(2, noon - 60_000), m(3, noon - 3 * d)];
+        assert_eq!(
+            list_rows(&meetings, noon),
+            vec![
+                ListRow::Header(DayGroup::Today),
+                ListRow::Meeting(0),
+                ListRow::Meeting(1),
+                ListRow::Header(DayGroup::Previous7Days),
+                ListRow::Meeting(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_steps_and_survives_a_delete() {
+        let order = [5, 4, 3];
+        assert_eq!(step_selection(&order, None, 1), Some(5));
+        assert_eq!(step_selection(&order, Some(5), 1), Some(4));
+        assert_eq!(step_selection(&order, Some(3), 1), Some(3));
+        assert_eq!(step_selection(&order, Some(5), -1), Some(5));
+        assert_eq!(step_selection(&[], Some(5), 1), None);
+        assert_eq!(after_delete(&order, 4), Some(3));
+        assert_eq!(after_delete(&order, 3), Some(4));
+        assert_eq!(after_delete(&[3], 3), None);
+    }
+
+    #[test]
+    fn find_ignores_case_and_returns_byte_ranges() {
+        assert_eq!(find_ranges("Hello hello", "HELLO"), vec![0..5, 6..11]);
+        assert_eq!(find_ranges("aaa", "aa"), vec![0..2]);
+        assert!(find_ranges("abc", "  ").is_empty());
+        assert_eq!(find_ranges("Café au lait", "au"), vec![6..8]);
+        let mut a = timed(0, 1, "Ship it Friday");
+        a.id = 1;
+        let mut b = timed(1, 1, "No");
+        b.id = 2;
+        let found = find_in_segments(&[a, b], "friday");
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].0, found[0].1[0].clone()), (1, 8..14));
+    }
+
+    #[test]
+    fn exports_name_files_and_join_notes_and_transcript() {
+        assert_eq!(
+            export_file_name("Q3: plan/review?", "md"),
+            "Q3- plan-review-.md"
+        );
+        assert_eq!(export_file_name("  ", "txt"), "Meeting.txt");
+        let transcript = "# Sync\n\nMon\n\n[00:01] Ann: Hi\n[00:02] Bob: Hey\n";
+        let md = export_markdown(Some("# Sync\n\n## Summary\n\nShort.\n"), Some(transcript));
+        assert!(md.starts_with("# Sync"));
+        assert!(md.contains("## Transcript\n\n[00:01] Ann: Hi  \n[00:02] Bob: Hey  \n"));
+        assert_eq!(export_markdown(None, Some(transcript)), transcript);
+        assert_eq!(export_markdown(Some("# A"), None), "# A\n");
+    }
+
+    #[test]
+    fn player_chunks_and_mixing() {
+        assert_eq!(player_chunk(0, 10_000), (0, 10_000));
+        assert_eq!(
+            player_chunk(1_000, 1_000_000),
+            (1_000, 1_000 + PLAYER_CHUNK_MS)
+        );
+        assert_eq!(player_chunk(20_000, 10_000), (10_000, 10_000));
+        assert_eq!(mix_tracks(&[0.5, 0.9], &[0.25]), vec![0.75, 0.9]);
+        assert_eq!(mix_tracks(&[0.8], &[0.8]), vec![1.0]);
     }
 
     #[test]

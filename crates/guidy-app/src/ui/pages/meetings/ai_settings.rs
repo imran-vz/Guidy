@@ -2,6 +2,11 @@
 //! LLM provider and model (separate from dictation post-processing), the
 //! built-in llama.cpp models, Apple Intelligence availability, and the Linear
 //! personal API key.
+//!
+//! Two panes of the meeting settings ([`AiSection`]). In the cloud, the
+//! Summaries pane pins the status, "Your models" and the provider form at
+//! the top and gives the rest of the height to the provider's model list,
+//! its only flexible scroll region (no scroll region around it).
 
 use crate::logic::flows::CUSTOM_PROVIDER_ID;
 use crate::logic::meetings::{meetings_patch, MeetingsEvent, PROVIDER_KEY_URLS};
@@ -11,8 +16,12 @@ use crate::meetings_backend::{
     error_message, LocalLlmModel, MeetingsBackend, ModelCatalog, SharedMeetingsBackend,
 };
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{group, icon, t, t_args, toggle, Dropdown, DropdownOption, SettingRow};
+use crate::ui::design::{self, dp};
+use crate::ui::download_control::DownloadControl;
+use crate::ui::kit::{
+    group, icon, page, scroll_page, t, t_args, toggle, Dropdown, DropdownOption,
+    LocalizedPlaceholder, ScrollTrap, SettingRow,
+};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -337,7 +346,7 @@ fn checkbox(checked: bool, cx: &App) -> Div {
     div()
         .flex_none()
         .size(dp(14.))
-        .rounded(dp(3.))
+        .rounded(crate::ui::design::RADIUS_CHIP)
         .flex()
         .items_center()
         .justify_center()
@@ -465,6 +474,16 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Which pane of the meeting settings the view fills.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiSection {
+    /// Where summaries run and which model makes them.
+    #[default]
+    Summaries,
+    /// The Linear API key.
+    Linear,
+}
+
 /// What the status line at the top of the Summaries settings says.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActiveSummary {
@@ -511,6 +530,10 @@ pub struct AiSettingsView {
     /// The cloud provider picked to add models from (or to enter its key);
     /// `None`: the default's. Picking one doesn't change the default.
     browsing: Option<String>,
+    /// The cloud model list's scroll; back to the top when what it lists
+    /// changes (search, provider, filter).
+    model_list_scroll: ScrollHandle,
+    section: AiSection,
     _subs: Vec<Subscription>,
 }
 
@@ -522,18 +545,27 @@ impl AiSettingsView {
         let api_key = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder(t("settings.postProcessing.api.apiKey.placeholder"))
+                .localized_placeholder("settings.postProcessing.api.apiKey.placeholder", window, cx)
         });
         let base_url = cx.new(|cx| InputState::new(window, cx));
         let model_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetingsAi.llm.modelPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetingsAi.llm.modelPlaceholder",
+                window,
+                cx,
+            )
         });
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t("meetingsAi.llm.searchModels")));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "meetingsAi.llm.searchModels",
+                window,
+                cx,
+            )
+        });
         let linear_key = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder(t("meetingsAi.linear.keyPlaceholder"))
+                .localized_placeholder("meetingsAi.linear.keyPlaceholder", window, cx)
         });
         let local = cx.new(|cx| {
             let mut v = LocalModelsView::new(cx);
@@ -580,9 +612,9 @@ impl AiSettingsView {
                     }
                 },
             ),
-            cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+            cx.subscribe(&search, |this, _, ev: &InputEvent, cx| {
                 if let InputEvent::Change = ev {
-                    cx.notify();
+                    this.search_changed(cx);
                 }
             }),
             cx.subscribe(&linear_key, |this, input, ev: &InputEvent, cx| {
@@ -626,6 +658,8 @@ impl AiSettingsView {
             linear_result: None,
             synced_provider: String::new(),
             browsing: None,
+            model_list_scroll: ScrollHandle::new(),
+            section: AiSection::default(),
             _subs: subs,
         };
         this.sync_inputs(true, window, cx);
@@ -649,6 +683,28 @@ impl AiSettingsView {
             .ok();
         })
         .detach();
+    }
+
+    /// Another search lists other models: back to the top of the list.
+    fn search_changed(&mut self, cx: &mut Context<Self>) {
+        self.model_list_scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
+
+    /// Test hook: type a model search.
+    #[cfg(test)]
+    pub fn type_search(&mut self, q: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let q = q.to_string();
+        self.search.update(cx, |s, cx| s.set_value(q, window, cx));
+        self.search_changed(cx);
+    }
+
+    /// Fill the Summaries or the Linear pane.
+    pub fn show(&mut self, section: AiSection, cx: &mut Context<Self>) {
+        if self.section != section {
+            self.section = section;
+            cx.notify();
+        }
     }
 
     fn settings(&self, cx: &App) -> Option<AppSettings> {
@@ -693,6 +749,7 @@ impl AiSettingsView {
             let key = self.api_keys.get(&pid).cloned();
             set_if(&self.api_key, key.unwrap_or_default(), true, window, cx);
             self.synced_provider = pid.clone();
+            self.model_list_scroll.set_offset(point(px(0.), px(0.)));
             self.test_result = None;
             self.catalog_error = None;
             if !self.api_keys.contains_key(&pid) {
@@ -889,6 +946,7 @@ impl AiSettingsView {
     /// Show `pid` to add its models or enter its key (the default stays).
     pub fn browse(&mut self, pid: String, window: &mut Window, cx: &mut Context<Self>) {
         self.browsing = Some(pid);
+        self.model_list_scroll.set_offset(point(px(0.), px(0.)));
         self.sync_inputs(false, window, cx);
         cx.notify();
     }
@@ -1141,52 +1199,13 @@ impl AiSettingsView {
 
     // -- render ---------------------------------------------------------
 
-    fn status_line(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// What summaries use now, and where they run (Cloud | On This Mac).
+    fn header(&self, place: SummaryPlace, cx: &mut Context<Self>) -> AnyElement {
         let tone = design::tone(cx);
-        let (dot, title, chip) = match self.active_summary(cx) {
+        let (ready, title, chip) = match self.active_summary(cx) {
             ActiveSummary::Ready { model, via } => (true, model, Some(via)),
             ActiveSummary::NotReady(why) => (false, why, None),
         };
-        h_flex()
-            .id("meetings-llm-active")
-            .w_full()
-            .gap_3()
-            .px(design::SECTION_X)
-            .py(dp(12.))
-            .child(if dot {
-                design::signal_dot(cx).into_any_element()
-            } else {
-                div()
-                    .flex_none()
-                    .size(dp(14.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(dp(7.)).rounded_full().bg(tone.text_faint))
-                    .into_any_element()
-            })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(dp(2.))
-                    .child(design::eyebrow(t("meetingsAi.llm.activeHeading"), cx))
-                    .child(
-                        div()
-                            .id("meetings-llm-active-model")
-                            .text_size(design::TEXT_TITLE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .when(!dot, |d| d.text_color(tone.text_muted))
-                            .child(title)
-                            .test_support(),
-                    ),
-            )
-            .children(chip.map(|c| design::chip(c, false, cx)))
-            .test_support()
-            .into_any_element()
-    }
-
-    fn place_row(&self, place: SummaryPlace, cx: &mut Context<Self>) -> AnyElement {
         let weak = cx.entity().downgrade();
         let seg =
             |id: &'static str, label: SharedString, p: SummaryPlace, cx: &mut Context<Self>| {
@@ -1209,122 +1228,204 @@ impl AiSettingsView {
             SummaryPlace::Local,
             cx,
         );
-        SettingRow::new("meetings-llm-place", t("meetingsAi.llm.place"))
-            .description(t("meetingsAi.llm.placeDescription"))
-            .inline_description()
-            .control(design::segmented(cx).child(cloud).child(local))
+        design::panel(cx)
+            .id("meetings-llm-active")
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .px(design::SECTION_X)
+                    .py(design::SECTION_Y)
+                    .child(if ready {
+                        design::signal_dot(cx).into_any_element()
+                    } else {
+                        div()
+                            .flex_none()
+                            .size(dp(14.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().size(dp(7.)).rounded_full().bg(cx.theme().warning))
+                            .into_any_element()
+                    })
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(dp(6.))
+                            .when(ready, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(design::TEXT_BODY)
+                                        .text_color(tone.text_muted)
+                                        .child(t("meetingsAi.llm.activeHeading")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("meetings-llm-active-model")
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(design::TEXT_BODY)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(title)
+                                    .test_support(),
+                            )
+                            .children(chip.map(|c| design::chip(c, false, cx))),
+                    )
+                    .child(
+                        div()
+                            .id("meetings-llm-place")
+                            .flex_none()
+                            .child(design::segmented(cx).child(cloud).child(local))
+                            .test_support(),
+                    ),
+            )
+            .test_support()
             .into_any_element()
     }
 
-    fn cloud_rows(&self, s: &AppSettings, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The provider whose models are listed below, on one line with its
+    /// API key and Test; under it the test result and where to get a key
+    /// (and the base URL, or a model id typed by hand when models.dev
+    /// doesn't know the provider).
+    fn provider_form(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
         let pid = self.synced_provider.clone();
         let provider = s.post_process_provider(&pid);
         let label = provider
             .map(|p| p.label.clone())
             .unwrap_or_else(|| pid.clone());
         let updating = self.state.read(cx).settings.is_updating("meetings");
+        let in_registry = self.catalogs.get(&pid).is_some_and(|c| c.in_registry);
         let weak = cx.entity().downgrade();
-        let mut rows = vec![
-            self.your_models_row(s, cx),
-            SettingRow::new("meetings-llm-provider", t("meetingsAi.llm.addFrom"))
-                .description(t("meetingsAi.llm.addFromDescription"))
-                .inline_description()
-                .control(
-                    Dropdown::new("meetings-llm-provider-dropdown")
-                        .options(cloud_provider_options(s))
-                        .selected(Some(pid.clone()))
-                        .min_width(dp(220.))
-                        .menu_width(dp(260.))
-                        .disabled(updating)
-                        .on_select(move |v, window, cx| {
-                            let v = v.to_string();
-                            weak.update(cx, |this, cx| this.browse(v, window, cx)).ok();
-                        }),
-                )
-                .into_any_element(),
-        ];
-
-        if provider.is_some_and(|p| p.allow_base_url_edit) || pid == CUSTOM_PROVIDER_ID {
-            rows.push(
-                SettingRow::new(
-                    "meetings-llm-base-url",
-                    t("settings.postProcessing.api.baseUrl.title"),
-                )
-                .stacked()
-                .control(Input::new(&self.base_url).small())
-                .into_any_element(),
-            );
-        }
-
         let key_url = provider_key_url(&pid);
+        let line = |id: &'static str| {
+            h_flex()
+                .id(id)
+                .w_full()
+                .gap_2()
+                .px(design::SECTION_X)
+                .py(dp(6.))
+        };
+        let caption = |text: SharedString| {
+            div()
+                .flex_none()
+                .text_size(design::TEXT_BODY)
+                .text_color(tone.text_muted)
+                .child(text)
+        };
+        let mut rows = vec![line("meetings-llm-provider")
+            .child(
+                Dropdown::new("meetings-llm-provider-dropdown")
+                    .options(cloud_provider_options(s))
+                    .selected(Some(pid.clone()))
+                    .min_width(dp(140.))
+                    .menu_width(dp(240.))
+                    .disabled(updating)
+                    .on_select(move |v, window, cx| {
+                        let v = v.to_string();
+                        weak.update(cx, |this, cx| this.browse(v, window, cx)).ok();
+                    }),
+            )
+            .child(
+                div()
+                    .id("meetings-llm-api-key")
+                    .flex_1()
+                    .min_w_0()
+                    .aria_label(t("meetingsAi.llm.apiKey"))
+                    .child(Input::new(&self.api_key).small().mask_toggle())
+                    .test_support(),
+            )
+            .child(
+                Button::new("meetings-llm-test-button")
+                    .outline()
+                    .small()
+                    .label(t("meetingsAi.llm.testConnection"))
+                    .loading(self.testing)
+                    .disabled(self.testing || self.saving_key.is_some())
+                    .on_click(cx.listener(|this, _, _, cx| this.test_connection(cx))),
+            )
+            .test_support()
+            .into_any_element()];
         rows.push(
-            SettingRow::new("meetings-llm-api-key", t("meetingsAi.llm.apiKey"))
-                .description(t("meetingsAi.llm.apiKeyDescription"))
-                .inline_description()
-                .stacked()
-                .control(
-                    v_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&self.api_key).small().mask_toggle()),
-                                )
-                                .child(
-                                    Button::new("meetings-llm-test-button")
-                                        .secondary()
-                                        .pill()
-                                        .small()
-                                        .label(t("meetingsAi.llm.testConnection"))
-                                        .loading(self.testing)
-                                        .disabled(self.testing || self.saving_key.is_some())
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.test_connection(cx)),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .children(
-                                    self.test_result
-                                        .as_ref()
-                                        .map(|r| result_line("meetings-llm-test-result", r, cx)),
-                                )
-                                .when_some(key_url, |d, url| {
-                                    d.child(
-                                        Button::new("meetings-llm-get-key")
-                                            .link()
-                                            .xsmall()
-                                            .label(t_args(
-                                                "meetingsAi.llm.getKey",
-                                                &[("provider", &label)],
-                                            ))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.open_url(url, cx)
-                                            })),
-                                    )
-                                }),
-                        ),
+            line("meetings-llm-key-help")
+                .pt(dp(0.))
+                .justify_between()
+                .child(
+                    div().min_w_0().child(match &self.test_result {
+                        Some(r) => result_line("meetings-llm-test-result", r, cx),
+                        None => div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_muted)
+                            .truncate()
+                            .child(t("meetingsAi.llm.apiKeyDescription"))
+                            .into_any_element(),
+                    }),
                 )
+                .when_some(key_url, |d, url| {
+                    d.child(
+                        Button::new("meetings-llm-get-key")
+                            .link()
+                            .xsmall()
+                            .icon(icon("external-link"))
+                            .label(t_args("meetingsAi.llm.getKey", &[("provider", &label)]))
+                            .on_click(cx.listener(move |this, _, _, cx| this.open_url(url, cx))),
+                    )
+                })
                 .into_any_element(),
         );
-
-        rows.push(self.model_row(s, cx));
-        rows
+        if provider.is_some_and(|p| p.allow_base_url_edit) || pid == CUSTOM_PROVIDER_ID {
+            rows.push(
+                line("meetings-llm-base-url")
+                    .border_t_1()
+                    .border_color(tone.hairline)
+                    .child(caption(t("settings.postProcessing.api.baseUrl.title")))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.base_url).small()),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        if !in_registry && self.catalogs.contains_key(&pid) {
+            rows.push(
+                line("meetings-llm-model-id")
+                    .border_t_1()
+                    .border_color(tone.hairline)
+                    .child(caption(t("meetingsAi.llm.modelId")))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.model_input).small()),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        v_flex()
+            .w_full()
+            .gap(design::HEADER_GAP)
+            .child(
+                div()
+                    .px(dp(2.))
+                    .child(design::section_header(t("meetingsAi.llm.addFrom"), cx)),
+            )
+            .child(design::panel(cx).py(dp(2.)).children(rows))
+            .into_any_element()
     }
 
     /// "Your models": every cloud model added for summaries, the default
     /// marked; "Generate summary" offers all of them.
-    fn your_models_row(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
+    fn your_models(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
         let tone = design::tone(cx);
         let models = saved_cloud_models(s);
-        let rows: Vec<AnyElement> = models
+        let mut rows: Vec<AnyElement> = models
             .iter()
             .enumerate()
             .map(|(i, c)| {
@@ -1339,18 +1440,16 @@ impl AiSettingsView {
                 h_flex()
                     .id(SharedString::from(format!("meetings-llm-saved-{i}")))
                     .w_full()
+                    .min_h(design::ROW_MIN_H)
                     .gap_3()
-                    .px(dp(10.))
-                    .py(dp(8.))
-                    .border_b_1()
-                    .border_color(tone.hairline)
-                    .when(c.default, |d| d.bg(tone.accent_soft))
+                    .px(design::SECTION_X)
+                    .py(dp(4.))
                     .child(
                         div()
                             .id(SharedString::from(format!(
                                 "meetings-llm-saved-default-{i}"
                             )))
-                            .cursor_pointer()
+                            .aria_label(t("meetingsAi.llm.makeDefault"))
                             .child(radio(c.default, cx))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.make_default(pid.clone(), model.clone(), cx)
@@ -1358,22 +1457,24 @@ impl AiSettingsView {
                             .test_support(),
                     )
                     .child(
-                        v_flex()
+                        h_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap(dp(2.))
+                            .gap_2()
                             .child(
                                 div()
-                                    .text_size(design::TEXT_BODY)
-                                    .font_weight(FontWeight::MEDIUM)
+                                    .flex_none()
+                                    .max_w(relative(0.6))
                                     .truncate()
+                                    .text_size(design::TEXT_BODY)
                                     .child(name),
                             )
                             .child(
                                 div()
-                                    .text_size(dp(11.))
-                                    .text_color(tone.text_faint)
+                                    .min_w_0()
                                     .truncate()
+                                    .text_size(design::TEXT_SECONDARY)
+                                    .text_color(tone.text_muted)
                                     .child(format!(
                                         "{} · {}",
                                         provider_label(s, &c.provider_id),
@@ -1404,35 +1505,28 @@ impl AiSettingsView {
                     .into_any_element()
             })
             .collect();
-        let empty = models.is_empty().then(|| {
-            div()
-                .id("meetings-llm-saved-empty")
-                .p_3()
-                .text_size(dp(12.))
-                .text_color(tone.text_muted)
-                .child(t("meetingsAi.llm.yourModelsEmpty"))
-                .test_support()
-        });
-        SettingRow::new("meetings-llm-saved", t("meetingsAi.llm.yourModels"))
-            .description(t("meetingsAi.llm.yourModelsDescription"))
-            .inline_description()
-            .stacked()
-            .control(
-                v_flex()
-                    .id("meetings-llm-saved-list")
-                    .w_full()
-                    .rounded(dp(6.))
-                    .border_1()
-                    .border_color(tone.hairline)
-                    .bg(tone.ink)
-                    .overflow_hidden()
-                    .children(rows)
-                    .children(empty),
-            )
+        if models.is_empty() {
+            rows.push(
+                div()
+                    .id("meetings-llm-saved-empty")
+                    .px(design::SECTION_X)
+                    .py(design::SECTION_Y)
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(t("meetingsAi.llm.yourModelsEmpty"))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        group(Some(t("meetingsAi.llm.yourModels")), rows, cx)
+            .id("meetings-llm-saved")
+            .test_support()
             .into_any_element()
     }
 
-    fn model_row(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
+    /// The provider's models with search and filter: fills the height it is
+    /// given, and its list is the only part that scrolls.
+    fn model_list(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
         let pid = self.synced_provider.clone();
         let tone = design::tone(cx);
         let theme = cx.theme().clone();
@@ -1486,9 +1580,8 @@ impl AiSettingsView {
                 .id(SharedString::from(format!("meetings-llm-model-{}", m.id)))
                 .w_full()
                 .gap_3()
-                .px(dp(10.))
-                .py(dp(8.))
-                .cursor_pointer()
+                .px(design::SECTION_X)
+                .py(dp(6.))
                 .border_b_1()
                 .border_color(tone.hairline)
                 .when(is_sel, |d| d.bg(tone.accent_soft))
@@ -1500,23 +1593,23 @@ impl AiSettingsView {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .gap(dp(2.))
+                        .gap(dp(1.))
                         .child(
                             div()
                                 .text_size(design::TEXT_BODY)
-                                .font_weight(FontWeight::MEDIUM)
                                 .truncate()
                                 .child(m.name.clone()),
                         )
                         .child(
                             design::mono(m.id.clone())
-                                .text_size(dp(11.))
+                                .text_size(design::TEXT_SECONDARY)
                                 .text_color(tone.text_faint)
                                 .truncate(),
                         ),
                 )
                 .child(
                     h_flex()
+                        .flex_none()
                         .gap(dp(4.))
                         .when(default, |d| {
                             d.child(design::chip(t("meetingsAi.llm.default"), true, cx))
@@ -1537,7 +1630,7 @@ impl AiSettingsView {
                         .flex_none()
                         .items_end()
                         .font_family(crate::theme::MONO_FONT)
-                        .text_size(dp(11.))
+                        .text_size(design::TEXT_SECONDARY)
                         .text_color(tone.text_muted)
                         .children(meta.into_iter().map(|l| div().child(l))),
                 )
@@ -1553,8 +1646,9 @@ impl AiSettingsView {
         let empty = shown.is_empty().then(|| {
             div()
                 .id("meetings-llm-models-empty")
-                .p_3()
-                .text_size(dp(12.))
+                .px(design::SECTION_X)
+                .py(design::SECTION_Y)
+                .text_size(design::TEXT_SECONDARY)
                 .text_color(tone.text_muted)
                 .child(if fetching && catalog.is_none() {
                     t("meetingsAi.common.loading")
@@ -1575,24 +1669,37 @@ impl AiSettingsView {
         let picker = v_flex()
             .id("meetings-llm-picker")
             .w_full()
-            .rounded(dp(6.))
+            .flex_1()
+            .min_h_0()
+            .rounded(crate::ui::design::RADIUS_PANEL)
             .border_1()
             .border_color(tone.hairline)
-            .bg(tone.ink)
+            .bg(tone.surface)
             .overflow_hidden()
             .child(
                 h_flex()
+                    .flex_none()
                     .w_full()
-                    .gap_2()
-                    .p(dp(6.))
+                    .gap_3()
+                    .pl(dp(6.))
+                    // Rows end at the panel's row inset; so does this label.
+                    .pr(design::SECTION_X)
+                    .py(dp(6.))
                     .border_b_1()
                     .border_color(tone.hairline)
-                    .child(div().flex_1().child(Input::new(&self.search).small()))
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.search)
+                                .small()
+                                .prefix(icon("search").xsmall().text_color(tone.text_muted)),
+                        ),
+                    )
                     .when(in_registry, |d| {
                         d.child(
                             h_flex()
+                                .flex_none()
                                 .gap_2()
-                                .text_size(dp(12.))
+                                .text_size(design::TEXT_SECONDARY)
                                 .text_color(tone.text_muted)
                                 .child(toggle(
                                     "meetings-llm-good-only",
@@ -1601,6 +1708,8 @@ impl AiSettingsView {
                                     move |v, _, cx| {
                                         weak.update(cx, |this, cx| {
                                             this.good_only = v;
+                                            this.model_list_scroll
+                                                .set_offset(point(px(0.), px(0.)));
                                             cx.notify();
                                         })
                                         .ok();
@@ -1614,21 +1723,29 @@ impl AiSettingsView {
                 v_flex()
                     .id("meetings-llm-model-list")
                     .w_full()
-                    .max_h(dp(260.))
+                    .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
+                    // The pane has no scroll region around the list; the trap
+                    // only matters if a host still scrolls (it stops the wheel
+                    // here while the list can scroll).
+                    .scroll_trap(&self.model_list_scroll)
                     .children(rows)
-                    .children(empty),
+                    .children(empty)
+                    .test_support(),
             )
             .child(
                 h_flex()
+                    .flex_none()
                     .w_full()
                     .justify_between()
                     .gap_2()
-                    .px(dp(10.))
-                    .py(dp(6.))
-                    .font_family(crate::theme::MONO_FONT)
-                    .text_size(dp(11.))
-                    .text_color(tone.text_faint)
+                    .px(design::SECTION_X)
+                    .py(dp(4.))
+                    .border_t_1()
+                    .border_color(tone.hairline)
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
                     .child(div().min_w_0().truncate().child(format!("{age} · {count}")))
                     .child(
                         Button::new("meetings-llm-refresh-registry")
@@ -1651,31 +1768,22 @@ impl AiSettingsView {
         let error = error.or(live_error).map(|e| {
             h_flex()
                 .id("meetings-llm-models-error")
+                .flex_none()
                 .gap_1()
-                .text_size(dp(12.))
+                .text_size(design::TEXT_SECONDARY)
                 .text_color(theme.danger)
                 .child(icon("circle-alert").xsmall())
                 .child(div().min_w_0().truncate().child(e))
                 .test_support()
         });
-        SettingRow::new("meetings-llm-model", t("meetingsAi.llm.model"))
-            .description(if in_registry {
-                t("meetingsAi.llm.modelDescription")
-            } else {
-                t("meetingsAi.llm.modelDescriptionCustom")
-            })
-            .inline_description()
-            .stacked()
-            .control(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .when(!in_registry, |d| {
-                        d.child(Input::new(&self.model_input).small())
-                    })
-                    .child(picker)
-                    .children(error),
-            )
+        v_flex()
+            .id("meetings-llm-model")
+            .size_full()
+            .min_h_0()
+            .gap(design::HEADER_GAP)
+            .child(picker)
+            .children(error)
+            .test_support()
             .into_any_element()
     }
 
@@ -1690,9 +1798,9 @@ impl AiSettingsView {
             .w_full()
             .gap_3()
             .px(design::SECTION_X)
-            .py(dp(12.))
+            .py(design::SECTION_Y)
             .when(available, |d| {
-                d.cursor_pointer().on_click(move |_, _, cx| {
+                d.on_click(move |_, _, cx| {
                     weak.update(cx, |this, cx| {
                         this.set_provider(APPLE_PROVIDER_ID.to_string(), cx)
                     })
@@ -1712,13 +1820,16 @@ impl AiSettingsView {
                             .font_weight(FontWeight::MEDIUM)
                             .child(t("meetingsAi.llm.apple")),
                     )
-                    .child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
-                        if available {
-                            t("meetingsAi.llm.appleDescription")
-                        } else {
-                            t("meetingsAi.llm.appleUnavailableHint")
-                        },
-                    )),
+                    .child(
+                        div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_muted)
+                            .child(if available {
+                                t("meetingsAi.llm.appleDescription")
+                            } else {
+                                t("meetingsAi.llm.appleUnavailableHint")
+                            }),
+                    ),
             )
             .when(!available, |d| {
                 d.child(design::chip(t("meetingsAi.llm.unavailable"), false, cx))
@@ -1726,16 +1837,14 @@ impl AiSettingsView {
             .test_support()
             .into_any_element();
         vec![
-            div()
-                .w_full()
-                .px(design::SECTION_X)
-                .py(dp(10.))
-                .text_size(dp(12.))
-                .text_color(tone.text_muted)
-                .child(t("meetingsAi.llm.localDescription"))
-                .into_any_element(),
-            self.local.clone().into_any_element(),
-            apple,
+            crate::ui::kit::lede(t("meetingsAi.llm.localDescription"), cx).into_any_element(),
+            group(
+                Some(t("meetingsAi.local.heading")),
+                vec![self.local.clone().into_any_element()],
+                cx,
+            )
+            .into_any_element(),
+            group(None, vec![apple], cx).into_any_element(),
         ]
     }
 
@@ -1762,7 +1871,6 @@ impl AiSettingsView {
                                     d.child(
                                         Button::new("meetings-linear-remove-key")
                                             .ghost()
-                                            .pill()
                                             .small()
                                             .label(t("meetingsAi.linear.removeKey"))
                                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1774,7 +1882,7 @@ impl AiSettingsView {
                         .child(
                             h_flex()
                                 .gap_2()
-                                .text_xs()
+                                .text_size(crate::ui::design::TEXT_SECONDARY)
                                 .text_color(muted)
                                 .child(if self.has_linear_key {
                                     t("meetingsAi.linear.keySaved")
@@ -1813,7 +1921,6 @@ impl AiSettingsView {
                         .child(
                             Button::new("meetings-linear-test-button")
                                 .secondary()
-                                .pill()
                                 .small()
                                 .label(t("meetingsAi.linear.test"))
                                 .loading(self.linear_testing)
@@ -1855,6 +1962,8 @@ impl LocalModelsView {
         let state = AppState::global(cx);
         let backend = state.read(cx).meetings.clone();
         let subs = vec![
+            // Download controls read the shared queue from the app state.
+            cx.observe(&state, |_, _, cx| cx.notify()),
             // Downloads report progress and state changes as events (no
             // polling).
             cx.subscribe(&state, |this, _, ev: &AppEvent, cx| match ev {
@@ -1931,14 +2040,12 @@ impl LocalModelsView {
         );
     }
 
-    fn local_action(&mut self, action: &'static str, id: String, cx: &mut Context<Self>) {
+    /// Delete a downloaded model (downloads go through the shared queue,
+    /// see [`DownloadControl`]).
+    fn delete_local(&mut self, id: String, cx: &mut Context<Self>) {
         self.run(
             cx,
-            move |b| match action {
-                "download" => b.download_local_llm_model(&id),
-                "cancel" => b.cancel_local_llm_download(&id),
-                _ => b.delete_local_llm_model(&id),
-            },
+            move |b| b.delete_local_llm_model(&id),
             |this, r, cx| {
                 if let Err(e) = r {
                     this.error = Some(error_message(&e));
@@ -2017,77 +2124,31 @@ impl LocalModelsView {
                         .child(t("meetingsAi.local.downloaded")),
                 );
             }
-            let action: AnyElement = match (m.downloaded, m.download_progress) {
-                (_, Some(p)) => {
-                    let id = id.clone();
-                    v_flex()
-                        .w(dp(220.))
-                        .gap(dp(6.))
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("local-progress-{}", m.id)))
-                                .child(design::track(
-                                    SharedString::from(format!("local-track-{}", m.id)),
-                                    Some(p),
-                                    cx,
-                                ))
-                                .test_support(),
-                        )
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .font_family(crate::theme::MONO_FONT)
-                                .text_size(design::TEXT_MONO)
-                                .text_color(muted)
-                                .child(design::shimmer_text(
-                                    SharedString::from(format!("local-dl-{}", m.id)),
-                                    t_args(
-                                        "meetingsAi.local.downloading",
-                                        &[(
-                                            "percentage",
-                                            &format!("{}", (p * 100.0).round() as i64),
-                                        )],
-                                    ),
-                                    cx,
-                                ))
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "local-cancel-{}",
-                                        m.id
-                                    )))
-                                    .ghost()
-                                    .pill()
-                                    .xsmall()
-                                    .label(t("meetingsAi.common.cancel"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.local_action("cancel", id.clone(), cx)
-                                    })),
-                                ),
-                        )
-                        .into_any_element()
-                }
-                (true, None) => Button::new(SharedString::from(format!("local-delete-{}", m.id)))
+            // Download, progress, retry and resume through the shared queue;
+            // a downloaded model can be deleted here.
+            let dl_id = guidy_core::downloads::llm_id(&m.id);
+            let busy = AppState::global(cx)
+                .read(cx)
+                .models
+                .download(&dl_id)
+                .is_some_and(|d| d.state.is_active());
+            let action: AnyElement = if m.downloaded && !busy {
+                Button::new(SharedString::from(format!("local-delete-{}", m.id)))
                     .ghost()
-                    .pill()
                     .small()
                     .icon(icon("trash"))
                     .label(t("meetingsAi.common.delete"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.local_action("delete", id.clone(), cx)
-                    }))
-                    .into_any_element(),
-                (false, None) => {
-                    Button::new(SharedString::from(format!("local-download-{}", m.id)))
-                        .secondary()
-                        .pill()
-                        .small()
-                        .icon(icon("download"))
-                        .label(t("meetingsAi.local.download"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.local_action("download", id.clone(), cx)
-                        }))
-                        .into_any_element()
-                }
+                    .on_click(cx.listener(move |this, _, _, cx| this.delete_local(id.clone(), cx)))
+                    .into_any_element()
+            } else {
+                let control = DownloadControl::for_model(dl_id, cx).installed(m.downloaded);
+                // The app state's list may not have loaded yet.
+                let control = if m.size_mb > 0 {
+                    control.size(m.size_mb * 1024 * 1024)
+                } else {
+                    control
+                };
+                control.into_any_element()
             };
             rows.push(
                 h_flex()
@@ -2105,7 +2166,7 @@ impl LocalModelsView {
                                 .id(SharedString::from(format!("local-select-{}", m.id)))
                                 .when(!pickable, |d| d.opacity(0.35))
                                 .when(pickable, |d| {
-                                    d.cursor_pointer().on_click(cx.listener(move |_, _, _, cx| {
+                                    d.on_click(cx.listener(move |_, _, _, cx| {
                                         cx.emit(LocalModelsEvent::Select(id.clone()))
                                     }))
                                 })
@@ -2121,7 +2182,7 @@ impl LocalModelsView {
                             .gap(dp(4.))
                             .when(self.selectable && m.downloaded, |d| {
                                 let id = m.id.clone();
-                                d.cursor_pointer().on_click(cx.listener(move |_, _, _, cx| {
+                                d.on_click(cx.listener(move |_, _, _, cx| {
                                     cx.emit(LocalModelsEvent::Select(id.clone()))
                                 }))
                             })
@@ -2214,7 +2275,7 @@ pub fn result_line(id: &'static str, r: &Result<String, String>, cx: &App) -> An
         .id(id)
         .max_w(dp(320.))
         .gap_1()
-        .text_xs()
+        .text_size(crate::ui::design::TEXT_SECONDARY)
         .text_color(color)
         .child(icon(icon_name).xsmall())
         .child(div().min_w_0().truncate().child(text))
@@ -2229,7 +2290,7 @@ pub fn error_box(id: &'static str, message: String, cx: &App) -> Stateful<Div> {
         .m_3()
         .px_3()
         .py_2()
-        .rounded(theme.radius)
+        .rounded(crate::ui::design::RADIUS_CONTROL)
         .border_1()
         .border_color(theme.danger.opacity(0.4))
         .bg(theme.danger.opacity(0.1))
@@ -2239,22 +2300,67 @@ pub fn error_box(id: &'static str, message: String, cx: &App) -> Stateful<Div> {
 
 impl Render for AiSettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.section == AiSection::Linear {
+            let rows = self.linear_rows(cx);
+            return scroll_page(
+                "meetings-linear-settings",
+                page().child(group(Some(t("meetingsAi.linear.heading")), rows, cx)),
+            )
+            .test_support()
+            .into_any_element();
+        }
         let Some(s) = self.state.read(cx).app_settings().cloned() else {
             return v_flex().id("meetings-ai-settings").into_any_element();
         };
         let place = SummaryPlace::of(&MeetingsLlmChoice::from_settings(&s).provider_id);
-        let mut llm = vec![self.status_line(cx), self.place_row(place, cx)];
-        match place {
-            SummaryPlace::Cloud => llm.extend(self.cloud_rows(&s, cx)),
-            SummaryPlace::Local => llm.extend(self.local_rows(cx)),
+        let header = self.header(place, cx);
+        if place == SummaryPlace::Local {
+            let rows = self.local_rows(cx);
+            return scroll_page("meetings-ai-settings", page().child(header).children(rows))
+                .test_support()
+                .into_any_element();
         }
-        let linear = self.linear_rows(cx);
+        // Cloud: the form is pinned (it scrolls by itself only when the
+        // window is too short for it), the model list takes the rest.
+        let your_models = self.your_models(&s, cx);
+        let form = self.provider_form(&s, cx);
+        let list = self.model_list(&s, cx);
         v_flex()
             .id("meetings-ai-settings")
-            .w_full()
-            .gap_6()
-            .child(group(Some(t("meetingsAi.llm.heading")), llm, cx))
-            .child(group(Some(t("meetingsAi.linear.heading")), linear, cx))
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .child(
+                div()
+                    .id("meetings-llm-form")
+                    .w_full()
+                    // Its own height, up to 60% of a short pane (then it
+                    // scrolls): flex must not squeeze the key field away.
+                    .flex_none()
+                    .max_h(relative(0.6))
+                    .overflow_y_scroll()
+                    .px(design::PAGE_X)
+                    .pt(design::PAGE_TOP)
+                    .pb(dp(14.))
+                    .child(
+                        page()
+                            .gap(dp(14.))
+                            .child(header)
+                            .child(your_models)
+                            .child(form),
+                    )
+                    .test_support(),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h(dp(120.))
+                    .px(design::PAGE_X)
+                    .pt(dp(8.))
+                    .pb(design::PAGE_BOTTOM)
+                    .child(div().size_full().max_w(design::FORM_MAX_W).child(list)),
+            )
             .test_support()
             .into_any_element()
     }
@@ -2508,6 +2614,7 @@ mod ui {
     use crate::ui::pages::post_processing::PostProcessingPage;
     use crate::ui_tests::{exists, open, with_window};
     use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{point, px, ScrollDelta};
     use gpui_kit::{AppContext as _, TestAppContext};
 
     fn local(id: &str, default: bool, ram: Option<u32>, downloaded: bool) -> LocalLlmModel {
@@ -2529,7 +2636,10 @@ mod ui {
         let mb = FakeMeetingsBackend::new();
         setup(cx, mb.clone());
         let (w, view) = open(cx, AiSettingsView::new);
+        assert!(!exists(cx, w, "meetings-linear-key"));
+        view.update(cx, |v, cx| v.show(super::AiSection::Linear, cx));
         assert!(exists(cx, w, "meetings-linear-key"));
+        assert!(!exists(cx, w, "meetings-llm-active"));
         with_window(cx, w, |window, cx| {
             window.click("meetings-linear-get-key", cx)
         });
@@ -2558,14 +2668,16 @@ mod ui {
             local("qwen3-4b", true, None, true),
             local("qwen3-8b", false, Some(16), false),
         ];
-        setup(cx, mb.clone());
+        let fb = crate::testing::FakeBackend::new();
+        setup_with(cx, fb.clone(), mb.clone());
         let (w, _) = open(cx, AiSettingsView::new);
         assert!(exists(cx, w, "local-model-qwen3-4b"));
         assert!(exists(cx, w, "local-model-qwen3-8b"));
+        // Downloads go through the shared queue (the status bar shows them).
         with_window(cx, w, |window, cx| {
-            window.click("local-download-qwen3-8b", cx)
+            window.click("dl-download-llm:qwen3-8b", cx)
         });
-        assert!(mb.called("download_local_llm_model qwen3-8b"));
+        assert!(fb.called("request_download llm:qwen3-8b"));
         with_window(cx, w, |window, cx| {
             window.click("local-delete-qwen3-4b", cx)
         });
@@ -2806,8 +2918,9 @@ mod ui {
             .find(|p| p.allow_base_url_edit && p.id != "custom")
             .map(|p| p.id.clone());
         let state = setup_with(cx, fb.clone(), mb.clone());
-        let (w, _) = open(cx, PostProcessingPage::new);
-        assert!(exists(cx, w, "pp-test-connection"));
+        // The Test button is in the page's toolbar.
+        let (w, _) = crate::ui_tests::open_page(cx, PostProcessingPage::new);
+        assert!(exists(cx, w, "pp-test-connection-button"));
         let pid = fb.settings().post_process_provider_id.clone();
         with_window(cx, w, |window, cx| {
             window.click("pp-test-connection-button", cx)
@@ -2825,5 +2938,42 @@ mod ui {
             cx.run_until_parked();
             assert!(exists(cx, w, "pp-base-url"), "{id}");
         }
+    }
+
+    /// The cloud model list is the pane's only flexible scroll region:
+    /// the wheel scrolls it and nothing else, and a new search starts it
+    /// at the top again.
+    #[gpui_kit::test]
+    fn the_model_list_scrolls_alone_and_resets_on_search(cx: &mut TestAppContext) {
+        let mb = FakeMeetingsBackend::new();
+        mb.data.lock().ai.catalog = crate::meetings_backend::ModelCatalog {
+            models: (0..100).map(|i| entry(&format!("m{i:02}"), true)).collect(),
+            in_registry: true,
+            registry_fetched_at: None,
+            live_error: None,
+        };
+        let fb = crate::testing::FakeBackend::new();
+        fb.with_settings(|s| s.meetings.llm_provider_id = "anthropic".into());
+        setup_with(cx, fb, mb);
+        let (w, view) = open(cx, AiSettingsView::new);
+        assert!(exists(cx, w, "meetings-llm-model-list"));
+        assert!(exists(cx, w, "meetings-llm-form"));
+        with_window(cx, w, |window, cx| {
+            window.scroll(
+                "meetings-llm-model-list",
+                ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                cx,
+            )
+        });
+        let offset = view.read_with(cx, |v, _| v.model_list_scroll.offset());
+        assert!(offset.y < px(0.), "the list scrolled: {offset:?}");
+        // Typing a search goes back to the top.
+        cx.update_window(w, |_, window, cx| {
+            view.update(cx, |v, cx| v.type_search("m1", window, cx))
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let offset = view.read_with(cx, |v, _| v.model_list_scroll.offset());
+        assert_eq!(offset.y, px(0.));
     }
 }

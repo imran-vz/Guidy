@@ -2,7 +2,7 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
 
-    // Meeting notes (EventKit, VPIO mic, process tap, notifications). Built for
+    // Meeting notes (EventKit, mic, process tap, notifications). Built for
     // every macOS arch; it needs a host macOS SDK, so the host must be a Mac.
     #[cfg(target_os = "macos")]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
@@ -578,8 +578,8 @@ fn is_command_line_tools_only() -> bool {
 /// Compile `swift/meeting_bridge.swift` into `libmeeting_bridge.a`.
 ///
 /// The deployment target is the app's minimum (10.15; 11.0 is the arm64
-/// floor). Everything newer (process taps 14.2, `requestFullAccessToEvents` 14,
-/// VPIO ducking config 14) sits behind `#available`, and swiftc weak-imports
+/// floor). Everything newer (process taps 14.2, `requestFullAccessToEvents` 14)
+/// sits behind `#available`, and swiftc weak-imports
 /// those symbols, so the binary still launches on older systems. None of the
 /// frameworks themselves is newer than 10.15 (UserNotifications is 10.14).
 /// CoreAudio is already weak-linked in `main` for CPAL.

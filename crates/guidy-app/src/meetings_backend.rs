@@ -227,6 +227,25 @@ pub trait MeetingsBackend: Send + Sync + 'static {
         t0_ms: i64,
         t1_ms: i64,
     ) -> MeetingsResult<Vec<f32>>;
+    /// 16 kHz mono samples of the whole meeting (both tracks mixed) between
+    /// `t0_ms` and `t1_ms`, for the meeting player. A missing track is
+    /// silence; it fails only when neither track can be read.
+    fn meeting_audio(
+        &self,
+        meeting_id: MeetingId,
+        t0_ms: i64,
+        t1_ms: i64,
+    ) -> MeetingsResult<Vec<f32>> {
+        let mic = self.segment_audio(meeting_id, Track::Mic, t0_ms, t1_ms);
+        let system = self.segment_audio(meeting_id, Track::System, t0_ms, t1_ms);
+        match (mic, system) {
+            (Err(e), Err(_)) => Err(e),
+            (mic, system) => Ok(crate::logic::meetings::mix_tracks(
+                &mic.unwrap_or_default(),
+                &system.unwrap_or_default(),
+            )),
+        }
+    }
 
     // -- meetings & people ------------------------------------------------
     fn list_meetings(&self) -> MeetingsResult<Vec<Meeting>>;

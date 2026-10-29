@@ -1,23 +1,30 @@
-//! Retired-model update screen.
+//! Retired-model update screen (a returning user whose model is in a
+//! format Guidy no longer runs): download the replacement, choose another
+//! model, or do it later (asked again next launch).
 
+use super::assistant::{continue_button, rows, Assistant};
+use super::model_picker::ModelPicker;
 use crate::logic::migration::{format_time_left, Action, Migration, Phase, RowState};
-use crate::logic::models::format_model_size;
 use crate::state::AppState;
-use crate::ui::brand::wordmark;
-use crate::ui::design::{self, dp, Pill};
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, spinner, t, t_args};
 use crate::ui::main_window::MainWindow;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::base::TestSupportExt;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::NotificationType;
 use gpui_kit::component::progress::ProgressCircle;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
+use gpui_kit::component::skeleton::Skeleton;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::downloads::format_bytes;
 
 pub struct ModelMigration {
     main: WeakEntity<MainWindow>,
     state: Entity<AppState>,
     migration: Option<Migration>,
+    /// "Choose Another…" is open.
+    picker: Option<Entity<ModelPicker>>,
     _subs: Vec<Subscription>,
 }
 
@@ -32,6 +39,7 @@ impl ModelMigration {
             main,
             state,
             migration: None,
+            picker: None,
             _subs: subs,
         };
         this.load_snapshot(cx);
@@ -58,18 +66,50 @@ impl ModelMigration {
         .detach();
     }
 
-    fn choose_another(&mut self, cx: &mut Context<Self>) {
-        self.main
-            .update(cx, |m, cx| m.open_model_picker_from_migration(cx))
-            .ok();
+    /// Pick another model instead: it is selected now, or downloaded in the
+    /// background and selected when done; the retired models are removed.
+    pub fn choose_another(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let picker = cx.new(|cx| {
+            ModelPicker::new(
+                None,
+                None,
+                move |chosen, _, cx| {
+                    weak.update(cx, |this, cx| {
+                        this.picker = None;
+                        if let Some(id) = chosen {
+                            this.state.update(cx, |s, cx| s.migrate_to_model(&id, cx));
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                },
+                window,
+                cx,
+            )
+        });
+        self.picker = Some(picker);
+        cx.notify();
+    }
+
+    /// The picker sub-pane, when open (tests drive it).
+    pub fn picker(&self) -> Option<Entity<ModelPicker>> {
+        self.picker.clone()
+    }
+
+    fn later(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        cx.defer(move |cx| state.update(cx, |s, cx| s.postpone_migration(cx)));
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let models = self.state.read(cx).models.models.clone();
+        let st = self.state.read(cx);
+        let models = st.models.models.clone();
+        let store = st.models.clone();
         let Some(m) = self.migration.as_mut() else {
             return;
         };
-        let downloads = m.start(&models);
+        let downloads = m.start(&models, &store);
         for id in &downloads {
             self.download(id, cx);
         }
@@ -91,8 +131,9 @@ impl ModelMigration {
         cx.notify();
     }
 
-    /// Download a replacement; a failure marks its row failed (Retry /
-    /// Choose another) instead of leaving it spinning.
+    /// Download a replacement. One that can't be queued fails its row at
+    /// once; one that fails later is noticed in the download list
+    /// ([`Migration::note_failures`]). Either way: Retry / Choose Another.
     fn download(&mut self, id: &str, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         let failed_id = id.to_string();
@@ -121,6 +162,7 @@ impl ModelMigration {
         let Some(m) = self.migration.as_mut() else {
             return;
         };
+        m.note_failures(&models, &store);
         for action in m.next_actions(&models, &store) {
             match action {
                 Action::Finalize {
@@ -200,26 +242,42 @@ impl ModelMigration {
 
 impl Render for ModelMigration {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(picker) = &self.picker {
+            return picker.clone().into_any_element();
+        }
         let theme = cx.theme().clone();
+        let tone = design::tone(cx);
+        let frame = |body: AnyElement| {
+            Assistant::new("model-migration", t("onboarding.migration.title"))
+                .icon("circle-arrow-up")
+                .description(t("onboarding.migration.description"))
+                .child(body)
+        };
         let Some(m) = self.migration.clone() else {
-            return v_flex()
-                .id("migration-loading")
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(spinner(
-                    "migration-loading",
-                    icon("loader-circle")
-                        .large()
-                        .text_color(theme.muted_foreground),
-                ))
-                .into_any_element();
+            let rows_skeleton = rows(
+                None,
+                vec![h_flex()
+                    .id("migration-loading")
+                    .h(dp(44.))
+                    .px(design::SECTION_X)
+                    .gap(dp(12.))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .gap(dp(6.))
+                            .child(Skeleton::new().w(dp(140.)).h(dp(10.)))
+                            .child(Skeleton::new().secondary().w(dp(220.)).h(dp(8.))),
+                    )
+                    .into_any_element()],
+                cx,
+            );
+            return frame(rows_skeleton.into_any_element()).into_any_element();
         };
         let st = self.state.read(cx);
         let models = st.models.models.clone();
         let store = st.models.clone();
-        let rows = m.rows(&models);
-        let show_checks = rows.len() > 1;
+        let rows_data = m.rows(&models);
+        let show_checks = rows_data.len() > 1;
         let chosen = m.chosen(&models);
         let no_way_forward = chosen.is_empty();
         let to_download = m.to_download(&models);
@@ -237,7 +295,7 @@ impl Render for ModelMigration {
         let time_left = format_time_left(secs);
         let entity = cx.entity().downgrade();
 
-        let row_elems: Vec<AnyElement> = rows
+        let row_elems: Vec<AnyElement> = rows_data
             .iter()
             .map(|p| {
                 let is_chosen = m.picked.contains(&p.retired.id);
@@ -256,8 +314,7 @@ impl Render for ModelMigration {
                             )
                             .child(
                                 Button::new(SharedString::from(format!("retry-{}", p.retired.id)))
-                                    .secondary()
-                                    .pill()
+                                    .outline()
                                     .xsmall()
                                     .label(t("onboarding.migration.retry"))
                                     .on_click(move |_, window, cx| {
@@ -271,22 +328,17 @@ impl Render for ModelMigration {
                             .into_any_element()
                     }
                     _ if state == RowState::Ready || (is_chosen && p.replacement.is_downloaded) => {
-                        div()
-                            .size(dp(22.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(design::tone(cx).accent_soft)
-                            .text_color(design::tone(cx).accent_text)
-                            .child(icon("check").xsmall())
+                        design::chip("", true, cx)
+                            .child(icon("check").size(dp(11.)))
+                            .child(t("onboarding.setup.downloaded"))
                             .into_any_element()
                     }
                     RowState::Progress(pct) => h_flex()
                         .gap_2()
                         .child(
                             design::mono(format!("{}%", pct.round() as i64))
-                                .text_color(theme.muted_foreground),
+                                .text_size(design::TEXT_SECONDARY)
+                                .text_color(tone.text_muted),
                         )
                         .child(
                             ProgressCircle::new(SharedString::from(format!(
@@ -297,8 +349,9 @@ impl Render for ModelMigration {
                             .small(),
                         )
                         .into_any_element(),
-                    _ => design::mono(format_model_size(Some(p.replacement.size_mb as f64)))
-                        .text_color(theme.muted_foreground)
+                    _ => design::mono(format_bytes(p.replacement.size_mb * 1024 * 1024))
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(tone.text_muted)
                         .into_any_element(),
                 };
                 let rid = p.retired.id.clone();
@@ -309,10 +362,10 @@ impl Render for ModelMigration {
                         p.retired.id
                     )))
                     .px(design::SECTION_X)
-                    .py(dp(12.))
-                    .gap_3()
+                    .py(dp(8.))
+                    .gap(dp(10.))
                     .when(toggleable, |d| {
-                        d.cursor_pointer().on_click(move |_, _, cx| {
+                        d.on_click(move |_, _, cx| {
                             let rid = rid.clone();
                             entity
                                 .update(cx, |this, cx| {
@@ -326,40 +379,36 @@ impl Render for ModelMigration {
                     })
                     .when(show_checks, |d| {
                         d.child(
-                            div()
-                                .size(dp(20.))
-                                .rounded_full()
-                                .border_2()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(is_chosen, |d| {
-                                    d.bg(design::tone(cx).accent)
-                                        .border_color(design::tone(cx).accent)
-                                        .text_color(theme.primary_foreground)
-                                        .child(icon("check").xsmall())
-                                })
-                                .when(!is_chosen, |d| d.border_color(theme.muted_foreground))
-                                .when(!toggleable, |d| d.opacity(0.55)),
+                            gpui_kit::component::checkbox::Checkbox::new(SharedString::from(
+                                format!("migration-check-{}", p.retired.id),
+                            ))
+                            .checked(is_chosen)
+                            .disabled(!toggleable),
+                        )
+                    })
+                    .when(!show_checks, |d| {
+                        d.child(
+                            icon("audio-lines")
+                                .size(dp(16.))
+                                .text_color(tone.text_muted),
                         )
                     })
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
+                            .gap(dp(2.))
                             .child(
                                 div()
                                     .text_size(design::TEXT_BODY)
-                                    .font_weight(FontWeight::MEDIUM)
                                     .truncate()
                                     .child(p.replacement.name.clone()),
                             )
                             .child(
                                 h_flex()
-                                    .gap_2()
-                                    .mt(dp(3.))
-                                    .text_size(dp(12.))
-                                    .text_color(theme.muted_foreground)
+                                    .gap(dp(6.))
+                                    .text_size(design::TEXT_SECONDARY)
+                                    .text_color(tone.text_muted)
                                     .child(t_args(
                                         "onboarding.migration.replaces",
                                         &[("name", &p.retired.name)],
@@ -371,124 +420,92 @@ impl Render for ModelMigration {
                                     )),
                             ),
                     )
-                    .child(div().text_size(dp(12.)).child(status))
+                    .child(div().text_size(design::TEXT_SECONDARY).child(status))
                     .into_any_element()
             })
             .collect();
 
-        let footer: AnyElement = if m.phase == Phase::Choose {
+        let mut assistant = frame(rows(None, row_elems, cx).into_any_element());
+        if m.phase == Phase::Choose {
+            assistant = assistant.footer_start(
+                Button::new("migration-later")
+                    .outline()
+                    .label(t("onboarding.migration.later"))
+                    .on_click(cx.listener(|this, _, _, cx| this.later(cx))),
+            );
             if no_way_forward {
-                Button::new("migration-choose-another")
-                    .primary()
-                    .pill()
-                    .w_full()
-                    .label(t("onboarding.migration.chooseAnother"))
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_another(cx)))
-                    .into_any_element()
+                assistant = assistant.action(continue_button(
+                    "migration-choose-another",
+                    t("onboarding.setup.chooseAnother"),
+                    true,
+                    cx.listener(|this, _, window, cx| this.choose_another(window, cx)),
+                ));
             } else {
                 let label = if !to_download.is_empty() {
                     t_args(
                         "onboarding.migration.download",
-                        &[("size", &format_model_size(Some(m.download_mb(&models))))],
+                        &[(
+                            "size",
+                            &format_bytes((m.download_mb(&models) * 1024.0 * 1024.0) as u64),
+                        )],
                     )
                 } else {
                     t("onboarding.migration.continue")
                 };
-                Button::new("migration-start")
-                    .primary()
-                    .pill()
-                    .w_full()
-                    .label(label)
-                    .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
-                    .into_any_element()
+                assistant = assistant
+                    .action(
+                        Button::new("migration-choose-another")
+                            .outline()
+                            .label(t("onboarding.setup.chooseAnother"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.choose_another(window, cx)),
+                            ),
+                    )
+                    .action(continue_button(
+                        "migration-start",
+                        label,
+                        true,
+                        cx.listener(|this, _, window, cx| this.start(window, cx)),
+                    ));
             }
         } else if downloading || !target_failed {
-            h_flex()
-                .h(dp(40.))
-                .gap_2()
-                .text_size(design::TEXT_BODY)
-                .text_color(theme.muted_foreground)
-                .child(spinner(
-                    "migration-footer-spin",
-                    icon("loader-circle").small(),
-                ))
-                .when_some(target.filter(|_| loading_target), |d, p| {
-                    d.child(t_args(
-                        "modelSelector.loading",
-                        &[("modelName", &p.replacement.name)],
+            assistant = assistant.note(
+                h_flex()
+                    .id("migration-progress")
+                    .gap(dp(6.))
+                    .child(spinner(
+                        "migration-footer-spin",
+                        icon("loader-circle").small(),
                     ))
-                })
-                .when_some(time_left.clone(), |d, tl| {
-                    d.child(t_args(
-                        "onboarding.migration.timeRemaining",
-                        &[("time", &tl)],
-                    ))
-                })
-                .when(time_left.is_some() && speed > 0.0, |d| d.child("·"))
-                .when(speed > 0.0, |d| {
-                    d.child(t_args(
-                        "modelSelector.downloadSpeed",
-                        &[("speed", &format!("{speed:.1}"))],
-                    ))
-                })
-                .into_any_element()
+                    .when_some(target.filter(|_| loading_target), |d, p| {
+                        d.child(t_args(
+                            "modelSelector.loading",
+                            &[("modelName", &p.replacement.name)],
+                        ))
+                    })
+                    .when_some(time_left.clone(), |d, tl| {
+                        d.child(t_args(
+                            "onboarding.migration.timeRemaining",
+                            &[("time", &tl)],
+                        ))
+                    })
+                    .when(time_left.is_some() && speed > 0.0, |d| d.child("·"))
+                    .when(speed > 0.0, |d| {
+                        d.child(t_args(
+                            "modelSelector.downloadSpeed",
+                            &[("speed", &format!("{speed:.1}"))],
+                        ))
+                    })
+                    .test_support(),
+            );
         } else {
-            Button::new("migration-choose-another-failed")
-                .ghost()
-                .pill()
-                .label(t("onboarding.migration.chooseAnother"))
-                .on_click(cx.listener(|this, _, _, cx| this.choose_another(cx)))
-                .into_any_element()
-        };
-
-        v_flex()
-            .id("model-migration")
-            .size_full()
-            .p_6()
-            .gap_5()
-            .items_center()
-            .justify_center()
-            .child(wordmark(dp(24.), cx))
-            .child(
-                v_flex()
-                    .max_w(dp(448.))
-                    .items_center()
-                    .gap_1p5()
-                    .child(
-                        div()
-                            .text_size(design::TEXT_HEADLINE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t("onboarding.migration.title")),
-                    )
-                    .child(
-                        div()
-                            .text_size(design::TEXT_BODY)
-                            .line_height(relative(1.55))
-                            .text_center()
-                            .text_color(theme.muted_foreground)
-                            .child(t("onboarding.migration.description")),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("migration-rows")
-                    .w_full()
-                    .max_w(dp(560.))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .rounded(design::RADIUS_PANEL)
-                    .border_1()
-                    .border_color(design::tone(cx).hairline)
-                    .bg(design::tone(cx).surface)
-                    .children(row_elems),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .max_w(dp(560.))
-                    .items_center()
-                    .child(footer),
-            )
-            .into_any_element()
+            assistant = assistant.action(
+                Button::new("migration-choose-another-failed")
+                    .outline()
+                    .label(t("onboarding.setup.chooseAnother"))
+                    .on_click(cx.listener(|this, _, window, cx| this.choose_another(window, cx))),
+            );
+        }
+        assistant.into_any_element()
     }
 }

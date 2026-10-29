@@ -5,6 +5,7 @@ fn main() {
         ("GUIDY_RELEASES_URL", ""),
         ("GUIDY_UPDATE_ENDPOINT", ""),
         ("GUIDY_UPDATE_PUBKEY", ""),
+        ("GUIDY_HELP_URL", ""),
     ] {
         println!("cargo:rerun-if-env-changed={var}");
         let value = std::env::var(var).unwrap_or_else(|_| default.to_string());

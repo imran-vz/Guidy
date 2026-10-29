@@ -184,12 +184,37 @@ pub async fn get_transcription_model_status(
 ) -> Result<Option<String>, String> {
     Ok(transcription_manager.get_current_model())
 }
-pub async fn is_model_loading(
-    transcription_manager: State<'_, Arc<TranscriptionManager>>,
-) -> Result<bool, String> {
-    // Check if transcription manager has a loaded model
-    let current_model = transcription_manager.get_current_model();
-    Ok(current_model.is_none())
+/// Mark first-run setup as done, whatever was (or wasn't) downloaded: a
+/// user can finish with meetings only, with cloud AI, or set up later.
+pub fn complete_onboarding(app: &AppHandle) {
+    update_settings(app, |s| s.onboarding_completed = true);
+}
+
+/// Load the selected speech model in the background so the first dictation
+/// doesn't wait for it. Skipped (returns false) when the unload timeout is
+/// "Immediately" (it loads on use by design), when no downloaded model is
+/// selected, or before the managers exist.
+pub fn warm_up_selected_model(app: &AppHandle) -> bool {
+    let settings = get_settings(app);
+    if settings.model_unload_timeout == ModelUnloadTimeout::Immediately
+        || settings.selected_model.is_empty()
+    {
+        return false;
+    }
+    let (Some(mm), Some(tm)) = (
+        app.try_state::<Arc<ModelManager>>(),
+        app.try_state::<Arc<TranscriptionManager>>(),
+    ) else {
+        return false;
+    };
+    if !mm
+        .get_model_info(&settings.selected_model)
+        .is_some_and(|m| m.is_downloaded)
+    {
+        return false;
+    }
+    tm.initiate_model_load();
+    true
 }
 pub async fn cancel_download(
     model_manager: State<'_, Arc<ModelManager>>,
@@ -216,5 +241,35 @@ mod tests {
 
         clear_selected_model_if(&t.app, "other");
         assert_eq!(get_settings(&t.app).selected_model, "");
+    }
+
+    #[test]
+    fn onboarding_completes_without_a_model() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| {
+            s.onboarding_completed = false;
+            s.selected_model.clear();
+        });
+        complete_onboarding(&t.app);
+        let s = get_settings(&t.app);
+        assert!(s.onboarding_completed);
+        assert!(s.selected_model.is_empty());
+    }
+
+    #[test]
+    fn warm_up_skips_without_a_model_or_when_unloading_immediately() {
+        let t = TestApp::new();
+        update_settings(&t.app, |s| s.selected_model.clear());
+        assert!(!warm_up_selected_model(&t.app));
+        update_settings(&t.app, |s| {
+            s.selected_model = "some-model".into();
+            s.model_unload_timeout = ModelUnloadTimeout::Immediately;
+        });
+        assert!(!warm_up_selected_model(&t.app));
+        // No managers in this app: nothing to load.
+        update_settings(&t.app, |s| {
+            s.model_unload_timeout = ModelUnloadTimeout::Min5
+        });
+        assert!(!warm_up_selected_model(&t.app));
     }
 }

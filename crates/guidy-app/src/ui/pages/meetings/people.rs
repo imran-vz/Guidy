@@ -1,18 +1,24 @@
-//! People tab: the user's own voice (recorded here, so in-person meetings
-//! can tell them from the others in the room), and everyone named in
-//! meetings, with voiceprint counts. Edit (name + email), merge into another
-//! person (after listening to both people's voiceprints), delete (with
-//! voiceprints).
+//! People: a list | detail split view. The list has a search field, "You"
+//! (the user's own voice, recorded here so in-person meetings can tell them
+//! from the others in the room) pinned at the top, then everyone named in
+//! meetings. The detail edits the selected person (name and email save on
+//! Enter or when the field loses focus; Esc puts them back), plays their
+//! voiceprints, merges them into another person after listening to both,
+//! and deletes them (after a confirmation).
 
 use super::{run, toast_error};
 use crate::logic::meetings::{format_meeting_date, merge_targets, non_empty, MeetingsEvent};
 use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, t, t_args, Dropdown, DropdownOption};
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{
+    group, icon, page, scroll_page, t, t_args, Dropdown, DropdownOption, LocalizedPlaceholder,
+    SettingRow,
+};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::resizable::ResizableState;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -40,33 +46,80 @@ const MAX_RECORDING: Duration = Duration::from_secs(60);
 /// Meeting audio is decoded to 16 kHz mono for playback.
 const SAMPLE_RATE: u32 = 16_000;
 
+/// The list's width in narrow windows (otherwise it is the split the
+/// Meetings tabs share).
+const LIST_W_NARROW: Pixels = dp(184.);
+
+/// What the detail shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeopleSelection {
+    /// The user's own voice.
+    You,
+    Person(PersonId),
+}
+
 pub struct PeopleView {
+    /// The list | detail split the Meetings page shares with this tab
+    /// (its own when shown alone).
+    split: Option<Entity<ResizableState>>,
     voice: UserVoice,
     recording: VoiceRecording,
     people: Vec<Person>,
     loading: bool,
-    editing: Option<PersonId>,
-    merging: Option<PersonId>,
-    /// The person picked to merge into (their voiceprints show too).
+    selected: PeopleSelection,
+    /// The person picked to merge the selected one into (their voiceprints
+    /// show too).
     merge_into: Option<PersonId>,
     /// Voiceprints with the lines they came from, per person (`None`:
     /// loading).
     samples: HashMap<PersonId, Option<Vec<VoiceSample>>>,
     /// Redrawing while a voiceprint plays.
     ticking: bool,
+    search: Entity<InputState>,
     name_input: Entity<InputState>,
     email_input: Entity<InputState>,
+    list_focus: FocusHandle,
+    detail_scroll: ScrollHandle,
+    /// The person and the stored name/email last put into the inputs.
+    inputs_for: Option<(PersonId, String, Option<String>)>,
     _subs: Vec<Subscription>,
 }
 
 impl PeopleView {
+    /// Share the Meetings page's list | detail split.
+    pub fn with_split(mut self, split: Entity<ResizableState>) -> Self {
+        self.split = Some(split);
+        self
+    }
+
+    fn split(&mut self, cx: &mut Context<Self>) -> Entity<ResizableState> {
+        self.split
+            .get_or_insert_with(|| cx.new(|_| ResizableState::default()))
+            .clone()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.people.searchPlaceholder",
+                window,
+                cx,
+            )
+        });
         let name_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetings.people.namePlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.people.namePlaceholder",
+                window,
+                cx,
+            )
         });
         let email_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetings.people.emailPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.people.emailPlaceholder",
+                window,
+                cx,
+            )
         });
         let subs = vec![
             cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| {
@@ -74,29 +127,30 @@ impl PeopleView {
                     this.reload(cx);
                 }
             }),
-            cx.subscribe(&name_input, |this, _, ev: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.save_edit(cx);
-                }
-            }),
-            cx.subscribe(&email_input, |this, _, ev: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.save_edit(cx);
+            cx.subscribe_in(&name_input, window, Self::on_edit_event),
+            cx.subscribe_in(&email_input, window, Self::on_edit_event),
+            cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+                if let InputEvent::Change = ev {
+                    cx.notify();
                 }
             }),
         ];
         let mut this = Self {
+            split: None,
             voice: UserVoice::default(),
             recording: VoiceRecording::Idle,
             people: Vec::new(),
             loading: true,
-            editing: None,
-            merging: None,
+            selected: PeopleSelection::You,
             merge_into: None,
             samples: HashMap::new(),
             ticking: false,
+            search,
             name_input,
             email_input,
+            list_focus: cx.focus_handle().tab_stop(true),
+            detail_scroll: ScrollHandle::new(),
+            inputs_for: None,
             _subs: subs,
         };
         this.reload(cx);
@@ -247,7 +301,7 @@ impl PeopleView {
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(crate::ui::design::TEXT_SECONDARY)
                         .line_height(relative(1.5))
                         .text_color(theme.muted_foreground)
                         .child(line),
@@ -293,7 +347,7 @@ impl PeopleView {
                             .w_full()
                             .px_3()
                             .py_2()
-                            .rounded(dp(8.))
+                            .rounded(crate::ui::design::RADIUS_PANEL)
                             .bg(theme.background)
                             .text_size(design::TEXT_BODY)
                             .line_height(relative(1.6))
@@ -307,7 +361,6 @@ impl PeopleView {
                             .child(
                                 Button::new("people-voice-cancel")
                                     .ghost()
-                                    .pill()
                                     .small()
                                     .label(t("meetings.people.cancel"))
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -317,7 +370,6 @@ impl PeopleView {
                             .child(
                                 Button::new("people-voice-done")
                                     .primary()
-                                    .pill()
                                     .small()
                                     .label(t("meetings.people.voice.done"))
                                     .disabled(elapsed < MIN_RECORDING)
@@ -345,7 +397,6 @@ impl PeopleView {
                 .child(
                     Button::new("people-voice-record")
                         .primary()
-                        .pill()
                         .small()
                         .loading(true)
                         .label(t("meetings.people.voice.record")),
@@ -362,7 +413,6 @@ impl PeopleView {
                         .child(
                             Button::new("people-voice-record")
                                 .ghost()
-                                .pill()
                                 .small()
                                 .label(t("meetings.people.voice.recordAgain"))
                                 .on_click(
@@ -388,7 +438,6 @@ impl PeopleView {
                 .child(
                     Button::new("people-voice-record")
                         .primary()
-                        .pill()
                         .small()
                         .icon(icon("mic"))
                         .label(t("meetings.people.voice.record"))
@@ -403,16 +452,148 @@ impl PeopleView {
         self.people.len()
     }
 
-    fn start_edit(&mut self, p: &Person, window: &mut Window, cx: &mut Context<Self>) {
-        self.editing = Some(p.id);
-        self.close_merge();
-        let (name, email) = (p.display_name.clone(), p.email.clone().unwrap_or_default());
-        self.name_input.update(cx, |s, cx| {
-            s.set_value(name, window, cx);
-            s.focus(window, cx);
-        });
+    pub fn selected(&self) -> PeopleSelection {
+        self.selected
+    }
+
+    /// Show the user's own voice.
+    pub fn select_you(&mut self, cx: &mut Context<Self>) {
+        if self.selected != PeopleSelection::You {
+            self.reset_detail();
+            self.selected = PeopleSelection::You;
+            self.detail_scroll.set_offset(point(px(0.), px(0.)));
+        }
+        cx.notify();
+    }
+
+    /// Show `id`: their name and email in the form, their voiceprints
+    /// loading. Pending edits of the person shown before are saved first.
+    pub fn select_person(&mut self, id: PersonId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected == PeopleSelection::Person(id) {
+            return;
+        }
+        self.save_edit(window, cx);
+        self.reset_detail();
+        self.selected = PeopleSelection::Person(id);
+        self.detail_scroll.set_offset(point(px(0.), px(0.)));
+        self.inputs_for = None;
+        self.sync_inputs(window, cx);
+        self.load_samples(id, cx);
+        cx.notify();
+    }
+
+    fn select(&mut self, sel: PeopleSelection, window: &mut Window, cx: &mut Context<Self>) {
+        match sel {
+            PeopleSelection::You => {
+                self.save_edit(window, cx);
+                self.select_you(cx)
+            }
+            PeopleSelection::Person(id) => self.select_person(id, window, cx),
+        }
+    }
+
+    /// The people the search matches, in list order.
+    fn shown_people(&self, cx: &App) -> Vec<&Person> {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        self.people
+            .iter()
+            .filter(|p| {
+                query.is_empty()
+                    || p.display_name.to_lowercase().contains(&query)
+                    || p.email
+                        .as_deref()
+                        .is_some_and(|e| e.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    /// ↑/↓ through You and the people shown; ⌫ deletes the selected person.
+    fn on_list_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        if matches!(key, "backspace" | "delete") {
+            if let PeopleSelection::Person(id) = self.selected {
+                if let Some(p) = self.people.iter().find(|p| p.id == id).cloned() {
+                    cx.stop_propagation();
+                    self.confirm_delete(&p, window, cx);
+                }
+            }
+            return;
+        }
+        let delta: isize = match key {
+            "up" => -1,
+            "down" => 1,
+            _ => return,
+        };
+        cx.stop_propagation();
+        let mut order = vec![PeopleSelection::You];
+        order.extend(
+            self.shown_people(cx)
+                .into_iter()
+                .map(|p| PeopleSelection::Person(p.id)),
+        );
+        let i = order.iter().position(|s| *s == self.selected).unwrap_or(0) as isize;
+        let next = order[(i + delta).clamp(0, order.len() as isize - 1) as usize];
+        self.select(next, window, cx);
+    }
+
+    fn on_edit_event(
+        &mut self,
+        _: &Entity<InputState>,
+        ev: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            self.save_edit(window, cx);
+        }
+    }
+
+    /// Put the selected person's stored name and email in the form, unless
+    /// the user is typing there or they are already in.
+    fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let PeopleSelection::Person(id) = self.selected else {
+            return;
+        };
+        let Some(p) = self.people.iter().find(|p| p.id == id) else {
+            return;
+        };
+        let stored = (id, p.display_name.clone(), p.email.clone());
+        if self.inputs_for.as_ref() == Some(&stored) {
+            return;
+        }
+        let typing = self.name_input.focus_handle(cx).is_focused(window)
+            || self.email_input.focus_handle(cx).is_focused(window);
+        if typing && self.inputs_for.as_ref().is_some_and(|(p, _, _)| *p == id) {
+            return;
+        }
+        let (name, email) = (stored.1.clone(), stored.2.clone().unwrap_or_default());
+        self.name_input
+            .update(cx, |s, cx| s.set_value(name, window, cx));
         self.email_input
             .update(cx, |s, cx| s.set_value(email, window, cx));
+        self.inputs_for = Some(stored);
+    }
+
+    /// Esc in the form: the stored name and email come back and the
+    /// keyboard goes back to the list.
+    pub fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.revert_edit(window, cx);
+        window.focus(&self.list_focus, cx);
+    }
+
+    /// Back to the stored name and email.
+    fn revert_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let PeopleSelection::Person(id) = self.selected else {
+            return;
+        };
+        if let Some(p) = self.people.iter().find(|p| p.id == id) {
+            let (name, email) = (p.display_name.clone(), p.email.clone().unwrap_or_default());
+            self.inputs_for = Some((id, p.display_name.clone(), p.email.clone()));
+            self.name_input
+                .update(cx, |s, cx| s.set_value(name, window, cx));
+            self.email_input
+                .update(cx, |s, cx| s.set_value(email, window, cx));
+        }
         cx.notify();
     }
 
@@ -431,19 +612,40 @@ impl PeopleView {
             .update(cx, |s, cx| s.set_value(email, window, cx));
     }
 
-    fn save_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.editing else {
+    /// Test hook: what Enter or leaving the field does.
+    #[cfg(test)]
+    pub fn commit_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_edit(window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn edit_values(&self, cx: &App) -> (String, String) {
+        (
+            self.name_input.read(cx).value().to_string(),
+            self.email_input.read(cx).value().to_string(),
+        )
+    }
+
+    /// Save the form when it differs from the stored person. An emptied
+    /// name isn't saved: the stored one comes back.
+    fn save_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let PeopleSelection::Person(id) = self.selected else {
+            return;
+        };
+        let Some(p) = self.people.iter_mut().find(|p| p.id == id) else {
             return;
         };
         let Some(name) = non_empty(&self.name_input.read(cx).value()) else {
+            self.revert_edit(window, cx);
             return;
         };
         let email = non_empty(&self.email_input.read(cx).value());
-        self.editing = None;
-        if let Some(p) = self.people.iter_mut().find(|p| p.id == id) {
-            p.display_name = name.clone();
-            p.email = email.clone();
+        if name == p.display_name && email == p.email {
+            return;
         }
+        p.display_name = name.clone();
+        p.email = email.clone();
+        self.inputs_for = Some((id, name.clone(), email.clone()));
         cx.notify();
         run(
             cx,
@@ -455,6 +657,21 @@ impl PeopleView {
                 this.reload(cx);
             },
         );
+    }
+
+    /// Forget the detail's merge pick and voiceprints, stopping one that
+    /// plays.
+    fn reset_detail(&mut self) {
+        self.merge_into = None;
+        self.samples.clear();
+        let player = Playback::global();
+        let playing_sample = player
+            .state()
+            .path
+            .is_some_and(|p| p.to_string_lossy().starts_with("voiceprint-"));
+        if playing_sample {
+            player.stop();
+        }
     }
 
     fn confirm_merge(
@@ -490,8 +707,12 @@ impl PeopleView {
     }
 
     pub fn merge(&mut self, from: PersonId, into: PersonId, cx: &mut Context<Self>) {
-        self.close_merge();
+        self.reset_detail();
         self.people.retain(|p| p.id != from);
+        if self.selected == PeopleSelection::Person(from) {
+            self.selected = PeopleSelection::Person(into);
+            self.load_samples(into, cx);
+        }
         cx.notify();
         run(
             cx,
@@ -530,6 +751,10 @@ impl PeopleView {
 
     pub fn delete(&mut self, id: PersonId, cx: &mut Context<Self>) {
         self.people.retain(|p| p.id != id);
+        if self.selected == PeopleSelection::Person(id) {
+            self.reset_detail();
+            self.selected = PeopleSelection::You;
+        }
         cx.notify();
         run(
             cx,
@@ -551,30 +776,13 @@ impl PeopleView {
             .unwrap_or_default()
     }
 
-    /// Open the merge panel of `id`, loading their voiceprints.
-    fn open_merge(&mut self, id: PersonId, cx: &mut Context<Self>) {
-        self.close_merge();
-        self.merging = Some(id);
-        self.load_samples(id, cx);
-    }
-
-    fn close_merge(&mut self) {
-        self.merging = None;
-        self.merge_into = None;
-        self.samples.clear();
-        let player = Playback::global();
-        let playing_sample = player
-            .state()
-            .path
-            .is_some_and(|p| p.to_string_lossy().starts_with("voiceprint-"));
-        if playing_sample {
-            player.stop();
-        }
-    }
-
     /// Pick whom to merge into; their voiceprints load next to the other's.
     pub fn pick_merge_target(&mut self, into: PersonId, cx: &mut Context<Self>) {
-        self.merge_into = Some(into);
+        if let Some(old) = self.merge_into.replace(into) {
+            if PeopleSelection::Person(old) != self.selected {
+                self.samples.remove(&old);
+            }
+        }
         self.load_samples(into, cx);
         cx.notify();
     }
@@ -663,37 +871,44 @@ impl PeopleView {
     }
 
     /// One person's voiceprints, each playable where its line's audio is
-    /// still kept.
-    fn render_samples(&self, person: PersonId, cx: &mut Context<Self>) -> AnyElement {
+    /// still kept. `heading`: their name above them (the merge target).
+    fn render_samples(
+        &self,
+        person: PersonId,
+        heading: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme().clone();
-        let header = div()
-            .text_xs()
-            .font_weight(FontWeight::MEDIUM)
-            .child(self.person_name(person));
         let list = v_flex()
             .id(SharedString::from(format!("person-samples-{person}")))
             .w_full()
+            .px(design::SECTION_X)
+            .py(design::ROW_Y)
             .gap(dp(4.))
-            .child(header);
+            .when(heading, |d| {
+                d.child(
+                    div()
+                        .text_size(design::TEXT_SECONDARY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(self.person_name(person)),
+                )
+            });
+        let note = |text: SharedString| {
+            div()
+                .py(dp(2.))
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
         let Some(Some(samples)) = self.samples.get(&person) else {
             return list
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(t("common.loading")),
-                )
+                .child(note(t("common.loading")))
                 .test_support()
                 .into_any_element();
         };
         if samples.is_empty() {
             return list
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(t("meetings.people.samples.none")),
-                )
+                .child(note(t("meetings.people.samples.none")))
                 .test_support()
                 .into_any_element();
         }
@@ -750,10 +965,10 @@ impl PeopleView {
                     v_flex()
                         .min_w_0()
                         .flex_1()
-                        .child(div().text_xs().truncate().child(line))
+                        .child(div().text_size(design::TEXT_BODY).truncate().child(line))
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(design::TEXT_SECONDARY)
                                 .text_color(theme.muted_foreground)
                                 .truncate()
                                 .child(place.join(" \u{b7} ")),
@@ -765,10 +980,9 @@ impl PeopleView {
         list.children(rows).test_support().into_any_element()
     }
 
-    /// Pick whom to merge into, listen to both people's voiceprints, then
-    /// merge.
-    fn render_merge_panel(&self, id: PersonId, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+    /// Pick whom to merge `id` into, listen to both people's voiceprints,
+    /// then merge (after a confirmation).
+    fn render_merge(&self, id: PersonId, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
         let options: Vec<DropdownOption> = merge_targets(&self.people, id)
             .into_iter()
@@ -781,265 +995,370 @@ impl PeopleView {
             })
             .collect();
         let into = self.merge_into;
-        v_flex()
+        let mut rows = vec![SettingRow::new(
+            SharedString::from(format!("person-merge-into-{id}")),
+            t("meetings.people.mergeInto"),
+        )
+        .description(t("meetings.people.mergeHint"))
+        .stacked()
+        .control(
+            Dropdown::new(SharedString::from(format!("person-merge-target-{id}")))
+                .options(options)
+                .selected(into.map(|p| p.to_string()))
+                .placeholder(t("meetings.people.choosePerson"))
+                .min_width(dp(180.))
+                .on_select(move |value, _, cx| {
+                    let Ok(into) = value.parse::<PersonId>() else {
+                        return;
+                    };
+                    entity
+                        .update(cx, |this, cx| this.pick_merge_target(into, cx))
+                        .ok();
+                }),
+        )
+        .into_any_element()];
+        if let Some(into) = into {
+            rows.push(self.render_samples(into, true, cx));
+        }
+        rows.push(
+            h_flex()
+                .w_full()
+                .px(design::SECTION_X)
+                .py(design::ROW_Y)
+                .justify_end()
+                .child(
+                    Button::new(SharedString::from(format!("person-merge-confirm-{id}")))
+                        .outline()
+                        .small()
+                        .icon(icon("merge"))
+                        .label(match into {
+                            Some(into) => t_args(
+                                "meetings.people.mergeIntoName",
+                                &[("name", &self.person_name(into))],
+                            ),
+                            None => t("meetings.people.merge"),
+                        })
+                        .disabled(into.is_none())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if let Some(into) = into {
+                                this.confirm_merge(id, into, window, cx);
+                            }
+                        })),
+                )
+                .into_any_element(),
+        );
+        group(Some(t("meetings.people.mergeHeading")), rows, cx)
             .id(SharedString::from(format!("person-merge-panel-{id}")))
-            .w_full()
-            .gap_3()
-            .px_3()
-            .py_2()
-            .bg(theme.background)
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(t("meetings.people.mergeHint")),
-                    )
-                    .child(
-                        Dropdown::new(SharedString::from(format!("person-merge-target-{id}")))
-                            .options(options)
-                            .selected(into.map(|p| p.to_string()))
-                            .placeholder(t("meetings.people.mergeInto"))
-                            .on_select(move |value, _, cx| {
-                                let Ok(into) = value.parse::<PersonId>() else {
-                                    return;
-                                };
-                                entity
-                                    .update(cx, |this, cx| this.pick_merge_target(into, cx))
-                                    .ok();
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(t("meetings.people.samples.hint")),
-            )
-            .child(self.render_samples(id, cx))
-            .when_some(into, |d, into| d.child(self.render_samples(into, cx)))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        Button::new(SharedString::from(format!("person-merge-cancel-{id}")))
-                            .ghost()
-                            .pill()
-                            .small()
-                            .label(t("meetings.people.cancel"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close_merge();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("person-merge-confirm-{id}")))
-                            .primary()
-                            .pill()
-                            .small()
-                            .label(match into {
-                                Some(into) => t_args(
-                                    "meetings.people.mergeIntoName",
-                                    &[("name", &self.person_name(into))],
-                                ),
-                                None => t("meetings.people.merge"),
-                            })
-                            .disabled(into.is_none())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(into) = into {
-                                    this.confirm_merge(id, into, window, cx);
-                                }
-                            })),
-                    ),
-            )
             .test_support()
             .into_any_element()
     }
 
-    fn render_row(&self, p: &Person, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
+    /// The selected person: name and email, voiceprints, merge, delete.
+    fn render_person(&self, p: &Person, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let tone = design::tone(cx);
         let id = p.id;
-        let icon_btn = |name: &'static str, label: SharedString, suffix: &str| {
-            Button::new(SharedString::from(format!("person-{suffix}-{id}")))
-                .ghost()
-                .xsmall()
-                .icon(icon(name))
-                .tooltip(label)
-        };
-        if self.editing == Some(id) {
-            return h_flex()
-                .id(SharedString::from(format!("person-{id}")))
-                .w_full()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .child(div().flex_1().child(Input::new(&self.name_input).small()))
-                .child(div().flex_1().child(Input::new(&self.email_input).small()))
-                .child(
-                    Button::new(SharedString::from(format!("person-save-{id}")))
-                        .primary()
-                        .pill()
-                        .small()
-                        .label(t("meetings.people.save"))
-                        .on_click(cx.listener(|this, _, _, cx| this.save_edit(cx))),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("person-edit-cancel-{id}")))
-                        .ghost()
-                        .pill()
-                        .small()
-                        .label(t("meetings.people.cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.editing = None;
-                            cx.notify();
-                        })),
-                )
-                .test_support()
-                .into_any_element();
-        }
         let count = p.voiceprint_count.to_string();
-        let (p_edit, p_delete) = (p.clone(), p.clone());
-        let can_merge = self.people.len() > 1;
-        let merging = self.merging == Some(id);
-        v_flex()
+        let header = v_flex()
+            .id("person-detail-header")
+            .gap(dp(2.))
+            .child(
+                div()
+                    .text_size(design::TEXT_HEADLINE)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .truncate()
+                    .child(p.display_name.clone()),
+            )
+            .child(
+                div()
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(t_args("meetings.people.voiceprints", &[("count", &count)])),
+            )
+            .test_support()
+            .into_any_element();
+        let field = |id: &'static str, title: SharedString, input: &Entity<InputState>| {
+            h_flex()
+                .id(id)
+                .w_full()
+                .min_h(design::ROW_MIN_H)
+                .gap(dp(12.))
+                .px(design::SECTION_X)
+                .py(design::ROW_Y)
+                .child(
+                    div()
+                        .flex_none()
+                        .w(dp(64.))
+                        .text_size(design::TEXT_BODY)
+                        .child(title),
+                )
+                .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+                .test_support()
+                .into_any_element()
+        };
+        let form = group(
+            Some(t("meetings.people.details")),
+            vec![
+                field("person-name", t("meetings.people.name"), &self.name_input),
+                field(
+                    "person-email",
+                    t("meetings.people.email"),
+                    &self.email_input,
+                ),
+            ],
+            cx,
+        )
+        .id(SharedString::from(format!("person-{id}-form")))
+        .on_action(cx.listener(|this, _: &Escape, window, cx| this.cancel_edit(window, cx)))
+        .test_support()
+        .into_any_element();
+        let voiceprints = group(
+            Some(t("meetings.people.voiceprintsHeading")),
+            vec![
+                div()
+                    .px(design::SECTION_X)
+                    .pt(design::ROW_Y)
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(t("meetings.people.samples.hint"))
+                    .into_any_element(),
+                self.render_samples(id, false, cx),
+            ],
+            cx,
+        )
+        .into_any_element();
+        let p_delete = p.clone();
+        let delete = h_flex()
             .w_full()
             .child(
-                h_flex()
-                    .id(SharedString::from(format!("person-{id}")))
-                    .w_full()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .justify_between()
+                Button::new(SharedString::from(format!("person-delete-{id}")))
+                    .outline()
+                    .small()
+                    .icon(icon("trash"))
+                    .label(t("meetings.people.deleteButton"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.confirm_delete(&p_delete, window, cx)
+                    })),
+            )
+            .into_any_element();
+        let mut out = vec![header, form, voiceprints];
+        if self.people.len() > 1 {
+            out.push(self.render_merge(id, cx));
+        }
+        out.push(delete);
+        out
+    }
+
+    /// A row of the list: icon or nothing, title, a secondary line.
+    #[allow(clippy::too_many_arguments)]
+    fn list_row(
+        &self,
+        id: SharedString,
+        sel: PeopleSelection,
+        title: SharedString,
+        line: SharedString,
+        lead: Option<&'static str>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tone = design::tone(cx);
+        let active = self.selected == sel;
+        let selection = if focused {
+            tone.selection_focused
+        } else {
+            tone.selection
+        };
+        h_flex()
+            .id(id)
+            .aria_label(title.clone())
+            .flex_none()
+            .w_full()
+            .gap(dp(8.))
+            .px(dp(8.))
+            .py(dp(4.))
+            .rounded(design::RADIUS_CHIP)
+            .when(active, |d| d.bg(selection))
+            .when_some(lead, |d, name| {
+                d.child(icon(name).small().text_color(if active {
+                    tone.accent_text
+                } else {
+                    tone.text_muted
+                }))
+            })
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
                     .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(p.display_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .truncate()
-                                    .child(match &p.email {
-                                        Some(e) => format!(
-                                            "{e} · {}",
-                                            t_args(
-                                                "meetings.people.voiceprints",
-                                                &[("count", &count)]
-                                            )
-                                        ),
-                                        None => t_args(
-                                            "meetings.people.voiceprints",
-                                            &[("count", &count)],
-                                        )
-                                        .to_string(),
-                                    }),
-                            ),
+                        div()
+                            .text_size(design::TEXT_BODY)
+                            .text_color(tone.text)
+                            .truncate()
+                            .child(title),
                     )
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .child(
-                                icon_btn("pencil", t("meetings.people.edit"), "edit").on_click(
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.start_edit(&p_edit, window, cx)
-                                    }),
-                                ),
-                            )
-                            .child(
-                                icon_btn("merge", t("meetings.people.merge"), "merge")
-                                    .disabled(!can_merge)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if this.merging == Some(id) {
-                                            this.close_merge();
-                                        } else {
-                                            this.open_merge(id, cx);
-                                        }
-                                        this.editing = None;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                icon_btn("trash", t("meetings.people.delete"), "delete").on_click(
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.confirm_delete(&p_delete, window, cx)
-                                    }),
-                                ),
-                            ),
+                        div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_muted)
+                            .truncate()
+                            .child(line),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&this.list_focus, cx);
+                this.select(sel, window, cx);
+            }))
+            .test_support()
+            .into_any_element()
+    }
+
+    fn render_list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tone = design::tone(cx);
+        let focused = self.list_focus.is_focused(window);
+        // In the shared split the panel sizes the list.
+        let narrow = super::is_narrow(window);
+        let you = self.list_row(
+            "people-you".into(),
+            PeopleSelection::You,
+            t("meetings.people.you"),
+            t(if self.voice.recorded_at.is_some() {
+                "meetings.people.voice.recordedTitle"
+            } else {
+                "meetings.people.voice.notRecorded"
+            }),
+            Some("circle-user"),
+            focused,
+            cx,
+        );
+        let note = |id: &'static str, text: SharedString| {
+            div()
+                .id(id)
+                .px(dp(8.))
+                .py(dp(6.))
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(tone.text_muted)
+                .child(text)
+                .test_support()
+                .into_any_element()
+        };
+        let shown: Vec<Person> = self.shown_people(cx).into_iter().cloned().collect();
+        let rows: Vec<AnyElement> = if self.loading {
+            vec![note("people-loading", t("common.loading"))]
+        } else if self.people.is_empty() {
+            vec![note("people-empty", t("meetings.people.empty"))]
+        } else if shown.is_empty() {
+            vec![note("people-no-matches", t("meetings.people.noMatches"))]
+        } else {
+            shown
+                .iter()
+                .map(|p| {
+                    let count = p.voiceprint_count.to_string();
+                    let prints = t_args("meetings.people.voiceprints", &[("count", &count)]);
+                    let line: SharedString = match &p.email {
+                        Some(e) => format!("{e} · {prints}").into(),
+                        None => prints,
+                    };
+                    self.list_row(
+                        SharedString::from(format!("person-{}", p.id)),
+                        PeopleSelection::Person(p.id),
+                        p.display_name.clone().into(),
+                        line,
+                        None,
+                        focused,
+                        cx,
                     )
+                })
+                .collect()
+        };
+        v_flex()
+            .h_full()
+            .min_h_0()
+            .map(|d| {
+                if narrow {
+                    d.flex_none()
+                        .w(LIST_W_NARROW)
+                        .border_r_1()
+                        .border_color(tone.hairline)
+                } else {
+                    d.size_full()
+                }
+            })
+            .child(
+                div().flex_none().p(dp(8.)).child(
+                    Input::new(&self.search)
+                        .small()
+                        .cleanable(true)
+                        .prefix(icon("search").xsmall().text_color(tone.text_muted)),
+                ),
+            )
+            .child(
+                v_flex()
+                    .id("people-list")
+                    .track_focus(&self.list_focus)
+                    .on_key_down(cx.listener(Self::on_list_key))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(dp(8.))
+                    .pb(dp(8.))
+                    .gap(px(1.))
+                    .child(you)
+                    .child(
+                        div()
+                            .px(dp(8.))
+                            .pt(dp(10.))
+                            .pb(dp(4.))
+                            .child(design::section_header(t("meetings.people.title"), cx)),
+                    )
+                    .children(rows)
                     .test_support(),
             )
-            .when(merging, |d| d.child(self.render_merge_panel(id, cx)))
-            .into_any_element()
     }
 }
 
 impl Render for PeopleView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let rows: Vec<AnyElement> = if self.loading {
-            vec![div()
-                .px_4()
-                .py_3()
-                .text_center()
-                .text_color(theme.muted_foreground)
-                .child(t("common.loading"))
-                .into_any_element()]
-        } else if self.people.is_empty() {
-            vec![div()
-                .id("people-empty")
-                .px_4()
-                .py(dp(18.))
-                .text_center()
-                .text_size(design::TEXT_BODY)
-                .text_color(theme.muted_foreground)
-                .child(t("meetings.people.empty"))
-                .test_support()
-                .into_any_element()]
-        } else {
-            let people = self.people.clone();
-            people.iter().map(|p| self.render_row(p, cx)).collect()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The selected person may be gone (deleted or merged elsewhere).
+        if let PeopleSelection::Person(id) = self.selected {
+            if !self.loading && !self.people.iter().any(|p| p.id == id) {
+                self.selected = PeopleSelection::You;
+                self.reset_detail();
+            }
+        }
+        self.sync_inputs(window, cx);
+        let detail: Vec<AnyElement> = match self.selected {
+            PeopleSelection::You => vec![
+                crate::ui::kit::lede(t("meetings.people.voice.description"), cx).into_any_element(),
+                group(
+                    Some(t("meetings.people.voice.title")),
+                    vec![self.render_voice(cx)],
+                    cx,
+                )
+                .into_any_element(),
+            ],
+            PeopleSelection::Person(id) => match self.people.iter().find(|p| p.id == id).cloned() {
+                Some(p) => self.render_person(&p, cx),
+                None => Vec::new(),
+            },
         };
-        // A tab under the Meetings headline: eyebrow and a quiet line, not a
-        // second headline.
-        v_flex()
+        let list = self.render_list(window, cx);
+        let detail = div().size_full().min_w_0().min_h_0().child(
+            scroll_page("people-detail", page().children(detail)).track_scroll(&self.detail_scroll),
+        );
+        let narrow = super::is_narrow(window);
+        h_flex()
             .id("meetings-people")
-            .w_full()
-            .gap(dp(8.))
-            .child(crate::ui::kit::group(
-                Some(t("meetings.people.voice.title")),
-                vec![self.render_voice(cx)],
-                cx,
-            ))
-            .child(
-                div()
-                    .px(dp(2.))
-                    .pt(dp(8.))
-                    .child(design::eyebrow(t("meetings.people.title"), cx)),
-            )
-            .child(
-                div()
-                    .px(dp(2.))
-                    .text_size(dp(12.))
-                    .line_height(relative(1.5))
-                    .text_color(theme.muted_foreground)
-                    .child(t("meetings.people.description")),
-            )
-            .child(crate::ui::kit::group(None, rows, cx))
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .items_stretch()
+            .map(|d| {
+                if narrow {
+                    d.child(list).child(div().flex_1().min_w_0().child(detail))
+                } else {
+                    let split = self.split(cx);
+                    d.child(super::split_view("people-split", &split, list, detail, cx))
+                }
+            })
             .test_support()
     }
 }

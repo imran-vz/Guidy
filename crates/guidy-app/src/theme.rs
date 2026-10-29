@@ -49,9 +49,22 @@ pub fn apply_mode(mode: ThemeMode, cx: &mut App) {
     Theme::change(mode, None::<&mut Window>, cx);
 }
 
+/// The theme setting last applied (before settings load, the one read at
+/// launch), so a window's appearance change follows it.
+struct AppliedSetting(ThemeSetting);
+impl gpui_kit::Global for AppliedSetting {}
+
 /// Apply the user's theme setting now.
 pub fn apply_setting(setting: ThemeSetting, cx: &mut App) {
+    cx.set_global(AppliedSetting(setting));
     apply_mode(mode_for(setting, cx.window_appearance()), cx);
+}
+
+/// The theme setting last applied ([`ThemeSetting::System`] if none).
+pub fn applied_setting(cx: &App) -> ThemeSetting {
+    cx.try_global::<AppliedSetting>()
+        .map(|s| s.0)
+        .unwrap_or(ThemeSetting::System)
 }
 
 #[cfg(test)]

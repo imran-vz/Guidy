@@ -36,23 +36,12 @@
     "about": "Om"
   },
   "usage": {
-    "title": "Användning",
-    "description": "Vad AI-leverantörer i molnet har kostat och vilket arbete modeller har gjort på den här Macen.",
-    "cloud": "Moln",
     "local": "På den här Macen",
     "refresh": "Uppdatera",
     "total": "Totalt spenderat",
     "last30Days": "Senaste 30 dagarna",
     "callsTitle": "Anrop",
-    "byModel": "Per modell",
-    "byFeature": "Per funktion",
     "empty": "Inga AI-anrop till molnet ännu.",
-    "calls_one": "{{count}} anrop",
-    "calls_other": "{{count}} anrop",
-    "average": "snitt {{cost}}",
-    "highest": "högst {{cost}}",
-    "tokens": "{{input}} in / {{output}} ut tokens",
-    "unknownPrice": "okänt pris",
     "feature": {
       "dictation": "Diktering",
       "meetingTranscription": "Mötestranskription",
@@ -61,37 +50,17 @@
       "other": "Övrigt"
     },
     "localAudio": "Transkriberat ljud",
-    "localWords": "Ord",
-    "localTokens": "LLM-tokens",
-    "localCloudEquivalent": "Motsvarande i molnet",
     "localEmpty": "Inget har körts på en lokal modell ännu.",
-    "localByModel": "Lokala modeller",
-    "localByFeature": "Lokalt arbete per funktion",
     "kind": {
       "transcription": "Transkription",
       "llm": "Inbyggd LLM"
     },
-    "runs_one": "{{count}} körning",
-    "runs_other": "{{count}} körningar",
-    "audio": "{{duration}} ljud",
-    "words": "{{count}} ord",
-    "realtime": "{{speed}} realtid",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "generering {{speed}}",
-    "loadTime": "laddas på {{time}}",
-    "localNote": "Realtidshastighet är ljudlängd ÷ bearbetningstid, utan laddning; diktering som avkodas live medan du talar tidsmäts inte. Motsvarande i molnet prissätter ljudet till ${{price}} per minut (OpenAI Whisper).",
     "estimateNote": "~ markerar belopp som uppskattats utifrån publicerade priser per token; leverantörer som rapporterar sin egen kostnad (som OpenRouter) är exakta. Se leverantörens kontrollpanel för fakturering.",
     "reportedNote": "Beloppen är så som leverantörerna rapporterar dem. Se leverantörens kontrollpanel för fakturering.",
-    "clear": "Rensa historik",
     "clearTitle": "Rensa användningshistorik?",
     "clearConfirm": "De registrerade anropen, kostnaderna och körningarna av lokala modeller tas bort. Användning som visas i mötessammanfattningar finns kvar."
   },
   "onboarding": {
-    "subtitle": "För att komma igång, välj en transkriptionsmodell",
-    "existingModelsTitle": "Kompatibla modeller",
-    "downloadModelsTitle": "Tillgängliga för nedladdning",
-    "showAllModels": "Visa alla {{total}} modeller",
-    "showFewerModels": "Visa färre modeller",
     "recommended": "Rekommenderat",
     "customModelDescription": "Stöds inte officiellt",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Gammalt format",
       "failed": "Nedladdningen misslyckades",
       "retry": "Försök igen",
-      "chooseAnother": "Välj en annan modell",
       "download": "Ladda ner modeller ({{size}})",
       "continue": "Fortsätt",
       "timeRemaining": "{{time}} kvar"
@@ -150,7 +118,6 @@
       "grant": "Bevilja behörighet",
       "granted": "Beviljad",
       "waiting": "Väntar...",
-      "allGranted": "Allt klart!",
       "errors": {
         "checkFailed": "Misslyckades med att kontrollera behörigheter. Försök igen.",
         "requestFailed": "Misslyckades med att begära behörighet. Försök igen."
@@ -163,10 +130,6 @@
     "active": "Aktiv",
     "switching": "Byter...",
     "noModelsAvailable": "Inga modeller tillgängliga",
-    "verifying": "Verifierar {{modelName}}...",
-    "verifyingGeneric": "Verifierar...",
-    "downloading": "Laddar ner {{percentage}}%",
-    "downloadingMultiple": "Laddar ner {{count}} modeller...",
     "modelReady": "Modell klar",
     "loading": "Laddar {{modelName}}...",
     "loadingGeneric": "Laddar...",
@@ -175,28 +138,18 @@
     "noModelDownloadRequired": "Ingen modell - Nedladdning krävs",
     "deleteModel": "Ta bort {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
-    "cancel": "Avbryt",
     "cancelDownload": "Avbryt nedladdning",
     "capabilities": {
-      "languageSelection": "Stöder flera indataspråk",
-      "singleLanguage": "Stöder endast detta språk",
       "languageCount": "{{total}} språk",
       "languageOnly": "Endast {{language}}",
-      "translation": "Kan översätta till engelska",
-      "translate": "Översätt till engelska",
-      "streaming": "Visar transkription i realtid medan du talar"
+      "translate": "Översätt till engelska"
     },
     "download": "Ladda ner",
     "use": "Använd",
     "legacy": "Äldre"
   },
   "settings": {
-    "modelSettings": {
-      "title": "{{model}}-inställningar"
-    },
     "general": {
-      "title": "Allmänt",
-      "description": "Hur du startar diktering, vilket språk den lyssnar efter och vad du hör.",
       "shortcutsGroup": "Kortkommandon",
       "shortcut": {
         "title": "Guidy-kortkommandon",
@@ -227,7 +180,6 @@
       },
       "language": {
         "title": "Språk",
-        "description": "Välj språk för taligenkänning. Auto kommer automatiskt att bestämma språket, medan val av ett specifikt språk kan förbättra noggrannheten för det språket.",
         "searchPlaceholder": "Sök språk...",
         "noResults": "Inga språk hittades",
         "auto": "Automatiskt"
@@ -248,12 +200,7 @@
       }
     },
     "models": {
-      "title": "Transkriptionsmodeller",
-      "description": "Välj en transkriptionsmodell eller ladda ner ytterligare modeller. Olika modeller erbjuder varierande nivåer av noggrannhet och hastighet.",
-      "yourModels": "Nedladdade modeller",
-      "availableModels": "Tillgängliga att ladda ner",
       "deleteConfirm": "Är du säker på att du vill ta bort {{modelName}}? Du måste ladda ner den igen för att använda den.",
-      "deleteActiveConfirm": "{{modelName}} är din aktiva modell. Om du tar bort den avbryts transkriptioner tills du väljer en ny modell. Är du säker?",
       "deleteTitle": "Ta bort modell",
       "retiredNotice": {
         "title": "Gamla modeller fungerar inte längre med Guidy",
@@ -270,15 +217,12 @@
       "noModelsMatch": "Inga modeller matchar detta filter.",
       "searchPlaceholder": "Sök modeller efter namn…",
       "rescan": {
-        "label": "Skanna om",
         "tooltip": "Skanna om efter modeller som lagts till i modellmappen eller Hugging Face-cachen utanför Guidy"
       }
     },
     "sound": {
-      "title": "Ljud",
       "microphone": {
         "title": "Mikrofon",
-        "description": "Välj din föredragna mikrofonenhet",
         "placeholder": "Välj mikrofon...",
         "loading": "Laddar..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Utmatningsenhet",
-        "description": "Välj din föredragna ljudutmatningsenhet för återkopplingsljud",
         "placeholder": "Välj utmatningsenhet...",
         "loading": "Laddar..."
       },
       "volume": {
-        "title": "Volym",
-        "description": "Justera volymen för ljudåterkopplingsljud"
+        "title": "Volym"
       }
     },
     "advanced": {
-      "title": "Avancerat",
-      "description": "Uppstart, inklistring, finjustering av transkription och historik.",
       "groups": {
         "app": "App",
         "output": "Utmatning",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Starta dold",
-        "description": "Starta i systemfältet utan att öppna fönstret."
+        "description": "Starta i systemfältet utan att öppna fönstret.",
+        "descriptionMac": "Starta i menyraden utan att öppna fönstret."
       },
       "autostart": {
         "label": "Starta vid uppstart",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Visa ikon i systemfältet",
-        "description": "Visa Guidy-ikonen i systemfältet."
+        "description": "Visa Guidy-ikonen i systemfältet.",
+        "descriptionMac": "Visa Guidy-symbolen i menyraden."
       },
       "overlay": {
         "style": {
-          "title": "Overlay",
           "description": "Välj inspelningsöverlägget: ”Ingen” döljer det, ”Minimal” visar en kompakt indikator, ”Live” visar transkriberingen i realtid medan du talar (endast modeller med streamingstöd — leta efter Streaming-märket i modellväljaren). På Linux rekommenderas ”Ingen”.",
+          "descriptionMac": "Välj inspelningsöverlägget: ”Ingen” döljer det, ”Minimal” visar en kompakt indikator, ”Live” visar transkriberingen i realtid medan du talar (endast modeller med streamingstöd — leta efter Streaming-märket i modellväljaren).",
           "options": {
             "none": "Ingen",
             "minimal": "Minimal",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Skicka automatiskt",
         "description": "Skicka automatiskt den valda tangentkombinationen efter textinsättning. Cmd+Enter gäller på macOS, medan Windows/Linux använder Super+Enter.",
+        "descriptionMac": "Skicka automatiskt den valda tangentkombinationen efter textinsättning.",
         "options": {
           "off": "Av",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Efterbearbetning",
-      "description": "Rensa upp eller skriv om en transkription med en AI-modell innan den klistras in.",
       "hotkey": {
         "title": "Snabbkommando"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Leverantör",
-          "description": "Välj en OpenAI- eller Anthropic-kompatibel leverantör."
+          "title": "Leverantör"
         },
         "builtin": {
           "label": "Inbyggd modell (på den här Macen)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "API-format",
-          "description": "Det förfrågningsformat som din anpassade slutpunkt förväntar sig.",
           "options": {
             "openai": "OpenAI-kompatibelt (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "Bas-URL",
-          "description": "API-bas-URL för den valda leverantören. Endast den anpassade leverantören kan redigeras.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API-nyckel",
-          "description": "API-nyckel för den valda leverantören.",
           "placeholder": "sk-...",
           "saveFailed": "Det gick inte att spara API-nyckeln"
         },
@@ -500,54 +437,33 @@
           "title": "Modell",
           "descriptionCustom": "Ange den modellidentifierare som förväntas av din anpassade slutpunkt.",
           "descriptionDefault": "Välj en modell som exponeras av den valda leverantören.",
-          "placeholderWithOptions": "Sök eller välj en modell",
           "placeholderNoOptions": "Ange ett modellnamn",
           "refreshModels": "Uppdatera modeller"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Vald prompt",
-          "description": "Välj en mall för att förfina transkriptioner eller skapa en ny. Använd ${output} inuti prompttexten för att referera till den fångade transkriptionen."
-        },
-        "noPrompts": "Inga prompter tillgängliga",
-        "selectPrompt": "Välj en prompt",
         "createNew": "Skapa ny prompt",
         "promptLabel": "Prompt-etikett",
         "promptLabelPlaceholder": "Ange namn på prompt",
         "promptInstructions": "Prompt-instruktioner",
         "promptInstructionsPlaceholder": "Skriv instruktionerna som ska köras efter transkription. Exempel: Förbättra grammatik och tydlighet för följande text: ${output}",
         "promptTip": "Tips: Använd <code>${output}</code> för att infoga den transkriberade texten i din prompt.",
-        "updatePrompt": "Uppdatera prompt",
-        "deletePrompt": "Ta bort prompt",
-        "createPrompt": "Skapa prompt",
-        "cancel": "Avbryt",
-        "selectToEdit": "Välj en prompt ovan för att visa och redigera dess detaljer.",
-        "createFirst": "Klicka på 'Skapa ny prompt' ovan för att skapa din första prompt för efterbearbetning."
+        "deletePrompt": "Ta bort prompt"
       }
     },
     "history": {
-      "title": "Historik",
-      "openFolder": "Öppna mapp för inspelningar",
-      "loading": "Laddar historik...",
-      "empty": "Inga transkriptioner ännu. Börja spela in för att bygga upp din historik!",
       "copyToClipboard": "Kopiera transkription till urklipp",
       "copyError": "Det gick inte att kopiera transkriptionen till urklipp.",
       "save": "Spara transkription",
       "unsave": "Ta bort från sparade",
       "delete": "Ta bort post",
-      "deleteError": "Misslyckades med att ta bort post. Försök igen.",
       "retranscribe": "Transkribera igen",
-      "retranscribeError": "Misslyckades med att transkribera igen. Försök igen.",
       "transcribing": "Transkriberar...",
       "transcriptionFailed": "Transkribering misslyckades. Du kan transkribera igen med hjälp av ikonen för nytt försök."
     },
     "debug": {
-      "title": "Felsökning",
       "logDirectory": {
-        "title": "Loggmapp",
-        "description": "Plats där loggfiler lagras"
+        "title": "Loggmapp"
       },
       "logLevel": {
         "title": "Loggnivå",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Liveloggar",
-        "description": "Strömma programmets loggar i realtid för att diagnostisera problem utan att öppna loggfilen. Endast loggar som skapas medan den här panelen är öppen visas; följer inställningen Loggnivå ovan.",
         "live": "Live",
         "paused": "Pausad",
         "pause": "Pausa",
@@ -617,11 +532,6 @@
         "description": "Välj tangentbordsgenvägens implementation.",
         "bindingsReset": "Kortkommandona var inkompatibla och återställdes till standardvärden"
       },
-      "paths": {
-        "appData": "Appdata:",
-        "models": "Modeller:",
-        "settings": "Inställningar:"
-      },
       "pasteDelay": {
         "title": "Fördröjning vid klistra in (före)",
         "description": "Fördröjning (i millisekunder) efter att text kopierats, innan tangenttryckningen för att klistra in skickas. Öka om ingenting klistras in."
@@ -666,8 +576,7 @@
         "title": "Förhandsvisa nyheter",
         "description": "Öppna den senaste medföljande versionsinformationen utan att markera den som visad",
         "button": "Förhandsvisa",
-        "noNotes": "Ingen medföljande versionsinformation hittades",
-        "error": "Det gick inte att förhandsvisa versionsinformationen"
+        "noNotes": "Ingen medföljande versionsinformation hittades"
       },
       "onboardingPreview": {
         "title": "Förhandsvisa introduktionen",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "Om",
-      "version": {
-        "title": "Version",
-        "description": "Nuvarande version av Guidy"
-      },
       "author": {
         "title": "Skapad av",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "Mapp för appdata",
-        "description": "Plats där Guidy lagrar sina data"
-      },
-      "sourceCode": {
-        "title": "Källkod",
-        "description": "Visa källkod och bidra",
-        "button": "Visa på GitHub"
-      },
-      "supportDevelopment": {
-        "title": "Stöd utvecklingen",
-        "description": "Hjälp oss att fortsätta bygga Guidy",
-        "button": "Donera"
+        "title": "Mapp för appdata"
       },
       "acknowledgments": {
         "title": "Tack till",
@@ -708,12 +601,6 @@
           "description": "Högpresterande inferens av OpenAI:s Whisper-modell för automatisk taligenkänning",
           "details": "Guidy använder ggml för snabb, lokal tal-till-text-behandling. Tack till det fantastiska arbete som utförts av Georgi Gerganov med medarbetare."
         }
-      },
-      "hero": {
-        "headline": "Tal till text som stannar på den här Macen",
-        "lede": "Tryck på ett kortkommando, tala, och Guidy skriver i appen som har fokus. Transkriptionen körs lokalt.",
-        "engine": "Motor",
-        "model": "Modell"
       },
       "whatsNewUpdates": {
         "label": "Visa nyheter",
@@ -741,7 +628,6 @@
     "delete": "Ta bort",
     "back": "Tillbaka",
     "close": "Stäng",
-    "open": "Öppna",
     "copy": "Kopiera",
     "clear": "Rensa",
     "noOptionsFound": "Inga alternativ hittades"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "Transkriptionen misslyckades"
   },
   "appLanguage": {
-    "title": "Applikationsspråk",
-    "description": "Ändra språket i Guidy-gränssnittet"
+    "title": "Applikationsspråk"
   },
   "theme": {
     "title": "Apptema",
-    "description": "Välj om Guidy ska följa systemets tema eller förbli ljust eller mörkt",
     "options": {
       "system": "System",
       "light": "Ljust",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Möten",
     "selection": {
-      "hint": "Dra, eller skiftklicka, för att tagga flera rader",
       "count_one": "{{count}} rad markerad",
       "count_other": "{{count}} rader markerade",
       "keys": "Skiftklick: intervall · ⌘-klick: lägg till eller ta bort · Esc: rensa",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Gör om talare",
-      "tooltip": "Skilj talarna åt igen med {{model}}. Transkriptionen behålls. Rader du har taggat och talare du har namngett behåller sin person; resten matchas igen efter röst.",
       "standard": "Standardmodell för talare",
       "download": "{{size}} nedladdning, en gång",
       "error": "Det gick inte att göra om talarna",
@@ -826,7 +708,6 @@
       "yesterday": "Igår"
     },
     "copy": {
-      "summary": "Kopiera",
       "transcript": "Kopiera transkription",
       "copied": "Kopierat",
       "notes": "Kopiera anteckningar",
@@ -866,7 +747,6 @@
       "openNotes": "Öppna anteckningar",
       "expand": "Visa livetranskriptionen",
       "collapse": "Fäll ihop",
-      "liveTitle": "Livetranskription",
       "liveHint": "Så som det hörts hittills. Den fullständiga transkriptionen med talarnamn skapas när mötet slutar.",
       "callTitle": "{{app}}-samtal",
       "callPrompt": "Föra mötesanteckningar?",
@@ -875,7 +755,6 @@
       "startFailed": "Kunde inte starta. Försöka igen?",
       "dismiss": "Inte nu"
     },
-    "description": "Spela in ett möte på den här Macen och läs sedan transkriptionen med namngivna talare.",
     "init": {
       "starting": "Startar mötesanteckningar...",
       "failed": "Mötesanteckningar kunde inte starta",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Skapa mötets sammanfattning först: rubriken skrivs utifrån den."
     },
     "model": {
-      "download": "Ladda ner mötesmodell",
       "downloadError": "Det gick inte att ladda ner mötesmodellen"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Starta mötesanteckningar",
       "stop": "Stoppa mötesanteckningar",
-      "recording": "Spelar in",
-      "idle": "Spelar inte in",
       "startError": "Det gick inte att starta inspelningen",
       "stopError": "Det gick inte att stoppa inspelningen",
       "disabled": "Slå på mötesanteckningar i Inställningar för att spela in."
     },
-    "upcoming": {
-      "title": "Kommande",
-      "empty": "Inga kommande kalendermöten med en samtalslänk.",
-      "start": "Starta"
-    },
     "list": {
-      "title": "Inspelningar",
-      "empty": "Inga möten ännu. Starta mötesanteckningar för att spela in ett.",
       "loading": "Laddar möten...",
       "loadError": "Det gick inte att ladda möten",
-      "speakerModelMissing": "Inspelningar bearbetas inte förrän modellen för talarigenkänning har laddats ner.",
       "minutes": "{{count}} min",
-      "open": "Öppna",
       "rename": "Byt namn",
       "delete": "Ta bort",
       "process": "Bearbeta",
       "retry": "Försök igen",
       "cancelProcessing": "Avbryt bearbetning",
-      "save": "Spara",
       "cancel": "Avbryt",
       "titlePlaceholder": "Mötesrubrik",
       "deleteTitle": "Ta bort möte?",
@@ -979,7 +845,6 @@
       "share": "Andel",
       "youSpoke": "Du pratade",
       "minutes": "Min",
-      "speakersToName": "{{count}} att namnge",
       "notesTab": "Anteckningar"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Personer",
-      "description": "Personer du har namngett i möten. Guidy känner igen deras röster i senare möten.",
       "empty": "Inga personer ännu. Namnge en talare i ett möte för att lägga till en.",
       "loadError": "Det gick inte att ladda personer",
       "voiceprints_one": "{{count}} röstavtryck",
       "voiceprints_other": "{{count}} röstavtryck",
-      "edit": "Redigera",
       "merge": "Slå ihop",
       "mergeInto": "Slå ihop med...",
       "mergeHint": "Välj personen som ska behållas. Röstavtryck och talarnamn flyttas till den personen.",
@@ -1035,7 +898,6 @@
       "renameError": "Det gick inte att uppdatera personen",
       "namePlaceholder": "Namn",
       "emailPlaceholder": "E-post (valfritt)",
-      "save": "Spara",
       "cancel": "Avbryt",
       "voice": {
         "title": "Din röst",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Mötesanteckningar",
       "enabled": {
         "title": "Mötesanteckningar",
         "description": "Spela in möten med din mikrofon och datorns ljud. När du slår på det här efterfrågas åtkomst till kalender, systemljud och notiser."
@@ -1077,7 +938,6 @@
         "requestAgain": "Begär igen",
         "openSettings": "Öppna Systeminställningar"
       },
-      "you": "Du",
       "userName": {
         "title": "Ditt namn",
         "description": "Ditt mikrofonspår märks alltid med det här namnet.",
@@ -1128,7 +988,6 @@
         "description": "Skiljer röster åt och känner igen personer du har namngett tidigare. Använder {{name}} ({{trainedOn}}), {{size}}. Laddas bara ner när du klickar på Ladda ner.",
         "ready": "Nedladdad",
         "download": "Ladda ner ({{size}})",
-        "retry": "Försök ladda ner igen",
         "failed": "Nedladdningen misslyckades: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} min"
       },
       "advanced": {
-        "title": "Avancerat",
-        "show": "Visa avancerade inställningar",
-        "hide": "Dölj avancerade inställningar",
         "matchThreshold": {
           "title": "Tröskel för automatisk matchning",
           "description": "Röstlikhet vid eller över vilken en talare namnges automatiskt. Under den frågar matchningen ”Bekräfta?”."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Identifiering av talarbyten",
         "description": "Delar rader där rösten byts ({{size}}). Tills dessa har laddats ner delas rader vid pauser.",
-        "ready": "Klar",
-        "downloading": "Laddar ner",
-        "download": "Ladda ner ({{size}})"
+        "descriptionReady": "Delar rader där rösten byts."
       },
       "callSuggestions": {
         "title": "Föreslå anteckningar vid samtal",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Sök i rubriker, sammanfattningar och transkriptioner",
       "searching": "Söker...",
       "empty": "Inga möten matchar ”{{query}}”.",
       "count_one": "1 möte",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Konfiguration",
-      "models": "Modeller",
-      "note": "Du kan spela in innan modellerna har laddats ner. Bearbetningen väntar tills de är klara.",
-      "downloading": "Laddar ner",
-      "downloadingPercent": "Laddar ner {{percent}}%",
-      "ready": "Klar",
-      "notDownloaded": "Inte nedladdad",
-      "download": "Ladda ner",
-      "dismiss": "Avfärda",
-      "optional": "Valfritt"
-    },
     "downloads": {
       "activity": "Laddar ner {{name}} · {{percent}}%",
       "activityFailed": "Nedladdningen misslyckades · {{name}}",
-      "multiple": "Laddar ner {{count}} modeller",
-      "cancel": "Avbryt",
       "retry": "Försök igen",
       "done": "{{name}} nedladdad",
       "failed": "Det gick inte att ladda ner {{name}}",
       "startError": "Det gick inte att starta nedladdningen",
       "empty": "Inga nedladdningar",
-      "queued": "I kö",
-      "doneShort": "Klar",
       "failedShort": "Misslyckades",
       "cancelled": "Avbruten"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Åtgärdspunkter",
       "generate": "Skapa sammanfattning",
       "regenerate": "Skapa igen",
-      "regenerateWith": "Skapa igen med...",
       "generateWith": "Skapa med {{model}}",
       "otherModels": "Andra modeller",
       "otherModel": "Annan modell…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Sammanfattningar",
-      "provider": "Leverantör",
-      "providerDescription": "Modell som används för mötessammanfattningar och åtgärdspunkter. Efterbearbetning av diktering behåller sin egen leverantör.",
       "builtin": "Inbyggd (på den här Macen)",
       "builtinDescription": "Kör en lokal modell med llama.cpp. Inget lämnar din Mac.",
-      "model": "Modell",
-      "modelDescription": "Bocka för en modell för att lägga till den i dina modeller. Endast modeller som ger text visas. ”Bra för sammanfattningar” betyder att modellen stöder strukturerad utdata, som sammanfattningar är beroende av.",
       "modelPlaceholder": "Modell-id",
       "pickModel": "Välj en modell",
-      "noLocalModels": "Ladda ner en modell nedan",
-      "usingPostProcessModel": "Använder efterbearbetningsmodellen ({{model}})",
       "refreshModels": "Uppdatera",
       "testConnection": "Testa anslutning",
-      "testDescription": "Kontrollera att leverantören, nyckeln och modellen fungerar.",
       "apple": "Apple Intelligence",
       "appleDescription": "Modell på enheten för Mac-datorer med Apple Silicon och Apple Intelligence aktiverat.",
-      "appleAvailable": "Tillgänglig",
       "appleUnavailable": "Apple Intelligence är inte tillgängligt på den här Macen",
       "activeHeading": "Sammanfattningar skapas av",
-      "place": "Var sammanfattningar körs",
-      "placeDescription": "Endast det valda alternativet används.",
       "tabCloud": "Molnleverantör",
       "tabLocal": "På den här Macen",
       "onThisMac": "Den här Macen · offline",
       "apiKey": "API-nyckel",
       "apiKeyDescription": "Sparas i din Nyckelring och delas med Efterbearbetning.",
       "getKey": "Skaffa en {{provider}}-nyckel",
-      "modelDescriptionCustom": "Skriv det modell-id som din slutpunkt förväntar sig och tryck på Enter för att lägga till det, eller bocka för ett som den listar.",
       "searchModels": "Sök modeller",
       "goodOnly": "Bra för sammanfattningar",
       "goodForSummaries": "sammanfattningar",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Inte tillgängligt på den här Macen. Slå på det i Systeminställningar > Apple Intelligence och Siri.",
       "unavailable": "inte tillgänglig",
       "yourModels": "Dina modeller",
-      "yourModelsDescription": "Skapa sammanfattning erbjuder alla modeller här, så att du kan välja en per möte. Den valda är standard.",
       "yourModelsEmpty": "Inga molnmodeller ännu. Välj en leverantör nedan, lägg till dess API-nyckel och bocka för de modeller du vill ha.",
       "default": "standard",
       "removeModel": "Ta bort från dina modeller",
-      "addFrom": "Lägg till modeller från",
-      "addFromDescription": "Välj en leverantör för att ange dess nyckel och bocka för modeller att lägga till. Det ändrar inte standardvalet."
+      "addFrom": "Lägg till modeller från"
     },
     "local": {
       "heading": "Lokala modeller",
@@ -1438,9 +1260,7 @@
       "default": "Standard",
       "recommendedRam": "Rekommenderas för {{gb}} GB+ RAM",
       "notEnoughRam": "Den här Macen har mindre minne än vad som rekommenderas för modellen.",
-      "downloaded": "Nedladdad",
-      "download": "Ladda ner",
-      "downloading": "Laddar ner {{percentage}}%"
+      "downloaded": "Nedladdad"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Ansluten som {{name}}"
     },
     "byok": {
-      "testConnection": "Testa anslutning",
-      "testDescription": "Kontrollera bas-URL, API-nyckel och modell med en liten förfrågan.",
-      "baseUrlEditable": "API-bas-URL för den här leverantören. Ersätt eventuella {placeholder} (t.ex. ditt Cloudflare-konto-id).",
-      "cloudflareHint": "Cloudflare: lägg in ditt konto-id (och gateway-id för AI Gateway) i bas-URL:en."
+      "testDescription": "Kontrollera bas-URL, API-nyckel och modell med en liten förfrågan."
     }
   }
 }

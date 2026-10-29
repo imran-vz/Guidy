@@ -1,16 +1,30 @@
-//! Banners above the page content: missing Accessibility permission (macOS)
-//! and stuck Secure Input (macOS).
+//! Banners pinned above the page body (they do not scroll with it):
+//! missing Accessibility permission (macOS) and stuck Secure Input (macOS).
 
 use crate::logic::flows::{secure_input_impacted, secure_input_message, SECURE_INPUT_HELP_URL};
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::design::{self, dp, Pill};
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{h_flex, ActiveTheme, Sizable};
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+
+/// A banner row: a [`design::notice`] pinned above the page body, inset by
+/// the page padding.
+fn banner(color: Hsla) -> Div {
+    design::notice(color)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(dp(10.))
+        .mx(design::PAGE_X)
+        .mt(dp(12.))
+        .w_auto()
+        .flex_none()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AxState {
@@ -100,19 +114,15 @@ impl Render for AccessibilityBanner {
             return div().into_any_element();
         }
         let theme = cx.theme();
-        h_flex()
+        // After the first click the system prompt is up; the button only
+        // checks again.
+        let label = match self.state {
+            AxState::Request => t("accessibility.openSettings"),
+            _ => t("accessibility.checkAgain"),
+        };
+        banner(theme.warning)
             .id("accessibility-banner")
-            .w_full()
-            .max_w(dp(768.))
-            .mb_4()
-            .gap_3()
-            .pl(dp(14.))
-            .pr(dp(10.))
-            .py(dp(10.))
-            .rounded(design::RADIUS_PANEL)
-            .border_1()
-            .border_color(theme.warning.opacity(0.3))
-            .bg(theme.warning.opacity(0.08))
+            .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
             .child(
                 icon("triangle-alert")
                     .flex_shrink_0()
@@ -130,8 +140,7 @@ impl Render for AccessibilityBanner {
                     .flex_shrink_0()
                     .primary()
                     .small()
-                    .pill()
-                    .label(t("accessibility.openSettings"))
+                    .label(label)
                     .on_click(cx.listener(|this, _, _, cx| this.on_click(cx))),
             )
             .test_support()
@@ -177,19 +186,9 @@ impl Render for SecureInputBanner {
             return div().into_any_element();
         }
         let theme = cx.theme();
-        h_flex()
+        banner(theme.warning)
             .id("secure-input-banner")
-            .w_full()
-            .max_w(dp(768.))
-            .mb_4()
-            .gap_3()
-            .pl(dp(14.))
-            .pr(dp(10.))
-            .py(dp(10.))
-            .rounded(design::RADIUS_PANEL)
-            .border_1()
-            .border_color(theme.warning.opacity(0.3))
-            .bg(theme.warning.opacity(0.08))
+            .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
             .child(
                 icon("triangle-alert")
                     .flex_shrink_0()
@@ -207,7 +206,6 @@ impl Render for SecureInputBanner {
                     .flex_shrink_0()
                     .ghost()
                     .small()
-                    .pill()
                     .label(t("secureInput.learnMore"))
                     .icon(icon("external-link"))
                     .on_click(|_, _, cx| cx.open_url(SECURE_INPUT_HELP_URL)),

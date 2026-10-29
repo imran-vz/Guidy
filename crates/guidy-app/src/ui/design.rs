@@ -1,59 +1,135 @@
-//! Guidy's design language: an ink well inside a graphite frame, hairline
-//! grids, uppercase mono labels, one signal-yellow accent, line-art
-//! illustrations with dashed leaders, and a glassy rim light and sheen.
+//! Guidy's design language: a native macOS settings app. Dense and calm:
+//! a full-height source-list sidebar, a unified title bar, flat panels
+//! separated by hairlines, small corner radii (3–5 pt), sentence-case
+//! section headers, one signal-yellow accent used sparingly (selection,
+//! focus, primary actions, live states). Sizes are macOS points.
+//!
+//! The recording floater and the dictation overlay are a separate, heads-up
+//! language (capsules, rim light, sheen) that keeps its own [`HUD_SCALE`].
 //!
 //! Colors that the stock components need live in `assets/themes/guidy.json`;
 //! the extra surface and line tones are here, keyed off the theme mode.
+//! The redesign spec is `docs/design/REDESIGN.md`.
 
-use gpui_kit::component::button::Button;
 use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::time::Duration;
 
-/// Interface scale. Every size below is a design size (as drawn in
-/// `docs/design/guidy-mock.html`) times this; the theme's rem sizes in
-/// `assets/themes/guidy.json` carry the same factor for the stock components.
-pub const SCALE: f32 = 1.2;
+/// Interface scale: design sizes are macOS points. The theme's rem
+/// (`font.size` in `assets/themes/guidy.json`) is 13, so stock components
+/// match.
+pub const SCALE: f32 = 1.0;
 
 /// A design size at the interface [`SCALE`]. Hairlines stay `px(1.)`.
 pub const fn dp(design: f32) -> Pixels {
     px(design * SCALE)
 }
 
-// Type scale. Body text is the theme's 14 px; these are the other steps.
-pub const TEXT_TITLE: Pixels = dp(15.);
-pub const TEXT_HEADLINE: Pixels = dp(17.);
-pub const TEXT_DISPLAY: Pixels = dp(30.);
-pub const TEXT_BODY: Pixels = dp(13.);
-pub const TEXT_MONO: Pixels = dp(12.);
-pub const TEXT_EYEBROW: Pixels = dp(10.5);
+/// Scale of the heads-up surfaces (recording floater, dictation overlay,
+/// notch geometry): they were drawn at 1.2× and keep that size.
+pub const HUD_SCALE: f32 = 1.2;
 
-// Spacing and shape.
-pub const SECTION_X: Pixels = dp(16.);
-pub const SECTION_Y: Pixels = dp(14.);
-/// Gap between the window frame and the content well.
-pub const WELL_INSET: Pixels = dp(6.);
-pub const RADIUS_WELL: Pixels = dp(14.);
-pub const RADIUS_PANEL: Pixels = dp(12.);
-pub const RADIUS_CHIP: Pixels = dp(5.);
-pub const RADIUS_PILL: Pixels = dp(999.);
-/// Blueprint grid pitch.
+/// A design size at the [`HUD_SCALE`].
+pub const fn hud(design: f32) -> Pixels {
+    px(design * HUD_SCALE)
+}
+
+// Type scale. Body text is the theme's 13 pt (rem).
+/// Body, row titles, controls.
+pub const TEXT_BODY: Pixels = dp(13.);
+/// Descriptions, metadata, captions, section headers.
+pub const TEXT_SECONDARY: Pixels = dp(11.);
+/// Toolbar titles and group headings that need weight (use semibold).
+pub const TEXT_TITLE: Pixels = dp(13.);
+/// Empty states, onboarding headings, About.
+pub const TEXT_HEADLINE: Pixels = dp(17.);
+/// Onboarding hero only.
+pub const TEXT_DISPLAY: Pixels = dp(26.);
+/// Numbers, sizes, times, ids.
+pub const TEXT_MONO: Pixels = dp(12.);
+
+// HUD type: the same steps at the HUD scale.
+pub const HUD_TEXT_BODY: Pixels = hud(13.);
+pub const HUD_TEXT_TITLE: Pixels = hud(15.);
+pub const HUD_TEXT_MONO: Pixels = hud(12.);
+pub const HUD_TEXT_LABEL: Pixels = hud(10.5);
+/// The rem the HUD windows render at (stock icon and spacing helpers),
+/// set by their views each frame.
+pub const HUD_REM: Pixels = hud(14.);
+
+// Spacing (4 pt grid).
+/// Horizontal page padding.
+pub const PAGE_X: Pixels = dp(20.);
+/// Padding above the first group on a page.
+pub const PAGE_TOP: Pixels = dp(16.);
+/// Padding below the last group on a scrolling page.
+pub const PAGE_BOTTOM: Pixels = dp(24.);
+/// Between groups on a page.
+pub const GROUP_GAP: Pixels = dp(20.);
+/// Between a group header and its panel.
+pub const HEADER_GAP: Pixels = dp(6.);
+/// Horizontal padding of rows and sections inside a panel.
+pub const SECTION_X: Pixels = dp(12.);
+/// Vertical padding of sections inside a panel.
+pub const SECTION_Y: Pixels = dp(10.);
+/// Vertical padding of a setting row.
+pub const ROW_Y: Pixels = dp(6.);
+/// A one-line setting row (with a description it grows to ~44).
+pub const ROW_MIN_H: Pixels = dp(32.);
+
+// Widths.
+/// Forms (settings groups) are left-aligned and no wider than this.
+pub const FORM_MAX_W: Pixels = dp(640.);
+/// Long paragraphs.
+pub const PROSE_MAX_W: Pixels = dp(560.);
+pub const SIDEBAR_W: Pixels = dp(200.);
+pub const SIDEBAR_ITEM_H: Pixels = dp(28.);
+
+// Chrome heights.
+/// The unified title bar / toolbar.
+pub const TOOLBAR_H: Pixels = dp(38.);
+pub const STATUS_BAR_H: Pixels = dp(22.);
+
+// Control heights. Stock `Button` sizes: `.small()` ≈ 20, default ≈ 24–26.
+pub const CONTROL_H_SMALL: Pixels = dp(20.);
+pub const CONTROL_H: Pixels = dp(24.);
+/// Onboarding call to action only.
+pub const CONTROL_H_LARGE: Pixels = dp(28.);
+
+// Shape. `rounded_full` only for dots, radio marks, switch and slider
+// knobs, avatars, HUD capsules.
+/// Progress, scrubber and timeline bars: thin capsules, like
+/// `NSProgressIndicator`.
+pub const RADIUS_TRACK: Pixels = dp(2.);
+/// Chips, key caps, list and sidebar selection.
+pub const RADIUS_CHIP: Pixels = dp(3.);
+/// Buttons, inputs, selects, segmented controls (theme `radius`).
+pub const RADIUS_CONTROL: Pixels = dp(4.);
+/// Groups, panels, banners, popovers, dialogs (theme `radius.lg`).
+pub const RADIUS_PANEL: Pixels = dp(5.);
+/// The recording floater's expanded panel.
+pub const HUD_RADIUS_PANEL: Pixels = hud(14.);
+/// Blueprint grid pitch (onboarding and About illustrations).
 pub const GRID: f32 = 24.;
 
 /// Surface, line and accent tones for the active mode.
 #[derive(Clone, Copy)]
 pub struct Tone {
     pub dark: bool,
-    /// The content well behind pages.
+    /// The content area behind pages.
     pub ink: Hsla,
-    /// Window chrome: title bar, sidebar, status bar.
+    /// Window chrome: sidebar, status bar.
     pub frame: Hsla,
-    /// Panels inside the well.
+    /// Panels on the content area.
     pub surface: Hsla,
-    /// Chips, secondary pills, selected nav.
+    /// Chips, key caps, secondary fills, hover.
     pub raised: Hsla,
+    /// List and sidebar selection while the list is not focused.
+    pub selection: Hsla,
+    /// Selection while its list has keyboard focus.
+    pub selection_focused: Hsla,
     pub hairline: Hsla,
     pub grid: Hsla,
     /// Crosshair marks and construction lines.
@@ -62,16 +138,17 @@ pub struct Tone {
     pub line_art: Hsla,
     pub text: Hsla,
     pub text_muted: Hsla,
+    /// Tertiary text (≥ 4.5:1 on every surface it is drawn on).
     pub text_faint: Hsla,
     /// Accent fill: buttons, live dots, bars.
     pub accent: Hsla,
-    /// Accent used as text or strokes on ink.
+    /// Accent used as text or strokes (≥ 4.5:1 on the surfaces).
     pub accent_text: Hsla,
     /// Tinted accent background: chips, highlighted regions.
     pub accent_soft: Hsla,
-    /// Specular top-edge highlight on raised surfaces.
+    /// HUD only: specular top-edge highlight on the floater and overlay.
     pub rim: Hsla,
-    /// Moving glass highlight.
+    /// Moving glass highlight: loading tracks and the HUD.
     pub sheen: Hsla,
 }
 
@@ -86,15 +163,17 @@ pub fn tone(cx: &App) -> Tone {
             dark: true,
             ink: c(0x0d0d0dff),
             frame: c(0x1b1b1bff),
-            surface: c(0x121212ff),
-            raised: c(0x212121ff),
-            hairline: c(0x222222ff),
+            surface: c(0x141414ff),
+            raised: c(0x242424ff),
+            selection: c(0xffffff1a),
+            selection_focused: c(0xffc72c33),
+            hairline: c(0x262626ff),
             grid: c(0xffffff0d),
             mark: c(0xffffff2e),
             line_art: c(0x8a8a8aff),
             text: theme.foreground,
             text_muted: theme.muted_foreground,
-            text_faint: c(0x5f5f5fff),
+            text_faint: c(0x858585ff),
             accent: c(0xffc72cff),
             accent_text: c(0xffc72cff),
             accent_soft: c(0xffc72c1f),
@@ -105,18 +184,20 @@ pub fn tone(cx: &App) -> Tone {
         Tone {
             dark: false,
             ink: c(0xfbfbfaff),
-            frame: c(0xefefecff),
+            frame: c(0xf0f0edff),
             surface: c(0xffffffff),
             raised: c(0xebebe7ff),
-            hairline: c(0xe5e5e1ff),
+            selection: c(0x00000017),
+            selection_focused: c(0xffc72c4d),
+            hairline: c(0xe3e3dfff),
             grid: c(0x0000000c),
             mark: c(0x00000029),
             line_art: c(0x8c8c86ff),
             text: theme.foreground,
             text_muted: theme.muted_foreground,
-            text_faint: c(0xa3a39dff),
+            text_faint: c(0x6f6f6aff),
             accent: c(0xffc72cff),
-            accent_text: c(0xa87500ff),
+            accent_text: c(0x8a6000ff),
             accent_soft: c(0xffc72c33),
             rim: c(0xffffffff),
             sheen: c(0xffffff8c),
@@ -133,6 +214,8 @@ pub fn tone_on_black() -> Tone {
         frame: c(0x000000ff),
         surface: c(0x000000ff),
         raised: c(0xffffff1f),
+        selection: c(0xffffff1f),
+        selection_focused: c(0xffc72c33),
         hairline: c(0xffffff1a),
         grid: c(0xffffff0d),
         mark: c(0xffffff2e),
@@ -148,33 +231,27 @@ pub fn tone_on_black() -> Tone {
     }
 }
 
-/// Extra space between eyebrow letters (≈ 0.1em at 10.5 px).
-const EYEBROW_TRACKING: Pixels = px(1.);
-/// Geist Mono's advance at the eyebrow size, for spaces.
-const EYEBROW_SPACE: Pixels = dp(6.3);
-
-/// Uppercase mono label: section names, column heads, metadata. Letters
-/// are tracked out like engraved labels; GPUI has no letter spacing, so
-/// each character is its own box.
-pub fn eyebrow(text: impl Into<SharedString>, cx: &App) -> Div {
-    let text: SharedString = text.into();
-    h_flex()
+/// A section header: sentence case, small, semibold and muted, in the UI
+/// font (group titles, column heads, labels over values). Text is shown as
+/// given; write it in sentence case.
+pub fn section_header(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
         .flex_none()
-        .gap(EYEBROW_TRACKING)
-        .overflow_hidden()
-        .font_family(crate::theme::MONO_FONT)
-        .text_size(TEXT_EYEBROW)
+        .min_w_0()
+        .truncate()
+        .text_size(TEXT_SECONDARY)
         .line_height(dp(14.))
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(tone(cx).text_muted)
-        .children(text.to_uppercase().chars().map(|c| {
-            if c.is_whitespace() {
-                div().w(EYEBROW_SPACE).into_any_element()
-            } else {
-                div()
-                    .child(SharedString::from(c.to_string()))
-                    .into_any_element()
-            }
-        }))
+        .child(text.into())
+}
+
+/// [`section_header`] at the HUD scale, for labels in the recording
+/// floater (speaker names, recording state).
+pub fn hud_label(text: impl Into<SharedString>, cx: &App) -> Div {
+    section_header(text, cx)
+        .text_size(HUD_TEXT_LABEL)
+        .line_height(hud(14.))
 }
 
 /// Mono value text (numbers, sizes, timings).
@@ -194,19 +271,18 @@ pub fn chip(text: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
         .flex_none()
         .items_center()
         .gap(dp(4.))
-        .px(dp(7.))
-        .py(dp(2.))
+        .px(dp(5.))
         .rounded(RADIUS_CHIP)
         .font_family(crate::theme::MONO_FONT)
-        .text_size(dp(11.))
+        .text_size(TEXT_SECONDARY)
         .line_height(dp(16.))
         .bg(if accent { t.accent_soft } else { t.raised })
         .text_color(if accent { t.accent_text } else { t.text_muted })
         .when(!text.is_empty(), |d| d.child(text))
 }
 
-/// A bordered surface with a rim light; sections inside are separated by
-/// hairlines (see [`section`]).
+/// A flat bordered surface; sections inside are separated by hairlines
+/// (see [`section`]).
 pub fn panel(cx: &App) -> Div {
     let t = tone(cx);
     v_flex()
@@ -217,7 +293,6 @@ pub fn panel(cx: &App) -> Div {
         .border_color(t.hairline)
         .bg(t.surface)
         .overflow_hidden()
-        .child(rim_light(cx))
 }
 
 /// Padded block inside a panel; `divided` draws the hairline below it.
@@ -230,8 +305,9 @@ pub fn section(divided: bool, cx: &App) -> Div {
         .when(divided, |d| d.border_b_1().border_color(hairline))
 }
 
-/// The specular top edge of a glass surface: a 1 px line that fades out
-/// towards both corners. Place inside a `relative` parent.
+/// HUD only (recording floater, overlay): the specular top edge of a glass
+/// surface, a 1 px line that fades out towards both corners. Place inside a
+/// `relative` parent. Ordinary surfaces have no rim light.
 pub fn rim_light(cx: &App) -> impl IntoElement {
     let rim = tone(cx).rim;
     let clear = rim.opacity(0.);
@@ -254,7 +330,8 @@ pub fn rim_light(cx: &App) -> impl IntoElement {
 }
 
 /// A slow diagonal glass highlight that glides across its `relative`
-/// parent, fading in and out, then rests. GPUI clips to rectangles, so the
+/// parent, fading in and out, then rests. Only for loading indicators
+/// ([`track`], skeletons) and the HUD, never on ordinary surfaces. GPUI clips to rectangles, so the
 /// band stays in a strip inset by the parent's corner `radius` and never
 /// reaches rounded corners. Static when the system asks for reduced motion.
 pub fn sheen(id: impl Into<ElementId>, radius: Pixels, cx: &App) -> AnyElement {
@@ -438,12 +515,7 @@ pub fn callout(label: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
 
 /// A line-art illustration from `assets/illustrations/`: `<name>.svg` is
 /// drawn in the line tone, `<name>-fill.svg` in the soft accent and
-/// `<name>-accent.svg` in the accent, stacked in that order.
-pub fn illustration(name: &str, w: Pixels, h: Pixels, cx: &App) -> Div {
-    illustration_state(name, w, h, true, cx)
-}
-
-/// [`illustration`] whose highlight can be switched off: inactive, the
+/// `<name>-accent.svg` in the accent, stacked in that order. Inactive, the
 /// accent layer falls back to the line tone and the fill is dropped.
 pub fn illustration_state(name: &str, w: Pixels, h: Pixels, active: bool, cx: &App) -> Div {
     let t = tone(cx);
@@ -493,7 +565,7 @@ impl Stat {
     }
 }
 
-/// Cells of eyebrow label over mono value, divided by hairlines. Long
+/// Cells of section-header label over mono value, divided by hairlines. Long
 /// values wrap rather than truncate.
 pub fn stat_grid(stats: Vec<Stat>, columns: usize, cx: &App) -> Div {
     let t = tone(cx);
@@ -513,15 +585,18 @@ pub fn stat_grid(stats: Vec<Stat>, columns: usize, cx: &App) -> Div {
                     .flex_1()
                     .min_w_0()
                     .px(SECTION_X)
-                    .py(dp(12.))
+                    .py(SECTION_Y)
                     .when(i + 1 < columns, |d| d.border_r_1().border_color(t.hairline));
                 match stats.next() {
                     Some(s) => cell.child(
-                        v_flex().gap(dp(6.)).child(eyebrow(s.label, cx)).child(
-                            mono(s.value)
-                                .line_height(relative(1.4))
-                                .text_color(if s.accent { t.accent_text } else { t.text }),
-                        ),
+                        v_flex()
+                            .gap(dp(4.))
+                            .child(section_header(s.label, cx))
+                            .child(
+                                mono(s.value)
+                                    .line_height(relative(1.4))
+                                    .text_color(if s.accent { t.accent_text } else { t.text }),
+                            ),
                     ),
                     None => cell,
                 }
@@ -531,36 +606,34 @@ pub fn stat_grid(stats: Vec<Stat>, columns: usize, cx: &App) -> Div {
 
 /// A dot in the accent with a soft halo, for "live" and "selected" marks.
 pub fn signal_dot(cx: &App) -> Div {
+    signal_dot_sized(dp(14.), cx)
+}
+
+/// [`signal_dot`] at the HUD scale.
+pub fn hud_signal_dot(cx: &App) -> Div {
+    signal_dot_sized(hud(14.), cx)
+}
+
+fn signal_dot_sized(halo: Pixels, cx: &App) -> Div {
     let t = tone(cx);
     div()
         .flex_none()
-        .size(dp(14.))
+        .size(halo)
         .rounded_full()
         .bg(t.accent_soft)
         .flex()
         .items_center()
         .justify_center()
-        .child(div().size(dp(7.)).rounded_full().bg(t.accent))
+        .child(div().size(halo / 2.).rounded_full().bg(t.accent))
 }
 
-/// Pill-shaped buttons, as used for actions throughout the app.
-pub trait Pill {
-    fn pill(self) -> Self;
-}
-
-impl Pill for Button {
-    fn pill(self) -> Self {
-        self.rounded(RADIUS_PILL)
-    }
-}
-
-/// A tinted notice box (warnings, errors) in `color`.
+/// A tinted notice box (warnings, errors, banners) in `color`.
 pub fn notice(color: Hsla) -> Div {
     div()
         .w_full()
-        .pl(dp(14.))
-        .pr(dp(10.))
-        .py(dp(10.))
+        .pl(dp(12.))
+        .pr(dp(8.))
+        .py(dp(8.))
         .rounded(RADIUS_PANEL)
         .border_1()
         .border_color(color.opacity(0.3))
@@ -572,15 +645,17 @@ pub fn segmented(cx: &App) -> Div {
     let t = tone(cx);
     h_flex()
         .flex_none()
-        .p(dp(3.))
-        .gap(dp(2.))
-        .rounded(RADIUS_PILL)
+        .h(CONTROL_H)
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded(RADIUS_CONTROL)
         .border_1()
         .border_color(t.hairline)
-        .bg(t.surface)
+        .bg(t.raised.opacity(0.6))
 }
 
-/// One option in a [`segmented`] control.
+/// One option in a [`segmented`] control: keyboard focusable (Tab), and
+/// Enter or Space selects it like a click.
 pub fn segment(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -588,18 +663,22 @@ pub fn segment(
     cx: &App,
 ) -> Stateful<Div> {
     let t = tone(cx);
-    div()
+    let ring = cx.theme().ring;
+    h_flex()
         .id(id)
-        .px(dp(14.))
-        .py(dp(5.))
-        .rounded(RADIUS_PILL)
+        .tab_index(0)
+        .h_full()
+        .px(dp(10.))
+        .rounded(RADIUS_CHIP)
+        .border_1()
+        .border_color(transparent_black())
         .text_size(dp(12.))
-        .cursor_pointer()
+        .focus_visible(move |s| s.border_color(ring))
         .when(selected, |d| {
-            d.bg(t.raised)
+            d.bg(t.surface)
                 .text_color(t.text)
-                .child(rim_light(cx))
-                .relative()
+                .font_weight(FontWeight::MEDIUM)
+                .shadow_xs()
         })
         .when(!selected, |d| {
             d.text_color(t.text_muted)
@@ -616,14 +695,14 @@ pub fn track(id: impl Into<ElementId>, fraction: Option<f32>, cx: &App) -> Div {
         .relative()
         .w_full()
         .h(dp(4.))
-        .rounded_full()
+        .rounded(RADIUS_TRACK)
         .bg(t.raised)
         .overflow_hidden()
         .when_some(fraction, |d, f| {
             d.child(
                 div()
                     .h_full()
-                    .rounded_full()
+                    .rounded(RADIUS_TRACK)
                     .bg(t.accent)
                     .w(relative(f.clamp(0.0, 1.0))),
             )

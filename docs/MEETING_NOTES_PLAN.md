@@ -48,7 +48,7 @@ This plan was agreed on through a design review. The decisions behind it are rec
 | D6 | Consent | No disclosure features. Consent is the user's responsibility. |
 | D7 | Task split | Four tasks (§3). The AI-model layer is built in task 2, not task 4. |
 | D8 | System-audio capture | Core Audio process taps (macOS 14.2+). Capture all system audio except Guidy's own sounds. |
-| D9 | Speakers without headphones | Apple's echo cancellation (Voice Processing I/O) on the mic during meetings. When attributing speech to the user, also compare the timing of the two tracks as a safety net. |
+| D9 | Speakers without headphones | Echo cancellation of the mic in software: WebRTC's AEC3 (`sonora`, pure Rust) with the system-audio track as the reference. The mic itself is recorded plain. (Apple's Voice Processing I/O was used first and dropped: it failed to start on common setups, took over the output device, ducked other apps and could cut off a call app's input.) When attributing speech to the user, also compare the words and timing of the two tracks as a safety net, in the live transcript too. |
 | D10 | Calendar source | macOS Calendar (EventKit). Google Calendar sign-in is on the roadmap. |
 | D11 | Naming and voiceprints | Store voiceprints only for people the user names. Group speakers by clustering voiceprints, which has no speaker limit. A People list allows rename, merge and delete. |
 | D12 | Where meetings appear | A new **Meetings** page, with **People** as a tab inside it. Dictation history is unchanged. |
@@ -86,7 +86,7 @@ The tasks ship in order. Each one ends in a working, tested feature.
 
 **1.3 Capture**
 - Two tracks, written to disk as recording happens so that a crash doesn't lose the meeting:
-  - **Mic**, through Voice Processing I/O (echo cancellation). This track is always the user. **(default)** It is labelled with the user's name from settings.
+  - **Mic**, plain input, echo-cancelled against the system track (D9). This track is always the user. **(default)** It is labelled with the user's name from settings.
   - **System audio**, through a Core Audio process tap that excludes Guidy's own process (`NSAudioCaptureUsageDescription`).
 - Store audio as Opus, encrypted (D17). Delete it on the retention schedule (D13).
 - Tray: "Start meeting notes" / "Stop meeting notes", the linked event's title, and a recording-state icon.
@@ -198,7 +198,7 @@ Notifications are requested through `UNUserNotificationCenter`.
 ## 5. Risks
 
 1. **Voiceprint accuracy** on Meet-compressed audio and on overlapping speech. Task 1.0 tests this before any other work starts.
-2. **Echo cancellation side effects:** Voice Processing I/O can lower the volume of other apps (audio ducking). Task 1.0 tests this on the hardware.
+2. **Echo cancellation quality:** software AEC3 depends on the two tracks staying aligned and on the room. Residual echo is caught by the D9 text safety net.
 3. **Small local models inventing action items.** Requiring a source quote for every item and the approval step in task 3 limit the damage.
 4. **Mixing SQLCipher and plain SQLite.** The bundled `rusqlite` build has to support both the encrypted `meetings.db` and the unencrypted `history.db`. Confirm this at the start of task 1.5.
 5. **Stable signing.** The Keychain and macOS privacy permissions depend on a stable code signature. Local builds use `scripts/package-macos.sh`, and release builds need a real signing identity.

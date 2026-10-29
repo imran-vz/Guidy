@@ -1,30 +1,27 @@
-//! Meeting list: title, description, date, duration, processing status
-//! (with live progress), and open / rename / title / process / delete
-//! actions. A search box above it searches titles, summaries and
-//! transcripts; "Generate titles" titles every summarized meeting.
+//! The meeting list pane: a search field pinned on top, the meetings
+//! grouped by day (Today, Yesterday, Previous 7 Days…) in a virtualized
+//! list, and a footer with the count and "Generate Titles". A whole row
+//! selects its meeting; its ⋯ button and right-click menu rename, title,
+//! process, cancel and delete. A search lists the matching meetings with
+//! their matching lines (a line opens the meeting there).
 
-use super::{
-    meeting_model_missing, meeting_settings, meetings_backend, render_model_download, run,
-    toast_error,
-};
+use super::{meeting_settings, meetings_backend, run, toast_error};
 use crate::logic::meetings::{
-    apply_progress, can_process, duration_minutes, non_empty, progress_label, status_key,
-    MeetingsEvent,
+    apply_progress, can_process, duration_minutes, list_rows, non_empty, progress_label,
+    status_key, ListRow, MeetingsEvent,
 };
 use crate::logic::models::format_model_size;
-use crate::meetings_backend::{error_message, MeetingsError};
+use crate::meetings_backend::MeetingsError;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, t, t_args};
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{icon, t, t_args, LocalizedPlaceholder};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use guidy_core::meetings::manager::PermissionReport;
-use guidy_core::meetings::processing::{SpeakerModelStatus, SPEAKER_MODEL_SIZE};
-use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::search::{MatchField, SearchHit, SearchResults, Snippet};
 use guidy_core::meetings::types::{Meeting, MeetingId, MeetingStatus, ProcessingProgress};
 use std::collections::{HashMap, HashSet};
@@ -32,11 +29,18 @@ use std::ops::Range;
 use std::time::Duration;
 
 pub enum MeetingListEvent {
+    /// A row was clicked: show this meeting.
     Open(MeetingId),
     /// Open a meeting at a transcript line (a search hit).
     OpenLine {
         meeting_id: MeetingId,
         segment_id: i64,
+    },
+    /// The meeting was deleted (after the confirmation). `next` is the
+    /// meeting to show instead.
+    Deleted {
+        id: MeetingId,
+        next: Option<MeetingId>,
     },
 }
 
@@ -56,13 +60,20 @@ pub struct BulkTitles {
 
 pub struct MeetingList {
     meetings: Vec<Meeting>,
+    /// `meetings` as list rows (day headers and meetings).
+    rows: Vec<ListRow>,
+    list_state: ListState,
+    /// Search results scroll on their own.
+    results_scroll: ScrollHandle,
+    /// The meeting shown in the detail.
+    selected: Option<MeetingId>,
+    /// Takes ↑ ↓ Enter ⌫ (key context `MeetingList`).
+    focus: FocusHandle,
     loading: bool,
     progress: HashMap<MeetingId, ProcessingProgress>,
     renaming: Option<MeetingId>,
     rename_input: Entity<InputState>,
     busy: HashSet<MeetingId>,
-    /// The speaker model's state: recordings aren't processed without it.
-    speaker_model: Option<SpeakerModelStatus>,
     search_input: Entity<InputState>,
     /// The query the shown results are for ("" = no search: the list).
     query: String,
@@ -77,23 +88,7 @@ pub struct MeetingList {
     title_candidates: usize,
     /// "Not now" on the speaker-turn download prompt, for this visit.
     turn_prompt_dismissed: bool,
-    permissions: Option<PermissionReport>,
-    /// A model download is in progress (the status bar has the detail).
-    downloads_active: bool,
-    /// Percent of the active download, when its size is known.
-    download_percent: Option<u32>,
     _subs: Vec<Subscription>,
-}
-
-/// What the checklist's Models row is waiting on. Speaker-turn models
-/// are not part of this.
-enum ModelsReadiness {
-    Ready,
-    Downloading(Option<u32>),
-    /// `speaker` is the standard speaker model, which this row can download.
-    NotDownloaded {
-        speaker: bool,
-    },
 }
 
 impl EventEmitter<MeetingListEvent> for MeetingList {}
@@ -101,20 +96,27 @@ impl EventEmitter<MeetingListEvent> for MeetingList {}
 impl MeetingList {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
-        let rename_input = cx
-            .new(|cx| InputState::new(window, cx).placeholder(t("meetings.list.titlePlaceholder")));
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t("meetings.search.placeholder")));
+        let rename_input = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.list.titlePlaceholder",
+                window,
+                cx,
+            )
+        });
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder("meetings.search.short", window, cx)
+        });
         let subs = vec![
             cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| {
                 if let AppEvent::Meetings(ev) = ev {
                     this.on_event(ev, cx);
                 }
             }),
-            cx.subscribe(&rename_input, |this, _, ev: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.save_rename(cx);
-                }
+            cx.subscribe(&rename_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::PressEnter { .. } => this.save_rename(cx),
+                // Clicking away cancels, like Esc.
+                InputEvent::Blur => this.cancel_rename(cx),
+                _ => {}
             }),
             cx.subscribe(&search_input, |this, input, ev: &InputEvent, cx| {
                 if let InputEvent::Change = ev {
@@ -125,12 +127,16 @@ impl MeetingList {
         ];
         let mut this = Self {
             meetings: Vec::new(),
+            rows: Vec::new(),
+            list_state: ListState::new(0, ListAlignment::Top, dp(200.)),
+            results_scroll: ScrollHandle::new(),
+            selected: None,
+            focus: cx.focus_handle(),
             loading: true,
             progress: HashMap::new(),
             renaming: None,
             rename_input,
             busy: HashSet::new(),
-            speaker_model: None,
             search_input,
             query: String::new(),
             search_seq: 0,
@@ -140,21 +146,9 @@ impl MeetingList {
             bulk: None,
             title_candidates: 0,
             turn_prompt_dismissed: false,
-            permissions: None,
-            downloads_active: false,
-            download_percent: None,
             _subs: subs,
         };
         this.reload(cx);
-        this.load_permissions(cx);
-        run(
-            cx,
-            |b| b.speaker_model_status(),
-            // Unless an event or a click got here first (newer).
-            |this: &mut Self, s, _| {
-                this.speaker_model.get_or_insert(s);
-            },
-        );
         this
     }
 
@@ -172,273 +166,98 @@ impl MeetingList {
             // Bulk titling changes one meeting after another: it updates
             // their rows itself and reloads once it's done.
             MeetingsEvent::MeetingChanged(_) if self.bulk.is_some() => {}
-            MeetingsEvent::MeetingChanged(_) | MeetingsEvent::RecorderState(_) => self.reload(cx),
-            MeetingsEvent::Ready => {
-                self.reload(cx);
-                self.load_permissions(cx);
-            }
-            MeetingsEvent::SpeakerModelStatus(s) => {
-                self.speaker_model = Some(s.clone());
-                cx.notify();
-            }
-            MeetingsEvent::DownloadsChanged(items) => {
-                self.downloads_active = items.iter().any(|d| d.state.is_active());
-                self.download_percent = items
-                    .iter()
-                    .find(|d| d.state.is_active())
-                    .and_then(|d| d.percent());
-                cx.notify();
-            }
+            MeetingsEvent::MeetingChanged(_)
+            | MeetingsEvent::RecorderState(_)
+            | MeetingsEvent::Ready => self.reload(cx),
             _ => {}
         }
     }
 
-    fn load_permissions(&mut self, cx: &mut Context<Self>) {
-        run(
-            cx,
-            |b| b.permission_status(),
-            |this: &mut Self, p, cx| {
-                this.permissions = Some(p);
-                cx.notify();
-            },
-        );
+    /// Rebuild the rows from `meetings`, keeping the scroll position.
+    fn rebuild_rows(&mut self, cx: &App) {
+        let rows = list_rows(&self.meetings, super::now(cx));
+        let old = self.list_state.item_count();
+        self.list_state.splice(0..old, rows.len());
+        self.rows = rows;
     }
 
-    fn allow_permissions(&mut self, cx: &mut Context<Self>) {
-        run(
-            cx,
-            |b| b.request_permissions().map_err(|e| e.to_string()),
-            |this: &mut Self, r, cx| match r {
-                Ok(p) => {
-                    this.permissions = Some(p);
-                    cx.notify();
-                }
-                Err(e) => toast_error("meetings.settings.permissions.error", &e, cx),
-            },
-        );
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
     }
 
-    /// Mic, system audio, and the required models. Calendar is optional and
-    /// does not keep the list up. Hidden once those are ready, or once the
-    /// user dismisses it. Recording stays available either way.
-    fn render_checklist(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if meeting_settings(cx).setup_checklist_dismissed {
-            return None;
-        }
-        let report = self.permissions.as_ref()?;
-        let models = self.models_readiness(cx);
-        let required_ready = report.microphone_granted
-            && report.system_audio_granted
-            && matches!(models, ModelsReadiness::Ready);
-        if required_ready {
-            return None;
-        }
-        let tone = design::tone(cx);
-        let permission = |id: &str, label: SharedString, ok: bool, optional: bool| {
-            let (state_id, state, muted) = if ok {
-                ("ready", t("meetings.settings.permissions.granted"), true)
-            } else if optional {
-                ("optional", t("meetings.checklist.optional"), true)
-            } else {
-                ("needed", t("meetings.settings.permissions.denied"), false)
-            };
-            h_flex()
-                .id(SharedString::from(format!("meetings-check-{id}")))
-                .w_full()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(design::TEXT_BODY)
-                        .text_color(tone.text)
-                        .child(label),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .id(SharedString::from(format!(
-                                    "meetings-check-{state_id}-{id}"
-                                )))
-                                .text_size(dp(12.))
-                                .text_color(if muted { tone.text_muted } else { tone.text })
-                                .child(state)
-                                .test_support(),
-                        )
-                        .when(!ok && !optional, |d| {
-                            d.child(
-                                Button::new(SharedString::from(format!(
-                                    "meetings-check-allow-{id}"
-                                )))
-                                .ghost()
-                                .xsmall()
-                                .label(t("meetings.settings.permissions.requestAgain"))
-                                .on_click(cx.listener(|this, _, _, cx| this.allow_permissions(cx))),
-                            )
-                        }),
-                )
-                .test_support()
-        };
-        Some(
-            design::panel(cx)
-                .id("meetings-checklist")
-                .child(
-                    design::section(false, cx).child(
-                        v_flex()
-                            .w_full()
-                            .gap(dp(8.))
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(design::eyebrow(t("meetings.checklist.title"), cx))
-                                    .child(
-                                        Button::new("meetings-checklist-dismiss")
-                                            .ghost()
-                                            .xsmall()
-                                            .label(t("meetings.checklist.dismiss"))
-                                            .on_click(cx.listener(|_, _, _, cx| {
-                                                super::settings::update_meetings(cx, |m| {
-                                                    m.setup_checklist_dismissed = true
-                                                });
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                            .child(permission(
-                                "microphone",
-                                t("meetings.settings.permissions.microphone"),
-                                report.microphone_granted,
-                                false,
-                            ))
-                            .child(permission(
-                                "system-audio",
-                                t("meetings.settings.permissions.systemAudio"),
-                                report.system_audio_granted,
-                                false,
-                            ))
-                            .child(permission(
-                                "calendar",
-                                t("meetings.settings.permissions.calendar"),
-                                report.calendar_granted,
-                                true,
-                            ))
-                            .child(self.models_row(cx))
-                            .child(
-                                div()
-                                    .text_size(dp(12.))
-                                    .text_color(tone.text_muted)
-                                    .child(t("meetings.checklist.note")),
-                            ),
-                    ),
-                )
-                .test_support()
-                .into_any_element(),
-        )
+    pub fn selected(&self) -> Option<MeetingId> {
+        self.selected
     }
 
-    /// Required models only: the meeting transcription model and the
-    /// standard speaker model. Speaker-turn models are optional.
-    fn models_readiness(&self, cx: &App) -> ModelsReadiness {
-        let speaker_missing = matches!(
-            self.speaker_model,
-            Some(SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. })
-        );
-        let speaker_downloading = matches!(
-            self.speaker_model,
-            Some(SpeakerModelStatus::Downloading { .. })
-        );
-        if speaker_downloading {
-            let pct = match self.speaker_model {
-                Some(SpeakerModelStatus::Downloading { downloaded, total }) if total > 0 => {
-                    Some((downloaded * 100 / total) as u32)
-                }
-                _ => None,
-            };
-            return ModelsReadiness::Downloading(pct);
+    /// Mark `id` as the meeting shown, and scroll its row into view.
+    pub fn set_selected(&mut self, id: Option<MeetingId>, cx: &mut Context<Self>) {
+        if self.selected == id {
+            return;
         }
-        if speaker_missing {
-            return ModelsReadiness::NotDownloaded { speaker: true };
-        }
-        if meeting_model_missing(cx).is_some() {
-            if self.downloads_active {
-                return ModelsReadiness::Downloading(self.download_percent);
-            }
-            return ModelsReadiness::NotDownloaded { speaker: false };
-        }
-        ModelsReadiness::Ready
+        self.selected = id;
+        self.reveal_selected();
+        cx.notify();
     }
 
-    fn models_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tone = design::tone(cx);
-        let readiness = self.models_readiness(cx);
-        let (state_id, state) = match readiness {
-            ModelsReadiness::Ready => ("ready", t("meetings.checklist.ready")),
-            ModelsReadiness::Downloading(Some(pct)) => {
-                let pct = pct.to_string();
-                (
-                    "downloading",
-                    t_args(
-                        "meetings.checklist.downloadingPercent",
-                        &[("percent", &pct)],
-                    ),
-                )
+    fn reveal_selected(&mut self) {
+        let Some(id) = self.selected else { return };
+        let row = self.rows.iter().position(|r| match r {
+            ListRow::Meeting(i) => self.meetings.get(*i).is_some_and(|m| m.id == id),
+            ListRow::Header(_) => false,
+        });
+        if let Some(ix) = row {
+            self.list_state.scroll_to_reveal_item(ix);
+        }
+    }
+
+    /// The meetings in the order the pane shows them (search hits while
+    /// searching), for keyboard selection.
+    pub fn order(&self) -> Vec<MeetingId> {
+        if self.is_searching() {
+            if let Some(r) = &self.results {
+                return r
+                    .hits
+                    .iter()
+                    .map(|h| h.meeting_id)
+                    .filter(|id| self.meetings.iter().any(|m| m.id == *id))
+                    .collect();
             }
-            ModelsReadiness::Downloading(None) => {
-                ("downloading", t("meetings.checklist.downloading"))
-            }
-            ModelsReadiness::NotDownloaded { .. } => {
-                ("needed", t("meetings.checklist.notDownloaded"))
-            }
-        };
-        let offer_download = matches!(readiness, ModelsReadiness::NotDownloaded { speaker: true });
-        h_flex()
-            .id("meetings-check-models")
-            .w_full()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(design::TEXT_BODY)
-                    .text_color(tone.text)
-                    .child(t("meetings.checklist.models")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "meetings-check-{state_id}-models"
-                            )))
-                            .text_size(dp(12.))
-                            .text_color(if state_id == "needed" {
-                                tone.text
-                            } else {
-                                tone.text_muted
-                            })
-                            .child(state)
-                            .test_support(),
-                    )
-                    .when(offer_download, |d| {
-                        d.child(
-                            Button::new("meetings-check-download-models")
-                                .ghost()
-                                .xsmall()
-                                .label(t("meetings.checklist.download"))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.download_speaker_model(cx)),
-                                ),
-                        )
-                    }),
-            )
-            .test_support()
+            return Vec::new();
+        }
+        self.meetings.iter().map(|m| m.id).collect()
+    }
+
+    pub fn meeting(&self, id: MeetingId) -> Option<&Meeting> {
+        self.meetings.iter().find(|m| m.id == id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.loading && self.meetings.is_empty()
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    fn is_searching(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
+    /// ⌘F: focus the search field.
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// Esc: clear the search. False when there was none.
+    pub fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.query.is_empty() {
+            return false;
+        }
+        self.search_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        self.set_query(String::new(), cx);
+        window.focus(&self.focus, cx);
+        true
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -470,6 +289,7 @@ impl MeetingList {
                             this.progress.insert(p.meeting_id, p);
                         }
                         this.meetings = meetings;
+                        this.rebuild_rows(cx);
                     }
                     Err(e) => toast_error("meetings.list.loadError", &e, cx),
                 }
@@ -689,25 +509,6 @@ impl MeetingList {
         self.bulk.as_ref()
     }
 
-    fn download_speaker_model(&mut self, cx: &mut Context<Self>) {
-        self.speaker_model = Some(SpeakerModelStatus::Downloading {
-            downloaded: 0,
-            total: 0,
-        });
-        cx.notify();
-        run(
-            cx,
-            |b| b.download_speaker_model(),
-            |this: &mut Self, r, _| {
-                if let Err(e) = r {
-                    this.speaker_model = Some(SpeakerModelStatus::Failed {
-                        error: error_message(&e),
-                    });
-                }
-            },
-        );
-    }
-
     fn consent_turn_models(&mut self, cx: &mut Context<Self>) {
         super::settings::update_meetings(cx, |m| m.speaker_turn_models_consent = true);
         run(
@@ -743,9 +544,8 @@ impl MeetingList {
             design::notice(theme.info)
                 .id("speaker-turn-consent")
                 .flex()
-                .items_center()
-                .gap_3()
-                .justify_between()
+                .flex_col()
+                .gap(dp(6.))
                 .child(
                     v_flex()
                         .flex_1()
@@ -753,25 +553,27 @@ impl MeetingList {
                         .gap(dp(2.))
                         .child(
                             div()
-                                .text_size(design::TEXT_BODY)
+                                .text_size(dp(12.))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(tone.text)
                                 .child(t("meetings.turnConsent.title")),
                         )
                         .child(
                             div()
-                                .text_size(dp(12.))
+                                .text_size(design::TEXT_SECONDARY)
                                 .text_color(tone.text_muted)
                                 .child(t_args("meetings.turnConsent.body", &[("size", &size)])),
                         ),
                 )
                 .child(
                     h_flex()
+                        .w_full()
                         .gap_2()
+                        .justify_end()
                         .child(
                             Button::new("speaker-turn-not-now")
                                 .ghost()
-                                .small()
-                                .pill()
+                                .xsmall()
                                 .label(t("meetings.turnConsent.notNow"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.turn_prompt_dismissed = true;
@@ -784,8 +586,7 @@ impl MeetingList {
                         .child(
                             Button::new("speaker-turn-download")
                                 .primary()
-                                .small()
-                                .pill()
+                                .xsmall()
                                 .icon(icon("download"))
                                 .label(t("meetings.turnConsent.download"))
                                 .on_click(
@@ -798,78 +599,17 @@ impl MeetingList {
         )
     }
 
-    /// "Download the speaker model" while it's missing: without it nothing
-    /// is processed (it downloads only when asked).
-    fn render_speaker_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let status = self.speaker_model.as_ref()?;
-        let tone = design::tone(cx);
-        let failed = matches!(status, SpeakerModelStatus::Failed { .. });
-        let action: AnyElement = match status {
-            SpeakerModelStatus::Ready => return None,
-            SpeakerModelStatus::Downloading { downloaded, total } => {
-                let pct = if *total > 0 {
-                    (*downloaded as f64 / *total as f64 * 100.0).clamp(0.0, 100.0)
-                } else {
-                    0.0
-                };
-                design::mono(format!("{pct:.0}%"))
-                    .text_color(tone.text_muted)
-                    .into_any_element()
-            }
-            SpeakerModelStatus::Missing | SpeakerModelStatus::Failed { .. } => {
-                let size = format_model_size(Some(SPEAKER_MODEL_SIZE as f64 / (1024.0 * 1024.0)));
-                Button::new("meetings-list-speaker-model-download")
-                    .primary()
-                    .small()
-                    .pill()
-                    .icon(icon(if failed { "rotate-ccw" } else { "download" }))
-                    .label(if failed {
-                        t("meetings.settings.speakerModel.retry")
-                    } else {
-                        t_args(
-                            "meetings.settings.speakerModel.download",
-                            &[("size", &size)],
-                        )
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.download_speaker_model(cx)))
-                    .into_any_element()
-            }
-        };
-        let message = match status {
-            SpeakerModelStatus::Failed { error } => {
-                t_args("meetings.settings.speakerModel.failed", &[("error", error)])
-            }
-            _ => t("meetings.list.speakerModelMissing"),
-        };
-        let theme = cx.theme().clone();
-        Some(
-            design::notice(theme.warning)
-                .id("meetings-speaker-model-missing-list")
-                .flex()
-                .items_center()
-                .gap_3()
-                .justify_between()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(design::TEXT_BODY)
-                        .child(message),
-                )
-                .child(action)
-                .test_support()
-                .into_any_element(),
-        )
-    }
-
     #[cfg(test)]
     pub fn meeting_count(&self) -> usize {
         self.meetings.len()
     }
 
-    fn start_rename(&mut self, m: &Meeting, window: &mut Window, cx: &mut Context<Self>) {
-        self.renaming = Some(m.id);
-        let title = m.title.clone();
+    /// Rename a meeting in its row (the menu's Rename…).
+    pub fn start_rename(&mut self, id: MeetingId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(title) = self.meeting(id).map(|m| m.title.clone()) else {
+            return;
+        };
+        self.renaming = Some(id);
         self.rename_input.update(cx, |s, cx| {
             s.set_value(title, window, cx);
             s.focus(window, cx);
@@ -882,6 +622,16 @@ impl MeetingList {
         let text = text.to_string();
         self.rename_input
             .update(cx, |s, cx| s.set_value(text, window, cx));
+    }
+
+    pub fn is_renaming(&self) -> bool {
+        self.renaming.is_some()
+    }
+
+    pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        if self.renaming.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn save_rename(&mut self, cx: &mut Context<Self>) {
@@ -908,7 +658,7 @@ impl MeetingList {
         );
     }
 
-    fn process(&mut self, id: MeetingId, cx: &mut Context<Self>) {
+    pub fn process(&mut self, id: MeetingId, cx: &mut Context<Self>) {
         self.busy.insert(id);
         cx.notify();
         run(
@@ -929,7 +679,7 @@ impl MeetingList {
         );
     }
 
-    fn cancel_processing(&mut self, id: MeetingId, cx: &mut Context<Self>) {
+    pub fn cancel_processing(&mut self, id: MeetingId, cx: &mut Context<Self>) {
         run(
             cx,
             move |b| b.cancel_processing(id),
@@ -942,8 +692,12 @@ impl MeetingList {
         );
     }
 
-    fn confirm_delete(&mut self, m: &Meeting, window: &mut Window, cx: &mut Context<Self>) {
-        let id = m.id;
+    /// Delete… : asks first. A meeting still recording can't be deleted.
+    pub fn confirm_delete(&mut self, id: MeetingId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.meeting(id) else { return };
+        if m.status == MeetingStatus::Recording {
+            return;
+        }
         let message = t_args("meetings.list.deleteConfirm", &[("title", &m.title)]);
         let this = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -951,6 +705,7 @@ impl MeetingList {
             alert
                 .title(t("meetings.list.deleteTitle"))
                 .description(message.clone())
+                .ok_text(t("meetings.list.delete"))
                 .show_cancel(true)
                 .on_ok(move |_, _, cx| {
                     this.update(cx, |this, cx| this.delete(id, cx)).ok();
@@ -960,7 +715,13 @@ impl MeetingList {
     }
 
     pub fn delete(&mut self, id: MeetingId, cx: &mut Context<Self>) {
+        let next = crate::logic::meetings::after_delete(&self.order(), id);
         self.meetings.retain(|m| m.id != id);
+        self.rebuild_rows(cx);
+        if self.selected == Some(id) {
+            self.selected = None;
+        }
+        cx.emit(MeetingListEvent::Deleted { id, next });
         cx.notify();
         run(
             cx,
@@ -974,6 +735,56 @@ impl MeetingList {
         );
     }
 
+    /// The row menu (⋯ and right click).
+    fn row_menu(&self, m: &Meeting, menu: PopupMenu, weak: WeakEntity<Self>) -> PopupMenu {
+        let id = m.id;
+        let item =
+            |label: SharedString, f: fn(&mut Self, MeetingId, &mut Window, &mut Context<Self>)| {
+                let weak = weak.clone();
+                PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    weak.update(cx, |this, cx| f(this, id, window, cx)).ok();
+                })
+            };
+        let recording = m.status == MeetingStatus::Recording;
+        let mut menu = menu
+            .item(item(
+                t("meetings.list.renameMenu"),
+                |this, id, window, cx| this.start_rename(id, window, cx),
+            ))
+            .item(
+                item(t("meetings.titles.generate"), |this, id, _, cx| {
+                    this.generate_title(id, cx)
+                })
+                .disabled(!m.has_summary || self.titling.contains(&id) || self.bulk.is_some()),
+            );
+        if can_process(m) {
+            let failed = m.status == MeetingStatus::Failed;
+            let label = if failed || m.status == MeetingStatus::Processed {
+                t("meetings.list.retry")
+            } else {
+                t("meetings.list.process")
+            };
+            menu = menu.separator().item(
+                item(label, |this, id, _, cx| this.process(id, cx))
+                    .disabled(self.busy.contains(&id)),
+            );
+        }
+        if m.status == MeetingStatus::Processing {
+            menu = menu.separator().item(item(
+                t("meetings.list.cancelProcessing"),
+                |this, id, _, cx| this.cancel_processing(id, cx),
+            ));
+        }
+        menu.separator().item(
+            item(t("meetings.list.deleteMenu"), |this, id, window, cx| {
+                this.confirm_delete(id, window, cx)
+            })
+            .disabled(recording),
+        )
+    }
+
+    /// The second line of a row: duration and status, or the processing
+    /// stage with its progress.
     fn render_status(&self, m: &Meeting, cx: &App) -> AnyElement {
         let theme = cx.theme();
         let tone = design::tone(cx);
@@ -983,253 +794,330 @@ impl MeetingList {
             let stage = p
                 .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
                 .unwrap_or_else(|| t("meetings.status.processing"));
-            return v_flex()
+            return h_flex()
+                .id(SharedString::from(format!("meeting-progress-{}", m.id)))
                 .w_full()
-                .gap(dp(8.))
+                .gap(dp(6.))
                 .child(
-                    h_flex().child(design::chip("", true, cx).child(design::shimmer_text(
-                        SharedString::from(format!("meeting-stage-{}", m.id)),
-                        progress_label(&stage, p),
-                        cx,
-                    ))),
+                    div()
+                        .flex_none()
+                        .max_w(relative(0.6))
+                        .truncate()
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(tone.text_muted)
+                        .child(design::shimmer_text(
+                            SharedString::from(format!("meeting-stage-{}", m.id)),
+                            progress_label(&stage, p),
+                            cx,
+                        )),
                 )
-                .child(design::track(
-                    SharedString::from(format!("meeting-progress-{}", m.id)),
+                .child(div().flex_1().min_w(dp(24.)).child(design::track(
+                    SharedString::from(format!("meeting-progress-track-{}", m.id)),
                     Some(fraction),
                     cx,
-                ))
+                )))
+                .test_support()
                 .into_any_element();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(d) = m.duration_ms() {
+            let mins = duration_minutes(d).to_string();
+            parts.push(t_args("meetings.list.minutes", &[("count", &mins)]).to_string());
         }
         let failed = m.status == MeetingStatus::Failed;
         let live = m.status == MeetingStatus::Recording;
+        let status = (m.status != MeetingStatus::Processed).then(|| t(status_key(m.status)));
         h_flex()
-            .gap(dp(8.))
+            .w_full()
             .min_w_0()
-            .child(
-                design::chip(t(status_key(m.status)), live, cx).when(failed, |d| {
-                    d.bg(theme.danger.opacity(0.12)).text_color(theme.danger)
-                }),
+            .gap(dp(4.))
+            .text_size(design::TEXT_SECONDARY)
+            .text_color(tone.text_muted)
+            .when(live, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .size(dp(6.))
+                        .rounded_full()
+                        .bg(theme.danger),
+                )
+            })
+            .when(!parts.is_empty(), |d| {
+                d.child(div().flex_none().child(parts.join(" · ")))
+            })
+            .when_some(status, |d, status| {
+                d.when(!parts.is_empty(), |d| d.child("·")).child(
+                    div()
+                        .flex_none()
+                        .when(failed, |d| d.text_color(theme.danger))
+                        .when(live, |d| d.text_color(tone.text))
+                        .child(status),
+                )
+            })
+            .when_some(
+                m.description.clone().filter(|_| !failed && !live),
+                |d, text| {
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("meeting-description-{}", m.id)))
+                            .min_w_0()
+                            .truncate()
+                            .text_color(tone.text_faint)
+                            .child(format!("— {text}"))
+                            .test_support(),
+                    )
+                },
             )
             .when_some(m.error.clone().filter(|_| failed), |d, e| {
                 d.child(
                     div()
                         .min_w_0()
-                        .text_size(dp(12.))
-                        .text_color(tone.text_muted)
                         .truncate()
-                        .child(e),
+                        .text_color(tone.text_faint)
+                        .child(format!("— {e}")),
                 )
             })
             .into_any_element()
     }
 
-    fn render_row(&self, m: &Meeting, cx: &mut Context<Self>) -> AnyElement {
-        let id = m.id;
-        let lang = guidy_i18n::language();
-        let busy = self.busy.contains(&id);
-        let mut meta = format!(
-            "{} · {}",
-            crate::logic::meetings::day_label(m.started_at, now_ms(), &lang),
-            super::clock_time(m.started_at)
-        );
-        if let Some(d) = m.duration_ms() {
-            let mins = duration_minutes(d).to_string();
-            meta.push_str(" · ");
-            meta.push_str(&t_args("meetings.list.minutes", &[("count", &mins)]));
+    fn render_list_row(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match self.rows.get(ix).copied() {
+            Some(ListRow::Header(group)) => {
+                let tone = design::tone(cx);
+                div()
+                    .id(SharedString::from(format!("meetings-group-{}", group.id())))
+                    .w_full()
+                    .px(dp(14.))
+                    .pt(if ix == 0 { dp(6.) } else { dp(12.) })
+                    .pb(dp(4.))
+                    .text_size(design::TEXT_SECONDARY)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(tone.text_muted)
+                    .child(t(group.key()))
+                    .test_support()
+                    .into_any_element()
+            }
+            Some(ListRow::Meeting(i)) => match self.meetings.get(i).cloned() {
+                Some(m) => self.render_row(&m, window, cx),
+                None => div().into_any_element(),
+            },
+            None => div().into_any_element(),
         }
-        let icon_btn = |name: &'static str, label: SharedString, suffix: &str| {
-            Button::new(SharedString::from(format!("meeting-{suffix}-{id}")))
-                .ghost()
-                .xsmall()
-                .icon(icon(name))
-                .tooltip(label)
-        };
+    }
+
+    fn render_row(&self, m: &Meeting, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let id = m.id;
+        let tone = design::tone(cx);
+        let selected = self.selected == Some(id);
+        let focused = self.focus.contains_focused(window, cx);
         let renaming = self.renaming == Some(id);
         let title: AnyElement = if renaming {
-            h_flex()
-                .gap_1()
-                .w_full()
-                .child(div().flex_1().child(Input::new(&self.rename_input).small()))
-                .child(
-                    Button::new(SharedString::from(format!("meeting-rename-save-{id}")))
-                        .primary()
-                        .xsmall()
-                        .pill()
-                        .label(t("meetings.list.save"))
-                        .on_click(cx.listener(|this, _, _, cx| this.save_rename(cx))),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("meeting-rename-cancel-{id}")))
-                        .ghost()
-                        .xsmall()
-                        .pill()
-                        .label(t("meetings.list.cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.renaming = None;
-                            cx.notify();
-                        })),
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(&self.rename_input).xsmall())
+                .on_action(
+                    cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
+                        this.cancel_rename(cx)
+                    }),
                 )
                 .into_any_element()
         } else {
             div()
                 .id(SharedString::from(format!("meeting-title-{id}")))
+                .flex_1()
+                .min_w_0()
+                .truncate()
                 .text_size(design::TEXT_BODY)
                 .font_weight(FontWeight::MEDIUM)
-                .truncate()
-                .cursor_pointer()
-                .hover(|s| s.underline())
                 .child(m.title.clone())
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(MeetingListEvent::Open(id))))
+                .test_support()
                 .into_any_element()
         };
-        let processing = m.status == MeetingStatus::Processing;
-        let failed = m.status == MeetingStatus::Failed;
-        let (m_rename, m_delete) = (m.clone(), m.clone());
-        h_flex()
+        let weak = cx.entity().downgrade();
+        let menu_meeting = m.clone();
+        let menu_weak = weak.clone();
+        let more = Button::new(SharedString::from(format!("meeting-menu-{id}")))
+            .ghost()
+            .xsmall()
+            .icon(icon("ellipsis"))
+            .tooltip(t("meetings.list.more"))
+            .dropdown_menu(move |menu, _, cx| {
+                let m = menu_meeting.clone();
+                match menu_weak.upgrade() {
+                    Some(this) => this.read(cx).row_menu(&m, menu, menu_weak.clone()),
+                    None => menu,
+                }
+            });
+        let ctx_meeting = m.clone();
+        let ctx_weak = weak.clone();
+        let group_id = SharedString::from(format!("meeting-row-{id}"));
+        let bg = if selected {
+            Some(if focused {
+                tone.selection_focused
+            } else {
+                tone.selection
+            })
+        } else {
+            None
+        };
+        div()
             .id(SharedString::from(format!("meeting-{id}")))
             .w_full()
-            .gap_3()
-            .pl(design::SECTION_X)
-            .pr(dp(10.))
-            .py(dp(12.))
+            .px(dp(6.))
             .child(
                 v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(dp(6.))
-                    .child(title)
-                    .when_some(m.description.clone().filter(|_| !renaming), |d, text| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("meeting-description-{id}")))
-                                .text_size(dp(12.5))
-                                .text_color(design::tone(cx).text_muted)
-                                .line_clamp(2)
-                                .child(text)
-                                .test_support(),
-                        )
+                    .id(SharedString::from(format!("meeting-open-{id}")))
+                    .group(group_id.clone())
+                    .w_full()
+                    // ~44 pt: a 13 pt title line over an 11 pt status line.
+                    .px(dp(8.))
+                    .py(dp(5.))
+                    .gap(dp(1.))
+                    .rounded(design::RADIUS_CHIP)
+                    .when_some(bg, |d, bg| d.bg(bg))
+                    .when(!selected, |d| {
+                        d.hover(move |s| s.bg(tone.raised.opacity(0.5)))
                     })
-                    .child(design::eyebrow(meta, cx))
-                    .child(self.render_status(m, cx)),
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .h(dp(18.))
+                            .line_height(dp(18.))
+                            .gap(dp(6.))
+                            .child(title)
+                            .when(!renaming, |d| {
+                                d.child(
+                                    div()
+                                        .relative()
+                                        .flex_none()
+                                        .child(
+                                            design::mono(super::clock_time(m.started_at))
+                                                .text_size(dp(11.))
+                                                .text_color(tone.text_muted)
+                                                .group_hover(group_id.clone(), |s| s.opacity(0.)),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top(dp(-3.))
+                                                .right(dp(-4.))
+                                                .opacity(0.)
+                                                .group_hover(group_id.clone(), |s| s.opacity(1.))
+                                                .child(more),
+                                        ),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .h(dp(15.))
+                            .line_height(dp(15.))
+                            .child(self.render_status(m, cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.renaming != Some(id) {
+                            cx.emit(MeetingListEvent::Open(id))
+                        }
+                    }))
+                    .test_support()
+                    .context_menu(move |menu, _, cx| {
+                        let m = ctx_meeting.clone();
+                        match ctx_weak.upgrade() {
+                            Some(this) => this.read(cx).row_menu(&m, menu, ctx_weak.clone()),
+                            None => menu,
+                        }
+                    }),
             )
-            .when(!renaming, |d| {
-                d.child(
-                    h_flex()
-                        .flex_none()
-                        .child(
-                            icon_btn("chevron-right", t("meetings.list.open"), "open").on_click(
-                                cx.listener(move |_, _, _, cx| cx.emit(MeetingListEvent::Open(id))),
-                            ),
-                        )
-                        .child(
-                            icon_btn("pencil", t("meetings.list.rename"), "rename").on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    this.start_rename(&m_rename, window, cx)
-                                }),
-                            ),
-                        )
-                        .child({
-                            let titling = self.titling.contains(&id);
-                            icon_btn(
-                                "sparkles",
-                                if m.has_summary {
-                                    t("meetings.titles.generate")
-                                } else {
-                                    t("meetings.titles.needsSummary")
-                                },
-                                "title",
-                            )
-                            .loading(titling)
-                            .disabled(titling || !m.has_summary || self.bulk.is_some())
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.generate_title(id, cx)),
-                            )
-                        })
-                        .when(processing, |d| {
-                            d.child(
-                                icon_btn("circle-x", t("meetings.list.cancelProcessing"), "cancel")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.cancel_processing(id, cx)
-                                    })),
-                            )
-                        })
-                        .when(can_process(m), |d| {
-                            let (ic, label) = if failed || m.status == MeetingStatus::Processed {
-                                ("rotate-ccw", t("meetings.list.retry"))
-                            } else {
-                                ("play", t("meetings.list.process"))
-                            };
-                            d.child(
-                                icon_btn(ic, label, "process")
-                                    .loading(busy)
-                                    .disabled(busy)
-                                    .on_click(
-                                        cx.listener(move |this, _, _, cx| this.process(id, cx)),
-                                    ),
-                            )
-                        })
-                        .child(
-                            icon_btn("trash", t("meetings.list.delete"), "delete")
-                                .disabled(m.status == MeetingStatus::Recording)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.confirm_delete(&m_delete, window, cx)
-                                })),
-                        ),
-                )
-            })
             .test_support()
             .into_any_element()
     }
 
-    /// "Generate titles", or its progress and Cancel.
-    fn render_bulk_titles(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The footer: how many meetings, and "Generate Titles" (or its
+    /// progress and Cancel).
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
-        if let Some(bulk) = &self.bulk {
+        let n = self.meetings.len().to_string();
+        let action: Option<AnyElement> = if let Some(bulk) = &self.bulk {
             let (done, total) = (bulk.done.to_string(), bulk.total.to_string());
-            return Some(
+            Some(
                 h_flex()
                     .id("meetings-titles-progress")
-                    .gap_2()
+                    .min_w_0()
+                    .gap_1()
                     .items_center()
-                    .child(div().text_size(dp(12.)).text_color(tone.text_muted).child(
-                        design::shimmer_text(
-                            "meetings-titles-progress-text",
-                            if bulk.total == 0 {
-                                t("meetings.titles.starting")
-                            } else {
-                                t_args(
-                                    "meetings.titles.progress",
-                                    &[("done", &done), ("total", &total)],
-                                )
-                            },
-                            cx,
-                        ),
-                    ))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_muted)
+                            .child(design::shimmer_text(
+                                "meetings-titles-progress-text",
+                                if bulk.total == 0 {
+                                    t("meetings.titles.starting")
+                                } else {
+                                    t_args(
+                                        "meetings.titles.progress",
+                                        &[("done", &done), ("total", &total)],
+                                    )
+                                },
+                                cx,
+                            )),
+                    )
                     .child(
                         Button::new("meetings-titles-cancel")
                             .ghost()
                             .xsmall()
-                            .pill()
                             .label(t("meetings.list.cancel"))
                             .disabled(bulk.cancelled)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel_titles(cx))),
                     )
                     .test_support()
                     .into_any_element(),
-            );
-        }
-        (self.title_candidates > 0).then(|| {
-            let n = self.title_candidates.to_string();
-            Button::new("meetings-titles-generate")
-                .ghost()
-                .small()
-                .pill()
-                .icon(icon("sparkles"))
-                .label(t_args("meetings.titles.generateAll", &[("count", &n)]))
-                .tooltip(t("meetings.titles.generateAllHint"))
-                .on_click(cx.listener(|this, _, _, cx| this.generate_all_titles(cx)))
-                .into_any_element()
-        })
+            )
+        } else {
+            (self.title_candidates > 0).then(|| {
+                let n = self.title_candidates.to_string();
+                Button::new("meetings-titles-generate")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon("sparkles"))
+                    .label(t_args("meetings.titles.generateAll", &[("count", &n)]))
+                    .tooltip(t("meetings.titles.generateAllHint"))
+                    .on_click(cx.listener(|this, _, _, cx| this.generate_all_titles(cx)))
+                    .into_any_element()
+            })
+        };
+        h_flex()
+            .id("meetings-list-footer")
+            .flex_none()
+            .w_full()
+            .h(dp(28.))
+            .px(dp(10.))
+            .gap_2()
+            .justify_between()
+            .border_t_1()
+            .border_color(tone.hairline)
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(t_args("meetings.list.count", &[("count", &n)])),
+            )
+            .children(action)
+            .test_support()
     }
 
     fn render_results(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1286,7 +1174,7 @@ impl MeetingList {
                     .items_center()
                     .border_b_1()
                     .border_color(tone.hairline)
-                    .child(design::eyebrow(
+                    .child(design::section_header(
                         t_args("meetings.search.count", &[("count", &n)]),
                         cx,
                     ))
@@ -1323,7 +1211,7 @@ impl MeetingList {
         let lang = guidy_i18n::language();
         let mut meta = format!(
             "{} · {}",
-            crate::logic::meetings::day_label(m.started_at, now_ms(), &lang),
+            crate::logic::meetings::day_label(m.started_at, super::now(cx), &lang),
             super::clock_time(m.started_at)
         );
         if hit.transcript_hits > 1 {
@@ -1353,9 +1241,11 @@ impl MeetingList {
                 .w_full()
                 .gap(dp(6.))
                 .px(design::SECTION_X)
-                .py(dp(12.))
-                .cursor_pointer()
-                .hover(|s| s.bg(tone.raised))
+                .py(dp(10.))
+                .when(self.selected == Some(id), |d| d.bg(tone.selection))
+                .when(self.selected != Some(id), |d| {
+                    d.hover(|s| s.bg(tone.raised))
+                })
                 .child(
                     div()
                         .text_size(design::TEXT_BODY)
@@ -1375,7 +1265,7 @@ impl MeetingList {
                         )
                     },
                 )
-                .child(design::eyebrow(meta, cx))
+                .child(design::section_header(meta, cx))
                 .children(snippets)
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(MeetingListEvent::Open(id))))
                 .test_support()
@@ -1437,23 +1327,43 @@ impl MeetingList {
 }
 
 /// `text` with `ranges` (search matches) emphasized.
-fn highlighted(text: &str, ranges: &[Range<usize>], cx: &App) -> StyledText {
+pub(crate) fn highlighted(text: &str, ranges: &[Range<usize>], cx: &App) -> StyledText {
+    highlighted_with(text, ranges, None, cx)
+}
+
+/// [`highlighted`], with the range at `current` (find's current match)
+/// drawn stronger.
+pub(crate) fn highlighted_with(
+    text: &str,
+    ranges: &[Range<usize>],
+    current: Option<usize>,
+    cx: &App,
+) -> StyledText {
     let tone = design::tone(cx);
+    // Like the macOS find highlight: text stays readable on the tint, and
+    // the current match is dark text on the accent yellow in both themes.
     let style = HighlightStyle {
-        color: Some(tone.accent_text),
+        color: Some(tone.text),
         background_color: Some(tone.accent_soft),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..Default::default()
+    };
+    let strong = HighlightStyle {
+        color: Some(black()),
+        background_color: Some(tone.accent),
         font_weight: Some(FontWeight::SEMIBOLD),
         ..Default::default()
     };
     let ranges: Vec<(Range<usize>, HighlightStyle)> = ranges
         .iter()
-        .filter(|r| {
+        .enumerate()
+        .filter(|(_, r)| {
             r.start < r.end
                 && r.end <= text.len()
                 && text.is_char_boundary(r.start)
                 && text.is_char_boundary(r.end)
         })
-        .map(|r| (r.clone(), style))
+        .map(|(i, r)| (r.clone(), if Some(i) == current { strong } else { style }))
         .collect();
     StyledText::new(text.to_string()).with_highlights(ranges)
 }
@@ -1461,74 +1371,69 @@ fn highlighted(text: &str, ranges: &[Range<usize>], cx: &App) -> StyledText {
 impl Render for MeetingList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
-        let needs_model = meeting_settings(cx).enabled
-            || self
-                .meetings
-                .iter()
-                .any(|m| matches!(m.status, MeetingStatus::Recorded | MeetingStatus::Failed));
-        let model_banner = meeting_model_missing(cx)
-            .filter(|_| needs_model)
-            .map(|m| render_model_download("list", &m, cx));
-        let speaker_banner = needs_model
-            .then(|| self.render_speaker_banner(cx))
-            .flatten();
-        let notice = |text: SharedString| {
+        let note = |id: &'static str, text: SharedString| {
             div()
-                .px(design::SECTION_X)
-                .py(dp(18.))
+                .id(id)
+                .px(dp(16.))
+                .py(dp(24.))
                 .text_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(tone.text_muted)
                 .child(text)
-        };
-        let searching = !self.query.trim().is_empty();
-        let content: AnyElement = if searching {
-            self.render_results(cx)
-        } else if self.loading {
-            notice(t("meetings.list.loading")).into_any_element()
-        } else if self.meetings.is_empty() {
-            notice(t("meetings.list.empty"))
-                .id("meetings-empty")
                 .test_support()
+        };
+        let content: AnyElement = if self.is_searching() {
+            div()
+                .id("meetings-search-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&self.results_scroll)
+                .child(self.render_results(cx))
+                .into_any_element()
+        } else if self.loading {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(note("meetings-loading", t("meetings.list.loading")))
+                .into_any_element()
+        } else if self.meetings.is_empty() {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(note("meetings-empty", t("meetings.list.emptyShort")))
                 .into_any_element()
         } else {
-            let meetings = self.meetings.clone();
-            let count = meetings.len();
-            v_flex()
-                .children(meetings.iter().enumerate().map(|(i, m)| {
-                    div()
-                        .when(i + 1 < count, |d| {
-                            d.border_b_1().border_color(tone.hairline)
-                        })
-                        .child(self.render_row(m, cx))
-                }))
-                .into_any_element()
+            let view = cx.entity().downgrade();
+            list(self.list_state.clone(), move |ix, window, cx| {
+                view.update(cx, |this, cx| this.render_list_row(ix, window, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
+            .flex_1()
+            .min_h_0()
+            .pb(dp(6.))
+            .into_any_element()
         };
         v_flex()
             .id("meetings-list")
-            .w_full()
-            .gap(dp(8.))
+            .key_context("MeetingList")
+            .track_focus(&self.focus)
+            .size_full()
+            .min_h_0()
             .child(
-                h_flex()
-                    .w_full()
-                    .min_h(dp(28.))
-                    .px(dp(2.))
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(design::eyebrow(t("meetings.list.title"), cx))
-                    .children(self.render_bulk_titles(cx)),
+                div().flex_none().px(dp(10.)).pt(dp(8.)).pb(dp(6.)).child(
+                    Input::new(&self.search_input)
+                        .small()
+                        .prefix(icon("search").small().text_color(tone.text_muted))
+                        .cleanable(true),
+                ),
             )
-            .child(
-                Input::new(&self.search_input)
-                    .prefix(icon("search").small().text_color(tone.text_muted))
-                    .cleanable(true),
+            .children(
+                self.render_turn_consent(cx)
+                    .map(|c| div().flex_none().px(dp(10.)).pb(dp(6.)).child(c)),
             )
-            .children(self.render_checklist(cx))
-            .children(model_banner)
-            .children(speaker_banner)
-            .children(self.render_turn_consent(cx))
-            .child(design::panel(cx).child(content))
+            .child(content)
+            .child(self.render_footer(cx))
             .test_support()
     }
 }

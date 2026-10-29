@@ -10,7 +10,11 @@
 //! The live transcript is only for following the meeting as it happens:
 //! it is kept in memory, never stored. The meeting's transcript, with
 //! speakers and word times, still comes from processing after the stop.
-//! Mic lines are the user, system-audio lines everyone else.
+//! Mic lines are the user, system-audio lines everyone else. A mic line
+//! that repeats what the system track said at the same time is the meeting
+//! leaking from the speakers past echo cancellation: it is hidden
+//! ([`EchoFilter`], the live form of the D9 safety net in
+//! [`crate::meetings::processing::timeline`]).
 
 pub mod segmenter;
 
@@ -26,6 +30,7 @@ use crate::audio_toolkit::SpeechScorer;
 use crate::host::AppHandle;
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::meeting::{resolve_meeting_model, MeetingTranscriber};
+use crate::meetings::processing::timeline::{echo_similarity, EchoParams};
 use crate::meetings::processing::SAMPLE_RATE;
 use crate::meetings::recorder::LiveSink;
 use crate::meetings::types::*;
@@ -226,6 +231,91 @@ impl TrackCutter {
     }
 }
 
+/// Hides live mic lines that echo the system track. Either line of a pair
+/// can be decoded first, so each new line is checked both ways: a mic line
+/// against the system lines around it, a system line against the mic lines
+/// around it.
+#[derive(Default)]
+struct EchoFilter {
+    /// Recent lines as decoded (original text), both tracks.
+    lines: Vec<LiveLine>,
+    /// Ids of the mic lines published blank.
+    hidden: std::collections::HashSet<u64>,
+}
+
+/// How long lines are kept to compare against, behind the newest one.
+const ECHO_MEMORY_MS: i64 = 60_000;
+
+impl EchoFilter {
+    /// Take a decoded line; returns what to publish: the line itself (blank
+    /// when it is an echo) and any earlier mic line it shows to be one
+    /// (blank).
+    fn add(&mut self, line: LiveLine) -> Vec<LiveLine> {
+        match self.lines.iter_mut().find(|l| l.id == line.id) {
+            Some(existing) => *existing = line.clone(),
+            None => self.lines.push(line.clone()),
+        }
+        let newest = self.lines.iter().map(|l| l.t1_ms).max().unwrap_or(0);
+        self.lines.retain(|l| l.t1_ms >= newest - ECHO_MEMORY_MS);
+        let lines = &self.lines;
+        self.hidden.retain(|id| lines.iter().any(|l| l.id == *id));
+
+        let mut out = Vec::new();
+        match line.track {
+            Track::Mic => {
+                if self.is_echo(&line) {
+                    self.hidden.insert(line.id);
+                    out.push(blank(line));
+                } else {
+                    self.hidden.remove(&line.id);
+                    out.push(line);
+                }
+            }
+            Track::System => {
+                let p = EchoParams::default();
+                let revealed: Vec<LiveLine> = self
+                    .lines
+                    .iter()
+                    .filter(|m| m.track == Track::Mic && !self.hidden.contains(&m.id))
+                    .filter(|m| {
+                        m.t0_ms - p.slack_ms < line.t1_ms && line.t0_ms < m.t1_ms + p.slack_ms
+                    })
+                    .filter(|m| self.is_echo(m))
+                    .cloned()
+                    .collect();
+                out.push(line);
+                for m in revealed {
+                    self.hidden.insert(m.id);
+                    out.push(blank(m));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether mic line `m` says (nearly) what the system track said around
+    /// the same time (see [`echo_similarity`]).
+    fn is_echo(&self, m: &LiveLine) -> bool {
+        let p = EchoParams::default();
+        let (t0, t1) = (m.t0_ms - p.slack_ms, m.t1_ms + p.slack_ms);
+        let near: Vec<&str> = self
+            .lines
+            .iter()
+            .filter(|s| s.track == Track::System && s.t0_ms < t1 && t0 < s.t1_ms)
+            .map(|s| s.text.as_str())
+            .collect();
+        !near.is_empty() && echo_similarity(&m.text, &near.join(" ")) >= p.threshold
+    }
+}
+
+/// `line` with no text: the transcript drops it.
+fn blank(line: LiveLine) -> LiveLine {
+    LiveLine {
+        text: String::new(),
+        ..line
+    }
+}
+
 struct Worker {
     app: AppHandle,
     transcript: Arc<Mutex<LiveTranscript>>,
@@ -307,6 +397,7 @@ impl Worker {
         self.status(LiveStatus::Live);
 
         let mut pending = Pending::default();
+        let mut echoes = EchoFilter::default();
         let mut stopping = false;
         loop {
             // Wait for audio only with nothing to decode; then take
@@ -358,7 +449,7 @@ impl Worker {
             }
             match pending.next() {
                 Some((track, cut)) => {
-                    if !self.decode(&mut transcriber, language.clone(), track, cut) {
+                    if !self.decode(&mut transcriber, &mut echoes, language.clone(), track, cut) {
                         break;
                     }
                 }
@@ -405,6 +496,7 @@ impl Worker {
     fn decode(
         &self,
         transcriber: &mut MeetingTranscriber,
+        echoes: &mut EchoFilter,
         language: Option<String>,
         track: Track,
         cut: Cut,
@@ -425,22 +517,25 @@ impl Worker {
             if cut.partial { "partial" } else { "final" },
             started.elapsed().as_millis()
         );
-        publish(
-            &self.app,
-            &self.transcript,
-            LiveUpdate {
-                meeting_id: self.meeting_id,
-                status: None,
-                line: Some(LiveLine {
-                    id: line_id(track, cut.id),
-                    track,
-                    t0_ms: cut.t0_ms,
-                    t1_ms: cut.t1_ms,
-                    text,
-                    tentative: cut.partial,
-                }),
-            },
-        );
+        let line = LiveLine {
+            id: line_id(track, cut.id),
+            track,
+            t0_ms: cut.t0_ms,
+            t1_ms: cut.t1_ms,
+            text,
+            tentative: cut.partial,
+        };
+        for line in echoes.add(line) {
+            publish(
+                &self.app,
+                &self.transcript,
+                LiveUpdate {
+                    meeting_id: self.meeting_id,
+                    status: None,
+                    line: Some(line),
+                },
+            );
+        }
         true
     }
 
@@ -554,6 +649,78 @@ mod tests {
         println!("live transcript: {text}");
         assert!(text.split_whitespace().count() >= 3, "{text:?}");
         transcriber.unload();
+    }
+
+    fn live(id: u64, track: Track, t0_ms: i64, t1_ms: i64, text: &str) -> LiveLine {
+        LiveLine {
+            id: line_id(track, id),
+            track,
+            t0_ms,
+            t1_ms,
+            text: text.into(),
+            tentative: false,
+        }
+    }
+
+    fn texts(lines: &[LiveLine]) -> Vec<(Track, &str)> {
+        lines.iter().map(|l| (l.track, l.text.as_str())).collect()
+    }
+
+    const SAID: &str = "So I think Santosh will join in sometime. But JD, the objective is \
+                        to go through the action items that were there on Friday and.";
+    const ECHO: &str = "So I think Santosh will join in sometime. But JD, the objective is \
+                        to go through the action items that were there on.";
+
+    #[test]
+    fn a_mic_echo_decoded_after_the_system_line_is_hidden() {
+        let mut f = EchoFilter::default();
+        assert_eq!(
+            texts(&f.add(live(0, Track::System, 0, 6_000, SAID))),
+            [(Track::System, SAID)]
+        );
+        assert_eq!(
+            texts(&f.add(live(0, Track::Mic, 200, 6_100, ECHO))),
+            [(Track::Mic, "")]
+        );
+    }
+
+    #[test]
+    fn a_mic_echo_decoded_first_is_hidden_when_the_system_line_comes() {
+        let mut f = EchoFilter::default();
+        assert_eq!(
+            texts(&f.add(live(0, Track::Mic, 200, 6_100, ECHO))),
+            [(Track::Mic, ECHO)]
+        );
+        assert_eq!(
+            texts(&f.add(live(0, Track::System, 0, 6_000, SAID))),
+            [(Track::System, SAID), (Track::Mic, "")]
+        );
+        // Its later decodes stay hidden, and it isn't blanked twice.
+        assert_eq!(
+            texts(&f.add(live(0, Track::Mic, 200, 6_100, ECHO))),
+            [(Track::Mic, "")]
+        );
+        assert_eq!(
+            texts(&f.add(live(1, Track::System, 6_500, 8_000, "Sounds good."))).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_users_own_words_are_kept() {
+        let mut f = EchoFilter::default();
+        f.add(live(0, Track::System, 0, 6_000, SAID));
+        // Talking over the other side, about something else.
+        let mine = "Sure, I can share my screen in a minute.";
+        assert_eq!(
+            texts(&f.add(live(0, Track::Mic, 1_000, 4_000, mine))),
+            [(Track::Mic, mine)]
+        );
+        // The same words much later: the user repeating them.
+        assert_eq!(
+            texts(&f.add(live(1, Track::Mic, 20_000, 26_000, ECHO))),
+            [(Track::Mic, ECHO)]
+        );
     }
 
     #[test]

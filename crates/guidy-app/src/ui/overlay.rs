@@ -120,7 +120,7 @@ fn cancel_button(cx: &App) -> impl IntoElement {
     let hover = cx.theme().accent;
     div()
         .id("overlay-cancel")
-        .aria_label("cancel")
+        .aria_label(t("common.cancel"))
         .size(px(22.))
         .rounded_full()
         .flex()
@@ -143,7 +143,7 @@ fn cancel_button(cx: &App) -> impl IntoElement {
 fn status_dot(ready: bool, cx: &App) -> AnyElement {
     let muted = cx.theme().muted_foreground;
     if ready {
-        design::signal_dot(cx)
+        design::hud_signal_dot(cx)
             .with_animation(
                 "dot-pulse",
                 Animation::new(Duration::from_millis(1900)).repeat(),
@@ -200,7 +200,8 @@ fn spinner(cx: &App) -> impl IntoElement {
 }
 
 impl Render for OverlayView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(design::HUD_REM);
         let Some(state) = self.state.clone() else {
             return div().into_any_element();
         };
@@ -273,7 +274,7 @@ impl Render for OverlayView {
                 .child(
                     div()
                         .id("overlay-work-label")
-                        .text_size(design::TEXT_BODY)
+                        .text_size(design::HUD_TEXT_BODY)
                         .text_color(muted)
                         .child(design::shimmer_text("overlay-work-shimmer", label, cx))
                         .test_support(),

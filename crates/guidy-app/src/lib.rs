@@ -11,9 +11,12 @@ pub mod state;
 pub mod testing;
 pub mod theme;
 pub mod ui;
+#[cfg(all(test, target_os = "macos"))]
+mod ui_snapshots;
 #[cfg(test)]
 mod ui_tests;
 pub mod updater;
+pub mod window_state;
 pub mod windows;
 
 use crate::backend::CoreBackend;
@@ -150,6 +153,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     windows::spawn_shell_loop(shell, shell_rx, cx);
     windows::spawn_appearance_watch(cx);
     windows::watch_displays(cx);
+    windows::save_state_on_quit(cx);
 
     // Queue backend events from now on; consumed once state exists.
     let (event_tx, event_rx) = smol::channel::unbounded::<CoreEvent>();
@@ -163,17 +167,69 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     state::apply_app_language(&initial.app_language);
     theme::apply_setting(initial.theme, cx);
 
-    let decision = guidy_core::initialize_app(&app, &cli_args, !cli_args.no_tray);
-
-    // AppState runs the startup step machine (onboarding check, then input +
-    // shortcut init) whether or not the settings window is ever opened.
-    let state = AppState::install_with_meetings(
+    // Window first: the core's managers (model registry scan, history
+    // database) are built off the main thread meanwhile, and the window
+    // draws a skeleton of the screen it will show (the app, or the setup
+    // assistant for a new user) instead of a blank frame.
+    let early = guidy_core::startup_decision(
+        initial.start_hidden,
+        initial.show_tray_icon,
+        &cli_args,
+        false,
+    );
+    let state = AppState::install_starting(
         Arc::new(CoreBackend::new(app.clone())),
         Arc::new(CoreMeetingsBackend::new(app.clone())),
+        initial.onboarding_completed,
         cx,
     );
     let overlay = OverlayState::install(cx);
     crate::ui::recording_widget::RecordingWidgetState::install(cx);
+    spawn_event_loop(event_rx, state.clone(), overlay, cx);
+    if early.show_main_window {
+        windows::show_main(cx);
+    } else {
+        #[cfg(target_os = "macos")]
+        if early.start_as_accessory {
+            cx.set_activation_policy(ActivationPolicy::Accessory);
+        }
+    }
+
+    let managers_app = app.clone();
+    let managers = cx
+        .background_executor()
+        .spawn(async move { guidy_core::create_managers(&managers_app) });
+    cx.spawn(async move |cx| {
+        let managers = managers.await;
+        cx.update(|cx| finish_start(app, cli_args, managers, early, state, cx));
+    })
+    .detach();
+}
+
+/// The second half of startup, on the main thread once the managers exist:
+/// register them (tray, shortcuts plumbing, meetings), then let the app
+/// state load and run the startup check. A core that can't start shows an
+/// error window (Show Logs, Quit) instead of crashing before any UI.
+fn finish_start(
+    app: AppHandle,
+    cli_args: CliArgs,
+    managers: Result<guidy_core::CoreManagers, String>,
+    early: guidy_core::StartupDecision,
+    state: Entity<AppState>,
+    cx: &mut App,
+) {
+    let managers = match managers {
+        Ok(m) => m,
+        Err(e) => {
+            log::error!("Guidy couldn't start: {e}");
+            state.update(cx, |s, cx| s.core_failed(e, cx));
+            windows::show_main(cx);
+            return;
+        }
+    };
+    let decision = guidy_core::initialize_app(&app, &cli_args, !cli_args.no_tray, managers);
+    state.update(cx, |s, cx| s.core_ready(cx));
+
     #[cfg(debug_assertions)]
     let call_demo = std::env::var("GUIDY_DEV_RECORDING_WIDGET_DEMO").as_deref() == Ok("call");
     #[cfg(not(debug_assertions))]
@@ -183,7 +239,6 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     }
     // Session-wide update checker (automatic check, tray "check for updates").
     ui::status_bar::StatusBar::global(cx);
-    spawn_event_loop(event_rx, state, overlay, cx);
 
     #[cfg(debug_assertions)]
     if std::env::var_os("GUIDY_DEV_OVERLAY_DEMO").is_some() {
@@ -207,13 +262,9 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
         recording_widget_demo(&app, mode == "expanded", cx);
     }
 
-    if decision.show_main_window {
+    // Windows: the core can insist on the window (microphone denied).
+    if decision.show_main_window && !early.show_main_window {
         windows::show_main(cx);
-    } else {
-        #[cfg(target_os = "macos")]
-        if decision.start_as_accessory {
-            cx.set_activation_policy(ActivationPolicy::Accessory);
-        }
     }
 }
 

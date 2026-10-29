@@ -13,7 +13,7 @@
 use crate::logic::meetings::{is_linear_url, MeetingsEvent};
 use crate::meetings_backend::{error_message, MeetingsBackend, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{foldable_heading, group, icon, t, t_args, Dropdown, DropdownOption};
 use crate::ui::pages::meetings::ai_settings::error_box;
 use gpui_kit::base::TestSupportExt;
@@ -112,6 +112,8 @@ pub struct TicketsView {
     on_open_settings: Option<Hook>,
     /// The ticket list is shown (folded when a meeting opens).
     open: bool,
+    /// Shown as its own tab of the meeting detail: no fold, always open.
+    embedded: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -157,10 +159,21 @@ impl TicketsView {
             error: None,
             on_open_settings: None,
             open: false,
+            embedded: false,
             _subs: subs,
         };
         this.reload(cx);
         this
+    }
+
+    /// Show the list as a tab of its own: open, with a plain heading.
+    pub fn set_embedded(&mut self, embedded: bool) {
+        self.embedded = embedded;
+    }
+
+    /// How many tickets are drafted or past draft.
+    pub fn count(&self) -> usize {
+        reviewable(&self.items).len()
     }
 
     /// Hook for the meetings page: show the settings tab (Linear key).
@@ -434,11 +447,11 @@ impl TicketsView {
         h_flex()
             .w_full()
             .gap_2()
+            .flex_wrap()
             .justify_end()
             .child(
                 Button::new("tickets-draft")
                     .secondary()
-                    .pill()
                     .small()
                     .icon(icon("file-pen-line"))
                     .label(t("meetingsAi.tickets.draft"))
@@ -449,7 +462,6 @@ impl TicketsView {
             .child(
                 Button::new("tickets-approve-selected")
                     .secondary()
-                    .pill()
                     .small()
                     .icon(icon("check"))
                     .label(t_args(
@@ -463,7 +475,6 @@ impl TicketsView {
                 Button::new("tickets-create")
                     .primary()
                     .when(approved == 0 || self.creating, |b| b.secondary())
-                    .pill()
                     .small()
                     .icon(icon("send"))
                     .label(t_args(
@@ -498,11 +509,16 @@ impl TicketsView {
                     .flex_1()
                     .min_w_0()
                     .child(div().text_sm().truncate().child(item.ticket.title.clone()))
-                    .child(div().text_xs().text_color(muted).child(if already {
-                        t("meetingsAi.tickets.alreadyExisted")
-                    } else {
-                        t("meetingsAi.tickets.created")
-                    })),
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::TEXT_SECONDARY)
+                            .text_color(muted)
+                            .child(if already {
+                                t("meetingsAi.tickets.alreadyExisted")
+                            } else {
+                                t("meetingsAi.tickets.created")
+                            }),
+                    ),
             )
             .child(
                 Button::new(SharedString::from(format!("ticket-issue-{id}")))
@@ -542,7 +558,6 @@ impl TicketsView {
             .child(
                 Button::new(SharedString::from(format!("ticket-restore-{id}")))
                     .ghost()
-                    .pill()
                     .xsmall()
                     .label(t("meetingsAi.tickets.restore"))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -610,7 +625,6 @@ impl TicketsView {
                 .child(if approved {
                     Button::new(SharedString::from(format!("ticket-unapprove-{id}")))
                         .secondary()
-                        .pill()
                         .xsmall()
                         .label(t("meetingsAi.tickets.unapprove"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -620,7 +634,6 @@ impl TicketsView {
                     Button::new(SharedString::from(format!("ticket-approve-{id}")))
                         .primary()
                         .when(!can_approve(item), |b| b.secondary())
-                        .pill()
                         .xsmall()
                         .label(t("meetingsAi.tickets.approve"))
                         .tooltip(if can_approve(item) {
@@ -649,7 +662,12 @@ impl TicketsView {
         let field = move |key: &str, el: AnyElement| {
             v_flex()
                 .gap_0p5()
-                .child(div().text_xs().text_color(muted).child(t(key)))
+                .child(
+                    div()
+                        .text_size(crate::ui::design::TEXT_SECONDARY)
+                        .text_color(muted)
+                        .child(t(key)),
+                )
                 .child(el)
         };
         let w = weak.clone();
@@ -827,7 +845,6 @@ impl TicketsView {
                         .child(
                             Button::new(SharedString::from(format!("ticket-save-{id}")))
                                 .primary()
-                                .pill()
                                 .small()
                                 .label(t("meetingsAi.common.save"))
                                 .on_click(cx.listener(|this, _, _, cx| this.save_edit(cx))),
@@ -835,7 +852,6 @@ impl TicketsView {
                         .child(
                             Button::new(SharedString::from(format!("ticket-cancel-{id}")))
                                 .secondary()
-                                .pill()
                                 .small()
                                 .label(t("meetingsAi.common.cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -847,7 +863,7 @@ impl TicketsView {
                 .into_any_element()
         } else {
             div()
-                .text_xs()
+                .text_size(crate::ui::design::TEXT_SECONDARY)
                 .text_color(muted)
                 .line_clamp(3)
                 .child(item.ticket.description.clone())
@@ -873,7 +889,7 @@ impl TicketsView {
                     h_flex()
                         .id(SharedString::from(format!("ticket-error-{id}")))
                         .gap_1()
-                        .text_xs()
+                        .text_size(crate::ui::design::TEXT_SECONDARY)
                         .text_color(theme.danger)
                         .child(icon("circle-alert").xsmall())
                         .child(t_args("meetingsAi.tickets.createFailed", &[("error", &e)])),
@@ -900,7 +916,6 @@ impl TicketsView {
             .child(
                 Button::new("tickets-open-settings")
                     .secondary()
-                    .pill()
                     .small()
                     .icon(icon("settings"))
                     .label(t("meetingsAi.tickets.openSettings"))
@@ -969,6 +984,15 @@ impl Render for TicketsView {
                 .w_full()
                 .gap_2()
                 .child(group(Some(t("meetingsAi.tickets.heading")), rows, cx))
+                .test_support();
+        }
+        if self.embedded {
+            return v_flex()
+                .id(id)
+                .w_full()
+                .gap_2()
+                .child(self.toolbar(cx))
+                .child(group(None, rows, cx))
                 .test_support();
         }
         let open = self.open;

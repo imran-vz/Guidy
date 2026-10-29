@@ -7,7 +7,6 @@
 //! audio than the 3D-Speaker (zh-cn) model.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
@@ -153,10 +152,187 @@ fn status_cell() -> &'static Mutex<Option<SpeakerModelStatus>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
-/// Serializes downloads: a second caller waits for the first to finish.
-fn download_lock() -> &'static Mutex<()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new(()))
+/// Serializes downloads of one file: a second caller waits for the first
+/// to finish (different files download side by side).
+fn file_lock(path: &Path) -> std::sync::Arc<Mutex<()>> {
+    static L: OnceLock<Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<Mutex<()>>>>> =
+        OnceLock::new();
+    L.get_or_init(Default::default)
+        .lock()
+        .entry(path.to_path_buf())
+        .or_default()
+        .clone()
+}
+
+/// Where a file downloads to before it is verified and renamed into place.
+/// A cancelled or failed download keeps it and the next one resumes.
+pub fn partial_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_owned();
+    name.push(".partial");
+    PathBuf::from(name)
+}
+
+/// One downloadable speaker-model file (the standard speaker model, a
+/// separation model or the segmentation model).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFile {
+    /// Its download-tracker id.
+    pub download_id: String,
+    pub name: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub size: u64,
+}
+
+impl ModelFile {
+    pub fn path(&self, app: &AppHandle) -> Result<PathBuf> {
+        Ok(speaker_model_dir(app)?.join(self.file))
+    }
+
+    pub fn installed(&self, path: &Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|m| m.len() == self.size)
+    }
+}
+
+/// The file behind a download-tracker id (`speaker:resnet34`,
+/// `separation:<id>`, `segmentation:pyannote`).
+pub fn download_file_for(id: &str) -> Option<ModelFile> {
+    if id == speaker_download_id() {
+        let m = separation_model(SpeakerModelId::Resnet34);
+        return Some(ModelFile {
+            download_id: id.to_string(),
+            name: m.name,
+            file: m.file,
+            url: m.url,
+            sha256: m.sha256,
+            size: m.size,
+        });
+    }
+    if id == segmentation_download_id() {
+        return Some(ModelFile {
+            download_id: id.to_string(),
+            name: SEGMENTATION_MODEL_NAME,
+            file: SEGMENTATION_MODEL_FILE,
+            url: SEGMENTATION_MODEL_URL,
+            sha256: SEGMENTATION_MODEL_SHA256,
+            size: SEGMENTATION_MODEL_SIZE,
+        });
+    }
+    let model = SpeakerModelId::parse(id.strip_prefix("separation:")?);
+    if model.is_standard() || separation_download_id(model) != id {
+        return None;
+    }
+    let m = separation_model(model);
+    Some(ModelFile {
+        download_id: id.to_string(),
+        name: m.name,
+        file: m.file,
+        url: m.url,
+        sha256: m.sha256,
+        size: m.size,
+    })
+}
+
+/// The file on disk, downloading it first if needed (blocking: call from a
+/// worker thread). The standard speaker model also reports
+/// [`SPEAKER_MODEL_STATUS_EVENT`].
+pub fn ensure_download(app: &AppHandle, file: &ModelFile) -> Result<PathBuf> {
+    if file.download_id == speaker_download_id() {
+        return ensure_speaker_model(app);
+    }
+    ensure_file(app, file, &|_, _| {})
+}
+
+fn ensure_file(
+    app: &AppHandle,
+    file: &ModelFile,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<PathBuf> {
+    let path = file.path(app)?;
+    if file.installed(&path) {
+        return Ok(path);
+    }
+    let lock = file_lock(&path);
+    let _guard = lock.lock();
+    if file.installed(&path) {
+        return Ok(path);
+    }
+    download_tracked(app, file, &path, on_progress)?;
+    Ok(path)
+}
+
+/// Download `file` to `dest` through the download tracker: resumable from
+/// [`partial_path`], size- and SHA-256-verified, cancelled by the tracker's
+/// token ([`crate::downloads::DownloadCancelled`]).
+fn download_tracked(
+    app: &AppHandle,
+    file: &ModelFile,
+    dest: &Path,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<()> {
+    let tracker = crate::downloads::global();
+    let id = file.download_id.as_str();
+    let token = tracker.begin(app, id, file.name, file.size);
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    let partial = partial_path(dest);
+    let size = file.size;
+    let progress = |p: &crate::managers::model::DownloadProgress| {
+        let total = if p.total > 0 { p.total } else { size };
+        tracker.progress(app, id, p.downloaded, total);
+        on_progress(p.downloaded, total);
+    };
+    let verifying = || tracker.verifying(app, id);
+    let result = crate::host::async_runtime::block_on(crate::managers::model::download_file(
+        id,
+        file.url,
+        &partial,
+        Some(size),
+        Some(file.sha256),
+        &token,
+        &progress,
+        &verifying,
+    ))
+    .and_then(|done| {
+        if done {
+            std::fs::rename(&partial, dest)
+                .with_context(|| format!("rename to {}", dest.display()))?;
+        }
+        Ok(done)
+    });
+    match result {
+        Ok(true) => {
+            tracker.finish(app, id);
+            Ok(())
+        }
+        Ok(false) => {
+            tracker.cancelled(app, id);
+            Err(crate::downloads::DownloadCancelled.into())
+        }
+        Err(e) => {
+            let error = format!("could not download {}: {e:#}", file.name);
+            tracker.fail(app, id, &error);
+            Err(e).context(error)
+        }
+    }
+}
+
+/// Remove a file, its partial and the pre-resume `.onnx.part` leftover.
+fn remove_model_file(path: &Path) -> Result<()> {
+    for p in [
+        path.to_path_buf(),
+        partial_path(path),
+        path.with_extension("onnx.part"),
+    ] {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("delete {}", p.display())),
+        }
+    }
+    Ok(())
 }
 
 pub fn speaker_model_dir(app: &AppHandle) -> Result<PathBuf> {
@@ -193,6 +369,16 @@ pub fn speaker_model_status(app: &AppHandle) -> SpeakerModelStatus {
     if let Some(s @ SpeakerModelStatus::Downloading { .. }) = status_cell().lock().clone() {
         return s;
     }
+    // Queued behind other downloads (or just started): already on its way.
+    if let Some(item) = crate::downloads::global()
+        .get(speaker_download_id())
+        .filter(|i| i.state.is_active())
+    {
+        return SpeakerModelStatus::Downloading {
+            downloaded: item.downloaded_bytes,
+            total: item.total_bytes,
+        };
+    }
     match speaker_model_path(app) {
         Ok(path) if is_installed(&path) => SpeakerModelStatus::Ready,
         _ => status_cell()
@@ -226,47 +412,15 @@ pub fn separation_model_installed(app: &AppHandle, id: SpeakerModelId) -> bool {
 pub fn ensure_separation_model(
     app: &AppHandle,
     id: SpeakerModelId,
-    mut on_progress: impl FnMut(u64, u64),
+    on_progress: impl FnMut(u64, u64) + Send,
 ) -> Result<PathBuf> {
     if id.is_standard() {
         return ensure_speaker_model(app);
     }
-    let model = separation_model(id);
-    let path = separation_model_path(app, id)?;
-    if separation_model_installed(app, id) {
-        return Ok(path);
-    }
-    let _guard = download_lock().lock();
-    if separation_model_installed(app, id) {
-        return Ok(path);
-    }
-    let download_id = separation_download_id(id);
-    let flag = crate::downloads::global().begin(app, &download_id, model.name, model.size);
-    let app_for_progress = app.clone();
-    let progress_id = download_id.clone();
-    let result = crate::host::async_runtime::block_on(download_verified_cancellable(
-        model.url,
-        &path,
-        model.sha256,
-        |downloaded, total| {
-            let total = total.unwrap_or(model.size);
-            crate::downloads::global().progress(&app_for_progress, &progress_id, downloaded, total);
-            on_progress(downloaded, total);
-        },
-        || flag.load(Ordering::SeqCst),
-    ));
-    match result {
-        Ok(()) => {
-            crate::downloads::global().finish(app, &download_id);
-            Ok(path)
-        }
-        Err(e) if e.is::<crate::downloads::DownloadCancelled>() => Err(e),
-        Err(e) => {
-            let error = format!("could not download the speaker model {}: {e:#}", model.name);
-            crate::downloads::global().fail(app, &download_id, &error);
-            Err(e).context(error)
-        }
-    }
+    let file = download_file_for(&separation_download_id(id))
+        .ok_or_else(|| anyhow::anyhow!("unknown speaker model {}", id.as_str()))?;
+    let on_progress = Mutex::new(on_progress);
+    ensure_file(app, &file, &|done, total| (on_progress.lock())(done, total))
 }
 
 /// Delete a downloaded separation model (never the standard one, which
@@ -275,23 +429,40 @@ pub fn delete_separation_model(app: &AppHandle, id: SpeakerModelId) -> Result<()
     if id.is_standard() {
         bail!("the standard speaker model recognizes people and can't be deleted here");
     }
-    let path = separation_model_path(app, id)?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("delete {}", path.display())),
-    }
+    remove_model_file(&separation_model_path(app, id)?)
+}
+
+/// Delete the standard speaker model. Meeting processing then stops with
+/// [`SpeakerModelMissing`] until it is downloaded again (the UI warns).
+pub fn delete_speaker_model(app: &AppHandle) -> Result<()> {
+    let path = speaker_model_path(app)?;
+    let lock = file_lock(&path);
+    let _guard = lock.lock();
+    remove_model_file(&path)?;
+    set_status(app, SpeakerModelStatus::Missing);
+    Ok(())
+}
+
+/// Delete the speaker segmentation model (meetings then find voice changes
+/// with voiceprints alone).
+pub fn delete_segmentation_model(app: &AppHandle) -> Result<()> {
+    let path = segmentation_model_path(app)?;
+    let lock = file_lock(&path);
+    let _guard = lock.lock();
+    remove_model_file(&path)
 }
 
 /// The model path, downloading it first if needed. Blocking: call from a
 /// worker thread, never from inside the async runtime.
 pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
-    let path = speaker_model_path(app)?;
-    if is_installed(&path) {
+    let file = download_file_for(speaker_download_id()).expect("the standard model");
+    let path = file.path(app)?;
+    if file.installed(&path) {
         return Ok(path);
     }
-    let _guard = download_lock().lock();
-    if is_installed(&path) {
+    let lock = file_lock(&path);
+    let _guard = lock.lock();
+    if file.installed(&path) {
         return Ok(path);
     }
     set_status(
@@ -301,29 +472,17 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
             total: SPEAKER_MODEL_SIZE,
         },
     );
-    let download_id = speaker_download_id();
-    let flag =
-        crate::downloads::global().begin(app, download_id, SPEAKER_MODEL_NAME, SPEAKER_MODEL_SIZE);
-    let mut last_emit = std::time::Instant::now();
-    let app_for_progress = app.clone();
-    let result = crate::host::async_runtime::block_on(download_verified_cancellable(
-        SPEAKER_MODEL_URL,
-        &path,
-        SPEAKER_MODEL_SHA256,
-        |downloaded, total| {
-            let total = total.unwrap_or(SPEAKER_MODEL_SIZE);
-            crate::downloads::global().progress(&app_for_progress, download_id, downloaded, total);
-            if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-                last_emit = std::time::Instant::now();
-                set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
-            }
-        },
-        || flag.load(Ordering::SeqCst),
-    ));
+    let last_emit = Mutex::new(std::time::Instant::now());
+    let result = download_tracked(app, &file, &path, &|downloaded, total| {
+        let mut last = last_emit.lock();
+        if last.elapsed() >= std::time::Duration::from_millis(250) {
+            *last = std::time::Instant::now();
+            set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
+        }
+    });
     match result {
         Ok(()) => {
             set_status(app, SpeakerModelStatus::Ready);
-            crate::downloads::global().finish(app, download_id);
             Ok(path)
         }
         Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {
@@ -338,22 +497,34 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
                     error: error.clone(),
                 },
             );
-            crate::downloads::global().fail(app, download_id, &error);
             bail!(error)
         }
     }
 }
 
-/// Start downloading the model in the background (no-op when installed).
+/// Queue the model's download (no-op when installed or already queued).
+/// Progress arrives as [`SPEAKER_MODEL_STATUS_EVENT`] and in the download
+/// tracker.
 pub fn start_speaker_model_download(app: &AppHandle) {
-    let app = app.clone();
-    let _ = std::thread::Builder::new()
-        .name("speaker-model-download".into())
-        .spawn(move || {
-            if let Err(e) = ensure_speaker_model(&app) {
-                log::warn!("{e:#}");
+    request_download(app, speaker_download_id());
+}
+
+/// Queue a download through the tracker, logging why it couldn't be.
+fn request_download(app: &AppHandle, id: &str) {
+    match crate::downloads::request(app, id) {
+        Ok(()) | Err(crate::downloads::DownloadError::AlreadyInstalled(_)) => {}
+        Err(e) => {
+            log::warn!("could not queue {id}: {e}");
+            if id == speaker_download_id() {
+                set_status(
+                    app,
+                    SpeakerModelStatus::Failed {
+                        error: e.to_string(),
+                    },
+                );
             }
-        });
+        }
+    }
 }
 
 /// Download `url` to `dest` through `dest.part`, verifying its SHA-256 before
@@ -485,6 +656,7 @@ pub const SEGMENTATION_MODEL_URL: &str = "https://huggingface.co/csukuangfj/sher
 pub const SEGMENTATION_MODEL_SHA256: &str =
     "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079";
 pub const SEGMENTATION_MODEL_SIZE: u64 = 5_992_913;
+pub const SEGMENTATION_MODEL_NAME: &str = "Pyannote Segmentation 3.0";
 
 /// Tracker id of the standard speaker model.
 pub fn speaker_download_id() -> &'static str {
@@ -524,65 +696,13 @@ pub fn installed_segmentation_model(app: &AppHandle) -> Option<PathBuf> {
         .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == SEGMENTATION_MODEL_SIZE))
 }
 
-/// Download the segmentation model in the background (no-op when it is
-/// there, or already downloading).
+/// Queue the segmentation model's download (no-op when it is there, or
+/// already queued).
 pub fn start_segmentation_model_download(app: &AppHandle) {
-    static DOWNLOADING: Mutex<bool> = Mutex::new(false);
     if installed_segmentation_model(app).is_some() {
         return;
     }
-    {
-        let mut busy = DOWNLOADING.lock();
-        if *busy {
-            return;
-        }
-        *busy = true;
-    }
-    let app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("segmentation-model-download".into())
-        .spawn(move || {
-            let download_id = segmentation_download_id();
-            let flag = crate::downloads::global().begin(
-                &app,
-                download_id,
-                "Speaker segmentation",
-                SEGMENTATION_MODEL_SIZE,
-            );
-            let result = segmentation_model_path(&app).and_then(|path| {
-                let app_for_progress = app.clone();
-                crate::host::async_runtime::block_on(download_verified_cancellable(
-                    SEGMENTATION_MODEL_URL,
-                    &path,
-                    SEGMENTATION_MODEL_SHA256,
-                    |downloaded, total| {
-                        crate::downloads::global().progress(
-                            &app_for_progress,
-                            download_id,
-                            downloaded,
-                            total.unwrap_or(SEGMENTATION_MODEL_SIZE),
-                        );
-                    },
-                    || flag.load(Ordering::SeqCst),
-                ))
-            });
-            match result {
-                Ok(()) => crate::downloads::global().finish(&app, download_id),
-                Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {}
-                Err(e) => {
-                    log::warn!("could not download the speaker segmentation model: {e:#}");
-                    crate::downloads::global().fail(
-                        &app,
-                        download_id,
-                        format!("could not download the speaker segmentation model: {e:#}"),
-                    );
-                }
-            }
-            *DOWNLOADING.lock() = false;
-        });
-    if spawned.is_err() {
-        *DOWNLOADING.lock() = false;
-    }
+    request_download(app, segmentation_download_id());
 }
 
 /// Speaker turns from the segmentation model, through sherpa-onnx's
@@ -716,6 +836,48 @@ mod tests {
             }
         });
         format!("http://{addr}/model.onnx")
+    }
+
+    #[test]
+    fn download_ids_map_to_their_files() {
+        assert_eq!(
+            download_file_for(speaker_download_id()).unwrap().file,
+            SPEAKER_MODEL_FILE
+        );
+        assert_eq!(
+            download_file_for(segmentation_download_id()).unwrap().size,
+            SEGMENTATION_MODEL_SIZE
+        );
+        let titanet = separation_download_id(SpeakerModelId::TitanetLarge);
+        assert_eq!(
+            download_file_for(&titanet).unwrap().file,
+            "nemo_en_titanet_large.onnx"
+        );
+        assert!(download_file_for("separation:resnet34").is_none());
+        assert!(download_file_for("separation:nope").is_none());
+        assert_eq!(
+            partial_path(Path::new("/a/m.onnx")),
+            Path::new("/a/m.onnx.partial")
+        );
+    }
+
+    #[test]
+    fn the_standard_and_segmentation_models_can_be_deleted() {
+        let t = crate::host::testing::TestApp::new();
+        let path = speaker_model_path(&t.app).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"model").unwrap();
+        std::fs::write(partial_path(&path), b"part").unwrap();
+        delete_speaker_model(&t.app).unwrap();
+        assert!(!path.exists() && !partial_path(&path).exists());
+        assert_eq!(speaker_model_status(&t.app), SpeakerModelStatus::Missing);
+        let seg = segmentation_model_path(&t.app).unwrap();
+        std::fs::write(&seg, b"seg").unwrap();
+        delete_segmentation_model(&t.app).unwrap();
+        assert!(!seg.exists());
+        // Deleting what isn't there is fine.
+        delete_segmentation_model(&t.app).unwrap();
+        assert!(delete_separation_model(&t.app, SpeakerModelId::Resnet34).is_err());
     }
 
     #[tokio::test]

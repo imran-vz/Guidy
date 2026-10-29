@@ -36,23 +36,12 @@
     "about": "Over Guidy"
   },
   "usage": {
-    "title": "Gebruik",
-    "description": "Wat cloud-AI-providers hebben gekost en het werk dat modellen op deze Mac hebben gedaan.",
-    "cloud": "Cloud",
     "local": "Op deze Mac",
     "refresh": "Verversen",
     "total": "Totaal uitgegeven",
     "last30Days": "Afgelopen 30 dagen",
     "callsTitle": "Aanroepen",
-    "byModel": "Per model",
-    "byFeature": "Per functie",
     "empty": "Nog geen cloud-AI-aanroepen.",
-    "calls_one": "{{count}} aanroep",
-    "calls_other": "{{count}} aanroepen",
-    "average": "gem. {{cost}}",
-    "highest": "hoogste {{cost}}",
-    "tokens": "{{input}} in / {{output}} uit tokens",
-    "unknownPrice": "prijs onbekend",
     "feature": {
       "dictation": "Dicteren",
       "meetingTranscription": "Vergadertranscriptie",
@@ -61,37 +50,17 @@
       "other": "Overig"
     },
     "localAudio": "Getranscribeerde audio",
-    "localWords": "Woorden",
-    "localTokens": "LLM-tokens",
-    "localCloudEquivalent": "Cloud-equivalent",
     "localEmpty": "Er is nog niets op een lokaal model uitgevoerd.",
-    "localByModel": "Lokale modellen",
-    "localByFeature": "Lokaal werk per functie",
     "kind": {
       "transcription": "Transcriptie",
       "llm": "Ingebouwd LLM"
     },
-    "runs_one": "{{count}} uitvoering",
-    "runs_other": "{{count}} uitvoeringen",
-    "audio": "{{duration}} audio",
-    "words": "{{count}} woorden",
-    "realtime": "{{speed}} realtime",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "generatie {{speed}}",
-    "loadTime": "laadt in {{time}}",
-    "localNote": "Realtimesnelheid is audioduur ÷ verwerkingstijd, zonder laden; dicteren dat live tijdens het spreken wordt gedecodeerd, wordt niet getimed. Het cloud-equivalent prijst de audio tegen ${{price}} per minuut (OpenAI Whisper).",
     "estimateNote": "~ markeert bedragen die zijn geschat op basis van gepubliceerde prijzen per token; providers die hun eigen kosten rapporteren (zoals OpenRouter) zijn exact. Bekijk het dashboard van je provider voor facturering.",
     "reportedNote": "Bedragen zijn zoals gerapporteerd door de providers. Bekijk het dashboard van je provider voor facturering.",
-    "clear": "Geschiedenis wissen",
     "clearTitle": "Gebruiksgeschiedenis wissen?",
     "clearConfirm": "De vastgelegde aanroepen, kosten en lokale modeluitvoeringen worden verwijderd. Het gebruik bij vergadersamenvattingen blijft staan."
   },
   "onboarding": {
-    "subtitle": "Kies een transcriptiemodel om aan de slag te gaan",
-    "existingModelsTitle": "Compatibele modellen",
-    "downloadModelsTitle": "Beschikbaar voor download",
-    "showAllModels": "Toon alle {{total}} modellen",
-    "showFewerModels": "Minder modellen tonen",
     "recommended": "Aanbevolen",
     "customModelDescription": "Niet officieel ondersteund",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Oud formaat",
       "failed": "Downloaden mislukt",
       "retry": "Opnieuw proberen",
-      "chooseAnother": "Kies een ander model",
       "download": "Modellen downloaden ({{size}})",
       "continue": "Doorgaan",
       "timeRemaining": "Nog {{time}}"
@@ -150,7 +118,6 @@
       "grant": "Machtiging verlenen",
       "granted": "Verleend",
       "waiting": "Wachten...",
-      "allGranted": "Alles ingesteld!",
       "errors": {
         "checkFailed": "Machtigingen controleren mislukt. Probeer het opnieuw.",
         "requestFailed": "Machtiging aanvragen mislukt. Probeer het opnieuw."
@@ -164,10 +131,6 @@
     "active": "Actief",
     "switching": "Wisselen...",
     "noModelsAvailable": "Geen modellen beschikbaar",
-    "verifying": "Verifiëren van {{modelName}}...",
-    "verifyingGeneric": "Verifiëren...",
-    "downloading": "Downloaden {{percentage}}%",
-    "downloadingMultiple": "Downloaden van {{count}} modellen...",
     "modelReady": "Model gereed",
     "loading": "Laden van {{modelName}}...",
     "loadingGeneric": "Laden...",
@@ -176,27 +139,17 @@
     "noModelDownloadRequired": "Geen model - Download vereist",
     "deleteModel": "{{modelName}} verwijderen",
     "downloadSpeed": "{{speed}} MB/s",
-    "cancel": "Annuleren",
     "cancelDownload": "Download annuleren",
     "capabilities": {
-      "languageSelection": "Ondersteunt meerdere invoertalen",
-      "singleLanguage": "Ondersteunt alleen deze taal",
       "languageCount": "{{total}} talen",
       "languageOnly": "Alleen {{language}}",
-      "translation": "Kan vertalen naar het Engels",
-      "translate": "Vertalen",
-      "streaming": "Toont live transcriptie tijdens het spreken"
+      "translate": "Vertalen"
     },
     "download": "Downloaden",
     "use": "Gebruiken"
   },
   "settings": {
-    "modelSettings": {
-      "title": "Instellingen voor {{model}}"
-    },
     "general": {
-      "title": "Algemeen",
-      "description": "Hoe je dicteren start, naar welke taal het luistert en wat je hoort.",
       "shortcutsGroup": "Sneltoetsen",
       "shortcut": {
         "title": "Sneltoetsen",
@@ -227,7 +180,6 @@
       },
       "language": {
         "title": "Taal",
-        "description": "Selecteer de taal voor spraakherkenning. 'Automatisch' detecteert de taal vanzelf, terwijl het kiezen van een specifieke taal de nauwkeurigheid voor die taal kan verbeteren.",
         "searchPlaceholder": "Talen zoeken...",
         "noResults": "Geen talen gevonden",
         "auto": "Automatisch"
@@ -248,13 +200,8 @@
       }
     },
     "models": {
-      "title": "Transcriptiemodellen",
-      "description": "Selecteer een transcriptiemodel of download extra modellen. Verschillende modellen bieden variërende niveaus van nauwkeurigheid en snelheid.",
       "searchPlaceholder": "Modellen zoeken op naam...",
-      "yourModels": "Gedownloade modellen",
-      "availableModels": "Beschikbaar voor download",
       "deleteConfirm": "Weet je zeker dat je {{modelName}} wilt verwijderen? Je moet het model opnieuw downloaden om het weer te gebruiken.",
-      "deleteActiveConfirm": "{{modelName}} is je actieve model. Als je dit verwijdert, stoppen de transcripties totdat je een nieuw model selecteert. Weet je het zeker?",
       "deleteTitle": "Model verwijderen",
       "retiredNotice": {
         "title": "Oude modellen werken niet meer met Guidy",
@@ -269,16 +216,13 @@
         "translation": "Filter modellen die vertaling naar het Engels ondersteunen"
       },
       "rescan": {
-        "label": "Opnieuw scannen",
         "tooltip": "Scannen naar modellen die buiten Guidy om zijn toegevoegd aan de modellenmap of Hugging Face-cache"
       },
       "noModelsMatch": "Geen modellen voldoen aan dit filter."
     },
     "sound": {
-      "title": "Geluid",
       "microphone": {
         "title": "Microfoon",
-        "description": "Selecteer de gewenste microfoon",
         "placeholder": "Microfoon selecteren...",
         "loading": "Laden..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Afspeelapparaat",
-        "description": "Selecteer het gewenste audioapparaat voor feedbackgeluiden",
         "placeholder": "Afspeelapparaat selecteren...",
         "loading": "Laden..."
       },
       "volume": {
-        "title": "Volume",
-        "description": "Pas het volume van de geluidsfeedback aan"
+        "title": "Volume"
       }
     },
     "advanced": {
-      "title": "Geavanceerd",
-      "description": "Opstarten, plakken, transcriptie afstemmen en geschiedenis.",
       "groups": {
         "app": "App",
         "output": "Uitvoer",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Geminimaliseerd opstarten",
-        "description": "Start op de achtergrond in het systeemvak zonder het hoofdvenster te openen."
+        "description": "Start op de achtergrond in het systeemvak zonder het hoofdvenster te openen.",
+        "descriptionMac": "Starten in de menubalk zonder het venster te openen."
       },
       "autostart": {
         "label": "Starten bij opstarten",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Pictogram in systeemvak tonen",
-        "description": "Toon het Guidy-pictogram in het systeemvak."
+        "description": "Toon het Guidy-pictogram in het systeemvak.",
+        "descriptionMac": "Het Guidy-symbool in de menubalk tonen."
       },
       "overlay": {
         "style": {
-          "title": "Overlay",
           "description": "Kies de opname-overlay: 'Geen' verbergt deze, 'Minimaal' toont een compacte balk, 'Live' toont de tekst in realtime tijdens het spreken (alleen voor streaming-modellen). Op Linux wordt 'Geen' aanbevolen.",
+          "descriptionMac": "Kies de opname-overlay: 'Geen' verbergt deze, 'Minimaal' toont een compacte balk, 'Live' toont de tekst in realtime tijdens het spreken (alleen voor streaming-modellen).",
           "options": {
             "none": "Geen",
             "minimal": "Minimaal",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Automatisch verzenden",
         "description": "Verzend automatisch de geselecteerde toetsencombinatie na het invoegen van de tekst. Cmd+Enter geldt voor macOS, Windows/Linux gebruiken Super+Enter.",
+        "descriptionMac": "Verzend automatisch de geselecteerde toetsencombinatie na het invoegen van de tekst.",
         "options": {
           "off": "Uit",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Naverwerking",
-      "description": "Laat een AI-model een transcriptie opschonen of herschrijven voordat deze wordt geplakt.",
       "hotkey": {
         "title": "Sneltoets"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Provider",
-          "description": "Selecteer een OpenAI- of Anthropic-compatibele provider."
+          "title": "Provider"
         },
         "builtin": {
           "label": "Ingebouwd model (op deze Mac)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "API-indeling",
-          "description": "Verzoekindeling die door je aangepaste eindpunt wordt verwacht.",
           "options": {
             "openai": "OpenAI-compatibel (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "Basis-URL",
-          "description": "API-basis-URL voor de geselecteerde provider. Alleen de aangepaste provider kan worden bewerkt.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API-sleutel",
-          "description": "API-sleutel voor de geselecteerde provider.",
           "placeholder": "sk-...",
           "saveFailed": "API-sleutel opslaan mislukt"
         },
@@ -500,54 +437,33 @@
           "title": "Model",
           "descriptionCustom": "Geef de model-ID op die door je aangepaste eindpunt wordt verwacht.",
           "descriptionDefault": "Kies een model dat door de geselecteerde provider wordt aangeboden.",
-          "placeholderWithOptions": "Zoek of selecteer een model",
           "placeholderNoOptions": "Typ een modelnaam",
           "refreshModels": "Modellen verversen"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Geselecteerde prompt",
-          "description": "Selecteer een sjabloon voor het verfijnen van transcripties of maak een nieuwe aan. Gebruik ${output} in de prompttekst om naar de gemaakte transcriptie te verwijzen."
-        },
-        "noPrompts": "Geen prompts beschikbaar",
-        "selectPrompt": "Selecteer een prompt",
         "createNew": "Nieuwe prompt maken",
         "promptLabel": "Promptnaam",
         "promptLabelPlaceholder": "Voer promptnaam in",
         "promptInstructions": "Prompt-instructies",
         "promptInstructionsPlaceholder": "Schrijf de instructies die na de transcriptie moeten worden uitgevoerd. Voorbeeld: Verbeter de grammatica en helderheid van de volgende tekst: ${output}",
         "promptTip": "Tip: Gebruik <code>${output}</code> om de getranscribeerde tekst in je prompt in te voegen.",
-        "updatePrompt": "Prompt bijwerken",
-        "deletePrompt": "Prompt verwijderen",
-        "createPrompt": "Prompt maken",
-        "cancel": "Annuleren",
-        "selectToEdit": "Selecteer hierboven een prompt om de details te bekijken en te bewerken.",
-        "createFirst": "Klik hierboven op 'Nieuwe prompt maken' om je eerste naverwerkingsprompt aan te maken."
+        "deletePrompt": "Prompt verwijderen"
       }
     },
     "history": {
-      "title": "Geschiedenis",
-      "openFolder": "Opnamemap openen",
-      "loading": "Geschiedenis laden...",
-      "empty": "Nog geen transcripties. Start met opnemen om je geschiedenis op te bouwen!",
       "copyToClipboard": "Transcriptie naar klembord kopiëren",
       "copyError": "Transcriptie naar het klembord kopiëren mislukt.",
       "save": "Transcriptie opslaan",
       "unsave": "Verwijderen uit opgeslagen",
       "delete": "Item verwijderen",
-      "deleteError": "Item verwijderen mislukt. Probeer het opnieuw.",
       "retranscribe": "Opnieuw transcriberen",
-      "retranscribeError": "Opnieuw transcriberen mislukt. Probeer het opnieuw.",
       "transcribing": "Transcriberen...",
       "transcriptionFailed": "Transcriptie mislukt. Je kunt het opnieuw proberen via het herlaad-pictogram."
     },
     "debug": {
-      "title": "Probleemoplossing",
       "logDirectory": {
-        "title": "Logboekmap",
-        "description": "Locatie waar logbestanden worden opgeslagen"
+        "title": "Logboekmap"
       },
       "logLevel": {
         "title": "Logboekniveau",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Live logboeken",
-        "description": "Streamt applicatielogs in realtime om problemen te diagnosticeren zonder het logbestand te openen. Alleen logs die worden gegenereerd terwijl dit paneel open is worden getoond; dit respecteert het bovenstaande logboekniveau.",
         "live": "Live",
         "paused": "Gepauzeerd",
         "pause": "Pauzeren",
@@ -573,8 +488,7 @@
         "title": "Voorbeeld van release-notes",
         "description": "Open de nieuwste meegeleverde release-notes zonder deze als gelezen te markeren",
         "button": "Voorbeeld",
-        "noNotes": "Geen meegeleverde release-notes gevonden",
-        "error": "Voorbeeld van release-notes laden mislukt"
+        "noNotes": "Geen meegeleverde release-notes gevonden"
       },
       "onboardingPreview": {
         "title": "Voorbeeld van onboarding",
@@ -631,11 +545,6 @@
         "description": "Kies de backend voor sneltoetsen.",
         "bindingsReset": "Sneltoetsen waren incompatibel en zijn teruggezet naar de standaardwaarden"
       },
-      "paths": {
-        "appData": "App-data:",
-        "models": "Modellen:",
-        "settings": "Instellingen:"
-      },
       "pasteDelay": {
         "title": "Plakvertraging (voor)",
         "description": "Vertraging (in milliseconden) na het kopiëren van de tekst, voordat de plak-toetsaanslag wordt verzonden. Verhoog dit als er niets wordt geplakt."
@@ -678,11 +587,6 @@
       }
     },
     "about": {
-      "title": "Over Guidy",
-      "version": {
-        "title": "Versie",
-        "description": "Huidige versie van Guidy"
-      },
       "author": {
         "title": "Gemaakt door",
         "description": "Imran"
@@ -692,18 +596,7 @@
         "description": "Release-notes tonen nadat Guidy is bijgewerkt"
       },
       "appDataDirectory": {
-        "title": "App-datamap",
-        "description": "Locatie waar Guidy de gegevens opslaat"
-      },
-      "sourceCode": {
-        "title": "Broncode",
-        "description": "Bekijk de broncode en draag bij",
-        "button": "Bekijk op GitHub"
-      },
-      "supportDevelopment": {
-        "title": "Ontwikkeling ondersteunen",
-        "description": "Help ons om te blijven bouwen aan Guidy",
-        "button": "Doneren"
+        "title": "App-datamap"
       },
       "acknowledgments": {
         "title": "Dankbetuigingen",
@@ -712,12 +605,6 @@
           "description": "Krachtige tensorbibliotheek voor lokale AI-verwerking",
           "details": "Guidy's lokale spraak-naar-tekst is gebouwd op transcribe.cpp en ggml. Met dank aan het geweldige werk van Georgi Gerganov en alle bijdragers."
         }
-      },
-      "hero": {
-        "headline": "Spraak-naar-tekst die op deze Mac blijft",
-        "lede": "Druk op een sneltoets, spreek, en Guidy typt in de actieve app. Transcriptie gebeurt lokaal.",
-        "engine": "Engine",
-        "model": "Model"
       }
     }
   },
@@ -744,7 +631,6 @@
     "delete": "Verwijderen",
     "back": "Terug",
     "close": "Sluiten",
-    "open": "Openen",
     "copy": "Kopiëren",
     "clear": "Wissen",
     "noOptionsFound": "Geen opties gevonden"
@@ -772,12 +658,10 @@
     "transcriptionFailedTitle": "Transcriptie mislukt"
   },
   "appLanguage": {
-    "title": "Interfacetaal",
-    "description": "Wijzig de taal van de Guidy-interface"
+    "title": "Interfacetaal"
   },
   "theme": {
     "title": "App-thema",
-    "description": "Kies of Guidy het systeemthema volgt of licht of donker blijft",
     "options": {
       "system": "Systeem",
       "light": "Licht",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Vergaderingen",
     "selection": {
-      "hint": "Sleep of Shift-klik om meerdere regels te taggen",
       "count_one": "{{count}} regel geselecteerd",
       "count_other": "{{count}} regels geselecteerd",
       "keys": "Shift-klik: bereik · ⌘-klik: toevoegen of verwijderen · Esc: wissen",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Sprekers opnieuw bepalen",
-      "tooltip": "Onderscheid de sprekers opnieuw met {{model}}. Het transcript blijft staan. Regels die je hebt getagd en sprekers die je een naam hebt gegeven, houden hun persoon; de rest wordt opnieuw op stem gekoppeld.",
       "standard": "Standaard sprekermodel",
       "download": "{{size}} downloaden, eenmalig",
       "error": "Sprekers opnieuw bepalen mislukt",
@@ -826,7 +708,6 @@
       "yesterday": "Gisteren"
     },
     "copy": {
-      "summary": "Kopiëren",
       "transcript": "Transcript kopiëren",
       "copied": "Gekopieerd",
       "notes": "Notities kopiëren",
@@ -866,7 +747,6 @@
       "openNotes": "Notities openen",
       "expand": "Live transcript tonen",
       "collapse": "Invouwen",
-      "liveTitle": "Live transcript",
       "liveHint": "Zoals tot nu toe gehoord. Het volledige transcript met sprekersnamen wordt gemaakt als de vergadering is afgelopen.",
       "callTitle": "{{app}}-gesprek",
       "callPrompt": "Vergadernotities maken?",
@@ -875,7 +755,6 @@
       "startFailed": "Starten mislukt. Opnieuw proberen?",
       "dismiss": "Niet nu"
     },
-    "description": "Neem een vergadering op deze Mac op en lees daarna het transcript met benoemde sprekers.",
     "init": {
       "starting": "Vergadernotities starten...",
       "failed": "Vergadernotities konden niet starten",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Genereer eerst de samenvatting van de vergadering: de titel wordt daaruit geschreven."
     },
     "model": {
-      "download": "Vergadermodel downloaden",
       "downloadError": "Vergadermodel downloaden mislukt"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Vergadernotities starten",
       "stop": "Vergadernotities stoppen",
-      "recording": "Opnemen",
-      "idle": "Niet aan het opnemen",
       "startError": "Opname starten mislukt",
       "stopError": "Opname stoppen mislukt",
       "disabled": "Zet vergadernotities aan in Instellingen om op te nemen."
     },
-    "upcoming": {
-      "title": "Binnenkort",
-      "empty": "Geen komende agendavergaderingen met een gesprekslink.",
-      "start": "Starten"
-    },
     "list": {
-      "title": "Opnames",
-      "empty": "Nog geen vergaderingen. Start vergadernotities om er een op te nemen.",
       "loading": "Vergaderingen laden...",
       "loadError": "Vergaderingen laden mislukt",
-      "speakerModelMissing": "Opnames worden pas verwerkt als het sprekerherkenningsmodel is gedownload.",
       "minutes": "{{count}} min",
-      "open": "Openen",
       "rename": "Naam wijzigen",
       "delete": "Verwijderen",
       "process": "Verwerken",
       "retry": "Opnieuw proberen",
       "cancelProcessing": "Verwerking annuleren",
-      "save": "Opslaan",
       "cancel": "Annuleren",
       "titlePlaceholder": "Titel van vergadering",
       "deleteTitle": "Vergadering verwijderen?",
@@ -979,7 +845,6 @@
       "share": "Aandeel",
       "youSpoke": "Jij sprak",
       "minutes": "Min",
-      "speakersToName": "{{count}} nog te benoemen",
       "notesTab": "Notities"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Personen",
-      "description": "Personen die je in vergaderingen een naam hebt gegeven. Guidy herkent hun stem in latere vergaderingen.",
       "empty": "Nog geen personen. Geef een spreker in een vergadering een naam om iemand toe te voegen.",
       "loadError": "Personen laden mislukt",
       "voiceprints_one": "{{count}} stemafdruk",
       "voiceprints_other": "{{count}} stemafdrukken",
-      "edit": "Bewerken",
       "merge": "Samenvoegen",
       "mergeInto": "Samenvoegen met...",
       "mergeHint": "Kies de persoon die je wilt behouden. Stemafdrukken en sprekersnamen gaan naar die persoon.",
@@ -1035,7 +898,6 @@
       "renameError": "Persoon bijwerken mislukt",
       "namePlaceholder": "Naam",
       "emailPlaceholder": "E-mail (optioneel)",
-      "save": "Opslaan",
       "cancel": "Annuleren",
       "voice": {
         "title": "Je stem",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Vergadernotities",
       "enabled": {
         "title": "Vergadernotities",
         "description": "Neem vergaderingen op met je microfoon en de audio van je computer. Als je dit aanzet, wordt om toegang tot agenda, systeemaudio en meldingen gevraagd."
@@ -1077,7 +938,6 @@
         "requestAgain": "Opnieuw aanvragen",
         "openSettings": "Systeeminstellingen openen"
       },
-      "you": "Jij",
       "userName": {
         "title": "Je naam",
         "description": "Je microfoonspoor krijgt altijd deze naam.",
@@ -1128,7 +988,6 @@
         "description": "Onderscheidt stemmen en herkent personen die je eerder een naam hebt gegeven. Gebruikt {{name}} ({{trainedOn}}), {{size}}. Wordt alleen gedownload als je op Downloaden klikt.",
         "ready": "Gedownload",
         "download": "Downloaden ({{size}})",
-        "retry": "Download opnieuw proberen",
         "failed": "Downloaden mislukt: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} min"
       },
       "advanced": {
-        "title": "Geavanceerd",
-        "show": "Geavanceerde instellingen tonen",
-        "hide": "Geavanceerde instellingen verbergen",
         "matchThreshold": {
           "title": "Drempel voor automatische koppeling",
           "description": "Stemovereenkomst vanaf welke een spreker automatisch een naam krijgt. Daaronder vraagt de koppeling \"Bevestigen?\"."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Sprekerwisseldetectie",
         "description": "Splitst regels waar de stem verandert ({{size}}). Tot deze zijn gedownload, worden regels bij pauzes gesplitst.",
-        "ready": "Klaar",
-        "downloading": "Downloaden",
-        "download": "Downloaden ({{size}})"
+        "descriptionReady": "Splitst regels waar de stem verandert."
       },
       "callSuggestions": {
         "title": "Notities voorstellen bij gesprekken",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Zoek in titels, samenvattingen en transcripten",
       "searching": "Zoeken...",
       "empty": "Geen vergaderingen gevonden voor \"{{query}}\".",
       "count_one": "1 vergadering",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Instellen",
-      "models": "Modellen",
-      "note": "Je kunt al opnemen voordat de modellen klaar zijn met downloaden. De verwerking wacht tot ze klaar zijn.",
-      "downloading": "Downloaden",
-      "downloadingPercent": "Downloaden {{percent}}%",
-      "ready": "Klaar",
-      "notDownloaded": "Niet gedownload",
-      "download": "Downloaden",
-      "dismiss": "Sluiten",
-      "optional": "Optioneel"
-    },
     "downloads": {
       "activity": "{{name}} downloaden · {{percent}}%",
       "activityFailed": "Download mislukt · {{name}}",
-      "multiple": "{{count}} modellen downloaden",
-      "cancel": "Annuleren",
       "retry": "Opnieuw proberen",
       "done": "{{name}} gedownload",
       "failed": "Kan {{name}} niet downloaden",
       "startError": "Kan de download niet starten",
       "empty": "Geen downloads",
-      "queued": "In wachtrij",
-      "doneShort": "Klaar",
       "failedShort": "Mislukt",
       "cancelled": "Geannuleerd"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Actiepunten",
       "generate": "Samenvatting genereren",
       "regenerate": "Opnieuw genereren",
-      "regenerateWith": "Opnieuw genereren met...",
       "generateWith": "Genereren met {{model}}",
       "otherModels": "Andere modellen",
       "otherModel": "Ander model…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Samenvattingen",
-      "provider": "Provider",
-      "providerDescription": "Model voor vergadersamenvattingen en actiepunten. Naverwerking van dicteren houdt een eigen provider.",
       "builtin": "Ingebouwd (op deze Mac)",
       "builtinDescription": "Voert een lokaal model uit met llama.cpp. Er verlaat niets je Mac.",
-      "model": "Model",
-      "modelDescription": "Vink een model aan om het aan je modellen toe te voegen. Alleen modellen die tekst uitvoeren worden getoond. \"Geschikt voor samenvattingen\" betekent dat het model gestructureerde uitvoer ondersteunt, waar samenvattingen op steunen.",
       "modelPlaceholder": "Model-ID",
       "pickModel": "Selecteer een model",
-      "noLocalModels": "Download hieronder een model",
-      "usingPostProcessModel": "Gebruikt het naverwerkingsmodel ({{model}})",
       "refreshModels": "Verversen",
       "testConnection": "Verbinding testen",
-      "testDescription": "Controleer of de provider, sleutel en het model werken.",
       "apple": "Apple Intelligence",
       "appleDescription": "Model op het apparaat zelf, op Macs met Apple silicon waarop Apple Intelligence is ingeschakeld.",
-      "appleAvailable": "Beschikbaar",
       "appleUnavailable": "Apple Intelligence is niet beschikbaar op deze Mac",
       "activeHeading": "Samenvattingen worden gemaakt door",
-      "place": "Waar samenvattingen worden uitgevoerd",
-      "placeDescription": "Alleen de geselecteerde optie wordt gebruikt.",
       "tabCloud": "Cloudprovider",
       "tabLocal": "Op deze Mac",
       "onThisMac": "Deze Mac · offline",
       "apiKey": "API-sleutel",
       "apiKeyDescription": "Opgeslagen in je Sleutelhanger en gedeeld met Naverwerking.",
       "getKey": "{{provider}}-sleutel aanvragen",
-      "modelDescriptionCustom": "Typ de model-ID die je eindpunt verwacht en druk op Enter om deze toe te voegen, of vink er een aan uit de lijst.",
       "searchModels": "Modellen zoeken",
       "goodOnly": "Geschikt voor samenvattingen",
       "goodForSummaries": "samenvattingen",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Niet beschikbaar op deze Mac. Schakel het in via Systeeminstellingen > Apple Intelligence en Siri.",
       "unavailable": "niet beschikbaar",
       "yourModels": "Je modellen",
-      "yourModelsDescription": "Samenvatting genereren biedt elk model hier aan, zodat je er per vergadering een kunt kiezen. Het geselecteerde model is de standaard.",
       "yourModelsEmpty": "Nog geen cloudmodellen. Kies hieronder een provider, voeg de API-sleutel toe en vink de gewenste modellen aan.",
       "default": "standaard",
       "removeModel": "Verwijderen uit je modellen",
-      "addFrom": "Modellen toevoegen van",
-      "addFromDescription": "Kies een provider om de sleutel in te voeren en vink modellen aan om toe te voegen. De standaard verandert hierdoor niet."
+      "addFrom": "Modellen toevoegen van"
     },
     "local": {
       "heading": "Lokale modellen",
@@ -1438,9 +1260,7 @@
       "default": "Standaard",
       "recommendedRam": "Aanbevolen voor {{gb}} GB+ RAM",
       "notEnoughRam": "Deze Mac heeft minder geheugen dan aanbevolen voor dit model.",
-      "downloaded": "Gedownload",
-      "download": "Downloaden",
-      "downloading": "Downloaden {{percentage}}%"
+      "downloaded": "Gedownload"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Verbonden als {{name}}"
     },
     "byok": {
-      "testConnection": "Verbinding testen",
-      "testDescription": "Controleer de basis-URL, API-sleutel en het model met een klein verzoek.",
-      "baseUrlEditable": "API-basis-URL voor deze provider. Vervang elke {placeholder} (bijv. je Cloudflare-account-ID).",
-      "cloudflareHint": "Cloudflare: zet je account-ID (en gateway-ID voor AI Gateway) in de basis-URL."
+      "testDescription": "Controleer de basis-URL, API-sleutel en het model met een klein verzoek."
     }
   }
 }

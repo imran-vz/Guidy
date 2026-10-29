@@ -1,5 +1,8 @@
-//! Meetings page: recorder header (start/stop, upcoming calendar events),
-//! then tabs: Meetings (list → detail), People, Settings.
+//! Meetings page: a full-height destination. The title bar holds the
+//! Meetings | People | Settings switch and the recorder (record, timer,
+//! pause, stop, the next calendar event). Meetings is a split view: the
+//! list (search, day groups) and the open meeting's detail, each with its
+//! own scroll regions; below ~640 pt of content they stack.
 //!
 //! G1 owns this directory except `summary.rs`, `tickets.rs` and
 //! `ai_settings.rs` (G2). See docs/MEETING_NOTES_ARCH.md.
@@ -9,6 +12,8 @@ pub mod detail;
 pub mod emails;
 pub mod list;
 pub mod people;
+pub mod player;
+pub mod recorder;
 pub mod settings;
 pub mod summary;
 pub mod tickets;
@@ -17,19 +22,22 @@ use crate::logic::meetings::{MeetingsEvent, MeetingsInit};
 use crate::logic::settings_store::ToastSpec;
 use crate::meetings_backend::{MeetingsBackend, MeetingsError, SharedMeetingsBackend};
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, page, page_header, t, t_args};
-use detail::{DetailEvent, MeetingDetail};
+use crate::ui::design::{self, dp};
+use crate::ui::download_control::DownloadControl;
+use crate::ui::kit::{fill_page, icon, page, t, t_args};
+use detail::{DetailEvent, DetailLayout, MeetingDetail};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizableState};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::managers::transcription::meeting::{resolve_meeting_model_id, MeetingModelMissing};
-use guidy_core::meetings::types::{CalendarEvent, MeetingId, RecorderState};
+use guidy_core::meetings::types::MeetingId;
 use list::{MeetingList, MeetingListEvent};
 use people::PeopleView;
-use settings::MeetingSettingsView;
+use recorder::{RecorderBar, RecorderEvent};
+use settings::{MeetingSettingsEvent, MeetingSettingsView, SettingsCategory};
 
 /// The meetings backend from app state.
 pub(crate) fn meetings_backend(cx: &App) -> SharedMeetingsBackend {
@@ -115,25 +123,37 @@ pub(crate) fn local_model_choices(cx: &App) -> Vec<crate::logic::meetings::Local
     choices
 }
 
-/// "Download meeting model" (or its progress) for a missing meeting model.
-/// `place` keeps element ids unique (`meeting-model-download-<place>`).
+/// The download control for the meeting transcription model `model_id`.
+/// It is marked as a meetings download, so finishing it doesn't offer to
+/// make it the dictation model.
+pub(crate) fn meeting_model_download(model_id: &str, cx: &App) -> DownloadControl {
+    let id = model_id.to_string();
+    DownloadControl::for_model(guidy_core::downloads::stt_id(model_id), cx).on_start(move |cx| {
+        let id = id.clone();
+        AppState::global(cx).update(cx, |s, _| {
+            s.meeting_model_downloads.insert(id);
+        });
+    })
+}
+
+/// The message for a missing meeting model.
+pub(crate) fn model_missing_message(missing: &MeetingModelMissing) -> SharedString {
+    let key = if missing.known {
+        "meetings.errors.modelMissing"
+    } else {
+        "meetings.errors.modelUnknown"
+    };
+    t_args(key, &[("name", &missing.model_name)])
+}
+
+/// A notice for a missing meeting model with its download control.
+/// `place` keeps element ids unique (`meeting-model-missing-<place>`).
 pub(crate) fn render_model_download(
     place: &str,
     missing: &MeetingModelMissing,
     cx: &mut App,
 ) -> AnyElement {
-    let message = if missing.known {
-        t_args(
-            "meetings.errors.modelMissing",
-            &[("name", &missing.model_name)],
-        )
-    } else {
-        t_args(
-            "meetings.errors.modelUnknown",
-            &[("name", &missing.model_name)],
-        )
-    };
-    render_model_download_with(place, missing, message, cx)
+    render_model_download_with(place, missing, model_missing_message(missing), cx)
 }
 
 /// [`render_model_download`] with its own message.
@@ -143,50 +163,11 @@ pub(crate) fn render_model_download_with(
     message: SharedString,
     cx: &mut App,
 ) -> AnyElement {
-    let theme = cx.theme().clone();
-    let state = AppState::global(cx);
-    let st = state.read(cx);
-    let id = missing.model_id.clone();
-    let downloading = st.models.downloading.contains(&id);
-    let pct = st
-        .models
-        .progress
-        .get(&id)
-        .map(|p| p.percentage)
-        .unwrap_or(0.0);
-    let action: Option<AnyElement> = if !missing.known {
-        None
-    } else if downloading {
-        Some(
-            h_flex()
-                .gap_2()
-                .w(dp(200.))
-                .child(div().flex_1().child(design::track(
-                    SharedString::from(format!("meeting-model-progress-{place}")),
-                    Some((pct as f32) / 100.0),
-                    cx,
-                )))
-                .child(design::mono(format!("{pct:.0}%")).text_color(theme.muted_foreground))
-                .into_any_element(),
-        )
-    } else {
-        Some(
-            Button::new(SharedString::from(format!(
-                "meeting-model-download-{place}"
-            )))
-            .primary()
-            .small()
-            .pill()
-            .icon(icon("download"))
-            .label(t("meetings.model.download"))
-            .on_click(move |_, _, cx| {
-                let id = id.clone();
-                AppState::global(cx).update(cx, |s, cx| s.download_meeting_model(&id, cx));
-            })
-            .into_any_element(),
-        )
-    };
-    design::notice(theme.warning)
+    let warning = cx.theme().warning;
+    let action = missing
+        .known
+        .then(|| meeting_model_download(&missing.model_id, cx));
+    design::notice(warning)
         .id(SharedString::from(format!("meeting-model-missing-{place}")))
         .flex()
         .items_center()
@@ -211,6 +192,17 @@ pub(crate) fn meeting_settings(cx: &App) -> guidy_core::meetings::settings::Meet
         .app_settings()
         .map(|s| s.meetings.clone())
         .unwrap_or_default()
+}
+
+/// "Now" for the meetings UI (day groups, the next event). Snapshots fix
+/// it so their dates don't move.
+pub struct MeetingsClock(pub i64);
+impl Global for MeetingsClock {}
+
+pub(crate) fn now(cx: &App) -> i64 {
+    cx.try_global::<MeetingsClock>()
+        .map(|c| c.0)
+        .unwrap_or_else(guidy_core::meetings::recorder::now_ms)
 }
 
 /// Local wall-clock time of a unix-ms timestamp (`HH:MM`).
@@ -240,16 +232,145 @@ impl MeetingsTab {
     }
 }
 
+actions!(
+    meetings,
+    [
+        /// ⌘F: the list's search, or find in the open transcript.
+        FindMeetings,
+        SelectNextMeeting,
+        SelectPreviousMeeting,
+        /// Enter in the list: show the selected meeting (stack layout).
+        OpenSelectedMeeting,
+        /// ⌫: delete the selected meeting (asks first).
+        DeleteMeeting,
+        /// Space: play or pause the open meeting.
+        TogglePlayback,
+        /// ⌘R: record, or stop recording.
+        ToggleRecording,
+        /// ⇧⌘P: pause or resume the recording.
+        TogglePauseRecording,
+        /// ⌘E: export the open meeting.
+        ExportMeeting,
+        /// Esc: close find, cancel a rename, clear the search, go back.
+        DismissMeetings,
+    ]
+);
+
+/// The page's key context.
+pub const MEETINGS_CONTEXT: &str = "MeetingsPage";
+
+/// Key bindings of the Meetings page (⌘1–⌘9 belong to the sidebar).
+pub fn init(cx: &mut App) {
+    let page = Some(MEETINGS_CONTEXT);
+    let not_typing = Some("MeetingsPage && !Input");
+    cx.bind_keys([
+        KeyBinding::new("cmd-f", FindMeetings, page),
+        KeyBinding::new("down", SelectNextMeeting, Some("MeetingList")),
+        KeyBinding::new("up", SelectPreviousMeeting, Some("MeetingList")),
+        KeyBinding::new("enter", OpenSelectedMeeting, Some("MeetingList")),
+        KeyBinding::new("backspace", DeleteMeeting, not_typing),
+        KeyBinding::new("cmd-backspace", DeleteMeeting, not_typing),
+        KeyBinding::new("space", TogglePlayback, not_typing),
+        KeyBinding::new("cmd-r", ToggleRecording, page),
+        KeyBinding::new("cmd-shift-p", TogglePauseRecording, page),
+        KeyBinding::new("cmd-e", ExportMeeting, page),
+        KeyBinding::new("escape", DismissMeetings, not_typing),
+    ]);
+}
+
+/// The list's default width and its limits: one for the Meetings, People
+/// and Settings tabs, which share the split ([`split_view`]).
+pub(crate) const LIST_W: Pixels = dp(240.);
+pub(crate) const LIST_MIN_W: Pixels = dp(220.);
+pub(crate) const LIST_MAX_W: Pixels = dp(400.);
+/// Below this content width the list and the detail stack (Meetings), the
+/// people list narrows and the settings categories become a popup button.
+pub(crate) const STACK_BELOW: Pixels = dp(640.);
+/// From this detail width, notes and transcript sit side by side.
+const SIDE_BY_SIDE_FROM: Pixels = dp(880.);
+/// Below this detail width, the actions get their own row.
+const COMPACT_BELOW: Pixels = dp(640.);
+
+/// What the Meetings page remembers while the app runs (the window can be
+/// closed and opened again): the list width and the meeting shown.
+#[derive(Default)]
+struct MeetingsMemory {
+    selected: Option<MeetingId>,
+    list_width: Option<Pixels>,
+}
+impl Global for MeetingsMemory {}
+
+fn remember(cx: &mut App, f: impl FnOnce(&mut MeetingsMemory)) {
+    f(cx.default_global::<MeetingsMemory>());
+}
+
+/// Whether the content area (the window less its sidebar) is narrow enough
+/// to stack the list and the detail.
+pub(crate) fn is_narrow(window: &Window) -> bool {
+    window.viewport_size().width - design::SIDEBAR_W < STACK_BELOW
+}
+
+/// The list's width in `split` now, else the remembered or default one.
+pub(crate) fn list_width(split: &Entity<ResizableState>, cx: &App) -> Pixels {
+    split
+        .read(cx)
+        .sizes()
+        .first()
+        .copied()
+        .or_else(|| cx.try_global::<MeetingsMemory>().and_then(|m| m.list_width))
+        .unwrap_or(LIST_W)
+        .clamp(LIST_MIN_W, LIST_MAX_W)
+}
+
+/// A list | detail split view. The Meetings, People and Settings tabs of a
+/// window all use it with one state (the page's), so the list has the same
+/// width, limits and drag on every tab; the width is also remembered for
+/// the next window.
+pub(crate) fn split_view(
+    id: &'static str,
+    split: &Entity<ResizableState>,
+    list: impl IntoElement,
+    detail: impl IntoElement,
+    cx: &App,
+) -> AnyElement {
+    let remembered = cx
+        .try_global::<MeetingsMemory>()
+        .and_then(|m| m.list_width)
+        .unwrap_or(LIST_W);
+    h_resizable(id)
+        .with_state(split)
+        .on_resize(|state, _, cx| {
+            let w = state.read(cx).sizes().first().copied();
+            remember(cx, |m| m.list_width = w);
+        })
+        .child(
+            resizable_panel()
+                .size(remembered)
+                .size_range(LIST_MIN_W..LIST_MAX_W)
+                .child(list),
+        )
+        .child(resizable_panel().child(detail))
+        .into_any_element()
+}
+
 pub struct MeetingsPage {
     state: Entity<AppState>,
     pub tab: MeetingsTab,
-    recorder: RecorderState,
-    recorder_busy: bool,
-    upcoming: Vec<CalendarEvent>,
+    recorder: Entity<RecorderBar>,
     list: Entity<MeetingList>,
     detail: Option<Entity<MeetingDetail>>,
     people: Entity<PeopleView>,
     settings: Entity<MeetingSettingsView>,
+    /// The list | detail split, shared with People and Settings.
+    split: Entity<ResizableState>,
+    focus: FocusHandle,
+    /// Stack layout (narrow): the detail is shown over the list.
+    stack_detail: bool,
+    /// The meeting remembered from last time, opened once the list has
+    /// loaded and still has it.
+    restore: Option<MeetingId>,
+    /// The first meeting was opened after the list loaded.
+    auto_opened: bool,
     _detail_sub: Option<Subscription>,
     _subs: Vec<Subscription>,
 }
@@ -258,82 +379,195 @@ impl MeetingsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let list = cx.new(|cx| MeetingList::new(window, cx));
+        let recorder = cx.new(RecorderBar::new);
         let subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| match ev {
-                AppEvent::Meetings(MeetingsEvent::RecorderState(rs)) => {
-                    this.recorder = rs.clone();
-                    this.load_upcoming(cx);
+            cx.subscribe_in(&state, window, |this, _, ev: &AppEvent, _, cx| {
+                if let AppEvent::Meetings(MeetingsEvent::Ready) = ev {
+                    this.on_ready(cx)
+                }
+            }),
+            cx.subscribe_in(&list, window, Self::on_list_event),
+            cx.subscribe_in(&recorder, window, Self::on_recorder_event),
+            cx.observe_in(&list, window, |this, list, window, cx| {
+                // Once the list has loaded: the remembered meeting if it
+                // still exists, else the newest (as Mail and Notes do), so
+                // the detail isn't empty. Not in the stack layout, where the
+                // list is what's shown.
+                if this.auto_opened || this.detail.is_some() {
+                    return;
+                }
+                let (loading, pick) = {
+                    let list = list.read(cx);
+                    let remembered = this.restore.filter(|id| list.meeting(*id).is_some());
+                    (
+                        list.is_loading(),
+                        remembered.or(list.order().first().copied()),
+                    )
+                };
+                if loading {
+                    return;
+                }
+                this.auto_opened = true;
+                this.restore = None;
+                if let Some(id) = pick {
+                    if !Self::is_stack(window) {
+                        let stacked = this.stack_detail;
+                        this.open_meeting(id, window, cx);
+                        this.stack_detail = stacked;
+                    }
+                }
+            }),
+        ];
+        let restore = cx.try_global::<MeetingsMemory>().and_then(|m| m.selected);
+        let split = cx.new(|_| ResizableState::default());
+        let people = cx.new(|cx| PeopleView::new(window, cx).with_split(split.clone()));
+        let settings = cx.new(|cx| MeetingSettingsView::new(window, cx).with_split(split.clone()));
+        let mut subs = subs;
+        subs.push(cx.subscribe(
+            &settings,
+            |this, _, ev: &MeetingSettingsEvent, cx| match ev {
+                MeetingSettingsEvent::OpenYourVoice => {
+                    this.tab = MeetingsTab::People;
+                    this.people.update(cx, |p, cx| p.select_you(cx));
                     cx.notify();
                 }
-                AppEvent::Meetings(MeetingsEvent::Ready) => this.on_ready(cx),
-                _ => {}
-            }),
-            cx.subscribe_in(
-                &list,
-                window,
-                |this, _, ev: &MeetingListEvent, window, cx| match ev {
-                    MeetingListEvent::Open(id) => this.open_meeting(*id, window, cx),
-                    MeetingListEvent::OpenLine {
-                        meeting_id,
-                        segment_id,
-                    } => {
-                        this.open_meeting(*meeting_id, window, cx);
-                        if let Some(detail) = &this.detail {
-                            let line = *segment_id;
-                            detail.update(cx, |d, cx| d.reveal_when_loaded(line, cx));
-                        }
-                    }
-                },
-            ),
-        ];
-        let mut this = Self {
+            },
+        ));
+        Self {
             state,
             tab: MeetingsTab::Meetings,
-            recorder: RecorderState::Idle,
-            recorder_busy: false,
-            upcoming: Vec::new(),
+            recorder,
             list,
             detail: None,
-            people: cx.new(|cx| PeopleView::new(window, cx)),
-            settings: cx.new(|cx| MeetingSettingsView::new(window, cx)),
+            people,
+            settings,
+            split,
+            focus: cx.focus_handle(),
+            stack_detail: false,
+            restore,
+            auto_opened: false,
             _detail_sub: None,
             _subs: subs,
-        };
-        this.refresh_recorder(cx);
-        this.load_upcoming(cx);
-        this
-    }
-
-    fn refresh_recorder(&mut self, cx: &mut Context<Self>) {
-        run(
-            cx,
-            |b| b.recorder_state(),
-            |this: &mut Self, rs, _| this.recorder = rs,
-        );
-    }
-
-    fn load_upcoming(&mut self, cx: &mut Context<Self>) {
-        run(
-            cx,
-            |b| b.upcoming_events(),
-            |this: &mut Self, r, _| match r {
-                Ok(events) => this.upcoming = events,
-                Err(e) => log::warn!("Failed to load upcoming events: {e}"),
-            },
-        );
+        }
     }
 
     /// The manager came up (startup or retry): reload everything.
     fn on_ready(&mut self, cx: &mut Context<Self>) {
-        self.refresh_recorder(cx);
-        self.load_upcoming(cx);
+        self.recorder.update(cx, |r, cx| r.reload(cx));
         self.list.update(cx, |l, cx| l.reload(cx));
         self.people.update(cx, |p, cx| p.reload(cx));
         self.settings.update(cx, |s, cx| s.reload_status(cx));
         if let Some(d) = &self.detail {
             d.update(cx, |d, cx| d.load(cx));
         }
+        cx.notify();
+    }
+
+    fn on_list_event(
+        &mut self,
+        _: &Entity<MeetingList>,
+        ev: &MeetingListEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev {
+            MeetingListEvent::Open(id) => {
+                self.open_meeting(*id, window, cx);
+                self.push_detail(window, cx);
+            }
+            MeetingListEvent::OpenLine {
+                meeting_id,
+                segment_id,
+            } => {
+                self.open_meeting(*meeting_id, window, cx);
+                self.stack_detail = true;
+                if let Some(detail) = &self.detail {
+                    let line = *segment_id;
+                    detail.update(cx, |d, cx| d.reveal_when_loaded(line, cx));
+                }
+            }
+            MeetingListEvent::Deleted { id, next } => {
+                if self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.read(cx).meeting_id == *id)
+                {
+                    // Split view: the next meeting takes its place. Stack:
+                    // back to the list.
+                    match next {
+                        Some(next) if !Self::is_stack(window) => {
+                            self.open_meeting(*next, window, cx)
+                        }
+                        _ => {
+                            self.close_meeting(cx);
+                            self.focus_list(window, cx);
+                        }
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_recorder_event(
+        &mut self,
+        _: &Entity<RecorderBar>,
+        ev: &RecorderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev {
+            RecorderEvent::Changed(started) => {
+                self.list.update(cx, |l, cx| l.reload(cx));
+                if let Some(id) = started {
+                    // Show the live transcript of the new recording.
+                    self.tab = MeetingsTab::Meetings;
+                    self.open_meeting(*id, window, cx);
+                } else if let Some(d) = &self.detail {
+                    d.update(cx, |d, cx| d.load(cx));
+                }
+            }
+            RecorderEvent::OpenMeeting(id) => {
+                self.tab = MeetingsTab::Meetings;
+                self.open_meeting(*id, window, cx);
+                self.stack_detail = true;
+            }
+            RecorderEvent::OpenSetup => self.show_settings(SettingsCategory::Setup, cx),
+            RecorderEvent::TurnOn => self.settings.update(cx, |s, cx| s.set_enabled(true, cx)),
+        }
+        cx.notify();
+    }
+
+    fn on_detail_event(
+        &mut self,
+        _: &Entity<MeetingDetail>,
+        ev: &DetailEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match ev {
+            DetailEvent::Back => {
+                self.stack_detail = false;
+                let focus = self.list.read(cx).focus_handle().clone();
+                window.focus(&focus, cx);
+            }
+            DetailEvent::OpenSettings => self.show_settings(SettingsCategory::Linear, cx),
+            DetailEvent::Delete(id) => {
+                let id = *id;
+                self.list
+                    .update(cx, |l, cx| l.confirm_delete(id, window, cx));
+            }
+            DetailEvent::Renamed => self.list.update(cx, |l, cx| l.reload(cx)),
+        }
+        cx.notify();
+    }
+
+    /// Meetings › Settings, at `category`.
+    pub fn show_settings(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
+        self.tab = MeetingsTab::Settings;
+        self.settings
+            .update(cx, |s, cx| s.show_category(category, cx));
         cx.notify();
     }
 
@@ -345,7 +579,9 @@ impl MeetingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.tab = MeetingsTab::Meetings;
         self.open_meeting(id, window, cx);
+        self.stack_detail = true;
         if let (Some(t_ms), Some(detail)) = (t_ms, &self.detail) {
             detail.update(cx, |d, cx| d.seek_when_loaded(t_ms, cx));
         }
@@ -431,7 +667,6 @@ impl MeetingsPage {
                         Button::new("meetings-init-retry")
                             .secondary()
                             .small()
-                            .pill()
                             .icon(icon("rotate-ccw"))
                             .label(t("meetings.init.retry"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -443,7 +678,6 @@ impl MeetingsPage {
                             Button::new("meetings-init-reset")
                                 .secondary()
                                 .small()
-                                .pill()
                                 .icon(icon("archive"))
                                 .label(t("meetings.init.reset.action"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -476,35 +710,43 @@ impl MeetingsPage {
         cx.notify();
     }
 
+    /// Show meeting `id` in the detail (a no-op when it already is, so
+    /// its edits, scroll and playback stay).
+    /// Doesn't switch tabs: callers that show it do.
     pub fn open_meeting(&mut self, id: MeetingId, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore = None;
+        self.list.update(cx, |l, cx| l.set_selected(Some(id), cx));
+        remember(cx, |m| m.selected = Some(id));
+        if self
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.read(cx).meeting_id == id)
+        {
+            cx.notify();
+            return;
+        }
         let detail = cx.new(|cx| MeetingDetail::new(id, window, cx));
-        self._detail_sub = Some(
-            cx.subscribe(&detail, |this, _, ev: &DetailEvent, cx| match ev {
-                DetailEvent::Back => this.close_meeting(cx),
-                DetailEvent::OpenSettings => {
-                    this.close_meeting(cx);
-                    this.set_tab(MeetingsTab::Settings, cx);
-                }
-            }),
-        );
+        self._detail_sub = Some(cx.subscribe_in(&detail, window, Self::on_detail_event));
         self.detail = Some(detail);
-        self.tab = MeetingsTab::Meetings;
         cx.notify();
     }
 
     pub fn close_meeting(&mut self, cx: &mut Context<Self>) {
         self.detail = None;
         self._detail_sub = None;
-        self.list.update(cx, |l, cx| l.reload(cx));
+        self.stack_detail = false;
+        self.list.update(cx, |l, cx| {
+            l.set_selected(None, cx);
+            l.reload(cx)
+        });
+        remember(cx, |m| m.selected = None);
         cx.notify();
     }
 
-    #[cfg(test)]
     pub fn detail(&self) -> Option<&Entity<MeetingDetail>> {
         self.detail.as_ref()
     }
 
-    #[cfg(test)]
     pub fn list(&self) -> &Entity<MeetingList> {
         &self.list
     }
@@ -519,257 +761,334 @@ impl MeetingsPage {
         &self.settings
     }
 
-    fn after_recorder_change(&mut self, cx: &mut Context<Self>) {
-        self.recorder_busy = false;
-        self.refresh_recorder(cx);
-        self.load_upcoming(cx);
-        self.list.update(cx, |l, cx| l.reload(cx));
+    #[cfg(test)]
+    pub fn recorder(&self) -> &Entity<RecorderBar> {
+        &self.recorder
     }
 
-    fn toggle_recording(&mut self, cx: &mut Context<Self>) {
-        if self.recorder_busy {
+    /// Stack layout is showing the detail.
+    pub fn is_stacked_detail(&self) -> bool {
+        self.stack_detail && self.detail.is_some()
+    }
+
+    /// Focus the meeting list (keyboard selection).
+    pub fn focus_list(&self, window: &mut Window, cx: &mut App) {
+        let focus = self.list.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+    }
+
+    // -- keyboard ---------------------------------------------------------------
+
+    /// Stack layout (from the window width).
+    fn is_stack(window: &Window) -> bool {
+        is_narrow(window)
+    }
+
+    fn step(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let list = self.list.read(cx);
+        let order = list.order();
+        let current = list.selected();
+        if let Some(id) = crate::logic::meetings::step_selection(&order, current, step) {
+            let stacked = self.stack_detail;
+            self.open_meeting(id, window, cx);
+            self.stack_detail = stacked;
+        }
+    }
+
+    fn on_find(&mut self, _: &FindMeetings, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab = MeetingsTab::Meetings;
+        let list_focused = self
+            .list
+            .read(cx)
+            .focus_handle()
+            .contains_focused(window, cx);
+        let detail_shown = !Self::is_stack(window) || self.stack_detail;
+        match &self.detail {
+            Some(detail) if detail_shown && !list_focused => {
+                detail.update(cx, |d, cx| d.open_find(window, cx))
+            }
+            _ => {
+                self.stack_detail = false;
+                self.list.update(cx, |l, cx| l.focus_search(window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_open_selected(
+        &mut self,
+        _: &OpenSelectedMeeting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.detail.is_some() {
+            self.push_detail(window, cx);
+        }
+    }
+
+    /// Show the detail over the list (stack layout). The list leaves the
+    /// screen, so the page takes the focus and its shortcuts keep working.
+    fn push_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stack_detail = true;
+        if Self::is_stack(window) {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn on_delete(&mut self, _: &DeleteMeeting, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab != MeetingsTab::Meetings {
             return;
         }
-        self.recorder_busy = true;
-        cx.notify();
-        if matches!(self.recorder, RecorderState::Recording { .. }) {
-            run(
-                cx,
-                |b| b.stop_recording(),
-                |this: &mut Self, r, cx| {
-                    if let Err(e) = r {
-                        toast_error("meetings.recorder.stopError", &e, cx);
-                    }
-                    this.after_recorder_change(cx);
-                },
-            );
-        } else {
-            self.start(None, cx);
+        if let Some(id) = self.list.read(cx).selected() {
+            self.list
+                .update(cx, |l, cx| l.confirm_delete(id, window, cx));
         }
     }
 
-    fn start(&mut self, event_id: Option<String>, cx: &mut Context<Self>) {
-        self.recorder_busy = true;
-        cx.notify();
-        run(
-            cx,
-            move |b| b.start_recording(event_id),
-            |this: &mut Self, r, cx| {
-                if let Err(e) = r {
-                    toast_error("meetings.recorder.startError", &e, cx);
-                }
-                this.after_recorder_change(cx);
-            },
-        );
-    }
-
-    fn render_recorder(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tone = design::tone(cx);
-        let enabled = meeting_settings(cx).enabled;
-        let recording = matches!(self.recorder, RecorderState::Recording { .. });
-        let dot = if recording {
-            design::signal_dot(cx)
-                .with_animation(
-                    "meeting-rec-pulse",
-                    Animation::new(std::time::Duration::from_millis(1900)).repeat(),
-                    |el, delta| el.opacity(1.0 - 0.45 * (delta * std::f32::consts::PI).sin()),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .size(dp(14.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(div().size(dp(7.)).rounded_full().bg(tone.text_faint))
-                .into_any_element()
-        };
-        let status: AnyElement = match &self.recorder {
-            RecorderState::Recording {
-                title, started_at, ..
-            } => v_flex()
-                .gap(dp(3.))
-                .min_w_0()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_baseline()
-                        .child(
-                            div()
-                                .text_size(design::TEXT_TITLE)
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(t("meetings.recorder.recording")),
-                        )
-                        .child(design::mono(clock_time(*started_at)).text_color(tone.accent_text)),
-                )
-                .child(
-                    div()
-                        .id("meeting-recording-title")
-                        .text_size(dp(12.))
-                        .text_color(tone.text_muted)
-                        .truncate()
-                        .child(title.clone())
-                        .test_support(),
-                )
-                .into_any_element(),
-            RecorderState::Idle => div()
-                .text_size(design::TEXT_TITLE)
-                .font_weight(FontWeight::MEDIUM)
-                .child(t("meetings.recorder.idle"))
-                .into_any_element(),
-        };
-        let button = Button::new("meeting-record-toggle")
-            .pill()
-            .loading(self.recorder_busy)
-            .disabled(self.recorder_busy || (!recording && !enabled))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_recording(cx)));
-        let button = if recording {
-            button
-                .danger()
-                .icon(icon("square"))
-                .label(t("meetings.recorder.stop"))
-        } else {
-            // Unavailable until meeting notes are on: neutral, not a dim accent.
-            button
-                .primary()
-                .when(!enabled, |b| b.secondary())
-                .icon(icon("mic"))
-                .label(t("meetings.recorder.start"))
-        };
-        design::panel(cx)
-            .id("meeting-recorder")
-            // The sheen travels only while a meeting is being recorded; idle
-            // stays still.
-            .when(recording, |d| {
-                d.border_color(tone.accent_text.opacity(0.35))
-                    .child(design::sheen("meeting-rec-sheen", design::RADIUS_PANEL, cx))
-            })
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap(dp(14.))
-                    .px(design::SECTION_X)
-                    .py(design::SECTION_Y)
-                    .child(dot)
-                    .child(div().flex_1().min_w_0().child(status))
-                    .child(button),
-            )
-            .test_support()
-    }
-
-    fn render_upcoming(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let now = guidy_core::meetings::recorder::now_ms();
-        let upcoming = crate::logic::meetings::upcoming_to_show(&self.upcoming, now);
-        if matches!(self.recorder, RecorderState::Recording { .. }) || upcoming.is_empty() {
-            return None;
+    fn on_toggle_playback(&mut self, _: &TogglePlayback, _: &mut Window, cx: &mut Context<Self>) {
+        if self.tab != MeetingsTab::Meetings {
+            return;
         }
-        let enabled = meeting_settings(cx).enabled;
-        let lang = guidy_i18n::language();
-        let rows: Vec<AnyElement> = upcoming
-            .iter()
-            .enumerate()
-            .map(|(i, ev)| {
-                let event_id = ev.id.clone();
-                h_flex()
-                    .id(SharedString::from(format!("upcoming-{i}")))
-                    .w_full()
-                    .gap_3()
-                    .px(design::SECTION_X)
-                    .py(dp(10.))
-                    .justify_between()
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .gap(dp(4.))
-                            .child(
-                                div()
-                                    .text_size(design::TEXT_BODY)
-                                    .truncate()
-                                    .child(ev.title.clone()),
-                            )
-                            .child(design::eyebrow(
-                                format!(
-                                    "{} · {} – {}",
-                                    crate::logic::meetings::day_label(ev.start_at, now, &lang),
-                                    clock_time(ev.start_at),
-                                    clock_time(ev.end_at)
-                                ),
-                                cx,
-                            )),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("upcoming-start-{i}")))
-                            .secondary()
-                            .small()
-                            .pill()
-                            .icon(icon("mic"))
-                            .label(t("meetings.upcoming.start"))
-                            .disabled(self.recorder_busy || !enabled)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.start(Some(event_id.clone()), cx)
-                            })),
-                    )
-                    .test_support()
-                    .into_any_element()
-            })
-            .collect();
-        Some(crate::ui::kit::group(Some(t("meetings.upcoming.title")), rows, cx).into_any_element())
+        if let Some(d) = &self.detail {
+            d.update(cx, |d, cx| d.toggle_play(cx));
+        }
+    }
+
+    fn on_export(&mut self, _: &ExportMeeting, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = &self.detail {
+            d.update(cx, |d, cx| d.export_default(cx));
+        }
+    }
+
+    /// Esc, innermost first: the detail (find, rename, line selection),
+    /// the list (rename, search), then back from the detail (stack).
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = &self.detail {
+            if d.update(cx, |d, cx| d.dismiss(window, cx)) {
+                return;
+            }
+        }
+        let list_done = self.list.update(cx, |l, cx| {
+            if l.is_renaming() {
+                l.cancel_rename(cx);
+                true
+            } else {
+                l.clear_search(window, cx)
+            }
+        });
+        if list_done {
+            return;
+        }
+        if self.stack_detail {
+            self.stack_detail = false;
+            self.focus_list(window, cx);
+            cx.notify();
+        }
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = [
-            (
-                MeetingsTab::Meetings,
-                "meetings.tabs.meetings",
-                "notebook-pen",
-            ),
-            (MeetingsTab::People, "meetings.tabs.people", "users"),
-            (MeetingsTab::Settings, "meetings.tabs.settings", "settings"),
+            (MeetingsTab::Meetings, "meetings.tabs.meetings"),
+            (MeetingsTab::People, "meetings.tabs.people"),
+            (MeetingsTab::Settings, "meetings.tabs.settings"),
         ];
-        h_flex().child(
-            design::segmented(cx).children(tabs.into_iter().map(|(tab, key, _)| {
-                design::segment(
-                    SharedString::from(format!("meetings-tab-{}", tab.id())),
-                    t(key),
-                    self.tab == tab,
-                    cx,
+        design::segmented(cx).children(tabs.into_iter().map(|(tab, key)| {
+            design::segment(
+                SharedString::from(format!("meetings-tab-{}", tab.id())),
+                t(key),
+                self.tab == tab,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
+            .test_support()
+        }))
+    }
+
+    /// Where the detail goes when no meeting is selected: what to do next.
+    fn render_placeholder(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
+        let enabled = meeting_settings(cx).enabled;
+        let list = self.list.read(cx);
+        let (title, body, action): (SharedString, SharedString, Option<AnyElement>) = if !enabled {
+            (
+                t("meetings.empty.offTitle"),
+                t("meetings.empty.offBody"),
+                Some(
+                    Button::new("meetings-empty-enable")
+                        .primary()
+                        .small()
+                        .label(t("meetings.recorder.turnOn"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings.update(cx, |s, cx| s.set_enabled(true, cx))
+                        }))
+                        .into_any_element(),
+                ),
+            )
+        } else if list.is_empty() {
+            (
+                t("meetings.empty.title"),
+                t("meetings.empty.body"),
+                Some(
+                    Button::new("meetings-empty-record")
+                        .primary()
+                        .small()
+                        .icon(icon("circle"))
+                        .label(t("meetings.recorder.record"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.recorder.update(cx, |r, cx| r.toggle(cx))
+                        }))
+                        .into_any_element(),
+                ),
+            )
+        } else {
+            (t("meetings.empty.select"), SharedString::default(), None)
+        };
+        v_flex()
+            .id("meetings-placeholder")
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap(dp(6.))
+            .px(dp(24.))
+            .child(
+                div()
+                    .text_size(design::TEXT_HEADLINE)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if body.is_empty() {
+                        tone.text_faint
+                    } else {
+                        tone.text
+                    })
+                    .child(title),
+            )
+            .when(!body.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(dp(320.))
+                        .text_center()
+                        .text_size(design::TEXT_BODY)
+                        .text_color(tone.text_muted)
+                        .child(body),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
-                .test_support()
-            })),
+            })
+            .children(action.map(|a| div().pt(dp(6.)).child(a)))
+            .test_support()
+            .into_any_element()
+    }
+
+    fn render_meetings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let content_w = window.viewport_size().width - design::SIDEBAR_W;
+        let stack = content_w < STACK_BELOW;
+        let list_w = list_width(&self.split, cx);
+        let detail_w = if stack { content_w } else { content_w - list_w };
+        let layout = DetailLayout {
+            side_by_side: !stack && detail_w >= SIDE_BY_SIDE_FROM,
+            show_back: stack,
+            compact: detail_w < COMPACT_BELOW,
+        };
+        if let Some(d) = &self.detail {
+            d.update(cx, |d, cx| d.set_layout(layout, cx));
+        }
+        let detail_pane = match &self.detail {
+            Some(d) => d.clone().into_any_element(),
+            None => self.render_placeholder(cx),
+        };
+        if stack {
+            return if self.stack_detail && self.detail.is_some() {
+                detail_pane
+            } else {
+                self.list.clone().into_any_element()
+            };
+        }
+        split_view(
+            "meetings-split",
+            &self.split,
+            self.list.clone(),
+            detail_pane,
+            cx,
         )
     }
 }
 
 impl Render for MeetingsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(init) = self.render_init(cx) {
-            return page()
-                .id("page-meetings")
-                .child(page_header(t("meetings.title"), None, cx))
-                .child(init)
-                .test_support();
-        }
-        let body: AnyElement = match self.tab {
-            MeetingsTab::Meetings => match &self.detail {
-                Some(detail) => detail.clone().into_any_element(),
-                None => v_flex()
-                    .w_full()
-                    .gap_6()
-                    .children(self.render_upcoming(cx))
-                    .child(self.list.clone())
-                    .into_any_element(),
-            },
-            MeetingsTab::People => self.people.clone().into_any_element(),
-            MeetingsTab::Settings => self.settings.clone().into_any_element(),
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tone = design::tone(cx);
+        let body: AnyElement = if let Some(init) = self.render_init(cx) {
+            div()
+                .size_full()
+                .px(design::PAGE_X)
+                .pt(design::PAGE_TOP)
+                .child(page().max_w_full().child(init))
+                .into_any_element()
+        } else {
+            match self.tab {
+                MeetingsTab::Meetings => self.render_meetings(window, cx),
+                MeetingsTab::People => self.people.clone().into_any_element(),
+                MeetingsTab::Settings => self.settings.clone().into_any_element(),
+            }
         };
-        page()
-            .id("page-meetings")
-            .child(page_header(t("meetings.title"), None, cx))
-            .child(self.render_recorder(cx))
-            .child(self.render_tabs(cx))
+        fill_page("page-meetings")
+            .key_context(MEETINGS_CONTEXT)
+            .track_focus(&self.focus)
+            .bg(tone.ink)
+            .on_action(cx.listener(Self::on_find))
+            .on_action(
+                cx.listener(|this, _: &SelectNextMeeting, window, cx| this.step(1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPreviousMeeting, window, cx| {
+                    this.step(-1, window, cx)
+                }),
+            )
+            .on_action(cx.listener(Self::on_open_selected))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_toggle_playback))
+            .on_action(cx.listener(|this, _: &ToggleRecording, _, cx| {
+                this.recorder.update(cx, |r, cx| r.toggle(cx))
+            }))
+            .on_action(cx.listener(|this, _: &TogglePauseRecording, _, cx| {
+                this.recorder.update(cx, |r, cx| r.toggle_pause(cx))
+            }))
+            .on_action(cx.listener(Self::on_export))
+            .on_action(
+                cx.listener(|this, _: &DismissMeetings, window, cx| this.dismiss(window, cx)),
+            )
+            // An Esc a text field didn't use (the search, find).
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.dismiss(window, cx)
+                }),
+            )
+            // A click on something that takes no focus keeps the page's
+            // shortcuts working.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !this.focus.contains_focused(window, cx) {
+                        window.focus(&this.focus, cx);
+                    }
+                }),
+            )
             .child(body)
             .test_support()
+    }
+}
+
+impl crate::ui::pages::Page for MeetingsPage {
+    /// Meetings | People | Settings in the title's place: it stays put
+    /// while the recorder (right) grows and shrinks.
+    fn leading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.render_init(cx).is_some() {
+            return None;
+        }
+        Some(self.render_tabs(cx).into_any_element())
+    }
+
+    fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.render_init(cx).is_some() {
+            return None;
+        }
+        Some(self.recorder.clone().into_any_element())
     }
 }

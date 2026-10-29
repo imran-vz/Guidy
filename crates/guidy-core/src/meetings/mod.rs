@@ -8,7 +8,7 @@
 //! - [`store`]: plain SQLite `meetings.db`.
 //! - [`audio_store`]: Opus track files + retention.
 //! - [`legacy`]: one-time conversion of data earlier versions encrypted.
-//! - [`native`]: macOS bridges (EventKit, VPIO mic, process tap, notifications).
+//! - [`native`]: macOS bridges (EventKit, mic, process tap, echo cancellation, notifications).
 //! - [`recorder`]: recording sessions, tray state, reminders, calendar prompts.
 //! - [`live`]: live transcription of the recording in progress.
 //! - [`processing`]: VAD -> transcription -> voiceprints -> clustering -> timeline.

@@ -1,15 +1,18 @@
-//! Permission onboarding: microphone and
-//! (macOS) accessibility, with 1 s polling after the user acts.
+//! Onboarding, step 2: microphone and (macOS, for dictation)
+//! Accessibility, with 1 s polling after the user acts. Accessibility can
+//! be skipped ("Continue Without"): the text is then copied for the user to
+//! paste. Meeting permissions are asked when the first meeting is recorded.
 
+use super::assistant::{back_button, continue_button, row, row_icon, rows, Assistant};
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, spinner, t};
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{icon, t};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::NotificationType;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
+use gpui_kit::component::{Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::commands::audio::PermissionAccess;
@@ -33,6 +36,7 @@ pub struct PermissionsOnboarding {
     pub microphone: PermissionStatus,
     polling: bool,
     completed: bool,
+    focus: FocusHandle,
 }
 
 impl PermissionsOnboarding {
@@ -43,6 +47,8 @@ impl PermissionsOnboarding {
         cx: &mut Context<Self>,
     ) -> Self {
         let os = OsType::current();
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         let mut this = Self {
             main,
             preview,
@@ -51,6 +57,7 @@ impl PermissionsOnboarding {
             microphone: PermissionStatus::Checking,
             polling: false,
             completed: false,
+            focus,
         };
         if preview {
             // Inert preview: show the request UI without touching the OS.
@@ -68,7 +75,7 @@ impl PermissionsOnboarding {
             // Nothing to grant on other platforms.
             this.accessibility = PermissionStatus::Granted;
             this.microphone = PermissionStatus::Granted;
-            this.complete(window, cx);
+            this.complete(cx);
         } else {
             this.check_initial(window, cx);
         }
@@ -116,7 +123,7 @@ impl PermissionsOnboarding {
                     }
                 })
                 .await;
-            this.update_in(cx, |this, window, cx| {
+            this.update_in(cx, |this, _, cx| {
                 this.accessibility = if acc {
                     PermissionStatus::Granted
                 } else {
@@ -127,9 +134,6 @@ impl PermissionsOnboarding {
                 } else {
                     PermissionStatus::Needed
                 };
-                if this.all_granted() {
-                    this.complete(window, cx);
-                }
                 cx.notify();
             })
             .ok();
@@ -137,7 +141,8 @@ impl PermissionsOnboarding {
         .detach();
     }
 
-    fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// On to the next step (once: a Back later builds a new view).
+    fn complete(&mut self, cx: &mut Context<Self>) {
         if self.completed || self.preview {
             return;
         }
@@ -147,13 +152,9 @@ impl PermissionsOnboarding {
             s.refresh_output_devices(cx);
         });
         let main = self.main.clone();
-        cx.spawn_in(window, async move |_, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(300))
-                .await;
+        cx.defer(move |cx| {
             main.update(cx, |m, cx| m.on_permissions_complete(cx)).ok();
-        })
-        .detach();
+        });
         cx.notify();
     }
 
@@ -211,7 +212,6 @@ impl PermissionsOnboarding {
                             cx.notify();
                             if this.all_granted() {
                                 this.polling = false;
-                                this.complete(window, cx);
                                 false
                             } else {
                                 true
@@ -276,9 +276,29 @@ impl PermissionsOnboarding {
         cx.notify();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// One permission: what it's for on the left, its state or the grant
-    /// button on the right.
+    fn next(&mut self, cx: &mut Context<Self>) {
+        if self.preview || !self.can_continue(cx) {
+            return;
+        }
+        self.complete(cx);
+    }
+
+    /// The microphone is required; Accessibility isn't (without it the
+    /// text is copied for the user to paste).
+    fn can_continue(&self, _cx: &App) -> bool {
+        match self.os {
+            OsType::MacOs | OsType::Windows => self.microphone == PermissionStatus::Granted,
+            _ => true,
+        }
+    }
+
+    /// Whether this setup asks for Accessibility: macOS, for dictation.
+    fn wants_accessibility(&self, cx: &App) -> bool {
+        let st = AppState::global(cx).read(cx);
+        self.os == OsType::MacOs && (st.startup.returning_user || st.startup.choices.dictation)
+    }
+
+    /// One permission: what it's for, and its state or the grant button.
     #[allow(clippy::too_many_arguments)]
     fn card(
         &self,
@@ -290,9 +310,7 @@ impl PermissionsOnboarding {
         button_label: SharedString,
         cx: &mut Context<Self>,
         on_grant: fn(&mut Self, &mut Window, &mut Context<Self>),
-    ) -> impl IntoElement {
-        let tone = design::tone(cx);
-        let granted = status == PermissionStatus::Granted;
+    ) -> AnyElement {
         let action: AnyElement = match status {
             PermissionStatus::Granted => design::chip("", true, cx)
                 .child(icon("check").size(dp(11.)))
@@ -305,223 +323,122 @@ impl PermissionsOnboarding {
                     cx,
                 ))
                 .into_any_element(),
-            _ => Button::new(SharedString::from(format!("grant-{id}")))
-                .primary()
-                .pill()
+            PermissionStatus::Checking => design::chip("", false, cx)
+                .child(t("onboarding.permissions.checking"))
+                .into_any_element(),
+            PermissionStatus::Needed => Button::new(SharedString::from(format!("grant-{id}")))
+                .outline()
                 .small()
                 .label(button_label)
                 .on_click(cx.listener(move |this, _, window, cx| on_grant(this, window, cx)))
                 .into_any_element(),
         };
-        h_flex()
-            .id(id)
-            .w_full()
-            .gap(dp(14.))
-            .px(design::SECTION_X)
-            .py(dp(12.))
-            .border_t_1()
-            .border_color(tone.hairline)
-            .child(icon(icon_name).small().text_color(if granted {
-                tone.text_faint
-            } else {
-                tone.accent_text
-            }))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(dp(3.))
-                    .child(
-                        div()
-                            .text_size(design::TEXT_BODY)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(dp(12.))
-                            .text_color(tone.text_muted)
-                            .child(description),
-                    ),
-            )
-            .child(div().flex_none().child(action))
-    }
-
-    /// The blueprint drawing: a microphone, and the ⌘ V keys Guidy presses
-    /// to paste. Whatever is still to grant is drawn in the accent.
-    fn render_drawing(&self, cx: &App) -> impl IntoElement {
-        // Drawn by scripts/illustrations.py on a 480 × 210 canvas; the
-        // callouts start at the anchors it prints.
-        const W: f32 = 480.;
-        const H: f32 = 210.;
-        let mic_pending = self.microphone != PermissionStatus::Granted;
-        let ax_pending = !mic_pending && self.accessibility != PermissionStatus::Granted;
-        let mac = self.os == OsType::MacOs;
-        design::blueprint(dp(228.), cx).child(
-            div()
-                .absolute()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .relative()
-                        .w(dp(W))
-                        .h(dp(H))
-                        .child(
-                            design::illustration_state("microphone", dp(W), dp(H), mic_pending, cx)
-                                .absolute(),
-                        )
-                        .when(mac, |d| {
-                            d.child(
-                                design::illustration_state(
-                                    "paste-keys",
-                                    dp(W),
-                                    dp(H),
-                                    ax_pending,
-                                    cx,
-                                )
-                                .absolute(),
-                            )
-                        })
-                        .child(
-                            design::callout(
-                                t("onboarding.permissions.microphone.title"),
-                                mic_pending,
-                                cx,
-                            )
-                            .absolute()
-                            .left(dp(132.))
-                            .right_0()
-                            .top(dp(70.)),
-                        )
-                        .when(mac, |d| {
-                            d.child(
-                                design::callout(
-                                    t("onboarding.permissions.accessibility.title"),
-                                    ax_pending,
-                                    cx,
-                                )
-                                .absolute()
-                                .left(dp(322.))
-                                .right(dp(-8.))
-                                .top(dp(146.)),
-                            )
-                        }),
-                ),
+        row(
+            id,
+            Some(row_icon(icon_name, cx)),
+            title,
+            Some(description),
+            Some(action),
+            cx,
         )
+        .test_support()
+        .into_any_element()
     }
 }
 
 impl Render for PermissionsOnboarding {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let checking = match self.os {
-            OsType::MacOs => {
-                self.accessibility == PermissionStatus::Checking
-                    && self.microphone == PermissionStatus::Checking
-            }
-            OsType::Windows => self.microphone == PermissionStatus::Checking,
-            _ => false,
-        };
-        if checking {
-            return v_flex()
-                .id("permissions-checking")
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(spinner(
-                    "permissions-loading",
-                    icon("loader-circle")
-                        .large()
-                        .text_color(theme.muted_foreground),
-                ))
-                .into_any_element();
-        }
-        if self.all_granted() && !self.preview {
-            return v_flex()
-                .id("permissions-granted")
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_4()
-                .child(
-                    div()
-                        .p_4()
-                        .rounded_full()
-                        .bg(design::tone(cx).accent_soft)
-                        .text_color(design::tone(cx).accent_text)
-                        .child(icon("check").large()),
-                )
-                .child(
-                    div()
-                        .text_size(design::TEXT_HEADLINE)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(t("onboarding.permissions.allGranted")),
-                )
-                .into_any_element();
-        }
+        let tone = design::tone(cx);
+        let st = AppState::global(cx).read(cx);
+        let back = crate::logic::flows::step_back(
+            crate::logic::flows::OnboardingStep::Permissions,
+            st.startup.returning_user,
+        )
+        .is_some();
+        let meetings = st.startup.choices.meetings && !st.startup.returning_user;
+        let accessibility = self.wants_accessibility(cx);
         let is_windows = self.os == OsType::Windows;
         let mic_button = if is_windows {
             t("accessibility.openSettings")
         } else {
             t("onboarding.permissions.grant")
         };
-        let tone = design::tone(cx);
-        v_flex()
-            .id("permissions-onboarding")
-            .size_full()
-            .p_6()
-            .items_center()
-            .justify_center()
-            .child(
-                design::panel(cx)
-                    .max_w(dp(520.))
-                    .child(self.render_drawing(cx))
-                    .child(
-                        design::section(false, cx)
-                            .gap(dp(6.))
-                            .child(
-                                div()
-                                    .text_size(design::TEXT_HEADLINE)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(t("onboarding.permissions.title")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(design::TEXT_BODY)
-                                    .line_height(relative(1.55))
-                                    .text_color(tone.text_muted)
-                                    .child(t("onboarding.permissions.description")),
-                            ),
+        let mut items = Vec::new();
+        if matches!(self.os, OsType::MacOs | OsType::Windows) {
+            items.push(self.card(
+                "microphone-permission",
+                "mic",
+                t("onboarding.permissions.microphone.title"),
+                t("onboarding.permissions.microphone.description"),
+                self.microphone,
+                mic_button,
+                cx,
+                Self::grant_microphone,
+            ));
+        }
+        let skipping_accessibility =
+            accessibility && self.accessibility != PermissionStatus::Granted;
+        if accessibility {
+            let description = if skipping_accessibility {
+                t("onboarding.permissions.accessibility.optional")
+            } else {
+                t("onboarding.permissions.accessibility.description")
+            };
+            items.push(self.card(
+                "accessibility-permission",
+                "keyboard",
+                t("onboarding.permissions.accessibility.title"),
+                description,
+                self.accessibility,
+                t("onboarding.permissions.grant"),
+                cx,
+                Self::grant_accessibility,
+            ));
+        }
+        let can_continue = self.can_continue(cx) && !self.preview;
+        let label = if skipping_accessibility {
+            t("onboarding.permissions.continueWithout")
+        } else {
+            t("onboarding.continue")
+        };
+        let mut assistant =
+            Assistant::new("permissions-onboarding", t("onboarding.permissions.title"))
+                .icon("shield-check")
+                .description(t("onboarding.permissions.description"))
+                .child(rows(None, items, cx))
+                .when(meetings, |a| {
+                    a.child(
+                        div()
+                            .id("permissions-meetings-note")
+                            .px(dp(2.))
+                            .text_size(design::TEXT_SECONDARY)
+                            .line_height(dp(15.))
+                            .text_color(tone.text_muted)
+                            .child(t("onboarding.permissions.meetingsLater")),
                     )
-                    .when(matches!(self.os, OsType::MacOs | OsType::Windows), |d| {
-                        d.child(self.card(
-                            "microphone-permission",
-                            "mic",
-                            t("onboarding.permissions.microphone.title"),
-                            t("onboarding.permissions.microphone.description"),
-                            self.microphone,
-                            mic_button.clone(),
-                            cx,
-                            Self::grant_microphone,
-                        ))
-                    })
-                    .when(self.os == OsType::MacOs, |d| {
-                        d.child(self.card(
-                            "accessibility-permission",
-                            "keyboard",
-                            t("onboarding.permissions.accessibility.title"),
-                            t("onboarding.permissions.accessibility.description"),
-                            self.accessibility,
-                            t("onboarding.permissions.grant"),
-                            cx,
-                            Self::grant_accessibility,
-                        ))
-                    }),
-            )
-            .test_support()
-            .into_any_element()
+                });
+        if back {
+            let preview = self.preview;
+            assistant = assistant.footer_start(back_button("permissions-back", move |_, _, cx| {
+                if !preview {
+                    let state = AppState::global(cx);
+                    state.update(cx, |s, cx| s.onboarding_back(cx));
+                }
+            }));
+        }
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "enter" && !ev.keystroke.modifiers.modified() {
+                    this.next(cx);
+                }
+            }))
+            .child(assistant.action(continue_button(
+                "permissions-continue",
+                label,
+                can_continue,
+                cx.listener(|this, _, _, cx| this.next(cx)),
+            )))
     }
 }

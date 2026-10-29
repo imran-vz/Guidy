@@ -1087,39 +1087,18 @@ pub fn start_speaker_turn_downloads(app: &AppHandle) {
 }
 
 /// Start again a download the tracker knows about (speaker model,
-/// a separation model, or the segmentation model).
+/// a separation model, or the segmentation model). Resumes its partial.
 pub fn retry_model_download(app: &AppHandle, id: &str) -> Result<()> {
-    use super::speaker_model::{
-        segmentation_download_id, separation_download_id, speaker_download_id,
-    };
-    if id == speaker_download_id() {
-        super::speaker_model::start_speaker_model_download(app);
-        return Ok(());
-    }
-    if id == segmentation_download_id() {
-        super::speaker_model::start_segmentation_model_download(app);
-        return Ok(());
-    }
-    if let Some(rest) = id.strip_prefix("separation:") {
-        let model = SpeakerModelId::parse(rest);
-        if separation_download_id(model) == id {
-            start_separation_model_download(app, model);
-            return Ok(());
-        }
-    }
-    bail!("unknown download {id}")
+    crate::downloads::retry(app, id).map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Download a separation model in the background (no-op when it is there).
+/// Queue a separation model's download (no-op when it is there).
 pub fn start_separation_model_download(app: &AppHandle, id: SpeakerModelId) {
-    let app = app.clone();
-    let _ = std::thread::Builder::new()
-        .name("separation-model-download".into())
-        .spawn(move || {
-            if let Err(e) = super::speaker_model::ensure_separation_model(&app, id, |_, _| {}) {
-                log::warn!("{e:#}");
-            }
-        });
+    let download_id = super::speaker_model::separation_download_id(id);
+    match crate::downloads::request(app, &download_id) {
+        Ok(()) | Err(crate::downloads::DownloadError::AlreadyInstalled(_)) => {}
+        Err(e) => log::warn!("could not queue {download_id}: {e}"),
+    }
 }
 
 #[cfg(test)]

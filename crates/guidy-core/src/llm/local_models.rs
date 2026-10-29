@@ -323,13 +323,33 @@ impl LocalModels {
             if map.contains_key(entry.id) {
                 bail!("{} is already downloading", entry.name);
             }
-            let token = CancellationToken::new();
+            // The download tracker's token, so cancelling there (status bar,
+            // Models page) stops this transfer too.
+            let token = match &self.app {
+                Some(app) => crate::downloads::global().begin(
+                    app,
+                    crate::downloads::llm_id(entry.id),
+                    entry.name,
+                    entry.size_bytes,
+                ),
+                None => CancellationToken::new(),
+            };
             map.insert(entry.id.to_string(), InFlight::new(token.clone()));
             token
         };
         self.emit_state(entry.id, DownloadState::Started, None);
         let verified = self.download_inner(entry, url, &token).await;
-        self.finish(entry, &token, verified)
+        let result = self.finish(entry, &token, verified);
+        if let Some(app) = &self.app {
+            let tracker = crate::downloads::global();
+            let id = crate::downloads::llm_id(entry.id);
+            match &result {
+                Ok(true) => tracker.finish(app, &id),
+                Ok(false) => tracker.cancelled(app, &id),
+                Err(e) => tracker.fail(app, &id, format!("{e:#}")),
+            }
+        }
+        result
     }
 
     /// Move a verified download into place unless it was cancelled (or
@@ -384,9 +404,20 @@ impl LocalModels {
             .with_context(|| format!("create {}", self.dir.display()))?;
         let partial = self.partial_for(entry);
         let app = self.app.clone();
-        let on_progress = move |p: &DownloadProgress| {
+        let tracker_id = crate::downloads::llm_id(entry.id);
+        let on_progress = {
+            let app = app.clone();
+            let tracker_id = tracker_id.clone();
+            move |p: &DownloadProgress| {
+                if let Some(app) = &app {
+                    crate::downloads::global().progress(app, &tracker_id, p.downloaded, p.total);
+                    let _ = app.emit(events::DOWNLOAD_PROGRESS, p);
+                }
+            }
+        };
+        let on_verifying = move || {
             if let Some(app) = &app {
-                let _ = app.emit(events::DOWNLOAD_PROGRESS, p);
+                crate::downloads::global().verifying(app, &tracker_id);
             }
         };
         const ATTEMPTS: usize = 3;
@@ -404,6 +435,7 @@ impl LocalModels {
                 Some(entry.sha256),
                 token,
                 &on_progress,
+                &on_verifying,
             )
             .await
             {
@@ -428,12 +460,19 @@ impl LocalModels {
         Err(last_err.unwrap_or_else(|| anyhow!("download failed")))
     }
 
-    /// Start a download in the background (UI entry point). Progress and the
-    /// outcome arrive as [`events`].
+    /// Start a download in the background. Progress and the outcome arrive
+    /// as [`events`] and in the download tracker. With an app it goes
+    /// through the tracker's queue (and its free-space check).
     pub fn start_download(&self, id: &str) -> Result<()> {
         let entry = Self::entry(id)?;
         if self.is_downloading(id) {
             return Ok(());
+        }
+        if let Some(app) = &self.app {
+            return match crate::downloads::request(app, &crate::downloads::llm_id(entry.id)) {
+                Ok(()) | Err(crate::downloads::DownloadError::AlreadyInstalled(_)) => Ok(()),
+                Err(e) => Err(anyhow!(e)),
+            };
         }
         let this = Self {
             app: self.app.clone(),
@@ -448,13 +487,18 @@ impl LocalModels {
     }
 
     /// Cancel an in-flight download (the partial file is kept for resume).
+    /// Its token is the download tracker's, so the tracker sees it stop.
     pub fn cancel_download(&self, id: &str) -> bool {
+        // A queued download isn't in flight yet: only the tracker has it.
+        let queued = self.app.as_ref().is_some_and(|app| {
+            crate::downloads::global().cancel(app, &crate::downloads::llm_id(id))
+        });
         match in_flight().lock().get(id) {
             Some(download) => {
                 download.token.cancel();
                 true
             }
-            None => false,
+            None => queued,
         }
     }
 

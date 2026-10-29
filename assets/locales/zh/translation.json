@@ -36,23 +36,12 @@
     "about": "关于"
   },
   "usage": {
-    "title": "用量",
-    "description": "云端 AI 提供商的费用，以及模型在这台 Mac 上完成的工作。",
-    "cloud": "云端",
     "local": "这台 Mac",
     "refresh": "刷新",
     "total": "总花费",
     "last30Days": "最近 30 天",
     "callsTitle": "调用",
-    "byModel": "按模型",
-    "byFeature": "按功能",
     "empty": "还没有云端 AI 调用。",
-    "calls_one": "{{count}} 次调用",
-    "calls_other": "{{count}} 次调用",
-    "average": "平均 {{cost}}",
-    "highest": "最高 {{cost}}",
-    "tokens": "输入 {{input}} / 输出 {{output}} tokens",
-    "unknownPrice": "价格未知",
     "feature": {
       "dictation": "听写",
       "meetingTranscription": "会议转录",
@@ -61,37 +50,17 @@
       "other": "其他"
     },
     "localAudio": "已转录音频",
-    "localWords": "字词",
-    "localTokens": "LLM tokens",
-    "localCloudEquivalent": "云端等价费用",
     "localEmpty": "还没有在本地模型上运行过任何内容。",
-    "localByModel": "本地模型",
-    "localByFeature": "本地工作（按功能）",
     "kind": {
       "transcription": "转录",
       "llm": "内置 LLM"
     },
-    "runs_one": "{{count}} 次运行",
-    "runs_other": "{{count}} 次运行",
-    "audio": "{{duration}} 音频",
-    "words": "{{count}} 个字词",
-    "realtime": "{{speed}} 实时速度",
-    "promptSpeed": "提示 {{speed}}",
-    "generationSpeed": "生成 {{speed}}",
-    "loadTime": "加载用时 {{time}}",
-    "localNote": "实时倍速 = 音频时长 ÷ 处理时间，不含加载时间；说话时实时解码的听写不计时。云端等价费用按每分钟 ${{price}}（OpenAI Whisper）计算音频。",
     "estimateNote": "~ 表示根据公开的每 token 价格估算的金额；自行报告费用的提供商（如 OpenRouter）为准确金额。账单请以提供商控制台为准。",
     "reportedNote": "金额以提供商报告为准。账单请以提供商控制台为准。",
-    "clear": "清除历史记录",
     "clearTitle": "清除用量历史记录？",
     "clearConfirm": "已记录的调用、费用和本地模型运行记录将被删除。会议摘要上显示的用量会保留。"
   },
   "onboarding": {
-    "subtitle": "请选择一个转录模型以开始使用",
-    "existingModelsTitle": "兼容的模型",
-    "downloadModelsTitle": "可供下载",
-    "showAllModels": "显示全部 {{total}} 个模型",
-    "showFewerModels": "显示较少模型",
     "recommended": "推荐",
     "customModelDescription": "非官方支持",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "旧格式",
       "failed": "下载失败",
       "retry": "重试",
-      "chooseAnother": "选择其他模型",
       "download": "下载模型（{{size}}）",
       "continue": "继续",
       "timeRemaining": "剩余 {{time}}"
@@ -150,7 +118,6 @@
       "grant": "授予权限",
       "granted": "已授予",
       "waiting": "等待中...",
-      "allGranted": "全部完成！",
       "errors": {
         "checkFailed": "检查权限失败。请重试。",
         "requestFailed": "请求权限失败。请重试。"
@@ -163,10 +130,6 @@
     "active": "活跃",
     "switching": "切换中...",
     "noModelsAvailable": "没有可用的模型",
-    "verifying": "正在验证 {{modelName}}...",
-    "verifyingGeneric": "正在验证...",
-    "downloading": "下载中 {{percentage}}%",
-    "downloadingMultiple": "正在下载 {{count}} 个模型...",
     "modelReady": "模型已就绪",
     "loading": "正在加载 {{modelName}}...",
     "loadingGeneric": "加载中...",
@@ -176,29 +139,18 @@
     "deleteModel": "删除 {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
     "capabilities": {
-      "languageSelection": "支持多种输入语言",
       "languageCount": "{{total}} 种语言",
-      "translation": "可翻译为英语",
       "translate": "翻译为英语",
-      "singleLanguage": "仅支持此语言",
-      "languageOnly": "仅 {{language}}",
-      "streaming": "在您说话时实时显示转录"
+      "languageOnly": "仅 {{language}}"
     },
     "download": "下载",
     "use": "使用",
-    "cancel": "取消",
     "cancelDownload": "取消下载",
     "legacy": "旧版"
   },
   "settings": {
-    "modelSettings": {
-      "title": "{{model}} 设置"
-    },
     "models": {
-      "title": "转录模型",
-      "description": "选择转录模型或下载其他模型。不同模型提供不同的准确度和速度。",
       "deleteConfirm": "确定要删除 {{modelName}} 吗？您需要重新下载才能使用。",
-      "deleteActiveConfirm": "{{modelName}} 是您当前使用的模型。删除后将停止转录，直到您选择新的模型。确定要删除吗？",
       "deleteTitle": "删除模型",
       "retiredNotice": {
         "title": "旧模型已无法在 Guidy 中使用",
@@ -213,17 +165,12 @@
         "translation": "筛选支持翻译为英语的模型"
       },
       "noModelsMatch": "没有符合此筛选条件的模型。",
-      "yourModels": "已下载的模型",
-      "availableModels": "可供下载",
       "searchPlaceholder": "按名称搜索模型…",
       "rescan": {
-        "label": "重新扫描",
         "tooltip": "重新扫描在 Guidy 之外添加到模型文件夹或 Hugging Face 缓存中的模型"
       }
     },
     "general": {
-      "title": "通用",
-      "description": "如何开始听写、识别的语言，以及您听到的声音。",
       "shortcutsGroup": "快捷键",
       "shortcut": {
         "title": "Guidy 快捷键",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "语言",
-        "description": "选择语音识别的语言。自动将自动确定语言，选择特定语言可以提高该语言的准确度。",
         "searchPlaceholder": "搜索语言...",
         "noResults": "未找到语言",
         "auto": "自动"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "声音",
       "microphone": {
         "title": "麦克风",
-        "description": "选择您偏好的麦克风设备",
         "placeholder": "选择麦克风...",
         "loading": "加载中..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "输出设备",
-        "description": "选择用于反馈声音的音频输出设备",
         "placeholder": "选择输出设备...",
         "loading": "加载中..."
       },
       "volume": {
-        "title": "音量",
-        "description": "调整音频反馈的音量"
+        "title": "音量"
       }
     },
     "advanced": {
-      "title": "高级",
-      "description": "启动、粘贴、转录调优和历史记录。",
       "groups": {
         "app": "应用",
         "output": "输出",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "隐藏启动",
-        "description": "启动到系统托盘而不打开窗口。"
+        "description": "启动到系统托盘而不打开窗口。",
+        "descriptionMac": "启动到菜单栏，不打开窗口。"
       },
       "autostart": {
         "label": "开机启动",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "显示托盘图标",
-        "description": "在系统托盘中显示 Guidy 图标。"
+        "description": "在系统托盘中显示 Guidy 图标。",
+        "descriptionMac": "在菜单栏中显示 Guidy 图标。"
       },
       "overlay": {
         "style": {
-          "title": "悬浮窗",
           "description": "选择录音悬浮窗的样式：「无」会隐藏悬浮窗，「精简」显示小巧的胶囊状指示，「实时」在您说话时实时显示转录内容（仅限支持流式的模型——请在模型选择器中查找「流式」标签）。在 Linux 上建议选择「无」。",
+          "descriptionMac": "选择录音悬浮窗的样式：「无」会隐藏悬浮窗，「精简」显示小巧的胶囊状指示，「实时」在您说话时实时显示转录内容（仅限支持流式的模型——请在模型选择器中查找「流式」标签）。",
           "options": {
             "none": "无",
             "minimal": "精简",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "自动提交",
         "description": "在文本插入后自动发送所选的按键组合。macOS 上使用 Cmd+Enter，Windows/Linux 上使用 Super+Enter。",
+        "descriptionMac": "在文本插入后自动发送所选的按键组合。",
         "options": {
           "off": "关闭",
           "enter": "回车",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "后处理",
-      "description": "在粘贴之前，用 AI 模型清理或改写转录内容。",
       "hotkey": {
         "title": "快捷键"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "提供商",
-          "description": "选择一个兼容 OpenAI 或 Anthropic 的提供商。"
+          "title": "提供商"
         },
         "builtin": {
           "label": "内置模型（在这台 Mac 上）",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "API 格式",
-          "description": "自定义端点期望的请求格式。",
           "options": {
             "openai": "兼容 OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "基础 URL",
-          "description": "所选提供商的 API 基础 URL。仅自定义提供商可编辑。",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API 密钥",
-          "description": "所选提供商的 API 密钥。",
           "placeholder": "sk-...",
           "saveFailed": "无法保存 API 密钥"
         },
@@ -500,54 +437,33 @@
           "title": "模型",
           "descriptionCustom": "提供自定义端点期望的模型标识符。",
           "descriptionDefault": "选择所选提供商提供的模型。",
-          "placeholderWithOptions": "搜索或选择模型",
           "placeholderNoOptions": "输入模型名称",
           "refreshModels": "刷新模型"
         }
       },
       "prompts": {
-        "title": "提示词",
-        "selectedPrompt": {
-          "title": "已选提示词",
-          "description": "选择用于优化转录的模板或创建新模板。在提示词文本中使用 ${output} 来引用捕获的转录。"
-        },
-        "noPrompts": "没有可用的提示词",
-        "selectPrompt": "选择提示词",
         "createNew": "创建新提示词",
         "promptLabel": "提示词名称",
         "promptLabelPlaceholder": "输入提示词名称",
         "promptInstructions": "提示词指令",
         "promptInstructionsPlaceholder": "编写转录后要执行的指令。示例：改进以下文本的语法和清晰度: ${output}",
         "promptTip": "提示：使用 <code>${output}</code> 将转录文本插入到您的提示词中。",
-        "updatePrompt": "更新提示词",
-        "deletePrompt": "删除提示词",
-        "createPrompt": "创建提示词",
-        "cancel": "取消",
-        "selectToEdit": "选择上方的提示词以查看和编辑其详细信息。",
-        "createFirst": "点击上方的「创建新提示词」来创建您的第一个后处理提示词。"
+        "deletePrompt": "删除提示词"
       }
     },
     "history": {
-      "title": "历史记录",
-      "openFolder": "打开录音文件夹",
-      "loading": "加载历史记录中...",
-      "empty": "还没有转录记录。开始录制以建立您的历史记录！",
       "copyToClipboard": "复制转录到剪贴板",
       "copyError": "无法将转录复制到剪贴板。",
       "save": "保存转录",
       "unsave": "从已保存中移除",
       "delete": "删除条目",
-      "deleteError": "删除条目失败，请重试。",
       "retranscribe": "重新转录",
-      "retranscribeError": "重新转录失败。请重试。",
       "transcribing": "转录中...",
       "transcriptionFailed": "转录失败。您可以使用重试图标重新转录。"
     },
     "debug": {
-      "title": "调试",
       "logDirectory": {
-        "title": "日志目录",
-        "description": "日志文件的存储位置"
+        "title": "日志目录"
       },
       "logLevel": {
         "title": "日志级别",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "实时日志",
-        "description": "实时传输应用程序日志，无需打开日志文件即可诊断问题。仅显示此面板打开期间产生的日志；遵循上方的“日志级别”设置。",
         "live": "实时",
         "paused": "已暂停",
         "pause": "暂停",
@@ -617,11 +532,6 @@
         "description": "选择键盘快捷键的后端。",
         "bindingsReset": "键盘快捷键不兼容，已重置为默认值"
       },
-      "paths": {
-        "appData": "应用数据:",
-        "models": "模型:",
-        "settings": "设置:"
-      },
       "pasteDelay": {
         "title": "粘贴延迟（前）",
         "description": "复制文本后、发送粘贴按键前的延迟（毫秒）。如果没有粘贴任何内容，请增加此值。"
@@ -666,8 +576,7 @@
         "title": "预览新功能",
         "description": "打开最新内置发行说明，且不标记为已查看",
         "button": "预览",
-        "noNotes": "未找到内置发行说明",
-        "error": "无法预览发行说明"
+        "noNotes": "未找到内置发行说明"
       },
       "onboardingPreview": {
         "title": "预览新手引导",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "关于",
-      "version": {
-        "title": "版本",
-        "description": "Guidy 的当前版本"
-      },
       "author": {
         "title": "作者",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "应用数据目录",
-        "description": "Guidy 存储数据的位置"
-      },
-      "sourceCode": {
-        "title": "源代码",
-        "description": "查看源代码并贡献",
-        "button": "在 GitHub 上查看"
-      },
-      "supportDevelopment": {
-        "title": "支持开发",
-        "description": "帮助我们继续开发 Guidy",
-        "button": "捐赠"
+        "title": "应用数据目录"
       },
       "acknowledgments": {
         "title": "致谢",
@@ -708,12 +601,6 @@
           "description": "OpenAI Whisper 自动语音识别模型的高性能推理",
           "details": "Guidy 使用 ggml 进行快速的本地语音转文字处理。感谢 Georgi Gerganov 和贡献者们的出色工作。"
         }
-      },
-      "hero": {
-        "headline": "留在这台 Mac 上的语音转文字",
-        "lede": "按下快捷键并说话，Guidy 就会在当前应用中输入文字。转录在本地运行。",
-        "engine": "引擎",
-        "model": "模型"
       },
       "whatsNewUpdates": {
         "label": "显示新功能",
@@ -741,7 +628,6 @@
     "delete": "删除",
     "back": "返回",
     "close": "关闭",
-    "open": "打开",
     "copy": "复制",
     "clear": "清除",
     "noOptionsFound": "未找到选项"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "转录失败"
   },
   "appLanguage": {
-    "title": "应用语言",
-    "description": "更改 Guidy 界面的语言"
+    "title": "应用语言"
   },
   "theme": {
     "title": "应用主题",
-    "description": "选择 Guidy 跟随系统主题，还是保持浅色或深色",
     "options": {
       "system": "跟随系统",
       "light": "浅色",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "会议",
     "selection": {
-      "hint": "拖动或按住 Shift 点按，可标记多行",
       "count_one": "已选择 {{count}} 行",
       "count_other": "已选择 {{count}} 行",
       "keys": "Shift-点按：范围 · ⌘-点按：添加或移除 · Esc：清除",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "重新识别说话人",
-      "tooltip": "使用 {{model}} 重新区分说话人。转录文本保持不变。您标记过的行和命名过的说话人会保留对应的人；其余的将再次按声音匹配。",
       "standard": "标准说话人模型",
       "download": "需下载 {{size}}（仅一次）",
       "error": "无法重新识别说话人",
@@ -826,7 +708,6 @@
       "yesterday": "昨天"
     },
     "copy": {
-      "summary": "复制",
       "transcript": "复制转录文本",
       "copied": "已复制",
       "notes": "复制记录",
@@ -866,7 +747,6 @@
       "openNotes": "打开记录",
       "expand": "显示实时转录",
       "collapse": "收起",
-      "liveTitle": "实时转录",
       "liveHint": "目前听到的内容。会议结束后会生成带说话人姓名的完整转录文本。",
       "callTitle": "{{app}} 通话",
       "callPrompt": "要做会议记录吗？",
@@ -875,7 +755,6 @@
       "startFailed": "无法开始。要重试吗？",
       "dismiss": "以后再说"
     },
-    "description": "在这台 Mac 上录制会议，然后阅读标有说话人姓名的转录文本。",
     "init": {
       "starting": "正在启动会议记录...",
       "failed": "会议记录无法启动",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "请先生成会议摘要：标题会根据摘要撰写。"
     },
     "model": {
-      "download": "下载会议模型",
       "downloadError": "无法下载会议模型"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "开始会议记录",
       "stop": "停止会议记录",
-      "recording": "录制中",
-      "idle": "未在录制",
       "startError": "无法开始录制",
       "stopError": "无法停止录制",
       "disabled": "请在设置中开启会议记录以进行录制。"
     },
-    "upcoming": {
-      "title": "即将开始",
-      "empty": "没有带通话链接的即将开始的日历会议。",
-      "start": "开始"
-    },
     "list": {
-      "title": "录音",
-      "empty": "还没有会议。开始会议记录即可录制。",
       "loading": "正在加载会议...",
       "loadError": "无法加载会议",
-      "speakerModelMissing": "下载说话人识别模型后才会处理录音。",
       "minutes": "{{count}} 分钟",
-      "open": "打开",
       "rename": "重命名",
       "delete": "删除",
       "process": "处理",
       "retry": "重试",
       "cancelProcessing": "取消处理",
-      "save": "保存",
       "cancel": "取消",
       "titlePlaceholder": "会议标题",
       "deleteTitle": "删除会议？",
@@ -979,7 +845,6 @@
       "share": "占比",
       "youSpoke": "您的发言",
       "minutes": "分钟",
-      "speakersToName": "{{count}} 位待命名",
       "notesTab": "记录"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "人员",
-      "description": "您在会议中命名过的人。Guidy 会在之后的会议中识别他们的声音。",
       "empty": "还没有人员。在会议中为说话人命名即可添加。",
       "loadError": "无法加载人员",
       "voiceprints_one": "{{count}} 个声纹",
       "voiceprints_other": "{{count}} 个声纹",
-      "edit": "编辑",
       "merge": "合并",
       "mergeInto": "合并到...",
       "mergeHint": "选择要保留的人。声纹和说话人名称会转移给此人。",
@@ -1035,7 +898,6 @@
       "renameError": "无法更新此人员",
       "namePlaceholder": "姓名",
       "emailPlaceholder": "电子邮件（可选）",
-      "save": "保存",
       "cancel": "取消",
       "voice": {
         "title": "您的声音",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "会议记录",
       "enabled": {
         "title": "会议记录",
         "description": "使用麦克风和电脑音频录制会议。开启后将请求日历、系统音频和通知权限。"
@@ -1077,7 +938,6 @@
         "requestAgain": "重新请求",
         "openSettings": "打开系统设置"
       },
-      "you": "您",
       "userName": {
         "title": "您的姓名",
         "description": "您的麦克风音轨始终以此姓名标记。",
@@ -1128,7 +988,6 @@
         "description": "区分不同声音，并识别您之前命名过的人。使用 {{name}}（{{trainedOn}}），{{size}}。仅在您点击“下载”时才会下载。",
         "ready": "已下载",
         "download": "下载（{{size}}）",
-        "retry": "重试下载",
         "failed": "下载失败：{{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} 分钟"
       },
       "advanced": {
-        "title": "高级",
-        "show": "显示高级设置",
-        "hide": "隐藏高级设置",
         "matchThreshold": {
           "title": "自动匹配阈值",
           "description": "声音相似度达到或超过此值时，会自动为说话人命名。低于此值时，匹配结果会询问“确认？”。"
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "说话人轮次检测",
         "description": "在声音变化处分行（{{size}}）。下载完成前，将在停顿处分行。",
-        "ready": "就绪",
-        "downloading": "正在下载",
-        "download": "下载（{{size}}）"
+        "descriptionReady": "在声音变化处分行。"
       },
       "callSuggestions": {
         "title": "通话时建议做记录",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "搜索标题、摘要和转录文本",
       "searching": "正在搜索...",
       "empty": "没有与“{{query}}”匹配的会议。",
       "count_one": "1 场会议",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "设置",
-      "models": "模型",
-      "note": "模型下载完成前即可录制。处理会等到模型就绪后进行。",
-      "downloading": "正在下载",
-      "downloadingPercent": "正在下载 {{percent}}%",
-      "ready": "就绪",
-      "notDownloaded": "未下载",
-      "download": "下载",
-      "dismiss": "关闭",
-      "optional": "可选"
-    },
     "downloads": {
       "activity": "正在下载 {{name}} · {{percent}}%",
       "activityFailed": "下载失败 · {{name}}",
-      "multiple": "正在下载 {{count}} 个模型",
-      "cancel": "取消",
       "retry": "重试",
       "done": "{{name}} 已下载",
       "failed": "无法下载 {{name}}",
       "startError": "无法开始下载",
       "empty": "没有下载任务",
-      "queued": "排队中",
-      "doneShort": "完成",
       "failedShort": "失败",
       "cancelled": "已取消"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "待办事项",
       "generate": "生成摘要",
       "regenerate": "重新生成",
-      "regenerateWith": "重新生成，使用...",
       "generateWith": "使用 {{model}} 生成",
       "otherModels": "其他模型",
       "otherModel": "其他模型…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "摘要",
-      "provider": "提供商",
-      "providerDescription": "用于会议摘要和待办事项的模型。听写后处理保留其自己的提供商。",
       "builtin": "内置（在这台 Mac 上）",
       "builtinDescription": "使用 llama.cpp 运行本地模型。任何内容都不会离开您的 Mac。",
-      "model": "模型",
-      "modelDescription": "勾选模型即可将其添加到您的模型中。仅列出输出文本的模型。“适合摘要”表示该模型支持结构化输出，摘要依赖于此功能。",
       "modelPlaceholder": "模型 ID",
       "pickModel": "选择模型",
-      "noLocalModels": "请在下方下载模型",
-      "usingPostProcessModel": "正在使用后处理模型（{{model}}）",
       "refreshModels": "刷新",
       "testConnection": "测试连接",
-      "testDescription": "检查提供商、密钥和模型是否可用。",
       "apple": "Apple Intelligence",
       "appleDescription": "在已开启 Apple Intelligence 的 Apple 芯片 Mac 上运行的设备端模型。",
-      "appleAvailable": "可用",
       "appleUnavailable": "Apple Intelligence 在这台 Mac 上不可用",
       "activeHeading": "摘要生成方式",
-      "place": "摘要运行位置",
-      "placeDescription": "仅使用所选选项。",
       "tabCloud": "云端提供商",
       "tabLocal": "这台 Mac",
       "onThisMac": "这台 Mac · 离线",
       "apiKey": "API 密钥",
       "apiKeyDescription": "保存在您的钥匙串中，并与后处理共用。",
       "getKey": "获取 {{provider}} 密钥",
-      "modelDescriptionCustom": "输入您的端点所需的模型 ID 并按回车添加，或勾选其列出的模型。",
       "searchModels": "搜索模型",
       "goodOnly": "适合摘要",
       "goodForSummaries": "摘要",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "在这台 Mac 上不可用。请在 系统设置 > Apple 智能与 Siri 中开启。",
       "unavailable": "不可用",
       "yourModels": "您的模型",
-      "yourModelsDescription": "“生成摘要”会提供这里的所有模型，您可以为每个会议单独选择。所选模型为默认模型。",
       "yourModelsEmpty": "还没有云端模型。请在下方选择提供商，添加其 API 密钥并勾选所需的模型。",
       "default": "默认",
       "removeModel": "从您的模型中移除",
-      "addFrom": "从以下来源添加模型",
-      "addFromDescription": "选择提供商以输入其密钥，并勾选要添加的模型。这不会更改默认模型。"
+      "addFrom": "从以下来源添加模型"
     },
     "local": {
       "heading": "本地模型",
@@ -1438,9 +1260,7 @@
       "default": "默认",
       "recommendedRam": "推荐 {{gb}} GB 以上内存",
       "notEnoughRam": "这台 Mac 的内存低于此模型的推荐配置。",
-      "downloaded": "已下载",
-      "download": "下载",
-      "downloading": "正在下载 {{percentage}}%"
+      "downloaded": "已下载"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "已连接为 {{name}}"
     },
     "byok": {
-      "testConnection": "测试连接",
-      "testDescription": "通过一个小请求检查基础 URL、API 密钥和模型。",
-      "baseUrlEditable": "此提供商的 API 基础 URL。请替换其中的 {placeholder}（例如您的 Cloudflare 账户 ID）。",
-      "cloudflareHint": "Cloudflare：将您的账户 ID（使用 AI Gateway 时还需网关 ID）填入基础 URL。"
+      "testDescription": "通过一个小请求检查基础 URL、API 密钥和模型。"
     }
   }
 }

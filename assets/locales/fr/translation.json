@@ -36,23 +36,12 @@
     "about": "À propos"
   },
   "usage": {
-    "title": "Utilisation",
-    "description": "Ce qu'ont coûté les fournisseurs d'IA dans le cloud, et le travail effectué par les modèles sur ce Mac.",
-    "cloud": "Cloud",
     "local": "Sur ce Mac",
     "refresh": "Actualiser",
     "total": "Total dépensé",
     "last30Days": "30 derniers jours",
     "callsTitle": "Appels",
-    "byModel": "Par modèle",
-    "byFeature": "Par fonctionnalité",
     "empty": "Aucun appel à une IA dans le cloud pour l'instant.",
-    "calls_one": "{{count}} appel",
-    "calls_other": "{{count}} appels",
-    "average": "moy. {{cost}}",
-    "highest": "max. {{cost}}",
-    "tokens": "{{input}} jetons en entrée / {{output}} en sortie",
-    "unknownPrice": "prix inconnu",
     "feature": {
       "dictation": "Dictée",
       "meetingTranscription": "Transcription des réunions",
@@ -61,37 +50,17 @@
       "other": "Autre"
     },
     "localAudio": "Audio transcrit",
-    "localWords": "Mots",
-    "localTokens": "Jetons LLM",
-    "localCloudEquivalent": "Équivalent cloud",
     "localEmpty": "Rien n'a encore été exécuté sur un modèle local.",
-    "localByModel": "Modèles locaux",
-    "localByFeature": "Travail local par fonctionnalité",
     "kind": {
       "transcription": "Transcription",
       "llm": "LLM intégré"
     },
-    "runs_one": "{{count}} exécution",
-    "runs_other": "{{count}} exécutions",
-    "audio": "{{duration}} d'audio",
-    "words": "{{count}} mots",
-    "realtime": "{{speed}} le temps réel",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "génération {{speed}}",
-    "loadTime": "chargement en {{time}}",
-    "localNote": "La vitesse par rapport au temps réel correspond à la durée de l'audio ÷ le temps de traitement, chargement exclu ; la dictée décodée en direct pendant que vous parlez n'est pas chronométrée. L'équivalent cloud évalue l'audio à {{price}} $ par minute (OpenAI Whisper).",
     "estimateNote": "~ indique des montants estimés à partir des prix publiés par jeton ; les fournisseurs qui indiquent leur propre coût (comme OpenRouter) sont exacts. Consultez le tableau de bord de votre fournisseur pour la facturation.",
     "reportedNote": "Les montants sont ceux indiqués par les fournisseurs. Consultez le tableau de bord de votre fournisseur pour la facturation.",
-    "clear": "Effacer l'historique",
     "clearTitle": "Effacer l'historique d'utilisation ?",
     "clearConfirm": "Les appels, coûts et exécutions de modèles locaux enregistrés seront supprimés. L'utilisation affichée sur les résumés de réunion est conservée."
   },
   "onboarding": {
-    "subtitle": "Pour commencer, choisissez un modèle de transcription",
-    "existingModelsTitle": "Modèles compatibles",
-    "downloadModelsTitle": "Disponibles au téléchargement",
-    "showAllModels": "Afficher tous les {{total}} modèles",
-    "showFewerModels": "Afficher moins de modèles",
     "recommended": "Recommandé",
     "customModelDescription": "Non officiellement pris en charge",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Ancien format",
       "failed": "Échec du téléchargement",
       "retry": "Réessayer",
-      "chooseAnother": "Choisir un autre modèle",
       "download": "Télécharger les modèles ({{size}})",
       "continue": "Continuer",
       "timeRemaining": "{{time}} restant"
@@ -150,7 +118,6 @@
       "grant": "Accorder l'autorisation",
       "granted": "Accordé",
       "waiting": "En attente...",
-      "allGranted": "Tout est prêt !",
       "errors": {
         "checkFailed": "Échec de la vérification des autorisations. Veuillez réessayer.",
         "requestFailed": "Échec de la demande d'autorisation. Veuillez réessayer."
@@ -163,10 +130,6 @@
     "active": "Actif",
     "switching": "Changement...",
     "noModelsAvailable": "Aucun modèle disponible",
-    "verifying": "Vérification de {{modelName}}...",
-    "verifyingGeneric": "Vérification...",
-    "downloading": "Téléchargement {{percentage}}%",
-    "downloadingMultiple": "Téléchargement de {{count}} modèles...",
     "modelReady": "Modèle Prêt",
     "loading": "Chargement de {{modelName}}...",
     "loadingGeneric": "Chargement...",
@@ -176,29 +139,18 @@
     "deleteModel": "Supprimer {{modelName}}",
     "downloadSpeed": "{{speed}} Mo/s",
     "capabilities": {
-      "languageSelection": "Prend en charge plusieurs langues d'entrée",
       "languageCount": "{{total}} langues",
-      "translation": "Peut traduire en anglais",
       "translate": "Traduire en anglais",
-      "singleLanguage": "Prend en charge uniquement cette langue",
-      "languageOnly": "{{language}} uniquement",
-      "streaming": "Affiche la transcription en direct pendant que vous parlez"
+      "languageOnly": "{{language}} uniquement"
     },
     "download": "Télécharger",
     "use": "Utiliser",
-    "cancel": "Annuler",
     "cancelDownload": "Annuler le téléchargement",
     "legacy": "Hérité"
   },
   "settings": {
-    "modelSettings": {
-      "title": "Paramètres de {{model}}"
-    },
     "models": {
-      "title": "Modèles de Transcription",
-      "description": "Sélectionnez un modèle de transcription ou téléchargez des modèles supplémentaires. Différents modèles offrent différents niveaux de précision et de vitesse.",
       "deleteConfirm": "Êtes-vous sûr de vouloir supprimer {{modelName}} ? Vous devrez le télécharger à nouveau pour l'utiliser.",
-      "deleteActiveConfirm": "{{modelName}} est votre modèle actif. Le supprimer arrêtera les transcriptions jusqu'à ce que vous sélectionniez un nouveau modèle. Êtes-vous sûr ?",
       "deleteTitle": "Supprimer le modèle",
       "retiredNotice": {
         "title": "Les anciens modèles ne fonctionnent plus avec Guidy",
@@ -213,17 +165,12 @@
         "translation": "Filtrer les modèles prenant en charge la traduction vers l'anglais"
       },
       "noModelsMatch": "Aucun modèle ne correspond à ce filtre.",
-      "yourModels": "Modèles téléchargés",
-      "availableModels": "Disponibles au téléchargement",
       "searchPlaceholder": "Rechercher des modèles par nom…",
       "rescan": {
-        "label": "Réanalyser",
         "tooltip": "Réanalyser pour détecter les modèles ajoutés au dossier des modèles ou au cache Hugging Face en dehors de Guidy"
       }
     },
     "general": {
-      "title": "Général",
-      "description": "Comment démarrer la dictée, la langue écoutée et ce que vous entendez.",
       "shortcutsGroup": "Raccourcis",
       "shortcut": {
         "title": "Raccourcis Guidy",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "Langue",
-        "description": "Sélectionnez la langue pour la reconnaissance vocale. Auto déterminera automatiquement la langue, tandis que sélectionner une langue spécifique peut améliorer la précision pour cette langue.",
         "searchPlaceholder": "Rechercher des langues...",
         "noResults": "Aucune langue trouvée",
         "auto": "Automatique"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "Son",
       "microphone": {
         "title": "Microphone",
-        "description": "Sélectionnez votre périphérique d'entrée audio",
         "placeholder": "Sélectionner un microphone...",
         "loading": "Chargement..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Périphérique de sortie",
-        "description": "Sélectionnez votre périphérique de sortie audio pour le signal sonore",
         "placeholder": "Sélectionner un périphérique de sortie...",
         "loading": "Chargement..."
       },
       "volume": {
-        "title": "Volume",
-        "description": "Ajuster le volume du signal sonore"
+        "title": "Volume"
       }
     },
     "advanced": {
-      "title": "Avancé",
-      "description": "Démarrage, collage, réglages de transcription et historique.",
       "groups": {
         "app": "Application",
         "output": "Sortie",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Démarrer masqué",
-        "description": "Lancer dans la barre système sans ouvrir la fenêtre."
+        "description": "Lancer dans la barre système sans ouvrir la fenêtre.",
+        "descriptionMac": "Démarrer dans la barre des menus sans ouvrir la fenêtre."
       },
       "autostart": {
         "label": "Lancer au démarrage",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Afficher l'icône de la barre",
-        "description": "Afficher l'icône de Guidy dans la barre système."
+        "description": "Afficher l'icône de Guidy dans la barre système.",
+        "descriptionMac": "Afficher l’icône de Guidy dans la barre des menus."
       },
       "overlay": {
         "style": {
-          "title": "Overlay",
           "description": "Choisissez l'overlay d'enregistrement : « Aucun » le masque, « Minimal » affiche une pilule compacte, « Live » affiche la transcription en temps réel pendant que vous parlez (uniquement pour les modèles compatibles avec le streaming — recherchez le badge Streaming dans le sélecteur de modèle). Sur Linux, « Aucun » est recommandé.",
+          "descriptionMac": "Choisissez l'overlay d'enregistrement : « Aucun » le masque, « Minimal » affiche une pilule compacte, « Live » affiche la transcription en temps réel pendant que vous parlez (uniquement pour les modèles compatibles avec le streaming — recherchez le badge Streaming dans le sélecteur de modèle).",
           "options": {
             "none": "Aucune",
             "minimal": "Minimal",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Envoi automatique",
         "description": "Envoie automatiquement la combinaison de touches sélectionnée après l'insertion du texte. Cmd+Enter s'applique sur macOS, tandis que Windows/Linux utilisent Super+Enter.",
+        "descriptionMac": "Envoie automatiquement la combinaison de touches sélectionnée après l'insertion du texte.",
         "options": {
           "off": "Désactivé",
           "enter": "Entrée",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Post-traitement",
-      "description": "Nettoyer ou réécrire une transcription avec un modèle d'IA avant qu'elle soit collée.",
       "hotkey": {
         "title": "Raccourci clavier"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Fournisseur",
-          "description": "Sélectionnez un fournisseur compatible OpenAI ou Anthropic."
+          "title": "Fournisseur"
         },
         "builtin": {
           "label": "Modèle intégré (sur ce Mac)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "Format d'API",
-          "description": "Format de requête attendu par votre point de terminaison personnalisé.",
           "options": {
             "openai": "Compatible OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "URL de base",
-          "description": "URL de base de l'API pour le fournisseur sélectionné. Seul le fournisseur personnalisé peut être modifié.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "Clé API",
-          "description": "Clé API pour le fournisseur sélectionné.",
           "placeholder": "sk-...",
           "saveFailed": "Impossible d'enregistrer la clé API"
         },
@@ -500,54 +437,33 @@
           "title": "Modèle",
           "descriptionCustom": "Fournissez l'identifiant du modèle attendu par votre point de terminaison personnalisé.",
           "descriptionDefault": "Choisissez un modèle exposé par le fournisseur sélectionné.",
-          "placeholderWithOptions": "Rechercher ou sélectionner un modèle",
           "placeholderNoOptions": "Tapez un nom de modèle",
           "refreshModels": "Actualiser les modèles"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Prompt sélectionné",
-          "description": "Sélectionnez un modèle pour affiner les transcriptions ou créez-en un nouveau. Utilisez ${output} dans le texte du prompt pour référencer la transcription capturée."
-        },
-        "noPrompts": "Aucun prompt disponible",
-        "selectPrompt": "Sélectionner un prompt",
         "createNew": "Créer un nouveau prompt",
         "promptLabel": "Libellé du prompt",
         "promptLabelPlaceholder": "Entrez le nom du prompt",
         "promptInstructions": "Instructions du prompt",
         "promptInstructionsPlaceholder": "Écrivez les instructions à exécuter après la transcription. Exemple : Améliorer la grammaire et la clarté du texte suivant : ${output}",
         "promptTip": "Astuce : Utilisez <code>${output}</code> pour insérer le texte transcrit dans votre prompt.",
-        "updatePrompt": "Mettre à jour le prompt",
-        "deletePrompt": "Supprimer le prompt",
-        "createPrompt": "Créer le prompt",
-        "cancel": "Annuler",
-        "selectToEdit": "Sélectionnez un prompt ci-dessus pour voir et modifier ses détails.",
-        "createFirst": "Cliquez sur 'Créer un nouveau prompt' ci-dessus pour créer votre premier prompt de post-traitement."
+        "deletePrompt": "Supprimer le prompt"
       }
     },
     "history": {
-      "title": "Historique",
-      "openFolder": "Ouvrir le dossier des enregistrements",
-      "loading": "Chargement de l'historique...",
-      "empty": "Pas encore de transcriptions. Commencez à enregistrer pour créer votre historique !",
       "copyToClipboard": "Copier la transcription dans le presse-papiers",
       "copyError": "Impossible de copier la transcription dans le presse-papiers.",
       "save": "Enregistrer la transcription",
       "unsave": "Retirer des favoris",
       "delete": "Supprimer l'entrée",
-      "deleteError": "Échec de la suppression de l'entrée. Veuillez réessayer.",
       "retranscribe": "Re-transcrire",
-      "retranscribeError": "Impossible de re-transcrire. Veuillez réessayer.",
       "transcribing": "Transcription en cours...",
       "transcriptionFailed": "La transcription a échoué. Vous pouvez re-transcrire en utilisant l'icône de réessai."
     },
     "debug": {
-      "title": "Débogage",
       "logDirectory": {
-        "title": "Répertoire des journaux",
-        "description": "Emplacement où les fichiers journaux sont stockés"
+        "title": "Répertoire des journaux"
       },
       "logLevel": {
         "title": "Niveau de journalisation",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Journaux en direct",
-        "description": "Affichez les journaux de l'application en temps réel pour diagnostiquer les problèmes sans ouvrir le fichier journal. Seuls les journaux émis pendant que ce panneau est ouvert sont affichés ; respecte le réglage Niveau de journalisation ci-dessus.",
         "live": "En direct",
         "paused": "En pause",
         "pause": "Pause",
@@ -617,11 +532,6 @@
         "description": "Choisissez le système des raccourcis clavier.",
         "bindingsReset": "Raccourcis clavier étaient incompatibles et ont été réinitialisés aux valeurs par défaut"
       },
-      "paths": {
-        "appData": "Données de l'application :",
-        "models": "Modèles :",
-        "settings": "Paramètres :"
-      },
       "pasteDelay": {
         "title": "Délai de collage (avant)",
         "description": "Délai (en millisecondes) après la copie du texte, avant l'envoi de la touche de collage. Augmentez si rien n'est collé."
@@ -666,8 +576,7 @@
         "title": "Aperçu des nouveautés",
         "description": "Ouvrir la dernière note de version intégrée sans la marquer comme vue",
         "button": "Aperçu",
-        "noNotes": "Aucune note de version intégrée trouvée",
-        "error": "Impossible d’afficher l’aperçu des notes de version"
+        "noNotes": "Aucune note de version intégrée trouvée"
       },
       "onboardingPreview": {
         "title": "Aperçu de la configuration initiale",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "À propos",
-      "version": {
-        "title": "Version",
-        "description": "Version actuelle de Guidy"
-      },
       "author": {
         "title": "Créé par",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "Emplacement des données de l'application",
-        "description": "Emplacement où Guidy stocke ses données"
-      },
-      "sourceCode": {
-        "title": "Code source",
-        "description": "Voir le code source et contribuer",
-        "button": "Voir sur GitHub"
-      },
-      "supportDevelopment": {
-        "title": "Soutenir le développement",
-        "description": "Aidez-nous à continuer à construire Guidy",
-        "button": "Faire un don"
+        "title": "Emplacement des données de l'application"
       },
       "acknowledgments": {
         "title": "Remerciements",
@@ -708,12 +601,6 @@
           "description": "Inférence haute performance du modèle de reconnaissance vocale automatique Whisper d'OpenAI",
           "details": "Guidy utilise ggml pour un traitement rapide et local de la parole en texte. Merci au travail incroyable de Georgi Gerganov et des contributeurs."
         }
-      },
-      "hero": {
-        "headline": "La reconnaissance vocale qui reste sur ce Mac",
-        "lede": "Appuyez sur un raccourci, parlez, et Guidy tape le texte dans l'application active. La transcription s'effectue localement.",
-        "engine": "Moteur",
-        "model": "Modèle"
       },
       "whatsNewUpdates": {
         "label": "Afficher les nouveautés",
@@ -741,7 +628,6 @@
     "delete": "Supprimer",
     "back": "Retour",
     "close": "Fermer",
-    "open": "Ouvrir",
     "copy": "Copier",
     "clear": "Effacer",
     "noOptionsFound": "Aucune option trouvée"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "Échec de la transcription"
   },
   "appLanguage": {
-    "title": "Langue de l'application",
-    "description": "Changer la langue de l'interface de Guidy"
+    "title": "Langue de l'application"
   },
   "theme": {
     "title": "Thème de l'application",
-    "description": "Choisissez si Guidy suit le thème du système ou reste clair ou sombre",
     "options": {
       "system": "Système",
       "light": "Clair",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Réunions",
     "selection": {
-      "hint": "Faites glisser, ou Maj-clic, pour attribuer plusieurs lignes",
       "count_one": "{{count}} ligne sélectionnée",
       "count_other": "{{count}} lignes sélectionnées",
       "keys": "Maj-clic : plage · ⌘-clic : ajouter ou retirer · Échap : effacer",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Refaire les intervenants",
-      "tooltip": "Distinguer à nouveau les intervenants avec {{model}}. La transcription est conservée. Les lignes que vous avez attribuées et les intervenants que vous avez nommés gardent leur personne ; les autres sont à nouveau identifiés par la voix.",
       "standard": "Modèle d'intervenants standard",
       "download": "Téléchargement unique de {{size}}",
       "error": "Impossible de refaire les intervenants",
@@ -826,7 +708,6 @@
       "yesterday": "Hier"
     },
     "copy": {
-      "summary": "Copier",
       "transcript": "Copier la transcription",
       "copied": "Copié",
       "notes": "Copier les notes",
@@ -866,7 +747,6 @@
       "openNotes": "Ouvrir les notes",
       "expand": "Afficher la transcription en direct",
       "collapse": "Réduire",
-      "liveTitle": "Transcription en direct",
       "liveHint": "Tel qu'entendu jusqu'ici. La transcription complète avec le nom des intervenants est créée à la fin de la réunion.",
       "callTitle": "Appel {{app}}",
       "callPrompt": "Prendre des notes de réunion ?",
@@ -875,7 +755,6 @@
       "startFailed": "Impossible de démarrer. Réessayer ?",
       "dismiss": "Pas maintenant"
     },
-    "description": "Enregistrez une réunion sur ce Mac, puis lisez la transcription avec le nom des intervenants.",
     "init": {
       "starting": "Démarrage des notes de réunion...",
       "failed": "Les notes de réunion n'ont pas pu démarrer",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Générez d'abord le résumé de la réunion : le titre est rédigé à partir de celui-ci."
     },
     "model": {
-      "download": "Télécharger le modèle de réunion",
       "downloadError": "Impossible de télécharger le modèle de réunion"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Démarrer les notes de réunion",
       "stop": "Arrêter les notes de réunion",
-      "recording": "Enregistrement",
-      "idle": "Pas d'enregistrement",
       "startError": "Impossible de démarrer l'enregistrement",
       "stopError": "Impossible d'arrêter l'enregistrement",
       "disabled": "Activez les notes de réunion dans les Paramètres pour enregistrer."
     },
-    "upcoming": {
-      "title": "À venir",
-      "empty": "Aucune réunion à venir dans le calendrier avec un lien d'appel.",
-      "start": "Démarrer"
-    },
     "list": {
-      "title": "Enregistrements",
-      "empty": "Aucune réunion pour l'instant. Démarrez les notes de réunion pour en enregistrer une.",
       "loading": "Chargement des réunions...",
       "loadError": "Impossible de charger les réunions",
-      "speakerModelMissing": "Les enregistrements ne sont pas traités tant que le modèle de reconnaissance des intervenants n'est pas téléchargé.",
       "minutes": "{{count}} min",
-      "open": "Ouvrir",
       "rename": "Renommer",
       "delete": "Supprimer",
       "process": "Traiter",
       "retry": "Réessayer",
       "cancelProcessing": "Annuler le traitement",
-      "save": "Enregistrer",
       "cancel": "Annuler",
       "titlePlaceholder": "Titre de la réunion",
       "deleteTitle": "Supprimer la réunion ?",
@@ -979,7 +845,6 @@
       "share": "Part",
       "youSpoke": "Votre temps de parole",
       "minutes": "Min",
-      "speakersToName": "{{count}} à nommer",
       "notesTab": "Notes"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Personnes",
-      "description": "Les personnes que vous avez nommées dans des réunions. Guidy reconnaît leur voix dans les réunions suivantes.",
       "empty": "Aucune personne pour l'instant. Nommez un intervenant dans une réunion pour en ajouter une.",
       "loadError": "Impossible de charger les personnes",
       "voiceprints_one": "{{count}} empreinte vocale",
       "voiceprints_other": "{{count}} empreintes vocales",
-      "edit": "Modifier",
       "merge": "Fusionner",
       "mergeInto": "Fusionner avec...",
       "mergeHint": "Choisissez la personne à conserver. Les empreintes vocales et les noms d'intervenants lui sont transférés.",
@@ -1035,7 +898,6 @@
       "renameError": "Impossible de mettre à jour la personne",
       "namePlaceholder": "Nom",
       "emailPlaceholder": "E-mail (facultatif)",
-      "save": "Enregistrer",
       "cancel": "Annuler",
       "voice": {
         "title": "Votre voix",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Notes de réunion",
       "enabled": {
         "title": "Notes de réunion",
         "description": "Enregistrez les réunions avec votre microphone et l'audio de votre ordinateur. L'activation demande l'accès au calendrier, à l'audio système et aux notifications."
@@ -1077,7 +938,6 @@
         "requestAgain": "Redemander",
         "openSettings": "Ouvrir Réglages du système"
       },
-      "you": "Vous",
       "userName": {
         "title": "Votre nom",
         "description": "Votre piste de microphone est toujours étiquetée avec ce nom.",
@@ -1128,7 +988,6 @@
         "description": "Distingue les voix et reconnaît les personnes que vous avez déjà nommées. Utilise {{name}} ({{trainedOn}}), {{size}}. Téléchargé uniquement lorsque vous cliquez sur Télécharger.",
         "ready": "Téléchargé",
         "download": "Télécharger ({{size}})",
-        "retry": "Réessayer le téléchargement",
         "failed": "Échec du téléchargement : {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} min"
       },
       "advanced": {
-        "title": "Avancé",
-        "show": "Afficher les paramètres avancés",
-        "hide": "Masquer les paramètres avancés",
         "matchThreshold": {
           "title": "Seuil d'identification automatique",
           "description": "Similarité vocale à partir de laquelle un intervenant est nommé automatiquement. En dessous, l'identification demande « Confirmer ? »."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Détection des tours de parole",
         "description": "Coupe les lignes là où la voix change ({{size}}). Tant qu'ils ne sont pas téléchargés, les lignes sont coupées aux pauses.",
-        "ready": "Prêt",
-        "downloading": "Téléchargement",
-        "download": "Télécharger ({{size}})"
+        "descriptionReady": "Coupe les lignes là où la voix change."
       },
       "callSuggestions": {
         "title": "Proposer des notes pendant les appels",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Rechercher dans les titres, résumés et transcriptions",
       "searching": "Recherche...",
       "empty": "Aucune réunion ne correspond à « {{query}} ».",
       "count_one": "{{count}} réunion",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Configuration",
-      "models": "Modèles",
-      "note": "Vous pouvez enregistrer avant la fin du téléchargement des modèles. Le traitement attend qu'ils soient prêts.",
-      "downloading": "Téléchargement",
-      "downloadingPercent": "Téléchargement {{percent}} %",
-      "ready": "Prêt",
-      "notDownloaded": "Non téléchargé",
-      "download": "Télécharger",
-      "dismiss": "Ignorer",
-      "optional": "Facultatif"
-    },
     "downloads": {
       "activity": "Téléchargement de {{name}} · {{percent}} %",
       "activityFailed": "Échec du téléchargement · {{name}}",
-      "multiple": "Téléchargement de {{count}} modèles",
-      "cancel": "Annuler",
       "retry": "Réessayer",
       "done": "{{name}} téléchargé",
       "failed": "Impossible de télécharger {{name}}",
       "startError": "Impossible de lancer le téléchargement",
       "empty": "Aucun téléchargement",
-      "queued": "En attente",
-      "doneShort": "Terminé",
       "failedShort": "Échec",
       "cancelled": "Annulé"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Actions à mener",
       "generate": "Générer le résumé",
       "regenerate": "Régénérer",
-      "regenerateWith": "Régénérer avec...",
       "generateWith": "Générer avec {{model}}",
       "otherModels": "Autres modèles",
       "otherModel": "Autre modèle…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Résumés",
-      "provider": "Fournisseur",
-      "providerDescription": "Modèle utilisé pour les résumés de réunion et les actions à mener. Le post-traitement de la dictée garde son propre fournisseur.",
       "builtin": "Intégré (sur ce Mac)",
       "builtinDescription": "Exécute un modèle local avec llama.cpp. Rien ne quitte votre Mac.",
-      "model": "Modèle",
-      "modelDescription": "Cochez un modèle pour l'ajouter à vos modèles. Seuls les modèles qui produisent du texte sont listés. « Adapté aux résumés » signifie que le modèle prend en charge la sortie structurée, sur laquelle reposent les résumés.",
       "modelPlaceholder": "Identifiant du modèle",
       "pickModel": "Sélectionner un modèle",
-      "noLocalModels": "Téléchargez un modèle ci-dessous",
-      "usingPostProcessModel": "Utilise le modèle de post-traitement ({{model}})",
       "refreshModels": "Actualiser",
       "testConnection": "Tester la connexion",
-      "testDescription": "Vérifier que le fournisseur, la clé et le modèle fonctionnent.",
       "apple": "Apple Intelligence",
       "appleDescription": "Modèle sur l'appareil, sur les Mac Apple Silicon avec Apple Intelligence activé.",
-      "appleAvailable": "Disponible",
       "appleUnavailable": "Apple Intelligence n'est pas disponible sur ce Mac",
       "activeHeading": "Les résumés sont créés par",
-      "place": "Où les résumés sont générés",
-      "placeDescription": "Seule l'option sélectionnée est utilisée.",
       "tabCloud": "Fournisseur cloud",
       "tabLocal": "Sur ce Mac",
       "onThisMac": "Ce Mac · hors ligne",
       "apiKey": "Clé API",
       "apiKeyDescription": "Enregistrée dans votre Trousseau et partagée avec le Post-traitement.",
       "getKey": "Obtenir une clé {{provider}}",
-      "modelDescriptionCustom": "Saisissez l'identifiant de modèle attendu par votre point de terminaison et appuyez sur Entrée pour l'ajouter, ou cochez-en un dans la liste.",
       "searchModels": "Rechercher des modèles",
       "goodOnly": "Adapté aux résumés",
       "goodForSummaries": "résumés",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Non disponible sur ce Mac. Activez-le dans Réglages du système > Apple Intelligence et Siri.",
       "unavailable": "indisponible",
       "yourModels": "Vos modèles",
-      "yourModelsDescription": "Générer le résumé propose tous les modèles listés ici, pour que vous puissiez en choisir un par réunion. Celui sélectionné est le modèle par défaut.",
       "yourModelsEmpty": "Aucun modèle cloud pour l'instant. Choisissez un fournisseur ci-dessous, ajoutez sa clé API et cochez les modèles souhaités.",
       "default": "par défaut",
       "removeModel": "Retirer de vos modèles",
-      "addFrom": "Ajouter des modèles depuis",
-      "addFromDescription": "Choisissez un fournisseur pour saisir sa clé et cochez les modèles à ajouter. Cela ne change pas le modèle par défaut."
+      "addFrom": "Ajouter des modèles depuis"
     },
     "local": {
       "heading": "Modèles locaux",
@@ -1438,9 +1260,7 @@
       "default": "Par défaut",
       "recommendedRam": "Recommandé pour {{gb}} Go de RAM ou plus",
       "notEnoughRam": "Ce Mac dispose de moins de mémoire que recommandé pour ce modèle.",
-      "downloaded": "Téléchargé",
-      "download": "Télécharger",
-      "downloading": "Téléchargement {{percentage}}%"
+      "downloaded": "Téléchargé"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Connecté en tant que {{name}}"
     },
     "byok": {
-      "testConnection": "Tester la connexion",
-      "testDescription": "Vérifier l'URL de base, la clé API et le modèle avec une petite requête.",
-      "baseUrlEditable": "URL de base de l'API pour ce fournisseur. Remplacez chaque {placeholder} (par ex. l'identifiant de votre compte Cloudflare).",
-      "cloudflareHint": "Cloudflare : indiquez l'identifiant de votre compte (et celui de la passerelle pour AI Gateway) dans l'URL de base."
+      "testDescription": "Vérifier l'URL de base, la clé API et le modèle avec une petite requête."
     }
   }
 }

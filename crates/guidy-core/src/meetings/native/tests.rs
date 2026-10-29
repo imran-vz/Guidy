@@ -309,7 +309,7 @@ fn deliver_routes_messages_in_order_and_ends_when_senders_drop() {
     });
 
     let (tx, rx) = mpsc::channel();
-    let thread = std::thread::spawn(move || deliver(rx, callbacks));
+    let thread = std::thread::spawn(move || deliver(rx, callbacks, None));
     tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 160], 16_000))
         .unwrap();
     tx.send(CaptureMsg::Audio(Track::System, vec![0.0; 320], 16_000))
@@ -325,6 +325,32 @@ fn deliver_routes_messages_in_order_and_ends_when_senders_drop() {
     assert_eq!(
         *log.lock().unwrap(),
         ["mic 160 16000", "sys 320 16000", "event System error: gone"]
+    );
+}
+
+#[test]
+fn deliver_with_echo_cancellation_holds_the_mic_for_its_system_frames() {
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (l1, l2) = (log.clone(), log.clone());
+    let callbacks = CaptureCallbacks::new(
+        move |s, r| l1.lock().unwrap().push(format!("mic {} {r}", s.len())),
+        move |s, r| l2.lock().unwrap().push(format!("sys {} {r}", s.len())),
+    );
+
+    let (tx, rx) = mpsc::channel();
+    let thread =
+        std::thread::spawn(move || deliver(rx, callbacks, Some(aec::EchoCanceller::new())));
+    tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 330], 16_000))
+        .unwrap();
+    tx.send(CaptureMsg::Audio(Track::System, vec![0.0; 320], 16_000))
+        .unwrap();
+    drop(tx);
+    thread.join().unwrap();
+
+    // Two whole frames once their system audio came, the rest at the end.
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["sys 320 16000", "mic 320 16000", "mic 10 16000"]
     );
 }
 

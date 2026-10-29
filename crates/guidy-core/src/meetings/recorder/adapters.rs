@@ -64,7 +64,7 @@ impl MeetingRepo for StoreRepo {
 
 use crate::meetings::native;
 
-/// Mic (VPIO) + system audio (process tap) through [`native::start_capture`].
+/// Mic (echo-cancelled) + system audio (process tap) through [`native::start_capture`].
 pub struct NativeCapture;
 
 /// EventKit through [`native::events_between`].

@@ -6,11 +6,11 @@ use super::meeting_settings;
 use super::settings::update_meetings;
 use crate::logic::meetings::{add_user_email, EmailError};
 use crate::state::AppState;
-use crate::ui::design::{self, dp, Pill};
-use crate::ui::kit::{icon, t};
+use crate::ui::design::{self, dp};
+use crate::ui::kit::{icon, t, LocalizedPlaceholder};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -31,12 +31,18 @@ impl UserEmailsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let new_label = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t("meetings.settings.userEmails.labelPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.settings.userEmails.labelPlaceholder",
+                window,
+                cx,
+            )
         });
         let new_email = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t("meetings.settings.userEmails.emailPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.settings.userEmails.emailPlaceholder",
+                window,
+                cx,
+            )
         });
         let subs = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
@@ -78,7 +84,7 @@ impl UserEmailsView {
             for (i, e) in emails.iter().enumerate() {
                 let input = cx.new(|cx| {
                     InputState::new(window, cx)
-                        .placeholder(t("meetings.settings.userEmails.noLabel"))
+                        .localized_placeholder("meetings.settings.userEmails.noLabel", window, cx)
                         .default_value(e.label.clone())
                 });
                 self.label_subs
@@ -124,6 +130,17 @@ impl UserEmailsView {
         cx.notify();
     }
 
+    /// Esc in a label: the stored label comes back.
+    fn revert_label(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let stored = meeting_settings(cx)
+            .user_emails
+            .get(index)
+            .map(|e| e.label.clone());
+        if let (Some(label), Some(input)) = (stored, self.labels.get(index)) {
+            input.update(cx, |s, cx| s.set_value(label, window, cx));
+        }
+    }
+
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
         update_meetings(cx, |m| {
             if index < m.user_emails.len() {
@@ -162,6 +179,9 @@ impl Render for UserEmailsView {
                     .id(SharedString::from(format!("meetings-user-email-{i}")))
                     .w_full()
                     .gap_2()
+                    .on_action(cx.listener(move |this, _: &Escape, window, cx| {
+                        this.revert_label(i, window, cx)
+                    }))
                     .child(
                         div()
                             .w(LABEL_WIDTH)
@@ -172,9 +192,9 @@ impl Render for UserEmailsView {
                         h_flex()
                             .flex_1()
                             .min_w_0()
-                            .h(dp(28.))
-                            .px(dp(10.))
-                            .rounded(dp(6.))
+                            .h(design::CONTROL_H)
+                            .px(dp(8.))
+                            .rounded(crate::ui::design::RADIUS_CONTROL)
                             .border_1()
                             .border_color(tone.hairline)
                             .bg(tone.ink)
@@ -197,7 +217,7 @@ impl Render for UserEmailsView {
         let error = self.error.map(|e| {
             div()
                 .id("meetings-user-email-error")
-                .text_size(dp(12.))
+                .text_size(design::TEXT_SECONDARY)
                 .text_color(cx.theme().danger)
                 .child(match e {
                     EmailError::Invalid => t("meetings.settings.userEmails.invalid"),
@@ -228,8 +248,7 @@ impl Render for UserEmailsView {
                     )
                     .child(
                         Button::new("meetings-user-email-add")
-                            .secondary()
-                            .pill()
+                            .outline()
                             .small()
                             .label(t("meetings.settings.userEmails.add"))
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),

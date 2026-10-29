@@ -19,8 +19,8 @@
 use crate::logic::notch::{notch_frame, ScreenInfo};
 use crate::logic::recording_widget::{MARGIN, PANEL, TOP_SHARE};
 
-/// The free floater's size (a rounded rectangle), in design units.
-pub const BLOB: (f32, f32) = (96.0, 44.0);
+/// The free floater's size (a pill), in design units.
+pub const BLOB: (f32, f32) = (134.0, 36.0);
 /// The hint beside the stopped floater during a call ("Take meeting
 /// notes?"), in design units.
 pub const HINT: (f32, f32) = (296.0, 52.0);
@@ -1438,6 +1438,8 @@ mod tests {
         let near = corner - P::new(d.d(CORNER) + 30.0, d.d(CORNER) + 30.0) * 0.75;
         assert!(drag(&mut f, &d, from, near).is_empty());
         assert!(f.neck(&d).is_some());
+        // Caught up with the pointer before it is grabbed again.
+        run(&mut f, 1.0);
         // In it: a leaf, flush with both edges.
         let t = Target::Corner(0, Corner::BottomRight);
         let changes = drag(&mut f, &d, near, corner - P::new(20.0, 20.0));

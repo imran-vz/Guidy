@@ -17,6 +17,9 @@ pub struct SettingsStore {
     /// field (`meetings.<field>`), so concurrent patches each hold their own
     /// count and the key stays "updating" until the last one finishes.
     in_flight: HashMap<String, usize>,
+    /// The last failed write per key, shown inline next to its control.
+    /// Cleared when the key is written again.
+    errors: HashMap<String, String>,
 }
 
 /// Settings whose value is an object patched field by field: the value
@@ -87,6 +90,22 @@ impl SettingsStore {
         serde_json::to_value(s).ok()?.get(key).cloned()
     }
 
+    /// Why the last write of `key` failed (its value was rolled back), until
+    /// the next write of `key`.
+    pub fn error_of(&self, key: &str) -> Option<&str> {
+        self.errors.get(key).map(String::as_str)
+    }
+
+    /// Record a failed operation on `key` that has no optimistic value
+    /// (provider fields, model lists): shown like a failed write.
+    pub fn set_error(&mut self, key: &str, error: String) {
+        self.errors.insert(key.to_string(), error);
+    }
+
+    pub fn clear_error(&mut self, key: &str) {
+        self.errors.remove(key);
+    }
+
     pub fn is_updating(&self, key: &str) -> bool {
         self.updating.contains(key) || self.in_flight.get(key).is_some_and(|n| *n > 0)
     }
@@ -122,6 +141,7 @@ impl SettingsStore {
         for k in &held {
             *self.in_flight.entry(k.clone()).or_default() += 1;
         }
+        self.errors.remove(key);
         let snapshot = |this: &Self| match &fields {
             Some(fields) => pick_fields(this.get(key), fields),
             None => this.get(key),
@@ -143,6 +163,7 @@ impl SettingsStore {
         if let Err(e) = result {
             log::error!("Failed to update setting {}: {}", pending.key, e);
             self.roll_back(&pending);
+            self.errors.insert(pending.key.clone(), e.clone());
         }
         for k in &pending.held {
             if let Some(n) = self.in_flight.get_mut(k) {
@@ -322,6 +343,18 @@ mod tests {
         s.finish_update(p, &Err("nope".into()));
         assert_eq!(s.get("paste_delay_ms"), before);
         assert!(!s.is_updating("paste_delay_ms"));
+    }
+
+    #[test]
+    fn failed_update_keeps_its_error_until_the_next_write() {
+        let mut s = store();
+        let p = s.begin_update("audio_feedback", json!(true));
+        s.finish_update(p, &Err("disk full".into()));
+        assert_eq!(s.error_of("audio_feedback"), Some("disk full"));
+        let p = s.begin_update("audio_feedback", json!(true));
+        assert_eq!(s.error_of("audio_feedback"), None);
+        s.finish_update(p, &Ok(()));
+        assert_eq!(s.error_of("audio_feedback"), None);
     }
 
     #[test]

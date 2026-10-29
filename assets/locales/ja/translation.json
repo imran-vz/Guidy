@@ -36,23 +36,12 @@
     "about": "概要"
   },
   "usage": {
-    "title": "使用状況",
-    "description": "クラウド AI プロバイダーにかかった費用と、この Mac 上でモデルが処理した作業量。",
-    "cloud": "クラウド",
     "local": "この Mac",
     "refresh": "更新",
     "total": "合計費用",
     "last30Days": "過去30日間",
     "callsTitle": "呼び出し",
-    "byModel": "モデル別",
-    "byFeature": "機能別",
     "empty": "クラウド AI の呼び出しはまだありません。",
-    "calls_one": "{{count}}回の呼び出し",
-    "calls_other": "{{count}}回の呼び出し",
-    "average": "平均 {{cost}}",
-    "highest": "最高 {{cost}}",
-    "tokens": "入力 {{input}} / 出力 {{output}} トークン",
-    "unknownPrice": "価格不明",
     "feature": {
       "dictation": "音声入力",
       "meetingTranscription": "会議の文字起こし",
@@ -61,37 +50,17 @@
       "other": "その他"
     },
     "localAudio": "文字起こしした音声",
-    "localWords": "単語数",
-    "localTokens": "LLM トークン",
-    "localCloudEquivalent": "クラウド換算",
     "localEmpty": "ローカルモデルはまだ実行されていません。",
-    "localByModel": "ローカルモデル",
-    "localByFeature": "機能別のローカル処理",
     "kind": {
       "transcription": "文字起こし",
       "llm": "内蔵 LLM"
     },
-    "runs_one": "{{count}}回実行",
-    "runs_other": "{{count}}回実行",
-    "audio": "音声 {{duration}}",
-    "words": "{{count}}語",
-    "realtime": "実時間の {{speed}}",
-    "promptSpeed": "プロンプト {{speed}}",
-    "generationSpeed": "生成 {{speed}}",
-    "loadTime": "読み込み {{time}}",
-    "localNote": "実時間比は「音声の長さ ÷ 処理時間」で、読み込み時間は含みません。話しながらリアルタイムでデコードされる音声入力は計測されません。クラウド換算は音声1分あたり ${{price}} (OpenAI Whisper) で計算しています。",
     "estimateNote": "~ は公開されているトークン単価から推定した金額です。独自に費用を報告するプロバイダー (OpenRouter など) の金額は正確です。請求額はプロバイダーのダッシュボードで確認してください。",
     "reportedNote": "金額はプロバイダーが報告した値です。請求額はプロバイダーのダッシュボードで確認してください。",
-    "clear": "履歴を消去",
     "clearTitle": "使用履歴を消去しますか？",
     "clearConfirm": "記録された呼び出し、費用、ローカルモデルの実行履歴が削除されます。会議の要約に表示されている使用量は残ります。"
   },
   "onboarding": {
-    "subtitle": "開始するには、文字起こしのモデルを選択してください",
-    "existingModelsTitle": "互換性のあるモデル",
-    "downloadModelsTitle": "ダウンロード可能",
-    "showAllModels": "すべての{{total}}個のモデルを表示",
-    "showFewerModels": "表示を減らす",
     "recommended": "おすすめ",
     "customModelDescription": "公式サポート対象外",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "旧形式",
       "failed": "ダウンロードに失敗しました",
       "retry": "再試行",
-      "chooseAnother": "別のモデルを選択",
       "download": "モデルをダウンロード ({{size}})",
       "continue": "続行",
       "timeRemaining": "残り {{time}}"
@@ -150,7 +118,6 @@
       "grant": "権限を許可",
       "granted": "許可済み",
       "waiting": "待機中…",
-      "allGranted": "準備完了!",
       "errors": {
         "checkFailed": "権限の確認に失敗しました。もう一度お試しください。",
         "requestFailed": "権限のリクエストに失敗しました。もう一度お試しください。"
@@ -163,10 +130,6 @@
     "active": "アクティブ",
     "switching": "切替中…",
     "noModelsAvailable": "利用可能なモデルがありません",
-    "verifying": "{{modelName}}を検証中…",
-    "verifyingGeneric": "検証中…",
-    "downloading": "ダウンロード中 {{percentage}}%",
-    "downloadingMultiple": "{{count}}個のモデルをダウンロード中…",
     "modelReady": "モデル準備完了",
     "loading": "{{modelName}}を読み込み中…",
     "loadingGeneric": "読み込み中…",
@@ -176,29 +139,18 @@
     "deleteModel": "{{modelName}}を削除",
     "downloadSpeed": "{{speed}} MB/s",
     "capabilities": {
-      "languageSelection": "複数の入力言語をサポート",
       "languageCount": "{{total}}言語",
-      "translation": "英語への翻訳が可能",
       "translate": "英語に翻訳",
-      "singleLanguage": "この言語のみ対応",
-      "languageOnly": "{{language}}のみ",
-      "streaming": "話しながらリアルタイムで文字起こしを表示"
+      "languageOnly": "{{language}}のみ"
     },
     "download": "ダウンロード",
     "use": "使用",
-    "cancel": "キャンセル",
     "cancelDownload": "ダウンロードをキャンセル",
     "legacy": "旧式"
   },
   "settings": {
-    "modelSettings": {
-      "title": "{{model}} の設定"
-    },
     "models": {
-      "title": "文字起こしのモデル",
-      "description": "文字起こしのモデルを選択するか、追加のモデルをダウンロードします。異なるモデルは精度と速度のレベルが異なります。",
       "deleteConfirm": "{{modelName}}を削除してもよろしいですか? 再度使用するにはダウンロードが必要です。",
-      "deleteActiveConfirm": "{{modelName}}は現在使用中のモデルです。削除すると、新しいモデルを選択するまで文字起こしが停止します。本当に削除しますか?",
       "deleteTitle": "モデルを削除",
       "retiredNotice": {
         "title": "古いモデルは Guidy で使用できなくなりました",
@@ -213,17 +165,12 @@
         "translation": "英語への翻訳に対応するモデルを絞り込む"
       },
       "noModelsMatch": "このフィルターに一致するモデルがありません。",
-      "yourModels": "ダウンロード済みモデル",
-      "availableModels": "ダウンロード可能",
       "searchPlaceholder": "モデルを名前で検索…",
       "rescan": {
-        "label": "再スキャン",
         "tooltip": "Guidy を使わずに models フォルダーまたは Hugging Face キャッシュに追加されたモデルを再スキャンします"
       }
     },
     "general": {
-      "title": "一般",
-      "description": "音声入力の開始方法、認識する言語、再生されるサウンド。",
       "shortcutsGroup": "ショートカット",
       "shortcut": {
         "title": "Guidy ショートカット",
@@ -254,7 +201,6 @@
       },
       "language": {
         "title": "言語",
-        "description": "音声認識の言語を選択してください。自動を選択すると言語を自動的に判定します。特定の言語を選択すると、その言語の精度が向上する場合があります。",
         "searchPlaceholder": "言語を検索…",
         "noResults": "言語が見つかりません",
         "auto": "自動"
@@ -275,10 +221,8 @@
       }
     },
     "sound": {
-      "title": "サウンド",
       "microphone": {
         "title": "マイク",
-        "description": "使用するマイクデバイスを選択",
         "placeholder": "マイクを選択…",
         "loading": "読み込み中…"
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "出力デバイス",
-        "description": "フィードバック用の音声出力デバイスを選択",
         "placeholder": "出力デバイスを選択…",
         "loading": "読み込み中…"
       },
       "volume": {
-        "title": "音量",
-        "description": "オーディオフィードバックの音量を調整"
+        "title": "音量"
       }
     },
     "advanced": {
-      "title": "詳細設定",
-      "description": "起動、貼り付け、文字起こしの調整、履歴。",
       "groups": {
         "app": "アプリ",
         "output": "出力",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "非表示で起動",
-        "description": "ウィンドウを開かずにシステムトレイに起動。"
+        "description": "ウィンドウを開かずにシステムトレイに起動。",
+        "descriptionMac": "ウインドウを開かずにメニューバーで起動します。"
       },
       "autostart": {
         "label": "起動時に実行",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "トレイアイコンを表示",
-        "description": "システムトレイに Guidy のアイコンを表示します。"
+        "description": "システムトレイに Guidy のアイコンを表示します。",
+        "descriptionMac": "メニューバーに Guidy のアイコンを表示します。"
       },
       "overlay": {
         "style": {
-          "title": "オーバーレイ",
           "description": "録音中のオーバーレイを選択します。「なし」は非表示、「ミニマル」はコンパクトなカプセル型表示、「ライブ」はリアルタイムで文字起こしを表示します(ストリーミング対応モデルのみ。モデル選択画面の「ストリーミング」表示を確認してください)。Linux では「なし」を推奨します。",
+          "descriptionMac": "録音中のオーバーレイを選択します。「なし」は非表示、「ミニマル」はコンパクトなカプセル型表示、「ライブ」はリアルタイムで文字起こしを表示します(ストリーミング対応モデルのみ。モデル選択画面の「ストリーミング」表示を確認してください)。",
           "options": {
             "none": "なし",
             "minimal": "ミニマル",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "自動送信",
         "description": "テキスト挿入後に選択したキーの組み合わせを自動的に送信します。macOS では Cmd+Enter、Windows/Linux では Super+Enter が適用されます。",
+        "descriptionMac": "テキスト挿入後に選択したキーの組み合わせを自動的に送信します。",
         "options": {
           "off": "オフ",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "後処理",
-      "description": "貼り付ける前に、AI モデルで文字起こしを整えたり書き直したりします。",
       "hotkey": {
         "title": "ショートカット"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "プロバイダー",
-          "description": "OpenAI 互換または Anthropic 互換のプロバイダーを選択。"
+          "title": "プロバイダー"
         },
         "builtin": {
           "label": "内蔵モデル (この Mac 上)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "API 形式",
-          "description": "カスタムエンドポイントが期待するリクエスト形式。",
           "options": {
             "openai": "OpenAI 互換 (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "ベース URL",
-          "description": "選択したプロバイダーの API ベース URL。カスタムプロバイダーのみ編集可能。",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "API キー",
-          "description": "選択したプロバイダーの API キー。",
           "placeholder": "sk-…",
           "saveFailed": "API キーを保存できませんでした"
         },
@@ -500,54 +437,33 @@
           "title": "モデル",
           "descriptionCustom": "カスタムエンドポイントが期待するモデル識別子を指定。",
           "descriptionDefault": "選択したプロバイダーが提供するモデルを選択。",
-          "placeholderWithOptions": "モデルを検索または選択",
           "placeholderNoOptions": "モデル名を入力",
           "refreshModels": "モデルを更新"
         }
       },
       "prompts": {
-        "title": "プロンプト",
-        "selectedPrompt": {
-          "title": "選択したプロンプト",
-          "description": "文字起こしを改善するテンプレートを選択するか、新しく作成します。プロンプトテキスト内で ${output} を使用して、キャプチャした文字起こしを参照します。"
-        },
-        "noPrompts": "プロンプトがありません",
-        "selectPrompt": "プロンプトを選択",
         "createNew": "新しいプロンプトを作成",
         "promptLabel": "プロンプト名",
         "promptLabelPlaceholder": "プロンプト名を入力",
         "promptInstructions": "プロンプトの指示",
         "promptInstructionsPlaceholder": "文字起こし後に実行する指示を記述します。例: 以下のテキストの文法と明瞭さを改善してください: ${output}",
         "promptTip": "ヒント: <code>${output}</code> を使用して、文字起こしテキストをプロンプトに挿入します。",
-        "updatePrompt": "プロンプトを更新",
-        "deletePrompt": "プロンプトを削除",
-        "createPrompt": "プロンプトを作成",
-        "cancel": "キャンセル",
-        "selectToEdit": "上からプロンプトを選択して、詳細を表示・編集します。",
-        "createFirst": "上の「新しいプロンプトを作成」をクリックして、最初の後処理プロンプトを作成してください。"
+        "deletePrompt": "プロンプトを削除"
       }
     },
     "history": {
-      "title": "履歴",
-      "openFolder": "録音フォルダを開く",
-      "loading": "履歴を読み込み中…",
-      "empty": "まだ文字起こしがありません。録音を開始して履歴を作成しましょう!",
       "copyToClipboard": "文字起こしをクリップボードにコピー",
       "copyError": "文字起こしをクリップボードにコピーできませんでした。",
       "save": "文字起こしを保存",
       "unsave": "保存から削除",
       "delete": "エントリーを削除",
-      "deleteError": "エントリーの削除に失敗しました。もう一度お試しください。",
       "retranscribe": "再文字起こし",
-      "retranscribeError": "再文字起こしに失敗しました。もう一度お試しください。",
       "transcribing": "文字起こし中…",
       "transcriptionFailed": "文字起こしに失敗しました。リトライアイコンを使用して再文字起こしできます。"
     },
     "debug": {
-      "title": "デバッグ",
       "logDirectory": {
-        "title": "ログディレクトリ",
-        "description": "ログファイルの保存場所"
+        "title": "ログディレクトリ"
       },
       "logLevel": {
         "title": "ログレベル",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "ライブログ",
-        "description": "ログファイルを開かずに問題を診断できるよう、アプリのログをリアルタイムで表示します。このパネルを開いている間に出力されたログのみが表示され、上記の「ログレベル」設定に従います。",
         "live": "ライブ",
         "paused": "一時停止中",
         "pause": "一時停止",
@@ -617,11 +532,6 @@
         "description": "キーボードショートカットのバックエンドを選択してください。",
         "bindingsReset": "キーボードショートカットに互換性がなかったため、デフォルトにリセットされました"
       },
-      "paths": {
-        "appData": "アプリデータ:",
-        "models": "モデル:",
-        "settings": "設定:"
-      },
       "pasteDelay": {
         "title": "貼り付け遅延(前)",
         "description": "テキストをコピーした後、貼り付けキーを送信する前の遅延(ミリ秒)。何も貼り付けられない場合は増やしてください。"
@@ -666,8 +576,7 @@
         "title": "新機能をプレビュー",
         "description": "最新の同梱リリースノートを既読にせずに開く",
         "button": "プレビュー",
-        "noNotes": "同梱リリースノートが見つかりません",
-        "error": "リリースノートのプレビューに失敗しました"
+        "noNotes": "同梱リリースノートが見つかりません"
       },
       "onboardingPreview": {
         "title": "オンボーディングをプレビュー",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "概要",
-      "version": {
-        "title": "バージョン",
-        "description": "Guidy の現在のバージョン"
-      },
       "author": {
         "title": "制作",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "アプリデータディレクトリ",
-        "description": "Guidy がデータを保存する場所"
-      },
-      "sourceCode": {
-        "title": "ソースコード",
-        "description": "ソースコードを見て貢献する",
-        "button": "GitHub で見る"
-      },
-      "supportDevelopment": {
-        "title": "開発を支援",
-        "description": "Guidy の開発を支援してください",
-        "button": "寄付する"
+        "title": "アプリデータディレクトリ"
       },
       "acknowledgments": {
         "title": "謝辞",
@@ -708,12 +601,6 @@
           "description": "オンデバイス機械学習推論のための高性能テンソルライブラリ",
           "details": "Guidy のローカルの音声からテキストへの文字起こしは transcribe.cpp と ggml を基盤としています。Georgi Gerganov 氏と貢献者の皆様の素晴らしい仕事に感謝します。"
         }
-      },
-      "hero": {
-        "headline": "この Mac の中で完結する音声入力",
-        "lede": "ショートカットを押して話すだけで、Guidy がフォーカス中のアプリに入力します。文字起こしはローカルで実行されます。",
-        "engine": "エンジン",
-        "model": "モデル"
       },
       "whatsNewUpdates": {
         "label": "新機能を表示",
@@ -741,7 +628,6 @@
     "delete": "削除",
     "back": "戻る",
     "close": "閉じる",
-    "open": "開く",
     "copy": "コピー",
     "clear": "クリア",
     "noOptionsFound": "オプションが見つかりません"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "文字起こしに失敗しました"
   },
   "appLanguage": {
-    "title": "アプリの言語",
-    "description": "Guidy インターフェースの言語を変更"
+    "title": "アプリの言語"
   },
   "theme": {
     "title": "アプリのテーマ",
-    "description": "Guidy をシステムのテーマに合わせるか、ライトまたはダークで固定するかを選択します",
     "options": {
       "system": "システム",
       "light": "ライト",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "会議",
     "selection": {
-      "hint": "ドラッグまたは Shift-クリックで複数の行にタグ付け",
       "count_one": "{{count}}行を選択中",
       "count_other": "{{count}}行を選択中",
       "keys": "Shift-クリック: 範囲選択 · ⌘-クリック: 追加/解除 · Esc: クリア",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "話者をやり直す",
-      "tooltip": "{{model}} で話者を改めて識別します。文字起こしはそのまま残ります。タグ付けした行と名前を付けた話者は人物が維持され、それ以外は声で再照合されます。",
       "standard": "標準の話者モデル",
       "download": "{{size}} のダウンロード (初回のみ)",
       "error": "話者をやり直せませんでした",
@@ -826,7 +708,6 @@
       "yesterday": "昨日"
     },
     "copy": {
-      "summary": "コピー",
       "transcript": "文字起こしをコピー",
       "copied": "コピーしました",
       "notes": "メモをコピー",
@@ -866,7 +747,6 @@
       "openNotes": "メモを開く",
       "expand": "ライブ文字起こしを表示",
       "collapse": "折りたたむ",
-      "liveTitle": "ライブ文字起こし",
       "liveHint": "ここまでに聞き取った内容です。話者名付きの完全な文字起こしは会議の終了後に作成されます。",
       "callTitle": "{{app}} 通話",
       "callPrompt": "会議のメモを取りますか？",
@@ -875,7 +755,6 @@
       "startFailed": "開始できませんでした。もう一度試しますか？",
       "dismiss": "後で"
     },
-    "description": "この Mac で会議を録音し、話者名付きの文字起こしを読めます。",
     "init": {
       "starting": "会議メモを開始中…",
       "failed": "会議メモを開始できませんでした",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "先に会議の要約を生成してください。タイトルは要約をもとに作成されます。"
     },
     "model": {
-      "download": "会議モデルをダウンロード",
       "downloadError": "会議モデルをダウンロードできませんでした"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "会議メモを開始",
       "stop": "会議メモを停止",
-      "recording": "録音中",
-      "idle": "録音していません",
       "startError": "録音を開始できませんでした",
       "stopError": "録音を停止できませんでした",
       "disabled": "録音するには、設定で会議メモをオンにしてください。"
     },
-    "upcoming": {
-      "title": "今後の予定",
-      "empty": "通話リンク付きの今後のカレンダー会議はありません。",
-      "start": "開始"
-    },
     "list": {
-      "title": "録音",
-      "empty": "まだ会議がありません。会議メモを開始して録音しましょう。",
       "loading": "会議を読み込み中…",
       "loadError": "会議を読み込めませんでした",
-      "speakerModelMissing": "話者認識モデルをダウンロードするまで、録音は処理されません。",
       "minutes": "{{count}}分",
-      "open": "開く",
       "rename": "名前を変更",
       "delete": "削除",
       "process": "処理",
       "retry": "再試行",
       "cancelProcessing": "処理をキャンセル",
-      "save": "保存",
       "cancel": "キャンセル",
       "titlePlaceholder": "会議のタイトル",
       "deleteTitle": "会議を削除しますか？",
@@ -979,7 +845,6 @@
       "share": "割合",
       "youSpoke": "あなたの発話",
       "minutes": "分",
-      "speakersToName": "{{count}} 人が未命名",
       "notesTab": "メモ"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "人物",
-      "description": "会議で名前を付けた人物です。Guidy は以降の会議でその人の声を認識します。",
       "empty": "まだ人物がいません。会議で話者に名前を付けると追加されます。",
       "loadError": "人物を読み込めませんでした",
       "voiceprints_one": "声紋 {{count}}件",
       "voiceprints_other": "声紋 {{count}}件",
-      "edit": "編集",
       "merge": "統合",
       "mergeInto": "統合先…",
       "mergeHint": "残す人物を選んでください。声紋と話者名はその人物に移動されます。",
@@ -1035,7 +898,6 @@
       "renameError": "人物を更新できませんでした",
       "namePlaceholder": "名前",
       "emailPlaceholder": "メールアドレス (任意)",
-      "save": "保存",
       "cancel": "キャンセル",
       "voice": {
         "title": "あなたの声",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "会議メモ",
       "enabled": {
         "title": "会議メモ",
         "description": "マイクとコンピューターの音声で会議を録音します。オンにすると、カレンダー、システムオーディオ、通知へのアクセスを求められます。"
@@ -1077,7 +938,6 @@
         "requestAgain": "再リクエスト",
         "openSettings": "システム設定を開く"
       },
-      "you": "あなた",
       "userName": {
         "title": "あなたの名前",
         "description": "マイクのトラックには常にこの名前が付きます。",
@@ -1128,7 +988,6 @@
         "description": "声を区別し、以前名前を付けた人物を認識します。{{name}} ({{trainedOn}})、{{size}} を使用します。「ダウンロード」をクリックしたときだけダウンロードされます。",
         "ready": "ダウンロード済み",
         "download": "ダウンロード ({{size}})",
-        "retry": "ダウンロードを再試行",
         "failed": "ダウンロードに失敗しました: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}}分"
       },
       "advanced": {
-        "title": "詳細設定",
-        "show": "詳細設定を表示",
-        "hide": "詳細設定を隠す",
         "matchThreshold": {
           "title": "自動照合のしきい値",
           "description": "声の類似度がこの値以上の場合、話者に自動で名前が付きます。これを下回ると「確認しますか？」と表示されます。"
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "話者交代の検出",
         "description": "声が変わった位置で行を分割します ({{size}})。ダウンロードが完了するまでは、間 (ま) で行を分割します。",
-        "ready": "準備完了",
-        "downloading": "ダウンロード中",
-        "download": "ダウンロード ({{size}})"
+        "descriptionReady": "声が変わった位置で行を分割します。"
       },
       "callSuggestions": {
         "title": "通話中にメモを提案",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "タイトル、要約、文字起こしを検索",
       "searching": "検索中…",
       "empty": "「{{query}}」に一致する会議はありません。",
       "count_one": "1 件の会議",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "セットアップ",
-      "models": "モデル",
-      "note": "モデルのダウンロード完了前でも録音できます。処理はモデルの準備ができるまで待機します。",
-      "downloading": "ダウンロード中",
-      "downloadingPercent": "ダウンロード中 {{percent}}%",
-      "ready": "準備完了",
-      "notDownloaded": "未ダウンロード",
-      "download": "ダウンロード",
-      "dismiss": "閉じる",
-      "optional": "任意"
-    },
     "downloads": {
       "activity": "{{name}} をダウンロード中 · {{percent}}%",
       "activityFailed": "ダウンロード失敗 · {{name}}",
-      "multiple": "{{count}} 個のモデルをダウンロード中",
-      "cancel": "キャンセル",
       "retry": "再試行",
       "done": "{{name}} をダウンロードしました",
       "failed": "{{name}} をダウンロードできませんでした",
       "startError": "ダウンロードを開始できませんでした",
       "empty": "ダウンロードはありません",
-      "queued": "待機中",
-      "doneShort": "完了",
       "failedShort": "失敗",
       "cancelled": "キャンセル済み"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "アクションアイテム",
       "generate": "要約を生成",
       "regenerate": "再生成",
-      "regenerateWith": "モデルを選んで再生成…",
       "generateWith": "{{model}} で生成",
       "otherModels": "その他のモデル",
       "otherModel": "その他のモデル…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "要約",
-      "provider": "プロバイダー",
-      "providerDescription": "会議の要約とアクションアイテムに使うモデル。音声入力の後処理は独自のプロバイダーを使い続けます。",
       "builtin": "内蔵 (この Mac 上)",
       "builtinDescription": "llama.cpp でローカルモデルを実行します。データが Mac の外に出ることはありません。",
-      "model": "モデル",
-      "modelDescription": "モデルにチェックを入れるとマイモデルに追加されます。テキストを出力するモデルのみ表示されます。「要約向け」は、要約に必要な構造化出力に対応したモデルです。",
       "modelPlaceholder": "モデル ID",
       "pickModel": "モデルを選択",
-      "noLocalModels": "下からモデルをダウンロード",
-      "usingPostProcessModel": "後処理のモデル ({{model}}) を使用中",
       "refreshModels": "更新",
       "testConnection": "接続をテスト",
-      "testDescription": "プロバイダー、キー、モデルが機能するか確認します。",
       "apple": "Apple Intelligence",
       "appleDescription": "Apple Intelligence がオンになっている Apple Silicon Mac で動作するオンデバイスモデル。",
-      "appleAvailable": "利用可能",
       "appleUnavailable": "この Mac では Apple Intelligence を利用できません",
       "activeHeading": "要約の生成元",
-      "place": "要約の実行場所",
-      "placeDescription": "選択したオプションのみが使用されます。",
       "tabCloud": "クラウドプロバイダー",
       "tabLocal": "この Mac",
       "onThisMac": "この Mac · オフライン",
       "apiKey": "API キー",
       "apiKeyDescription": "キーチェーンに保存され、後処理と共有されます。",
       "getKey": "{{provider}} のキーを取得",
-      "modelDescriptionCustom": "エンドポイントが期待するモデル ID を入力して Enter で追加するか、一覧からチェックを入れてください。",
       "searchModels": "モデルを検索",
       "goodOnly": "要約向け",
       "goodForSummaries": "要約",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "この Mac では利用できません。システム設定 > Apple Intelligence と Siri でオンにしてください。",
       "unavailable": "利用不可",
       "yourModels": "マイモデル",
-      "yourModelsDescription": "「要約を生成」ではここにあるすべてのモデルが表示され、会議ごとに選べます。選択したモデルがデフォルトです。",
       "yourModelsEmpty": "クラウドモデルはまだありません。下でプロバイダーを選び、API キーを追加して、使いたいモデルにチェックを入れてください。",
       "default": "デフォルト",
       "removeModel": "マイモデルから削除",
-      "addFrom": "モデルの追加元",
-      "addFromDescription": "プロバイダーを選んでキーを入力し、追加するモデルにチェックを入れてください。デフォルトは変更されません。"
+      "addFrom": "モデルの追加元"
     },
     "local": {
       "heading": "ローカルモデル",
@@ -1438,9 +1260,7 @@
       "default": "デフォルト",
       "recommendedRam": "{{gb}} GB 以上の RAM を推奨",
       "notEnoughRam": "この Mac のメモリは、このモデルの推奨量より少なくなっています。",
-      "downloaded": "ダウンロード済み",
-      "download": "ダウンロード",
-      "downloading": "ダウンロード中 {{percentage}}%"
+      "downloaded": "ダウンロード済み"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "{{name}} として接続中"
     },
     "byok": {
-      "testConnection": "接続をテスト",
-      "testDescription": "小さなリクエストでベース URL、API キー、モデルを確認します。",
-      "baseUrlEditable": "このプロバイダーの API ベース URL。{placeholder} はすべて置き換えてください (例: Cloudflare のアカウント ID)。",
-      "cloudflareHint": "Cloudflare: ベース URL にアカウント ID (AI Gateway の場合はゲートウェイ ID も) を入力してください。"
+      "testDescription": "小さなリクエストでベース URL、API キー、モデルを確認します。"
     }
   }
 }

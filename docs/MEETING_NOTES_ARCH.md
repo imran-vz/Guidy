@@ -60,7 +60,7 @@ contracts between the workstreams.
 | WS | Owner of | Files |
 |---|---|---|
 | A: secrets + store | Keychain module, `meetings.db` | `src/secrets.rs`, `src/meetings/store.rs` (or `store/`) |
-| B: native macOS | Swift bridge: EventKit, VPIO mic, process tap, notifications; Info.plist | `swift/meeting_bridge*.swift`, `swift/meeting_bridge.h`, the new fn in `build.rs`, `src/meetings/native.rs` (or `native/`), `assets/Info.plist`, `assets/Entitlements.plist` |
+| B: native macOS | Swift bridge: EventKit, mic, process tap, notifications; AEC3 echo cancellation (`native/aec.rs`); Info.plist | `swift/meeting_bridge*.swift`, `swift/meeting_bridge.h`, the new fn in `build.rs`, `src/meetings/native.rs` (or `native/`), `assets/Info.plist`, `assets/Entitlements.plist` |
 | C: capture | Recording session, audio files, retention, reminders, calendar prompts, tray | `src/meetings/audio_store.rs`, `src/meetings/recorder.rs` (or `recorder/`), the meeting items in `src/tray.rs` and `tray_i18n`, registering `MeetingsManager` in `lib.rs` startup |
 | D: processing | VAD, batch transcription with words, voiceprints, clustering, matching, timeline merge, resumable jobs | `src/meetings/processing.rs` (or `processing/`), the speaker-embedding model download, word-timestamp support in `managers/transcription*` / `engine_supervisor` |
 | E: LLM | `LlmProvider` layer, the `guidy-llm` worker + GGUF catalog, summarizer, BYOK providers | `src/llm/`, `crates/guidy-llm/`, `src/meetings/summarize.rs`, provider defaults in `settings.rs` (`default_post_process_providers`) |

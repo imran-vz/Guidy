@@ -36,23 +36,12 @@
     "about": "אודות"
   },
   "usage": {
-    "title": "שימוש",
-    "description": "כמה עלו ספקי ה-AI בענן, והעבודה שעשו המודלים ב-Mac הזה.",
-    "cloud": "ענן",
     "local": "ב-Mac הזה",
     "refresh": "רענן",
     "total": "סך ההוצאה",
     "last30Days": "30 הימים האחרונים",
     "callsTitle": "קריאות",
-    "byModel": "לפי מודל",
-    "byFeature": "לפי תכונה",
     "empty": "עדיין אין קריאות ל-AI בענן.",
-    "calls_one": "{{count}} קריאה",
-    "calls_other": "{{count}} קריאות",
-    "average": "ממוצע {{cost}}",
-    "highest": "הגבוה ביותר {{cost}}",
-    "tokens": "{{input}} טוקנים נכנסים / {{output}} יוצאים",
-    "unknownPrice": "מחיר לא ידוע",
     "feature": {
       "dictation": "הכתבה",
       "meetingTranscription": "תמלול פגישות",
@@ -61,37 +50,17 @@
       "other": "אחר"
     },
     "localAudio": "שמע שתומלל",
-    "localWords": "מילים",
-    "localTokens": "טוקנים של LLM",
-    "localCloudEquivalent": "שווה ערך בענן",
     "localEmpty": "עדיין לא רץ דבר על מודל מקומי.",
-    "localByModel": "מודלים מקומיים",
-    "localByFeature": "עבודה מקומית לפי תכונה",
     "kind": {
       "transcription": "תמלול",
       "llm": "LLM מובנה"
     },
-    "runs_one": "{{count}} הרצה",
-    "runs_other": "{{count}} הרצות",
-    "audio": "{{duration}} שמע",
-    "words": "{{count}} מילים",
-    "realtime": "{{speed}} מזמן אמת",
-    "promptSpeed": "פרומפט {{speed}}",
-    "generationSpeed": "יצירה {{speed}}",
-    "loadTime": "נטען תוך {{time}}",
-    "localNote": "מהירות ביחס לזמן אמת היא אורך השמע ÷ זמן העיבוד, ללא זמן הטעינה; הכתבה שמפוענחת בזמן הדיבור אינה נמדדת. השווי בענן מתמחר את השמע ב-${{price}} לדקה (OpenAI Whisper).",
     "estimateNote": "~ מסמן סכומים שהוערכו לפי מחירים מפורסמים לטוקן; ספקים שמדווחים על העלות בעצמם (כמו OpenRouter) מדויקים. לחיוב, בדוק בלוח הבקרה של הספק.",
     "reportedNote": "הסכומים הם כפי שדווחו על ידי הספקים. לחיוב, בדוק בלוח הבקרה של הספק.",
-    "clear": "נקה היסטוריה",
     "clearTitle": "לנקות את היסטוריית השימוש?",
     "clearConfirm": "הקריאות, העלויות וההרצות של מודלים מקומיים שנרשמו יימחקו. השימוש שמוצג בסיכומי הפגישות יישאר."
   },
   "onboarding": {
-    "subtitle": "כדי להתחיל, בחר מודל תמלול",
-    "existingModelsTitle": "מודלים תואמים",
-    "downloadModelsTitle": "זמינים להורדה",
-    "showAllModels": "הצג את כל {{total}} המודלים",
-    "showFewerModels": "הצג פחות מודלים",
     "recommended": "מומלץ",
     "customModelDescription": "לא נתמך באופן רשמי",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "פורמט ישן",
       "failed": "ההורדה נכשלה",
       "retry": "ניסיון חוזר",
-      "chooseAnother": "בחירת מודל אחר",
       "download": "הורדת מודלים ({{size}})",
       "continue": "המשך",
       "timeRemaining": "נותרו {{time}}"
@@ -150,7 +118,6 @@
       "grant": "תן הרשאה",
       "granted": "ניתנה",
       "waiting": "ממתין...",
-      "allGranted": "הכול מוכן!",
       "errors": {
         "checkFailed": "בדיקת ההרשאות נכשלה. נסה שוב.",
         "requestFailed": "בקשת ההרשאה נכשלה. נסה שוב."
@@ -163,10 +130,6 @@
     "active": "פעיל",
     "switching": "מחליף...",
     "noModelsAvailable": "אין מודלים זמינים",
-    "verifying": "מאמת את {{modelName}}...",
-    "verifyingGeneric": "מאמת...",
-    "downloading": "מוריד {{percentage}}%",
-    "downloadingMultiple": "מוריד {{count}} מודלים...",
     "modelReady": "המודל מוכן",
     "loading": "טוען את {{modelName}}...",
     "loadingGeneric": "טוען...",
@@ -175,28 +138,18 @@
     "noModelDownloadRequired": "אין מודל, נדרשת הורדה",
     "deleteModel": "מחק את {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
-    "cancel": "ביטול",
     "cancelDownload": "בטל הורדה",
     "capabilities": {
-      "languageSelection": "תומך בכמה שפות קלט",
-      "singleLanguage": "תומך רק בשפה הזו",
       "languageCount": "{{total}} שפות",
       "languageOnly": "{{language}} בלבד",
-      "translation": "יכול לתרגם לאנגלית",
-      "translate": "תרגם לאנגלית",
-      "streaming": "מציג תמלול חי תוך כדי דיבור"
+      "translate": "תרגם לאנגלית"
     },
     "download": "הורד",
     "use": "השתמש",
     "legacy": "מדור קודם"
   },
   "settings": {
-    "modelSettings": {
-      "title": "הגדרות עבור {{model}}"
-    },
     "general": {
-      "title": "כללי",
-      "description": "איך מתחילים הכתבה, לאיזו שפה היא מאזינה ומה שומעים.",
       "shortcutsGroup": "קיצורי מקשים",
       "shortcut": {
         "title": "קיצורי מקשים של Guidy",
@@ -227,7 +180,6 @@
       },
       "language": {
         "title": "שפה",
-        "description": "בחר את שפת זיהוי הדיבור. מצב אוטומטי יזהה את השפה לבד, בעוד שבחירת שפה מסוימת יכולה לשפר את הדיוק עבורה.",
         "searchPlaceholder": "חפש שפות...",
         "noResults": "לא נמצאו שפות",
         "auto": "אוטומטי"
@@ -248,12 +200,7 @@
       }
     },
     "models": {
-      "title": "מודלי תמלול",
-      "description": "בחר מודל תמלול או הורד מודלים נוספים. מודלים שונים מציעים רמות שונות של דיוק ומהירות.",
-      "yourModels": "מודלים שהורדו",
-      "availableModels": "זמינים להורדה",
       "deleteConfirm": "האם למחוק את {{modelName}}? יהיה צורך להוריד אותו שוב כדי להשתמש בו.",
-      "deleteActiveConfirm": "{{modelName}} הוא המודל הפעיל שלך כרגע. מחיקה שלו תעצור את התמלול עד שתבחר מודל חדש. להמשיך?",
       "deleteTitle": "מחיקת מודל",
       "retiredNotice": {
         "title": "מודלים ישנים כבר לא עובדים עם Guidy",
@@ -270,15 +217,12 @@
       "noModelsMatch": "אין מודלים שמתאימים לסינון הזה.",
       "searchPlaceholder": "חיפוש מודלים לפי שם…",
       "rescan": {
-        "label": "סריקה מחדש",
         "tooltip": "סריקה מחדש לאיתור מודלים שנוספו לתיקיית המודלים או למטמון של Hugging Face מחוץ ל-Guidy"
       }
     },
     "sound": {
-      "title": "שמע",
       "microphone": {
         "title": "מיקרופון",
-        "description": "בחר את המיקרופון המועדף עליך",
         "placeholder": "בחר מיקרופון...",
         "loading": "טוען..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "התקן פלט",
-        "description": "בחר את התקן השמע המועדף עליך עבור צלילי המשוב",
         "placeholder": "בחר התקן פלט...",
         "loading": "טוען..."
       },
       "volume": {
-        "title": "עוצמת קול",
-        "description": "כוונן את עוצמת צלילי המשוב"
+        "title": "עוצמת קול"
       }
     },
     "advanced": {
-      "title": "מתקדם",
-      "description": "הפעלה, הדבקה, כוונון תמלול והיסטוריה.",
       "groups": {
         "app": "אפליקציה",
         "output": "פלט",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "התחל מוסתר",
-        "description": "הפעל לתוך מגש המערכת בלי לפתוח את החלון."
+        "description": "הפעל לתוך מגש המערכת בלי לפתוח את החלון.",
+        "descriptionMac": "הפעלה בשורת התפריטים בלי לפתוח את החלון."
       },
       "autostart": {
         "label": "הפעל עם עליית המערכת",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "הצג אייקון במגש",
-        "description": "הצג את האייקון של Guidy במגש המערכת."
+        "description": "הצג את האייקון של Guidy במגש המערכת.",
+        "descriptionMac": "הצגת הסמל של Guidy בשורת התפריטים."
       },
       "overlay": {
         "style": {
-          "title": "שכבת-על",
           "description": "בחר את שכבת-העל בהקלטה: 'ללא' מסתירה אותה, 'מינימלי' מציג סמן קומפקטי, 'בזמן אמת' מציג תמלול בזמן אמת בזמן הדיבור (מודלים התומכים בסטרימינג בלבד — חפש את התווית 'סטרימינג' בבורר המודלים). ב-Linux מומלץ לבחור 'ללא'.",
+          "descriptionMac": "בחר את שכבת-העל בהקלטה: 'ללא' מסתירה אותה, 'מינימלי' מציג סמן קומפקטי, 'בזמן אמת' מציג תמלול בזמן אמת בזמן הדיבור (מודלים התומכים בסטרימינג בלבד — חפש את התווית 'סטרימינג' בבורר המודלים).",
           "options": {
             "none": "ללא",
             "minimal": "מינימלי",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "שליחה אוטומטית",
         "description": "שלח אוטומטית את צירוף המקשים שנבחר אחרי הכנסת הטקסט. ב-macOS יופעל Cmd+Enter, וב-Windows/Linux יופעל Super+Enter.",
+        "descriptionMac": "שלח אוטומטית את צירוף המקשים שנבחר אחרי הכנסת הטקסט.",
         "options": {
           "off": "כבוי",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "עיבוד משלים",
-      "description": "נקה או נסח מחדש תמלול בעזרת מודל AI לפני שהוא מודבק.",
       "hotkey": {
         "title": "קיצור מקשים"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "ספק",
-          "description": "בחר ספק שתואם ל-OpenAI או ל-Anthropic."
+          "title": "ספק"
         },
         "builtin": {
           "label": "מודל מובנה (ב-Mac הזה)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "פורמט API",
-          "description": "פורמט הבקשה שה-endpoint המותאם שלך מצפה לו.",
           "options": {
             "openai": "תואם OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "כתובת URL בסיסית",
-          "description": "כתובת ה-API הבסיסית עבור הספק הנבחר. רק ספק מותאם אישית ניתן לעריכה.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "מפתח API",
-          "description": "מפתח API עבור הספק הנבחר.",
           "placeholder": "sk-...",
           "saveFailed": "לא ניתן היה לשמור את מפתח ה-API"
         },
@@ -500,54 +437,33 @@
           "title": "מודל",
           "descriptionCustom": "ספק את מזהה המודל שה-endpoint המותאם שלך מצפה לו.",
           "descriptionDefault": "בחר מודל שהספק הנבחר חושף.",
-          "placeholderWithOptions": "חפש או בחר מודל",
           "placeholderNoOptions": "הקלד שם מודל",
           "refreshModels": "רענן מודלים"
         }
       },
       "prompts": {
-        "title": "פרומפט",
-        "selectedPrompt": {
-          "title": "פרומפט נבחר",
-          "description": "בחר תבנית לשיפור התמלול או צור חדשה. השתמש ב-${output} בתוך טקסט הפרומפט כדי להפנות לתמלול שנקלט."
-        },
-        "noPrompts": "אין פרומפטים זמינים",
-        "selectPrompt": "בחר פרומפט",
         "createNew": "צור פרומפט חדש",
         "promptLabel": "שם הפרומפט",
         "promptLabelPlaceholder": "הזן שם לפרומפט",
         "promptInstructions": "הוראות לפרומפט",
         "promptInstructionsPlaceholder": "כתוב את ההוראות שירוצו אחרי התמלול. לדוגמה: שפר דקדוק ובהירות עבור הטקסט הבא: ${output}",
         "promptTip": "טיפ: השתמש ב-<code>${output}</code> כדי להכניס את הטקסט המתומלל לפרומפט שלך.",
-        "updatePrompt": "עדכן פרומפט",
-        "deletePrompt": "מחק פרומפט",
-        "createPrompt": "צור פרומפט",
-        "cancel": "ביטול",
-        "selectToEdit": "בחר פרומפט למעלה כדי לצפות בפרטים שלו ולערוך אותם.",
-        "createFirst": "לחץ על 'צור פרומפט חדש' למעלה כדי ליצור את פרומפט העיבוד הראשון שלך."
+        "deletePrompt": "מחק פרומפט"
       }
     },
     "history": {
-      "title": "היסטוריה",
-      "openFolder": "פתח את תיקיית ההקלטות",
-      "loading": "טוען היסטוריה...",
-      "empty": "עדיין אין תמלולים. התחל להקליט כדי לבנות את ההיסטוריה שלך!",
       "copyToClipboard": "העתק תמלול ללוח",
       "copyError": "לא ניתן להעתיק את התמלול ללוח.",
       "save": "שמור תמלול",
       "unsave": "הסר משמורים",
       "delete": "מחק רשומה",
-      "deleteError": "מחיקת הרשומה נכשלה. נסה שוב.",
       "retranscribe": "תמלל מחדש",
-      "retranscribeError": "תמלול מחדש נכשל. נסה שוב.",
       "transcribing": "מתמלל...",
       "transcriptionFailed": "התמלול נכשל. אפשר לתמלל מחדש באמצעות אייקון הניסיון החוזר."
     },
     "debug": {
-      "title": "ניפוי שגיאות",
       "logDirectory": {
-        "title": "תיקיית לוגים",
-        "description": "המיקום שבו נשמרים קבצי הלוג"
+        "title": "תיקיית לוגים"
       },
       "logLevel": {
         "title": "רמת לוג",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "לוגים בזמן אמת",
-        "description": "הצג את לוגי האפליקציה בזמן אמת כדי לאבחן בעיות בלי לפתוח את קובץ הלוג. מוצגים רק לוגים שנוצרו בזמן שחלונית זו פתוחה; מתחשב בהגדרת «רמת לוג» שלמעלה.",
         "live": "בזמן אמת",
         "paused": "מושהה",
         "pause": "השהה",
@@ -617,11 +532,6 @@
         "description": "בחר את מנגנון קיצורי המקלדת.",
         "bindingsReset": "קיצורי המקלדת לא היו תואמים ואופסו לברירות המחדל"
       },
-      "paths": {
-        "appData": "נתוני אפליקציה:",
-        "models": "מודלים:",
-        "settings": "הגדרות:"
-      },
       "pasteDelay": {
         "title": "השהיית הדבקה (לפני)",
         "description": "השהיה (במילישניות) לאחר העתקת הטקסט, לפני שליחת צירוף ההדבקה. הגדל אם דבר אינו מודבק."
@@ -666,8 +576,7 @@
         "title": "תצוגה מקדימה של מה חדש",
         "description": "פתח את הערת הגרסה המצורפת האחרונה בלי לסמן אותה כנצפתה",
         "button": "תצוגה מקדימה",
-        "noNotes": "לא נמצאו הערות גרסה מצורפות",
-        "error": "הצגת התצוגה המקדימה של הערות הגרסה נכשלה"
+        "noNotes": "לא נמצאו הערות גרסה מצורפות"
       },
       "onboardingPreview": {
         "title": "תצוגה מקדימה של ההגדרה הראשונית",
@@ -678,28 +587,12 @@
       }
     },
     "about": {
-      "title": "אודות",
-      "version": {
-        "title": "גרסה",
-        "description": "הגרסה הנוכחית של Guidy"
-      },
       "author": {
         "title": "נוצר על ידי",
         "description": "Imran"
       },
       "appDataDirectory": {
-        "title": "תיקיית נתוני אפליקציה",
-        "description": "המיקום שבו Guidy שומר את הנתונים שלו"
-      },
-      "sourceCode": {
-        "title": "קוד מקור",
-        "description": "צפה בקוד המקור ותרום",
-        "button": "צפה ב-GitHub"
-      },
-      "supportDevelopment": {
-        "title": "תמיכה בפיתוח",
-        "description": "עזור לנו להמשיך לבנות את Guidy",
-        "button": "תרומה"
+        "title": "תיקיית נתוני אפליקציה"
       },
       "acknowledgments": {
         "title": "תודות",
@@ -708,12 +601,6 @@
           "description": "הסקה מהירה לביצועים גבוהים עבור מודל זיהוי הדיבור Whisper של OpenAI",
           "details": "Guidy משתמש ב-ggml לתמלול מהיר ומקומי. תודה לעבודה המדהימה של Georgi Gerganov וכל התורמים."
         }
-      },
-      "hero": {
-        "headline": "דיבור לטקסט שנשאר ב-Mac הזה",
-        "lede": "לחץ על קיצור מקשים, דבר, ו-Guidy מקליד לתוך האפליקציה הפעילה. התמלול רץ באופן מקומי.",
-        "engine": "מנוע",
-        "model": "מודל"
       },
       "whatsNewUpdates": {
         "label": "הצג מה חדש",
@@ -741,7 +628,6 @@
     "delete": "מחק",
     "back": "חזרה",
     "close": "סגור",
-    "open": "פתח",
     "copy": "העתק",
     "clear": "נקה",
     "noOptionsFound": "לא נמצאו אפשרויות"
@@ -769,12 +655,10 @@
     "transcriptionFailedTitle": "התמלול נכשל"
   },
   "appLanguage": {
-    "title": "שפת האפליקציה",
-    "description": "שנה את שפת הממשק של Guidy"
+    "title": "שפת האפליקציה"
   },
   "theme": {
     "title": "ערכת נושא של האפליקציה",
-    "description": "בחר אם Guidy יעקוב אחר ערכת הנושא של המערכת או יישאר בהיר או כהה",
     "options": {
       "system": "מערכת",
       "light": "בהיר",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "פגישות",
     "selection": {
-      "hint": "גרור, או לחץ עם Shift, כדי לתייג כמה שורות",
       "count_one": "{{count}} שורה נבחרה",
       "count_other": "{{count}} שורות נבחרו",
       "keys": "Shift-לחיצה: טווח · ⌘-לחיצה: הוספה או הסרה · Esc: ניקוי",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "זהה דוברים מחדש",
-      "tooltip": "הפרד שוב בין הדוברים בעזרת {{model}}. התמלול נשאר. שורות שתייגת ודוברים שנתת להם שם שומרים על האדם שלהם; השאר מותאמים שוב לפי הקול.",
       "standard": "מודל דוברים רגיל",
       "download": "הורדה של {{size}}, פעם אחת",
       "error": "לא ניתן היה לזהות מחדש את הדוברים",
@@ -826,7 +708,6 @@
       "yesterday": "אתמול"
     },
     "copy": {
-      "summary": "העתק",
       "transcript": "העתק תמלול",
       "copied": "הועתק",
       "notes": "העתק הערות",
@@ -866,7 +747,6 @@
       "openNotes": "פתח סיכום",
       "expand": "הצג את התמלול החי",
       "collapse": "כווץ",
-      "liveTitle": "תמלול חי",
       "liveHint": "כפי שנשמע עד כה. התמלול המלא עם שמות הדוברים נוצר כשהפגישה מסתיימת.",
       "callTitle": "שיחת {{app}}",
       "callPrompt": "לרשום הערות לפגישה?",
@@ -875,7 +755,6 @@
       "startFailed": "לא ניתן להתחיל. לנסות שוב?",
       "dismiss": "לא עכשיו"
     },
-    "description": "הקלט פגישה ב-Mac הזה, ואז קרא את התמלול עם שמות הדוברים.",
     "init": {
       "starting": "מפעיל את סיכומי הפגישות...",
       "failed": "לא ניתן היה להפעיל את סיכומי הפגישות",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "צור קודם את סיכום הפגישה: הכותרת נכתבת על פיו."
     },
     "model": {
-      "download": "הורד מודל פגישות",
       "downloadError": "לא ניתן היה להוריד את מודל הפגישות"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "התחל סיכום פגישה",
       "stop": "עצור סיכום פגישה",
-      "recording": "מקליט",
-      "idle": "לא מקליט",
       "startError": "לא ניתן היה להתחיל להקליט",
       "stopError": "לא ניתן היה לעצור את ההקלטה",
       "disabled": "הפעל סיכומי פגישות בהגדרות כדי להקליט."
     },
-    "upcoming": {
-      "title": "בקרוב",
-      "empty": "אין פגישות קרובות ביומן עם קישור לשיחה.",
-      "start": "התחל"
-    },
     "list": {
-      "title": "הקלטות",
-      "empty": "עדיין אין פגישות. התחל סיכום פגישה כדי להקליט אחת.",
       "loading": "טוען פגישות...",
       "loadError": "לא ניתן היה לטעון את הפגישות",
-      "speakerModelMissing": "הקלטות לא יעובדו עד שמודל זיהוי הדוברים יורד.",
       "minutes": "{{count}} דק׳",
-      "open": "פתח",
       "rename": "שנה שם",
       "delete": "מחק",
       "process": "עבד",
       "retry": "ניסיון חוזר",
       "cancelProcessing": "בטל עיבוד",
-      "save": "שמור",
       "cancel": "ביטול",
       "titlePlaceholder": "כותרת הפגישה",
       "deleteTitle": "למחוק את הפגישה?",
@@ -979,7 +845,6 @@
       "share": "חלק יחסי",
       "youSpoke": "דיברת",
       "minutes": "דק׳",
-      "speakersToName": "{{count}} ממתינים לשם",
       "notesTab": "הערות"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "אנשים",
-      "description": "אנשים שנתת להם שם בפגישות. Guidy מזהה את הקולות שלהם בפגישות הבאות.",
       "empty": "עדיין אין אנשים. תן שם לדובר בפגישה כדי להוסיף אחד.",
       "loadError": "לא ניתן היה לטעון את האנשים",
       "voiceprints_one": "{{count}} טביעת קול",
       "voiceprints_other": "{{count}} טביעות קול",
-      "edit": "ערוך",
       "merge": "מזג",
       "mergeInto": "מזג לתוך...",
       "mergeHint": "בחר את האדם שיישאר. טביעות הקול ושמות הדוברים יעברו אליו.",
@@ -1035,7 +898,6 @@
       "renameError": "לא ניתן היה לעדכן את האדם",
       "namePlaceholder": "שם",
       "emailPlaceholder": "אימייל (אופציונלי)",
-      "save": "שמור",
       "cancel": "ביטול",
       "voice": {
         "title": "הקול שלך",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "סיכומי פגישות",
       "enabled": {
         "title": "סיכומי פגישות",
         "description": "הקלט פגישות עם המיקרופון שלך ועם השמע של המחשב. ההפעלה תבקש גישה ליומן, לשמע המערכת ולהתראות."
@@ -1077,7 +938,6 @@
         "requestAgain": "בקש שוב",
         "openSettings": "פתח את הגדרות המערכת"
       },
-      "you": "אתה",
       "userName": {
         "title": "השם שלך",
         "description": "ערוץ המיקרופון שלך תמיד מסומן בשם הזה.",
@@ -1128,7 +988,6 @@
         "description": "מבחין בין קולות ומזהה אנשים שנתת להם שם בעבר. משתמש ב-{{name}} ({{trainedOn}}), {{size}}. יורד רק כשאתה לוחץ על ״הורד״.",
         "ready": "הורד",
         "download": "הורד ({{size}})",
-        "retry": "נסה להוריד שוב",
         "failed": "ההורדה נכשלה: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} דק׳"
       },
       "advanced": {
-        "title": "מתקדם",
-        "show": "הצג הגדרות מתקדמות",
-        "hide": "הסתר הגדרות מתקדמות",
         "matchThreshold": {
           "title": "סף התאמה אוטומטית",
           "description": "דמיון קולי שממנו ומעלה דובר מקבל שם אוטומטית. מתחתיו, ההתאמה שואלת \"לאשר?\"."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "זיהוי חילופי דוברים",
         "description": "מפצל שורות במקום שבו הקול מתחלף ({{size}}). עד שהם יורדו, השורות מפוצלות בהפסקות.",
-        "ready": "מוכן",
-        "downloading": "מוריד",
-        "download": "הורדה ({{size}})"
+        "descriptionReady": "מפצל שורות במקום שבו הקול מתחלף."
       },
       "callSuggestions": {
         "title": "הצע הערות בשיחות",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "חפש בכותרות, בסיכומים ובתמלולים",
       "searching": "מחפש...",
       "empty": "אין פגישות שתואמות ל-\"{{query}}\".",
       "count_one": "פגישה אחת",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "הגדרה",
-      "models": "מודלים",
-      "note": "אפשר להקליט עוד לפני שהורדת המודלים מסתיימת. העיבוד ימתין עד שהם יהיו מוכנים.",
-      "downloading": "מוריד",
-      "downloadingPercent": "מוריד {{percent}}%",
-      "ready": "מוכן",
-      "notDownloaded": "לא הורד",
-      "download": "הורדה",
-      "dismiss": "התעלם",
-      "optional": "אופציונלי"
-    },
     "downloads": {
       "activity": "מוריד את {{name}} · {{percent}}%",
       "activityFailed": "ההורדה נכשלה · {{name}}",
-      "multiple": "מוריד {{count}} מודלים",
-      "cancel": "ביטול",
       "retry": "ניסיון חוזר",
       "done": "{{name}} הורד",
       "failed": "לא ניתן היה להוריד את {{name}}",
       "startError": "לא ניתן היה להתחיל את ההורדה",
       "empty": "אין הורדות",
-      "queued": "בתור",
-      "doneShort": "הסתיים",
       "failedShort": "נכשל",
       "cancelled": "בוטל"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "משימות לביצוע",
       "generate": "צור סיכום",
       "regenerate": "צור מחדש",
-      "regenerateWith": "צור מחדש עם...",
       "generateWith": "צור עם {{model}}",
       "otherModels": "מודלים אחרים",
       "otherModel": "מודל אחר…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "סיכומים",
-      "provider": "ספק",
-      "providerDescription": "המודל שמשמש לסיכומי פגישות ולמשימות. העיבוד המשלים של ההכתבה שומר על הספק שלו.",
       "builtin": "מובנה (ב-Mac הזה)",
       "builtinDescription": "מריץ מודל מקומי עם llama.cpp. שום דבר לא יוצא מה-Mac שלך.",
-      "model": "מודל",
-      "modelDescription": "סמן מודל כדי להוסיף אותו למודלים שלך. מוצגים רק מודלים שמפיקים טקסט. \"טוב לסיכומים\" אומר שהמודל תומך בפלט מובנה, שעליו הסיכומים מתבססים.",
       "modelPlaceholder": "מזהה מודל",
       "pickModel": "בחר מודל",
-      "noLocalModels": "הורד מודל למטה",
-      "usingPostProcessModel": "משתמש במודל העיבוד המשלים ({{model}})",
       "refreshModels": "רענן",
       "testConnection": "בדוק חיבור",
-      "testDescription": "בדוק שהספק, המפתח והמודל עובדים.",
       "apple": "Apple Intelligence",
       "appleDescription": "מודל על המכשיר ב-Mac עם Apple silicon שבו Apple Intelligence מופעל.",
-      "appleAvailable": "זמין",
       "appleUnavailable": "Apple Intelligence אינו זמין ב-Mac הזה",
       "activeHeading": "הסיכומים נוצרים על ידי",
-      "place": "היכן הסיכומים רצים",
-      "placeDescription": "רק האפשרות שנבחרה משמשת.",
       "tabCloud": "ספק ענן",
       "tabLocal": "ב-Mac הזה",
       "onThisMac": "ה-Mac הזה · לא מקוון",
       "apiKey": "מפתח API",
       "apiKeyDescription": "נשמר בצרור המפתחות שלך ומשותף עם העיבוד המשלים.",
       "getKey": "קבל מפתח {{provider}}",
-      "modelDescriptionCustom": "הקלד את מזהה המודל שה-endpoint שלך מצפה לו ולחץ Enter כדי להוסיף אותו, או סמן אחד מהרשימה שלו.",
       "searchModels": "חפש מודלים",
       "goodOnly": "טוב לסיכומים",
       "goodForSummaries": "סיכומים",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "לא זמין ב-Mac הזה. הפעל אותו בהגדרות המערכת > Apple Intelligence ו-Siri.",
       "unavailable": "לא זמין",
       "yourModels": "המודלים שלך",
-      "yourModelsDescription": "״צור סיכום״ מציע כל מודל שכאן, כך שאפשר לבחור אחד לכל פגישה. המודל שנבחר הוא ברירת המחדל.",
       "yourModelsEmpty": "עדיין אין מודלים בענן. בחר ספק למטה, הוסף את מפתח ה-API שלו וסמן את המודלים הרצויים.",
       "default": "ברירת מחדל",
       "removeModel": "הסר מהמודלים שלך",
-      "addFrom": "הוסף מודלים מ",
-      "addFromDescription": "בחר ספק כדי להזין את המפתח שלו ולסמן מודלים להוספה. זה לא משנה את ברירת המחדל."
+      "addFrom": "הוסף מודלים מ"
     },
     "local": {
       "heading": "מודלים מקומיים",
@@ -1438,9 +1260,7 @@
       "default": "ברירת מחדל",
       "recommendedRam": "מומלץ ל-{{gb}} GB+ RAM",
       "notEnoughRam": "ל-Mac הזה יש פחות זיכרון מהמומלץ למודל הזה.",
-      "downloaded": "הורד",
-      "download": "הורד",
-      "downloading": "מוריד {{percentage}}%"
+      "downloaded": "הורד"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "מחובר בתור {{name}}"
     },
     "byok": {
-      "testConnection": "בדוק חיבור",
-      "testDescription": "בדוק את כתובת ה-URL הבסיסית, מפתח ה-API והמודל בעזרת בקשה קטנה.",
-      "baseUrlEditable": "כתובת ה-API הבסיסית עבור הספק הזה. החלף כל {placeholder} (למשל מזהה החשבון שלך ב-Cloudflare).",
-      "cloudflareHint": "Cloudflare: הכנס את מזהה החשבון שלך (ואת מזהה ה-gateway עבור AI Gateway) לכתובת ה-URL הבסיסית."
+      "testDescription": "בדוק את כתובת ה-URL הבסיסית, מפתח ה-API והמודל בעזרת בקשה קטנה."
     }
   }
 }

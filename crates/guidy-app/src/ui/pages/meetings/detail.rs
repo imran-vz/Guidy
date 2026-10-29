@@ -1,27 +1,34 @@
-//! Meeting detail: header, G2's summary and ticket panes, the speakers
-//! with their name pickers, and the transcript grouped by speaker with
-//! click-to-play segments.
+//! Meeting detail: a pinned header (title with inline rename, when and
+//! how long, the actions: Process, Redo, Copy, Export, Delete, and an
+//! info popover), thin notices, the player, then the notes (summary,
+//! action items, Linear tickets) and the transcript, side by side when
+//! there is room, each in its own scroll region. The transcript is
+//! virtualized by speaker turn; its speakers strip names voices, and ⌘F
+//! finds words in it.
 
 use super::ai_settings::SummaryChoice;
+use super::player::{MeetingPlayer, PlayerEvent};
+use super::summary::{SummarySection, SummaryView};
+use super::tickets::TicketsView;
 use super::{meeting_model_missing, meeting_settings, render_model_download, run, toast_error};
 use crate::logic::meetings::{
-    can_process, cluster_label, format_meeting_date, format_offset, group_by_speaker,
-    insert_provisional, line_near, line_range, needs_confirmation, non_empty, progress_label,
-    redo_diff, select_lines, speaker_name, status_key, talk_time, transcript_issue, LineClick,
-    MeetingsEvent, RedoChoice, RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime,
-    TranscriptIssue,
+    can_process, cluster_label, export_file_name, export_markdown, find_in_segments,
+    format_meeting_date, format_offset, group_by_speaker, insert_provisional, line_near,
+    line_range, needs_confirmation, non_empty, progress_label, redo_diff, select_lines,
+    speaker_name, status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice,
+    RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime, TranscriptIssue,
 };
-use crate::playback::Playback;
 use crate::state::{AppEvent, AppState};
-use crate::ui::design::{self, dp, Pill, Stat};
-use crate::ui::kit::{crumb_title, foldable_heading, group, icon, t, t_args};
-use crate::ui::main_window::PageScroll;
+use crate::ui::design::{self, dp, Stat};
+use crate::ui::kit::{icon, t, t_args, LocalizedPlaceholder};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants, DropdownButton};
-use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable, WindowExt,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
@@ -31,23 +38,65 @@ use guidy_core::meetings::types::{
     TranscriptionEngine,
 };
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::ops::Range;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// `segment_audio` returns 16 kHz mono.
-const SEGMENT_SAMPLE_RATE: u32 = 16_000;
+/// After the user scrolls the transcript, how long it doesn't follow the
+/// playhead.
+pub(crate) const FOLLOW_PAUSE: Duration = Duration::from_secs(5);
+
+/// Whether the transcript should follow the playhead: while it plays, and
+/// not for [`FOLLOW_PAUSE`] after the user scrolled it.
+pub(crate) fn follows_playhead(playing: bool, scrolled_at: Option<Instant>, now: Instant) -> bool {
+    playing && scrolled_at.is_none_or(|at| now.saturating_duration_since(at) >= FOLLOW_PAUSE)
+}
 
 pub enum DetailEvent {
+    /// Back to the list (stack layout).
     Back,
     /// The ticket list asked for settings (no Linear key yet).
     OpenSettings,
+    /// Delete… was chosen: the page confirms and deletes.
+    Delete(MeetingId),
+    /// The title changed here: the list shows it.
+    Renamed,
 }
 
 /// Notes is the meeting write-up. Transcript is the lines and speakers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
     Notes,
+    Transcript,
+}
+
+/// The notes column's parts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotesTab {
+    Summary,
+    ActionItems,
+    Tickets,
+}
+
+/// How the page lays the detail out (it knows the width).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DetailLayout {
+    /// Notes and transcript side by side.
+    pub side_by_side: bool,
+    /// The list is hidden (stack): show a back button.
+    pub show_back: bool,
+    /// Narrow: the actions get their own row under the title.
+    pub compact: bool,
+}
+
+/// What Export writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExportKind {
+    /// Notes and transcript, Markdown.
+    All,
+    /// The notes, Markdown.
+    Notes,
+    /// The transcript, plain text.
     Transcript,
 }
 
@@ -70,6 +119,13 @@ pub struct MeetingDetail {
     pub meeting_id: MeetingId,
     meeting: Option<Meeting>,
     segments: Vec<Segment>,
+    /// `segments` grouped into speaker turns: the transcript list's items.
+    blocks: Vec<SpeakerBlock>,
+    transcript_list: ListState,
+    /// Scroll of the notes column, and of the live / streamed transcript.
+    notes_scroll: ScrollHandle,
+    lines_scroll: ScrollHandle,
+    speakers_scroll: ScrollHandle,
     /// Derived from `segments` on load, for the stats and talk-time chart.
     talk: TalkTime,
     speakers: Vec<MeetingSpeaker>,
@@ -101,8 +157,6 @@ pub struct MeetingDetail {
     pending_seek: Option<i64>,
     /// A search hit: scroll to this line once the transcript has loaded.
     pending_reveal: Option<i64>,
-    /// A talk-time click: scroll the page to this line on the next paint.
-    reveal: Option<i64>,
     /// The line just revealed, highlighted for a moment.
     flash: Option<i64>,
     /// Cloud providers the transcript can be redone with.
@@ -113,26 +167,43 @@ pub struct MeetingDetail {
     transcript_copied: bool,
     /// The header copy just copied the notes.
     notes_copied: bool,
-    /// The header shows every attendee, not one truncated line.
-    attendees_open: bool,
-    /// Talk-time share, folded until the user opens it.
-    talk_open: bool,
-    /// Notes or the transcript.
+    /// Notes or the transcript (when they don't fit side by side).
     detail_tab: DetailTab,
-    /// The speakers list is shown (folded when a meeting opens).
+    notes_tab: NotesTab,
+    layout: DetailLayout,
+    /// The speakers panel (names, confirmations, talk time) is open. It
+    /// opens by itself when a speaker still needs a name.
     speakers_open: bool,
+    /// `speakers_open` was set from the first load.
+    speakers_settled: bool,
+    /// The first load hasn't arrived yet (it picks the starting tab).
+    loading_first: bool,
     /// The title and description are being generated.
     titling: bool,
-    /// The notes view, kept from the last time that tab rendered so copy
-    /// and regenerate can reach it from a click.
-    summary_view: Option<Entity<super::summary::SummaryView>>,
+    /// The title is being edited in place.
+    renaming: bool,
+    title_input: Entity<InputState>,
+    summary: Entity<SummaryView>,
+    tickets: Entity<TicketsView>,
+    player: Entity<MeetingPlayer>,
+    /// The line under the playhead (once something played).
+    active_line: Option<i64>,
+    /// When the user last scrolled the transcript (wheel/trackpad).
+    scrolled_at: Rc<Cell<Option<Instant>>>,
+    /// ⌘F in the transcript.
+    find_open: bool,
+    find_input: Entity<InputState>,
+    find_matches: Vec<(i64, Vec<Range<usize>>)>,
+    /// Index into the flattened matches (line, range).
+    find_current: usize,
     /// Lines announced while this meeting is still transcribing, in time order.
     provisional: Vec<ProvisionalLine>,
     /// Transcript and speakers at the moment a redo started.
     before_redo: Option<RedoSnapshot>,
     /// Shown after that redo finishes, until dismissed.
     what_changed: Option<RedoDiff>,
-    ticking: bool,
+    /// What changed shows its details.
+    what_changed_open: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -142,10 +213,51 @@ impl MeetingDetail {
     pub fn new(meeting_id: MeetingId, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = AppState::global(cx);
         let name_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetings.speaker.namePlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.speaker.namePlaceholder",
+                window,
+                cx,
+            )
         });
         let email_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t("meetings.speaker.emailPlaceholder"))
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.speaker.emailPlaceholder",
+                window,
+                cx,
+            )
+        });
+        let title_input = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.list.titlePlaceholder",
+                window,
+                cx,
+            )
+        });
+        let find_input = cx.new(|cx| {
+            InputState::new(window, cx).localized_placeholder(
+                "meetings.find.placeholder",
+                window,
+                cx,
+            )
+        });
+        // Kept for the meeting's lifetime, so unsaved edits, drafts and
+        // the player survive switching tabs and columns.
+        let summary = cx.new(|cx| SummaryView::new(meeting_id, window, cx));
+        let tickets = cx.new(|cx| TicketsView::new(meeting_id, window, cx));
+        let player = cx.new(|_| MeetingPlayer::new(meeting_id));
+        let weak = cx.entity().downgrade();
+        summary.update(cx, |v, _| {
+            v.set_section(SummarySection::Notes);
+            v.set_on_seek(move |t_ms, _, cx| {
+                let _ = weak.update(cx, |this, cx| this.seek_to(t_ms, cx));
+            });
+        });
+        let weak = cx.entity().downgrade();
+        tickets.update(cx, |v, _| {
+            v.set_embedded(true);
+            v.set_on_open_settings(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.emit(DetailEvent::OpenSettings));
+            })
         });
         let mut subs = vec![
             cx.observe(&state, |_, _, cx| cx.notify()),
@@ -164,6 +276,27 @@ impl MeetingDetail {
                     this.save_new_person(cx);
                 }
             }),
+            cx.subscribe(&title_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::PressEnter { .. } => this.save_rename(cx),
+                InputEvent::Blur => this.cancel_rename(cx),
+                _ => {}
+            }),
+            cx.subscribe(&find_input, |this, input, ev: &InputEvent, cx| match ev {
+                InputEvent::Change => {
+                    let q = input.read(cx).value().to_string();
+                    this.set_find(&q, cx);
+                }
+                InputEvent::PressEnter { shift, .. } => {
+                    this.find_step(if *shift { -1 } else { 1 }, cx)
+                }
+                _ => {}
+            }),
+            cx.subscribe(&player, |this, _, ev: &PlayerEvent, cx| {
+                let PlayerEvent::Moved(t_ms) = *ev;
+                this.follow_playhead(t_ms, cx);
+            }),
+            cx.observe(&summary, |_, _, cx| cx.notify()),
+            cx.observe(&tickets, |_, _, cx| cx.notify()),
         ];
         // The live transcript while this meeting records.
         if let Some(widget) = crate::ui::recording_widget::RecordingWidgetState::global(cx) {
@@ -177,6 +310,11 @@ impl MeetingDetail {
             meeting_id,
             meeting: None,
             segments: Vec::new(),
+            blocks: Vec::new(),
+            transcript_list: ListState::new(0, ListAlignment::Top, dp(400.)),
+            notes_scroll: ScrollHandle::new(),
+            lines_scroll: ScrollHandle::new(),
+            speakers_scroll: ScrollHandle::new(),
             talk: talk_time(&[], None),
             speakers: Vec::new(),
             people: Vec::new(),
@@ -198,24 +336,41 @@ impl MeetingDetail {
             cancelling: false,
             pending_seek: None,
             pending_reveal: None,
-            reveal: None,
             flash: None,
             cloud_options: Vec::new(),
             diarization: DiarizationOptions::default(),
             transcript_copied: false,
             notes_copied: false,
-            attendees_open: false,
-            talk_open: false,
             detail_tab: DetailTab::Notes,
+            notes_tab: NotesTab::Summary,
+            layout: DetailLayout::default(),
             speakers_open: false,
+            speakers_settled: false,
+            loading_first: true,
             titling: false,
-            summary_view: None,
+            renaming: false,
+            title_input,
+            summary,
+            tickets,
+            player,
+            active_line: None,
+            scrolled_at: Rc::new(Cell::new(None)),
+            find_open: false,
+            find_input,
+            find_matches: Vec::new(),
+            find_current: 0,
             provisional: Vec::new(),
             before_redo: None,
             what_changed: None,
-            ticking: false,
+            what_changed_open: false,
             _subs: subs,
         };
+        // A wheel/trackpad scroll of the transcript pauses following the
+        // playhead for a moment (the list calls this only for user scrolls).
+        let scrolled_at = this.scrolled_at.clone();
+        this.transcript_list.set_scroll_handler(move |_, _, cx| {
+            scrolled_at.set(Some(cx.background_executor().now()))
+        });
         this.load(cx);
         this
     }
@@ -327,9 +482,33 @@ impl MeetingDetail {
                         }
                         this.speakers = speakers;
                         this.people = people;
+                        this.rebuild_blocks();
                         this.settle_redo();
                         if progress.is_some() {
                             this.progress = progress;
+                        }
+                        this.sync_player(cx);
+                        if this.loading_first {
+                            // Live or being transcribed: the lines are what
+                            // there is to see.
+                            this.loading_first = false;
+                            if this.meeting.as_ref().is_some_and(|m| {
+                                matches!(
+                                    m.status,
+                                    MeetingStatus::Recording | MeetingStatus::Processing
+                                )
+                            }) {
+                                this.detail_tab = DetailTab::Transcript;
+                            }
+                        }
+                        if !this.speakers_settled && !this.speakers.is_empty() {
+                            // Open when a voice still needs a name.
+                            this.speakers_settled = true;
+                            this.speakers_open = this.pending_speakers() > 0;
+                        }
+                        if this.find_open {
+                            let q = this.find_input.read(cx).value().to_string();
+                            this.set_find(&q, cx);
                         }
                         if !this.segments.is_empty() {
                             if let Some(t_ms) = this.pending_seek.take() {
@@ -728,7 +907,11 @@ impl MeetingDetail {
     }
 
     pub fn select_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        let shown = tab == DetailTab::Transcript && self.detail_tab != tab;
         self.detail_tab = tab;
+        if shown {
+            self.show_playhead(cx);
+        }
         cx.notify();
     }
 
@@ -910,12 +1093,16 @@ impl MeetingDetail {
         let choices = self.redo_choices(cx);
         let current = choices.iter().find(|c| c.current && !c.cloud).cloned();
         let busy = self.processing_busy;
+        let icon_only = !primary && self.layout.compact;
         let main = Button::new(id)
             .small()
-            .pill()
             .icon(icon("rotate-ccw"))
-            .label(t("meetings.redo.menu"))
-            .map(|b| if primary { b.primary() } else { b.secondary() })
+            .when(!icon_only, |b| b.label(t("meetings.redo.menu")))
+            .when(icon_only && current.is_none(), |b| {
+                b.tooltip(t("meetings.redo.menu"))
+            })
+            // In the header it sits with the other ghost toolbar buttons.
+            .map(|b| if primary { b.primary() } else { b.ghost() })
             .when_some(current.clone(), |b, c| {
                 b.tooltip(t_args("meetings.redo.tooltip", &[("model", &c.label)]))
             })
@@ -930,14 +1117,10 @@ impl MeetingDetail {
             });
         let weak = cx.entity().downgrade();
         let speakers = self.speaker_redo_choices();
-        let (summary_choices, has_summary) = self
-            .summary_view
-            .as_ref()
-            .map(|v| {
-                let v = v.read(cx);
-                (v.provider_choices(), v.has_summary())
-            })
-            .unwrap_or_default();
+        let (summary_choices, has_summary) = {
+            let v = self.summary.read(cx);
+            (v.provider_choices(), v.has_summary())
+        };
         let offer_speakers = self
             .meeting
             .as_ref()
@@ -1048,11 +1231,9 @@ impl MeetingDetail {
                                             .on_click(move |_, _, cx| {
                                                 let run = run.clone();
                                                 weak.update(cx, |this, cx| {
-                                                    if let Some(v) = this.summary_view.clone() {
-                                                        v.update(cx, |v, cx| {
-                                                            v.generate(Some(run), cx)
-                                                        });
-                                                    }
+                                                    this.summary.update(cx, |v, cx| {
+                                                        v.generate(Some(run), cx)
+                                                    });
                                                 })
                                                 .ok();
                                             }),
@@ -1067,9 +1248,10 @@ impl MeetingDetail {
                                 PopupMenuItem::new(t("meetingsAi.summary.otherModel")).on_click(
                                     move |_, window, cx| {
                                         weak.update(cx, |this, cx| {
-                                            if let Some(v) = this.summary_view.clone() {
-                                                v.update(cx, |v, cx| v.open_picker(window, cx));
-                                            }
+                                            this.notes_tab = NotesTab::Summary;
+                                            this.detail_tab = DetailTab::Notes;
+                                            this.summary
+                                                .update(cx, |v, cx| v.open_picker(window, cx));
                                         })
                                         .ok();
                                     },
@@ -1082,48 +1264,208 @@ impl MeetingDetail {
             })
     }
 
-    // -- G2 panes ---------------------------------------------------------------
+    // -- layout, player, reveal ------------------------------------------------
 
-    fn render_summary(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let weak = cx.entity().downgrade();
-        let v = super::summary::view(self.meeting_id, window, cx);
-        v.update(cx, |v, _| {
-            v.set_on_seek(move |t_ms, _, cx| {
-                let _ = weak.update(cx, |this, cx| this.seek_to(t_ms, cx));
-            });
-        });
-        self.summary_view = Some(v.clone());
-        v.into_any_element()
-    }
-
-    fn render_tickets(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let tickets = super::tickets::view(self.meeting_id, window, cx);
-        let weak = cx.entity().downgrade();
-        tickets.update(cx, |v, _| {
-            v.set_on_open_settings(move |_, cx| {
-                let _ = weak.update(cx, |_, cx| cx.emit(DetailEvent::OpenSettings));
-            })
-        });
-        tickets.into_any_element()
-    }
-
-    /// Play the segment containing `t_ms` (or the last one starting before it).
-    fn seek_to(&mut self, t_ms: i64, cx: &mut Context<Self>) {
-        let seg = self
-            .segments
-            .iter()
-            .find(|s| s.t0_ms <= t_ms && t_ms <= s.t1_ms)
-            .or_else(|| self.segments.iter().rev().find(|s| s.t0_ms <= t_ms))
-            .or_else(|| self.segments.first())
-            .cloned();
-        if let Some(seg) = seg {
-            self.play(&seg, cx);
+    /// The page tells the detail how much room it has.
+    pub fn set_layout(&mut self, layout: DetailLayout, cx: &mut Context<Self>) {
+        if self.layout != layout {
+            let transcript_shown = layout.side_by_side && !self.layout.side_by_side;
+            self.layout = layout;
+            if transcript_shown {
+                self.show_playhead(cx);
+            }
+            cx.notify();
         }
     }
 
-    /// Scroll to the line and highlight it for a moment.
+    pub fn layout(&self) -> DetailLayout {
+        self.layout
+    }
+
+    pub fn notes_tab(&self) -> NotesTab {
+        self.notes_tab
+    }
+
+    pub fn select_notes_tab(&mut self, tab: NotesTab, cx: &mut Context<Self>) {
+        self.notes_tab = tab;
+        self.detail_tab = DetailTab::Notes;
+        cx.notify();
+    }
+
+    /// The summary view (kept for the meeting's lifetime).
+    pub fn summary_view(&self) -> &Entity<SummaryView> {
+        &self.summary
+    }
+
+    #[cfg(test)]
+    pub fn player(&self) -> &Entity<MeetingPlayer> {
+        &self.player
+    }
+
+    /// Speakers still waiting for a name or a confirmation.
+    fn pending_speakers(&self) -> usize {
+        self.speakers
+            .iter()
+            .filter(|s| !s.is_user && (s.person_id.is_none() || needs_confirmation(s)))
+            .count()
+    }
+
+    /// Group the lines into turns and hand the list its new item count.
+    fn rebuild_blocks(&mut self) {
+        self.blocks = group_by_speaker(&self.segments);
+        let old = self.transcript_list.item_count();
+        self.transcript_list.splice(0..old, self.blocks.len());
+    }
+
+    /// The meeting's audio can be played: it is still on disk and the
+    /// meeting is not being recorded.
+    fn has_audio(&self) -> bool {
+        self.meeting.as_ref().is_some_and(|m| {
+            m.status != MeetingStatus::Recording
+                && (m.mic_audio_path.is_some() || m.system_audio_path.is_some())
+                && m.duration_ms().unwrap_or(0) > 0
+        })
+    }
+
+    fn sync_player(&mut self, cx: &mut Context<Self>) {
+        let duration = self
+            .meeting
+            .as_ref()
+            .and_then(|m| m.duration_ms())
+            .unwrap_or(self.talk.total_ms);
+        self.player.update(cx, |p, cx| p.set_duration(duration, cx));
+    }
+
+    /// Space: play or pause the meeting.
+    pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
+        if !self.has_audio() {
+            return;
+        }
+        self.player.update(cx, |p, cx| p.toggle(cx));
+    }
+
+    /// The line at `t_ms`: the one containing it, else the last one that
+    /// started before it.
+    fn line_at(&self, t_ms: i64) -> Option<&Segment> {
+        self.segments
+            .iter()
+            .find(|s| s.t0_ms <= t_ms && t_ms < s.t1_ms)
+            .or_else(|| self.segments.iter().rev().find(|s| s.t0_ms <= t_ms))
+    }
+
+    fn block_of(&self, seg_id: i64) -> Option<usize> {
+        self.blocks
+            .iter()
+            .position(|b| b.segments.iter().any(|s| s.id == seg_id))
+    }
+
+    /// The playhead moved: mark its line, and keep it in view (unless the
+    /// user scrolled the transcript a moment ago).
+    fn follow_playhead(&mut self, t_ms: i64, cx: &mut Context<Self>) {
+        let line = self.line_at(t_ms).map(|s| s.id);
+        if line == self.active_line {
+            return;
+        }
+        let old_block = self.active_line.and_then(|id| self.block_of(id));
+        self.active_line = line;
+        if let Some(ix) = line.and_then(|id| self.block_of(id)) {
+            if Some(ix) != old_block && self.follows_playhead(cx) {
+                self.transcript_list.scroll_to_reveal_item(ix);
+            }
+        }
+        cx.notify();
+    }
+
+    fn follows_playhead(&self, cx: &App) -> bool {
+        follows_playhead(
+            self.player.read(cx).is_playing(),
+            self.scrolled_at.get(),
+            cx.background_executor().now(),
+        )
+    }
+
+    /// The transcript came into view (its tab, or the side-by-side
+    /// column) while audio plays: bring the playing turn to the top. The
+    /// list may not have measured its rows while hidden, so this scrolls
+    /// to the turn rather than computing a minimal reveal.
+    fn show_playhead(&mut self, cx: &mut Context<Self>) {
+        if !self.follows_playhead(cx) {
+            return;
+        }
+        if let Some(ix) = self.active_line.and_then(|id| self.block_of(id)) {
+            self.transcript_list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    /// The transcript's first visible turn (tests).
+    #[cfg(test)]
+    pub fn transcript_top(&self) -> usize {
+        self.transcript_list.logical_scroll_top().item_ix
+    }
+
+    /// The turn holding the playing line (tests).
+    #[cfg(test)]
+    pub fn active_block(&self) -> Option<usize> {
+        self.active_line.and_then(|id| self.block_of(id))
+    }
+
+    /// Record a user scroll of the transcript (tests; the list's scroll
+    /// handler does this for real wheel events).
+    #[cfg(test)]
+    pub fn note_user_scroll(&self, cx: &App) {
+        self.scrolled_at.set(Some(cx.background_executor().now()));
+    }
+
+    /// End the pause after a user scroll (tests; [`follows_playhead`] has
+    /// the timing).
+    #[cfg(test)]
+    pub fn expire_user_scroll(&self) {
+        self.scrolled_at.set(None);
+    }
+
+    /// Play from `t_ms` (an action item's quote, a deep link) and show
+    /// that line.
+    fn seek_to(&mut self, t_ms: i64, cx: &mut Context<Self>) {
+        if self.has_audio() {
+            self.player.update(cx, |p, cx| p.play_at(t_ms, cx));
+        }
+        if let Some(id) = self.line_at(t_ms).map(|s| s.id) {
+            self.reveal_line(id, cx);
+        }
+    }
+
+    /// A plain click on a line: play from it, or pause/resume when it is
+    /// the line playing.
+    fn play(&mut self, seg: &Segment, cx: &mut Context<Self>) {
+        if !self.has_audio() {
+            return;
+        }
+        let playing_here = self.active_line == Some(seg.id) && self.player.read(cx).is_playing();
+        if playing_here {
+            self.player.update(cx, |p, cx| p.pause(cx));
+        } else {
+            let t0 = seg.t0_ms;
+            self.player.update(cx, |p, cx| p.play_at(t0, cx));
+        }
+        self.active_line = Some(seg.id);
+        cx.notify();
+    }
+
+    /// Scroll the transcript to the line and highlight it for a moment.
+    /// Shows the transcript first when it is a tab.
     fn reveal_line(&mut self, seg_id: i64, cx: &mut Context<Self>) {
-        self.reveal = Some(seg_id);
+        if !self.layout.side_by_side {
+            self.detail_tab = DetailTab::Transcript;
+        }
+        if let Some(ix) = self.block_of(seg_id) {
+            self.transcript_list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        }
         self.flash = Some(seg_id);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1141,103 +1483,238 @@ impl MeetingDetail {
         .detach();
     }
 
-    /// Painted over the revealed line: once its position is known, scrolls
-    /// the page so the line sits a third of the way down.
-    fn reveal_marker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity().downgrade();
-        canvas(
-            move |line: Bounds<Pixels>, _, cx| {
-                if let Some(PageScroll(scroll)) = cx.try_global::<PageScroll>() {
-                    let view = scroll.bounds();
-                    let mut offset = scroll.offset();
-                    let target = view.top() + view.size.height / 3.;
-                    offset.y = (offset.y - (line.top() - target))
-                        .min(px(0.))
-                        .max(-scroll.max_offset().y);
-                    scroll.set_offset(offset);
-                }
-                cx.defer(move |cx| {
-                    entity
-                        .update(cx, |this, cx| {
-                            this.reveal = None;
-                            cx.notify();
-                        })
-                        .ok();
-                });
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .size_full()
+    // -- find -------------------------------------------------------------------
+
+    /// ⌘F: open the find bar over the transcript.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.layout.side_by_side {
+            self.detail_tab = DetailTab::Transcript;
+        }
+        self.find_open = true;
+        self.find_input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
     }
 
-    // -- playback -------------------------------------------------------------
-
-    fn clip_key(&self, segment_id: i64) -> PathBuf {
-        PathBuf::from(format!("meeting-{}-segment-{segment_id}", self.meeting_id))
+    pub fn is_finding(&self) -> bool {
+        self.find_open
     }
 
-    fn play(&mut self, seg: &Segment, cx: &mut Context<Self>) {
-        let player = Playback::global();
-        let st = player.state();
-        let key = self.clip_key(seg.id);
-        if st.path.as_ref() == Some(&key) {
-            if st.playing {
-                player.pause();
-            } else {
-                player.resume();
+    pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_open = false;
+        self.find_matches.clear();
+        self.find_current = 0;
+        self.find_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn type_find(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.find_input
+            .update(cx, |s, cx| s.set_value(text.clone(), window, cx));
+        self.set_find(&text, cx);
+    }
+
+    #[cfg(test)]
+    pub fn find_count(&self) -> usize {
+        self.find_total()
+    }
+
+    fn find_total(&self) -> usize {
+        self.find_matches.iter().map(|(_, r)| r.len()).sum()
+    }
+
+    fn set_find(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.find_matches = find_in_segments(&self.segments, query);
+        self.find_current = 0;
+        self.reveal_find(cx);
+        cx.notify();
+    }
+
+    /// The current match: its line and its index among that line's ranges.
+    fn find_at(&self, n: usize) -> Option<(i64, usize)> {
+        let mut n = n;
+        for (id, ranges) in &self.find_matches {
+            if n < ranges.len() {
+                return Some((*id, n));
             }
-            self.ensure_ticking(cx);
+            n -= ranges.len();
+        }
+        None
+    }
+
+    fn find_step(&mut self, step: isize, cx: &mut Context<Self>) {
+        let total = self.find_total();
+        if total == 0 {
             return;
         }
-        let (id, track, t0, t1) = (self.meeting_id, seg.track, seg.t0_ms, seg.t1_ms);
+        self.find_current = (self.find_current as isize + step).rem_euclid(total as isize) as usize;
+        self.reveal_find(cx);
+        cx.notify();
+    }
+
+    fn reveal_find(&mut self, _cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .find_at(self.find_current)
+            .and_then(|(id, _)| self.block_of(id))
+        {
+            self.transcript_list.scroll_to_reveal_item(ix);
+        }
+    }
+
+    // -- rename, delete, export -------------------------------------------------
+
+    /// Edit the title in place.
+    pub fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(title) = self.meeting.as_ref().map(|m| m.title.clone()) else {
+            return;
+        };
+        self.renaming = true;
+        self.title_input.update(cx, |s, cx| {
+            s.set_value(title, window, cx);
+            s.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn type_title(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.title_input
+            .update(cx, |s, cx| s.set_value(text, window, cx));
+    }
+
+    pub fn is_renaming(&self) -> bool {
+        self.renaming
+    }
+
+    pub fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.renaming) {
+            cx.notify();
+        }
+    }
+
+    pub fn save_rename(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.renaming) {
+            return;
+        }
+        cx.notify();
+        let Some(title) = non_empty(&self.title_input.read(cx).value()) else {
+            return;
+        };
+        if let Some(m) = &mut self.meeting {
+            if m.title == title {
+                return;
+            }
+            m.title = title.clone();
+        }
+        let id = self.meeting_id;
         run(
             cx,
-            move |b| b.segment_audio(id, track, t0, t1),
-            move |this: &mut Self, r, cx| match r {
-                Ok(samples) => {
-                    Playback::global().play_samples(key, samples, SEGMENT_SAMPLE_RATE);
-                    this.ensure_ticking(cx);
-                    // The player reports an output failure asynchronously.
-                    cx.spawn(async move |_, cx| {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(300))
-                            .await;
-                        if let Some(e) = Playback::global().state().error {
-                            cx.update(|cx| toast_error("meetings.detail.playError", &e, cx));
-                        }
-                    })
-                    .detach();
+            move |b| b.rename_meeting(id, &title),
+            |this: &mut Self, r, cx| match r {
+                Ok(()) => cx.emit(DetailEvent::Renamed),
+                Err(e) => {
+                    toast_error("meetings.list.renameError", &e, cx);
+                    this.load(cx);
                 }
-                Err(e) => toast_error("meetings.detail.playError", &e, cx),
             },
         );
     }
 
-    fn ensure_ticking(&mut self, cx: &mut Context<Self>) {
-        if self.ticking {
-            return;
+    /// Delete… (the page asks first).
+    pub fn request_delete(&mut self, cx: &mut Context<Self>) {
+        if self
+            .meeting
+            .as_ref()
+            .is_some_and(|m| m.status != MeetingStatus::Recording)
+        {
+            cx.emit(DetailEvent::Delete(self.meeting_id));
         }
-        self.ticking = true;
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(200))
+    }
+
+    fn can_export(&self, cx: &App) -> bool {
+        self.can_copy() || self.has_notes(cx)
+    }
+
+    /// The text Export writes for `kind`, if there is any.
+    pub(crate) fn export_text(&self, kind: ExportKind, cx: &App) -> Option<String> {
+        let m = self.meeting.as_ref()?;
+        let date = format_meeting_date(m.started_at, &guidy_i18n::language());
+        let transcript = (!self.segments.is_empty()).then(|| {
+            crate::logic::meetings::transcript_text(
+                &m.title,
+                &date,
+                &self.segments,
+                &self.speakers,
+                &self.people,
+                &meeting_settings(cx).user_display_name,
+            )
+        });
+        let notes = self.summary.read(cx).markdown(&date, true, cx);
+        match kind {
+            ExportKind::Transcript => transcript,
+            ExportKind::Notes => notes,
+            ExportKind::All => (notes.is_some() || transcript.is_some())
+                .then(|| export_markdown(notes.as_deref(), transcript.as_deref())),
+        }
+    }
+
+    /// Export…: a save panel, then the file.
+    pub fn export(&mut self, kind: ExportKind, cx: &mut Context<Self>) {
+        let Some(text) = self.export_text(kind, cx) else {
+            return;
+        };
+        let title = self
+            .meeting
+            .as_ref()
+            .map(|m| m.title.clone())
+            .unwrap_or_default();
+        let ext = if kind == ExportKind::Transcript {
+            "txt"
+        } else {
+            "md"
+        };
+        let name = export_file_name(&title, ext);
+        let dir = dirs_home().join("Documents");
+        let dir = if dir.is_dir() { dir } else { dirs_home() };
+        let rx = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn(async move |_, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let r = cx
+                .background_spawn(async move { std::fs::write(&path, text) })
                 .await;
-            let keep = this
-                .update(cx, |this, cx| {
-                    cx.notify();
-                    let playing = Playback::global().state().playing;
-                    if !playing {
-                        this.ticking = false;
-                    }
-                    playing
-                })
-                .unwrap_or(false);
-            if !keep {
-                break;
+            if let Err(e) = r {
+                cx.update(|cx| toast_error("meetings.export.error", &e.to_string(), cx));
             }
         })
         .detach();
+    }
+
+    /// Esc inside the detail: close find, cancel a rename, close the name
+    /// picker, drop the line selection. False when there was nothing.
+    pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.find_open {
+            self.close_find(window, cx);
+        } else if self.renaming {
+            self.cancel_rename(cx);
+        } else if self.picker.is_some() {
+            self.close_picker(cx);
+        } else if !self.selection.is_empty() {
+            self.clear_selection(cx);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// ⌘E: everything there is, as Markdown.
+    pub fn export_default(&mut self, cx: &mut Context<Self>) {
+        self.export(ExportKind::All, cx);
     }
 
     // -- rendering ------------------------------------------------------------
@@ -1245,43 +1722,6 @@ impl MeetingDetail {
     fn speaker_label(&self, s: &MeetingSpeaker, cx: &App) -> String {
         let settings = meeting_settings(cx);
         speaker_name(s, &self.people, Some(&settings), &t("meetings.detail.you"))
-    }
-
-    /// Talk-time share, folded until opened.
-    fn render_talk_fold(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let chart = self.render_talk_time(cx)?;
-        let open = self.talk_open;
-        let count = self.talk.speakers.len().min(6);
-        let tone = design::tone(cx);
-        Some(
-            v_flex()
-                .w_full()
-                .border_t_1()
-                .border_color(tone.hairline)
-                .child(
-                    div()
-                        .px(design::SECTION_X)
-                        .py(dp(8.))
-                        .child(foldable_heading(
-                            "meeting-talk-time-fold",
-                            t("meetings.detail.talkTime"),
-                            count,
-                            open,
-                            cx.listener(|this, _, _, cx| {
-                                this.talk_open = !this.talk_open;
-                                cx.notify();
-                            }),
-                            cx,
-                        )),
-                )
-                .child(
-                    Collapsible::new()
-                        .open(open)
-                        .motion_id("meeting-talk-time-reveal")
-                        .content(chart),
-                )
-                .into_any_element(),
-        )
     }
 
     /// Speakers along the meeting's timeline, longest talker first; the
@@ -1372,9 +1812,8 @@ impl MeetingDetail {
                                     .top(px(1.))
                                     .h(dp(8.))
                                     .min_w(dp(2.))
-                                    .rounded(dp(2.))
+                                    .rounded(design::RADIUS_TRACK)
                                     .bg(bar)
-                                    .cursor_pointer()
                                     .left(relative(*t0 as f32 / total))
                                     .w(relative((*t1 - *t0) as f32 / total))
                             })),
@@ -1406,8 +1845,8 @@ impl MeetingDetail {
                         .pt(design::SECTION_Y)
                         .pb(dp(4.))
                         .justify_between()
-                        .child(design::eyebrow(t("meetings.detail.talkTime"), cx))
-                        .child(design::eyebrow(t("meetings.detail.share"), cx)),
+                        .child(design::section_header(t("meetings.detail.talkTime"), cx))
+                        .child(design::section_header(t("meetings.detail.share"), cx)),
                 )
                 .child(
                     v_flex()
@@ -1419,15 +1858,17 @@ impl MeetingDetail {
                             h_flex()
                                 .mt(dp(4.))
                                 .gap(dp(12.))
+                                .child(div().w(label_w).flex_none().child(design::section_header(
+                                    t("meetings.detail.minutes"),
+                                    cx,
+                                )))
                                 .child(
-                                    div()
-                                        .w(label_w)
-                                        .flex_none()
-                                        .child(design::eyebrow(t("meetings.detail.minutes"), cx)),
+                                    h_flex().flex_1().justify_between().children(
+                                        ticks
+                                            .into_iter()
+                                            .map(|tick| design::section_header(tick, cx)),
+                                    ),
                                 )
-                                .child(h_flex().flex_1().justify_between().children(
-                                    ticks.into_iter().map(|tick| design::eyebrow(tick, cx)),
-                                ))
                                 .child(div().w(share_w).flex_none()),
                         )
                         .test_support(),
@@ -1436,61 +1877,25 @@ impl MeetingDetail {
         )
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let tone = design::tone(cx);
-        let back = h_flex().child(
-            Button::new("meeting-back")
-                .ghost()
-                .small()
-                .pill()
-                .icon(icon("arrow-left"))
-                .label(t("meetings.detail.back"))
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailEvent::Back))),
-        );
-        let Some(m) = &self.meeting else {
-            return v_flex().gap_2().child(back).into_any_element();
-        };
-        let lang = guidy_i18n::language();
-        let date = format_meeting_date(m.started_at, &lang);
-        let attendees: Vec<String> = m
-            .calendar_event
-            .as_ref()
-            .map(|e| {
-                e.attendees
-                    .iter()
-                    .filter_map(|a| a.name.clone().or_else(|| a.email.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let processing = m.status == MeetingStatus::Processing;
-        let failed = m.status == MeetingStatus::Failed;
-        let fraction = self
-            .progress
-            .as_ref()
-            .map(|p| p.fraction)
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
-        let show_process = can_process(m) && m.status != MeetingStatus::Processed;
-        let model_banner = meeting_model_missing(cx)
-            .filter(|_| matches!(m.status, MeetingStatus::Recorded | MeetingStatus::Failed))
-            .map(|missing| render_model_download("detail", &missing, cx));
-
-        // Stats: duration, speakers, words and, when the mic track was
-        // recorded, how much of the talking was yours.
+    /// Duration, speakers, words and, when the mic track was recorded,
+    /// how much of the talking was yours.
+    fn stats(&self, m: &Meeting) -> Vec<(SharedString, String, bool)> {
         let duration_ms = m.duration_ms().unwrap_or(self.talk.total_ms);
-        let mut stats = vec![Stat::new(
+        let mut stats = vec![(
             t("meetings.detail.duration"),
             format_offset(duration_ms),
+            false,
         )];
         if !self.segments.is_empty() {
-            stats.push(Stat::new(
+            stats.push((
                 t("meetings.detail.speakers"),
                 self.speakers.len().to_string(),
+                false,
             ));
-            stats.push(Stat::new(
+            stats.push((
                 t("meetings.detail.words"),
                 self.talk.words.to_string(),
+                false,
             ));
             let user_ids: Vec<_> = self
                 .speakers
@@ -1504,26 +1909,151 @@ impl MeetingDetail {
                 .iter()
                 .find(|s| s.speaker_id.is_some_and(|id| user_ids.contains(&id)))
             {
-                stats.push(
-                    Stat::new(
-                        t("meetings.detail.youSpoke"),
-                        format!("{:.0}%", mine.share * 100.0),
-                    )
-                    .accent(true),
-                );
+                stats.push((
+                    t("meetings.detail.youSpoke"),
+                    format!("{:.0}%", mine.share * 100.0),
+                    true,
+                ));
             }
         }
-        let columns = stats.len();
+        stats
+    }
 
-        let actions = h_flex()
-            .gap(dp(8.))
+    /// The meta line under the title: when, how long, how many speakers.
+    fn meta_line(&self, m: &Meeting) -> String {
+        let lang = guidy_i18n::language();
+        let mut parts = vec![format_meeting_date(m.started_at, &lang)];
+        if let Some(d) = m.duration_ms() {
+            let mins = crate::logic::meetings::duration_minutes(d).to_string();
+            parts.push(t_args("meetings.list.minutes", &[("count", &mins)]).to_string());
+        }
+        if !self.speakers.is_empty() {
+            let n = self.speakers.len().to_string();
+            parts.push(t_args("meetings.detail.speakerCount", &[("count", &n)]).to_string());
+        }
+        parts.join(" · ")
+    }
+
+    /// ⓘ: description, attendees and the numbers, in a popover.
+    fn info_button(&self, m: &Meeting, cx: &mut Context<Self>) -> impl IntoElement {
+        let description = m.description.clone();
+        let attendees: Vec<String> = m
+            .calendar_event
+            .as_ref()
+            .map(|e| {
+                e.attendees
+                    .iter()
+                    .filter_map(|a| a.name.clone().or_else(|| a.email.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let stats = self.stats(m);
+        let _ = cx;
+        Popover::new("meeting-info")
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new("meeting-detail-info")
+                    .ghost()
+                    .small()
+                    .icon(icon("info"))
+                    .tooltip(t("meetings.detail.info")),
+            )
+            .content(move |_, _, cx| {
+                let tone = design::tone(cx);
+                let columns = stats.len();
+                let stats: Vec<Stat> = stats
+                    .iter()
+                    .map(|(l, v, accent)| Stat::new(l.clone(), v.clone()).accent(*accent))
+                    .collect();
+                v_flex()
+                    .id("meeting-info-content")
+                    .w(dp(320.))
+                    .gap(dp(10.))
+                    .when_some(description.clone(), |d, text| {
+                        d.child(
+                            div()
+                                .id("meeting-info-description")
+                                .text_size(design::TEXT_BODY)
+                                .text_color(tone.text)
+                                .child(text)
+                                .test_support(),
+                        )
+                    })
+                    .when(!attendees.is_empty(), |d| {
+                        d.child(
+                            v_flex()
+                                .id("meeting-detail-attendees")
+                                .gap(dp(4.))
+                                .child(design::section_header(
+                                    format!(
+                                        "{} ({})",
+                                        t("meetings.detail.attendees"),
+                                        attendees.len()
+                                    ),
+                                    cx,
+                                ))
+                                .child(
+                                    div()
+                                        .text_size(design::TEXT_SECONDARY)
+                                        .text_color(tone.text_muted)
+                                        .child(attendees.join(", ")),
+                                )
+                                .test_support(),
+                        )
+                    })
+                    .child(design::panel(cx).child(design::stat_grid(stats, columns.max(1), cx)))
+                    .test_support()
+            })
+    }
+
+    fn export_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        let notes = self.has_notes(cx);
+        let transcript = !self.segments.is_empty();
+        Button::new("meeting-detail-export")
+            .ghost()
+            .small()
+            .icon(icon("share"))
+            .tooltip(t("meetings.export.title"))
+            .disabled(!self.can_export(cx))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let item = |label: SharedString, kind: ExportKind, enabled: bool| {
+                    let weak = weak.clone();
+                    PopupMenuItem::new(label)
+                        .disabled(!enabled)
+                        .on_click(move |_, _, cx| {
+                            weak.update(cx, |this, cx| this.export(kind, cx)).ok();
+                        })
+                };
+                menu.item(item(
+                    t("meetings.export.all"),
+                    ExportKind::All,
+                    notes || transcript,
+                ))
+                .separator()
+                .item(item(t("meetings.export.notes"), ExportKind::Notes, notes))
+                .item(item(
+                    t("meetings.export.transcript"),
+                    ExportKind::Transcript,
+                    transcript,
+                ))
+            })
+    }
+
+    fn render_actions(&self, m: &Meeting, cx: &mut Context<Self>) -> impl IntoElement {
+        let processing = m.status == MeetingStatus::Processing;
+        let failed = m.status == MeetingStatus::Failed;
+        let show_process = can_process(m) && m.status != MeetingStatus::Processed;
+        h_flex()
+            .id("meeting-detail-actions")
+            .flex_none()
+            .gap(dp(4.))
             .when(show_process, |d| {
                 d.child(
                     Button::new("meeting-detail-process")
                         .primary()
                         .when(self.processing_busy, |b| b.secondary())
                         .small()
-                        .pill()
                         .icon(icon(if failed { "rotate-ccw" } else { "play" }))
                         .label(if failed {
                             t("meetings.list.retry")
@@ -1535,192 +2065,236 @@ impl MeetingDetail {
                         .on_click(cx.listener(|this, _, _, cx| this.process(cx))),
                 )
             })
-            .when(self.can_redo(), |d| {
-                d.child(self.redo_button("meeting-detail-redo", false, cx))
-            })
-            .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
             .when(processing, |d| {
                 d.child(
                     Button::new("meeting-detail-cancel")
                         .secondary()
                         .small()
-                        .pill()
                         .icon(icon("circle-x"))
-                        .label(t("meetings.list.cancelProcessing"))
+                        .label(t("meetings.detail.cancelShort"))
+                        .tooltip(t("meetings.list.cancelProcessing"))
                         .loading(self.cancelling)
                         .disabled(self.cancelling)
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_processing(cx))),
                 )
-            });
+            })
+            .when(self.can_redo(), |d| {
+                d.child(self.redo_button("meeting-detail-redo", false, cx))
+            })
+            .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
+            .child(self.export_button(cx))
+            .child(
+                Button::new("meeting-detail-generate-title")
+                    .ghost()
+                    .small()
+                    .icon(icon("sparkles"))
+                    .tooltip(if m.has_summary {
+                        t("meetings.titles.generate")
+                    } else {
+                        t("meetings.titles.needsSummary")
+                    })
+                    .loading(self.titling)
+                    .disabled(self.titling || !m.has_summary)
+                    .on_click(cx.listener(|this, _, _, cx| this.generate_title(cx))),
+            )
+            .child(
+                Button::new("meeting-detail-delete")
+                    .ghost()
+                    .small()
+                    .icon(icon("trash"))
+                    .tooltip(t("meetings.list.deleteMenu"))
+                    .disabled(m.status == MeetingStatus::Recording)
+                    .on_click(cx.listener(|this, _, _, cx| this.request_delete(cx))),
+            )
+            .child(self.info_button(m, cx))
+    }
 
-        let panel =
-            design::panel(cx)
-                .child(
-                    design::section(false, cx)
-                        .gap(dp(6.))
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_3()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .id("meeting-detail-title")
-                                        .min_w_0()
-                                        .child(crumb_title(
-                                            m.title.clone().into(),
-                                            Some(date.into()),
-                                            design::TEXT_TITLE,
-                                            cx,
-                                        ))
-                                        .test_support(),
-                                )
-                                .child(
-                                    h_flex()
-                                        .flex_none()
-                                        .gap(dp(6.))
-                                        .items_center()
-                                        .child(
-                                            Button::new("meeting-detail-generate-title")
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(icon("sparkles"))
-                                                .tooltip(if m.has_summary {
-                                                    t("meetings.titles.generate")
-                                                } else {
-                                                    t("meetings.titles.needsSummary")
-                                                })
-                                                .loading(self.titling)
-                                                .disabled(self.titling || !m.has_summary)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.generate_title(cx)
-                                                })),
-                                        )
-                                        .child(
-                                            design::chip(t(status_key(m.status)), processing, cx)
-                                                .when(failed, |d| {
-                                                    d.bg(theme.danger.opacity(0.12))
-                                                        .text_color(theme.danger)
-                                                }),
-                                        ),
-                                ),
-                        )
-                        .when_some(m.description.clone(), |d, text| {
-                            d.child(
-                                div()
-                                    .id("meeting-detail-description")
-                                    .text_size(design::TEXT_BODY)
-                                    .text_color(tone.text_muted)
-                                    .child(text)
-                                    .test_support(),
-                            )
-                        })
-                        .when(!attendees.is_empty(), |d| {
-                            let open = self.attendees_open;
-                            d.child(
-                                h_flex()
-                                    .id("meeting-detail-attendees")
-                                    .w_full()
-                                    .items_start()
-                                    .gap(dp(4.))
-                                    .cursor_pointer()
-                                    .text_size(dp(12.))
-                                    .text_color(tone.text_muted)
-                                    .child(
-                                        div().flex_none().pt(dp(2.)).child(
-                                            icon(if open {
-                                                "chevron-down"
-                                            } else {
-                                                "chevron-right"
-                                            })
-                                            .xsmall(),
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .when(!open, |d| d.truncate())
-                                            .child(format!(
-                                                "{} ({}): {}",
-                                                t("meetings.detail.attendees"),
-                                                attendees.len(),
-                                                attendees.join(", ")
-                                            )),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.attendees_open = !this.attendees_open;
-                                        cx.notify();
-                                    }))
-                                    .test_support(),
-                            )
-                        })
-                        .when_some(m.error.clone().filter(|_| failed), |d, e| {
-                            d.child(div().text_size(dp(12.)).text_color(theme.danger).child(e))
-                        }),
-                )
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(tone.hairline)
-                        .child(design::stat_grid(stats, columns, cx)),
-                )
-                .children(self.render_talk_fold(cx))
-                .when(processing, |d| {
-                    let stage = self
-                        .progress
-                        .as_ref()
-                        .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
-                        .unwrap_or_else(|| t("meetings.status.processing"));
-                    d.child(
-                        v_flex()
-                            .w_full()
-                            .gap(dp(8.))
-                            .px(design::SECTION_X)
-                            .py(design::SECTION_Y)
-                            .border_t_1()
-                            .border_color(tone.hairline)
+    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let tone = design::tone(cx);
+        let back = self.layout.show_back.then(|| {
+            Button::new("meeting-back")
+                .ghost()
+                .small()
+                .icon(icon("chevron-left"))
+                .tooltip(t("meetings.detail.back"))
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailEvent::Back)))
+        });
+        let Some(m) = self.meeting.clone() else {
+            return h_flex()
+                .id("meeting-detail-header")
+                .flex_none()
+                .h(dp(52.))
+                .px(dp(12.))
+                .border_b_1()
+                .border_color(tone.hairline)
+                .children(back)
+                .into_any_element();
+        };
+        let processing = m.status == MeetingStatus::Processing;
+        let failed = m.status == MeetingStatus::Failed;
+        let title: AnyElement =
+            if self.renaming {
+                div()
+                    .id("meeting-title-edit")
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(dp(420.))
+                    .child(Input::new(&self.title_input).small())
+                    .on_action(cx.listener(
+                        |this, _: &gpui_kit::component::input::Escape, _, cx| {
+                            this.cancel_rename(cx)
+                        },
+                    ))
+                    .test_support()
+                    .into_any_element()
+            } else {
+                h_flex()
+                    .id("meeting-detail-title")
+                    .group("meeting-detail-title")
+                    .min_w_0()
+                    .gap(dp(4.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(dp(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(tone.text)
+                            .child(m.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .opacity(0.)
+                            .group_hover("meeting-detail-title", |s| s.opacity(1.))
                             .child(
-                                div()
-                                    .font_family(crate::theme::MONO_FONT)
-                                    .text_size(design::TEXT_MONO)
-                                    .child(design::shimmer_text(
-                                        "meeting-detail-stage",
-                                        progress_label(&stage, self.progress.as_ref()),
-                                        cx,
-                                    )),
-                            )
-                            .child(design::track("meeting-detail-progress", Some(fraction), cx)),
+                                Button::new("meeting-detail-rename")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(icon("pencil"))
+                                    .tooltip(t("meetings.list.rename"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_rename(window, cx)
+                                    })),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| {
+                        if ev.click_count() >= 2 {
+                            this.start_rename(window, cx)
+                        }
+                    }))
+                    .test_support()
+                    .into_any_element()
+            };
+        let chip = (m.status != MeetingStatus::Processed).then(|| {
+            design::chip(t(status_key(m.status)), processing, cx).when(failed, |d| {
+                d.bg(theme.danger.opacity(0.12)).text_color(theme.danger)
+            })
+        });
+        let title_row = h_flex()
+            .w_full()
+            .gap(dp(6.))
+            .children(back)
+            .child(title)
+            .children(chip)
+            .child(div().flex_1())
+            .child(self.render_actions(&m, cx));
+        let meta = h_flex()
+            .w_full()
+            .min_w_0()
+            .gap(dp(6.))
+            .when(self.layout.show_back, |d| d.pl(dp(30.)))
+            .child(
+                div()
+                    .id("meeting-detail-meta")
+                    .flex_none()
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(self.meta_line(&m))
+                    .test_support(),
+            )
+            .when_some(m.error.clone().filter(|_| failed), |d, e| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(theme.danger)
+                        .child(e),
+                )
+            })
+            .when(!failed, |d| {
+                d.when_some(m.description.clone(), |d, text| {
+                    d.child(
+                        div()
+                            .id("meeting-detail-description")
+                            .min_w_0()
+                            .truncate()
+                            .text_size(design::TEXT_SECONDARY)
+                            .text_color(tone.text_faint)
+                            .child(format!("— {text}"))
+                            .test_support(),
                     )
                 })
-                .when(
-                    show_process || processing || self.can_redo() || self.can_copy(),
-                    |d| {
-                        d.child(
-                            h_flex()
-                                .w_full()
-                                .justify_end()
-                                .px(design::SECTION_X)
-                                .py(dp(10.))
-                                .border_t_1()
-                                .border_color(tone.hairline)
-                                .child(actions),
-                        )
-                    },
-                );
-
+            });
+        let progress = processing.then(|| {
+            let fraction = self
+                .progress
+                .as_ref()
+                .map(|p| p.fraction)
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            let stage = self
+                .progress
+                .as_ref()
+                .map(|p| t(&format!("meetings.stage.{}", p.stage.as_str())))
+                .unwrap_or_else(|| t("meetings.status.processing"));
+            h_flex()
+                .w_full()
+                .gap(dp(10.))
+                .pt(dp(2.))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(tone.text_muted)
+                        .child(design::shimmer_text(
+                            "meeting-detail-stage",
+                            progress_label(&stage, self.progress.as_ref()),
+                            cx,
+                        )),
+                )
+                .child(div().flex_1().child(design::track(
+                    "meeting-detail-progress",
+                    Some(fraction),
+                    cx,
+                )))
+        });
+        // The player is the header's last row (not a bar of its own), so
+        // the header stays short at the minimum window size.
+        let player = self.has_audio().then(|| self.player.clone());
         v_flex()
-            .gap(dp(10.))
+            .id("meeting-detail-header")
+            .flex_none()
             .w_full()
-            .child(back)
-            .child(panel)
-            .children(model_banner)
+            .px(dp(14.))
+            .pt(dp(8.))
+            .pb(if player.is_some() { dp(2.) } else { dp(8.) })
+            .gap(dp(2.))
+            .border_b_1()
+            .border_color(tone.hairline)
+            .child(title_row)
+            .child(meta)
+            .children(progress)
+            .children(player)
+            .test_support()
             .into_any_element()
     }
 
     fn render_picker(&self, id: SharedString, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let heading = |key: &str| design::eyebrow(t(key), cx);
+        let heading = |key: &str| design::section_header(t(key), cx);
         let suggestions: AnyElement = if self.suggestions_loading {
             div()
                 .text_size(dp(12.))
@@ -1756,7 +2330,6 @@ impl MeetingDetail {
                     Button::new(SharedString::from(format!("speaker-suggestion-{i}")))
                         .secondary()
                         .xsmall()
-                        .pill()
                         .when(s.source == SuggestionSource::Attendee, |b| {
                             b.icon(icon("calendar"))
                         })
@@ -1793,7 +2366,6 @@ impl MeetingDetail {
                             .primary()
                             .when(!can_save || self.assigning, |b| b.secondary())
                             .small()
-                            .pill()
                             .icon(icon("user-plus"))
                             .label(t("meetings.speaker.save"))
                             .loading(self.assigning)
@@ -1804,7 +2376,6 @@ impl MeetingDetail {
                         Button::new("speaker-picker-cancel")
                             .ghost()
                             .small()
-                            .pill()
                             .label(t("meetings.speaker.cancel"))
                             .on_click(cx.listener(|this, _, _, cx| this.close_picker(cx))),
                     ),
@@ -1885,7 +2456,6 @@ impl MeetingDetail {
                                     )))
                                     .secondary()
                                     .xsmall()
-                                    .pill()
                                     .icon(icon("check"))
                                     .label(t("meetings.speaker.confirmAction"))
                                     .on_click(
@@ -1898,7 +2468,6 @@ impl MeetingDetail {
                                     )))
                                     .ghost()
                                     .xsmall()
-                                    .pill()
                                     .label(t("meetings.speaker.change"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_picker(sid, window, cx)
@@ -1928,45 +2497,135 @@ impl MeetingDetail {
             })
             .collect();
         let open = self.speakers_open;
-        // A speaker waiting for a name or a confirmation is shown anyway.
-        let pending = self
-            .speakers
+        let pending = self.pending_speakers();
+        let tone = design::tone(cx);
+        let warning = cx.theme().warning;
+        // One chip per speaker with their share of the talking, longest
+        // talker first; a voice that needs a name is amber.
+        let share = |id: SpeakerId| {
+            self.talk
+                .speakers
+                .iter()
+                .find(|s| s.speaker_id == Some(id))
+                .map(|s| s.share)
+                .unwrap_or(0.0)
+        };
+        let mut order: Vec<&MeetingSpeaker> = self.speakers.iter().collect();
+        order.sort_by(|a, b| {
+            share(b.id)
+                .partial_cmp(&share(a.id))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let chips: Vec<AnyElement> = order
             .iter()
-            .filter(|s| !s.is_user && (s.person_id.is_none() || needs_confirmation(s)))
-            .count();
+            .map(|s| {
+                let sid = s.id;
+                let needs = !s.is_user && (s.person_id.is_none() || needs_confirmation(s));
+                let pct = format!("{:.0}%", share(sid) * 100.0);
+                h_flex()
+                    .id(SharedString::from(format!("speaker-chip-{sid}")))
+                    .flex_none()
+                    .h(dp(20.))
+                    .px(dp(6.))
+                    .gap(dp(4.))
+                    .rounded(design::RADIUS_CHIP)
+                    .text_size(design::TEXT_SECONDARY)
+                    .when(needs, |d| d.bg(warning.opacity(0.12)).text_color(warning))
+                    .when(!needs, |d| {
+                        d.bg(tone.raised).text_color(if s.is_user {
+                            tone.accent_text
+                        } else {
+                            tone.text
+                        })
+                    })
+                    .child(
+                        div()
+                            .max_w(dp(120.))
+                            .truncate()
+                            .child(self.speaker_label(s, cx)),
+                    )
+                    .child(
+                        div()
+                            .font_family(crate::theme::MONO_FONT)
+                            .text_color(if needs { warning } else { tone.text_muted })
+                            .child(pct),
+                    )
+                    .when(!s.is_user, |d| {
+                        d.hover(move |s| s.opacity(0.85)).on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.speakers_open = true;
+                                this.open_picker(sid, window, cx)
+                            },
+                        ))
+                    })
+                    .test_support()
+                    .into_any_element()
+            })
+            .collect();
+        let strip = h_flex()
+            .id("meeting-speakers")
+            .w_full()
+            .flex_none()
+            .px(dp(12.))
+            .py(dp(6.))
+            .gap(dp(6.))
+            .border_b_1()
+            .border_color(tone.hairline)
+            .child(
+                Button::new("meeting-speakers-fold")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon(if open {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    }))
+                    .label(if pending > 0 {
+                        t_args(
+                            "meetings.detail.speakersUnnamed",
+                            &[("count", &pending.to_string())],
+                        )
+                    } else {
+                        t("meetings.detail.speakers")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.speakers_open = !this.speakers_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(dp(4.))
+                    .overflow_hidden()
+                    .children(chips),
+            )
+            .test_support();
+        let panel = open.then(|| {
+            div()
+                .id("meeting-speakers-panel")
+                .flex_none()
+                .w_full()
+                .max_h(dp(280.))
+                .overflow_y_scroll()
+                .track_scroll(&self.speakers_scroll)
+                .border_b_1()
+                .border_color(tone.hairline)
+                .bg(tone.surface)
+                .child(v_flex().w_full().children(rows))
+                .children(
+                    self.render_talk_time(cx)
+                        .map(|chart| div().border_t_1().border_color(tone.hairline).child(chart)),
+                )
+                .test_support()
+        });
         Some(
             v_flex()
                 .w_full()
-                .gap(dp(8.))
-                .child(
-                    h_flex().w_full().items_center().justify_between().child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(foldable_heading(
-                                "meeting-speakers-fold",
-                                t("meetings.detail.speakers"),
-                                self.speakers.len(),
-                                open,
-                                cx.listener(|this, _, _, cx| {
-                                    this.speakers_open = !this.speakers_open;
-                                    cx.notify();
-                                }),
-                                cx,
-                            ))
-                            .when(!open && pending > 0, |d| {
-                                d.child(design::chip(
-                                    t_args(
-                                        "meetings.detail.speakersToName",
-                                        &[("count", &pending.to_string())],
-                                    ),
-                                    true,
-                                    cx,
-                                ))
-                            }),
-                    ),
-                )
-                .when(open, |d| d.child(group(None, rows, cx)))
+                .flex_none()
+                .child(strip)
+                .children(panel)
                 .into_any_element(),
         )
     }
@@ -1984,7 +2643,8 @@ impl MeetingDetail {
         let is_user = speaker.is_some_and(|s| s.is_user);
         let pickable = speaker.filter(|s| !s.is_user).map(|s| s.id);
         let uncertain = speaker.is_some_and(needs_confirmation);
-        let st = Playback::global().state();
+        let player_playing = self.player.read(cx).is_playing();
+        let find_current = self.find_at(self.find_current);
         let block_ids: Vec<i64> = block.segments.iter().map(|s| s.id).collect();
         // The line picker opens right under the (first) line it names, so it
         // is next to where it was clicked even in a long turn.
@@ -2065,7 +2725,6 @@ impl MeetingDetail {
                                 .mt(dp(4.))
                                 .text_size(dp(11.))
                                 .text_color(theme.warning)
-                                .cursor_pointer()
                                 .hover(|s| s.underline())
                                 .child(t("meetings.speaker.whoIsThis"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -2081,9 +2740,14 @@ impl MeetingDetail {
                     .min_w_0()
                     .gap(dp(2.))
                     .children(block.segments.iter().map(|seg| {
-                        let key = self.clip_key(seg.id);
-                        let active = st.error.is_none() && st.path.as_ref() == Some(&key);
-                        let playing = active && st.playing;
+                        let active = self.active_line == Some(seg.id);
+                        let playing = active && player_playing;
+                        let found = self
+                            .find_matches
+                            .iter()
+                            .find(|(id, _)| *id == seg.id)
+                            .map(|(_, r)| r.clone());
+                        let current = find_current.filter(|(id, _)| *id == seg.id).map(|(_, n)| n);
                         let s = seg.clone();
                         let seg_id = seg.id;
                         let selected = self.selection.contains(&seg_id);
@@ -2096,8 +2760,7 @@ impl MeetingDetail {
                             .items_start()
                             .px(dp(6.))
                             .py(px(1.))
-                            .rounded(dp(6.))
-                            .cursor_pointer()
+                            .rounded(design::RADIUS_CHIP)
                             .relative()
                             .when(active, |d| d.bg(tone.accent_soft))
                             .when(
@@ -2110,9 +2773,6 @@ impl MeetingDetail {
                             )
                             .when(self.flash == Some(seg_id) && !selected, |d| {
                                 d.bg(tone.accent.opacity(0.18))
-                            })
-                            .when(self.reveal == Some(seg_id), |d| {
-                                d.child(self.reveal_marker(cx))
                             })
                             .when(selected, |d| {
                                 d.bg(tone.accent.opacity(0.18))
@@ -2168,7 +2828,12 @@ impl MeetingDetail {
                                     .min_w_0()
                                     .text_size(design::TEXT_BODY)
                                     .line_height(relative(1.6))
-                                    .child(seg.text.clone()),
+                                    .map(|d| match &found {
+                                        Some(ranges) => d.child(super::list::highlighted_with(
+                                            &seg.text, ranges, current, cx,
+                                        )),
+                                        None => d.child(seg.text.clone()),
+                                    }),
                             )
                             // "Who said this?": name one line's speaker.
                             .child(
@@ -2177,7 +2842,7 @@ impl MeetingDetail {
                                     .flex_none()
                                     .mt(dp(3.))
                                     .p(dp(3.))
-                                    .rounded(dp(5.))
+                                    .rounded(crate::ui::design::RADIUS_PANEL)
                                     .text_color(tone.text_faint)
                                     // Faint until the line is hovered.
                                     .opacity(0.35)
@@ -2251,7 +2916,7 @@ impl MeetingDetail {
             .py(dp(6.))
             .gap_2()
             .items_center()
-            .rounded(dp(8.))
+            .rounded(crate::ui::design::RADIUS_PANEL)
             .bg(tone.raised)
             .child(
                 div()
@@ -2274,7 +2939,6 @@ impl MeetingDetail {
             .child(
                 Button::new("selection-clear")
                     .ghost()
-                    .pill()
                     .small()
                     .label(t("meetings.selection.clear"))
                     .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
@@ -2282,7 +2946,6 @@ impl MeetingDetail {
             .child(
                 Button::new("selection-tag")
                     .primary()
-                    .pill()
                     .small()
                     .icon(icon("user-round-pen"))
                     .label(t("meetings.selection.setSpeaker"))
@@ -2327,7 +2990,7 @@ impl MeetingDetail {
                 .py(dp(10.))
                 .gap(dp(4.))
                 .child(
-                    design::eyebrow(
+                    design::section_header(
                         if you {
                             t("meetings.widget.you")
                         } else {
@@ -2341,7 +3004,9 @@ impl MeetingDetail {
                     div()
                         .text_size(design::TEXT_BODY)
                         .line_height(relative(1.55))
-                        .child(r.text.clone())
+                        // A turn with only tentative words has no settled
+                        // text: no empty line above them.
+                        .when(!r.text.is_empty(), |d| d.child(div().child(r.text.clone())))
                         .when(!r.tentative.is_empty(), |d| {
                             d.child(div().text_color(tone.text_muted).child(r.tentative.clone()))
                         }),
@@ -2352,7 +3017,8 @@ impl MeetingDetail {
         Some(
             div()
                 .id("meeting-live-transcript")
-                .child(group(Some(t("meetings.widget.liveTitle")), rows, cx))
+                .w_full()
+                .children(rows)
                 .test_support()
                 .into_any_element(),
         )
@@ -2373,7 +3039,9 @@ impl MeetingDetail {
         Some(
             div()
                 .id("transcript-quality")
-                .p(dp(10.))
+                .flex_none()
+                .px(dp(12.))
+                .pt(dp(8.))
                 .child(
                     design::notice(warning).child(
                         h_flex()
@@ -2436,11 +3104,156 @@ impl MeetingDetail {
             .into_any_element()
     }
 
-    fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(live) = self.render_live_transcript(cx) {
-            return live;
+    /// The transcript column's tools: find and copy.
+    fn transcript_tools(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_lines = !self.loading && !self.segments.is_empty();
+        h_flex().flex_none().gap(dp(2.)).when(has_lines, |d| {
+            d.child(
+                Button::new("transcript-find")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon("search"))
+                    .tooltip(t("meetings.find.tooltip"))
+                    .selected(self.find_open)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.find_open {
+                            this.close_find(window, cx)
+                        } else {
+                            this.open_find(window, cx)
+                        }
+                    })),
+            )
+            .child(
+                Button::new("transcript-copy")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon(if self.transcript_copied {
+                        "check"
+                    } else {
+                        "copy"
+                    }))
+                    .tooltip(if self.transcript_copied {
+                        t("meetings.copy.copied")
+                    } else {
+                        t("meetings.copy.transcript")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
+            )
+        })
+    }
+
+    /// Find in the transcript: the field, "3 of 12", previous / next, Done.
+    fn render_find_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.find_open {
+            return None;
         }
-        let theme = cx.theme().clone();
+        let tone = design::tone(cx);
+        let total = self.find_total();
+        let query_empty = self.find_input.read(cx).value().trim().is_empty();
+        let count = if query_empty {
+            SharedString::default()
+        } else if total == 0 {
+            t("meetings.find.none")
+        } else {
+            t_args(
+                "meetings.find.count",
+                &[
+                    ("current", &(self.find_current + 1).to_string()),
+                    ("total", &total.to_string()),
+                ],
+            )
+        };
+        Some(
+            h_flex()
+                .id("transcript-find-bar")
+                .flex_none()
+                .w_full()
+                .px(dp(10.))
+                .py(dp(6.))
+                .gap(dp(6.))
+                .border_b_1()
+                .border_color(tone.hairline)
+                .bg(tone.surface)
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Input::new(&self.find_input)
+                            .xsmall()
+                            .prefix(icon("search").xsmall().text_color(tone.text_muted)),
+                    ),
+                )
+                .on_action(cx.listener(
+                    |this, _: &gpui_kit::component::input::Escape, window, cx| {
+                        this.close_find(window, cx)
+                    },
+                ))
+                .child(
+                    div()
+                        .id("transcript-find-count")
+                        .flex_none()
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(tone.text_muted)
+                        .child(count)
+                        .test_support(),
+                )
+                .child(
+                    Button::new("transcript-find-prev")
+                        .ghost()
+                        .xsmall()
+                        .icon(icon("chevron-up"))
+                        .tooltip(t("meetings.find.previous"))
+                        .disabled(total == 0)
+                        .on_click(cx.listener(|this, _, _, cx| this.find_step(-1, cx))),
+                )
+                .child(
+                    Button::new("transcript-find-next")
+                        .ghost()
+                        .xsmall()
+                        .icon(icon("chevron-down"))
+                        .tooltip(t("meetings.find.next"))
+                        .disabled(total == 0)
+                        .on_click(cx.listener(|this, _, _, cx| this.find_step(1, cx))),
+                )
+                .child(
+                    Button::new("transcript-find-done")
+                        .ghost()
+                        .xsmall()
+                        .label(t("meetings.find.done"))
+                        .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    /// The transcript below its header: find bar, speakers, then the lines
+    /// in their own (virtualized) scroll region.
+    fn render_transcript(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
+        let note = |id: &'static str, text: SharedString| {
+            div()
+                .id(id)
+                .px(dp(16.))
+                .py(dp(24.))
+                .text_center()
+                .text_size(design::TEXT_BODY)
+                .text_color(tone.text_muted)
+                .child(text)
+                .test_support()
+                .into_any_element()
+        };
+        let scroll = |id: &'static str, child: AnyElement, handle: &ScrollHandle| {
+            div()
+                .id(id)
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(handle)
+                .child(child)
+                .into_any_element()
+        };
+        if let Some(live) = self.render_live_transcript(cx) {
+            return scroll("meeting-live-scroll", live, &self.lines_scroll);
+        }
         let processing = self
             .meeting
             .as_ref()
@@ -2449,98 +3262,76 @@ impl MeetingDetail {
         // line arrives. Then the streamed lines replace it until merge.
         let show_provisional = processing && !self.provisional.is_empty();
         let dim_old = processing && !self.segments.is_empty() && self.provisional.is_empty();
-        let rows: Vec<AnyElement> = if self.loading {
-            vec![div()
-                .px_4()
-                .py(dp(18.))
-                .text_center()
-                .text_size(design::TEXT_BODY)
-                .text_color(theme.muted_foreground)
-                .child(t("meetings.detail.loading"))
-                .into_any_element()]
+        let lines: AnyElement = if self.loading {
+            note("transcript-loading", t("meetings.detail.loading"))
         } else if show_provisional {
-            self.provisional
-                .iter()
-                .map(|line| self.render_provisional(line, cx))
-                .collect()
-        } else if self.segments.is_empty() {
-            vec![div()
-                .id("transcript-empty")
-                .px_4()
-                .py(dp(18.))
-                .text_center()
-                .text_size(design::TEXT_BODY)
-                .text_color(theme.muted_foreground)
-                .child(t("meetings.detail.empty"))
-                .test_support()
-                .into_any_element()]
-        } else {
-            group_by_speaker(&self.segments)
-                .iter()
-                .enumerate()
-                .map(|(i, b)| self.render_block(i, b, cx))
-                .collect()
-        };
-        let copy = (!self.loading && !self.segments.is_empty()).then(|| {
-            Button::new("transcript-copy")
-                .ghost()
-                .pill()
-                .small()
-                .icon(icon(if self.transcript_copied {
-                    "check"
-                } else {
-                    "copy"
-                }))
-                .label(if self.transcript_copied {
-                    t("meetings.copy.copied")
-                } else {
-                    t("meetings.copy.transcript")
-                })
-                .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx)))
-        });
-        v_flex()
-            .w_full()
-            .gap(dp(8.))
-            .child(
-                h_flex()
+            scroll(
+                "transcript-provisional",
+                v_flex()
                     .w_full()
-                    .px(dp(2.))
-                    .items_center()
-                    .justify_between()
-                    .child(design::eyebrow(t("meetings.detail.transcript"), cx))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .when(!self.loading && !self.segments.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .text_size(dp(11.))
-                                        .text_color(design::tone(cx).text_faint)
-                                        .child(t("meetings.selection.hint")),
-                                )
-                            })
-                            .children(copy),
-                    ),
-            )
-            .child(
-                div()
-                    .id("transcript-lines")
-                    .w_full()
-                    .when(dim_old, |d| d.opacity(0.45))
-                    .track_focus(&self.focus)
-                    .on_key_down(cx.listener(Self::on_key_down))
-                    // A drag let go outside the transcript ends there.
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                            if this.drag_start.take().is_some() {
-                                cx.notify();
-                            }
-                        }),
+                    .py(dp(4.))
+                    .children(
+                        self.provisional
+                            .iter()
+                            .map(|line| self.render_provisional(line, cx)),
                     )
-                    .child(group(None, rows, cx)),
+                    .into_any_element(),
+                &self.lines_scroll,
             )
+        } else if self.segments.is_empty() {
+            note(
+                "transcript-empty",
+                if processing {
+                    t("meetings.detail.transcribing")
+                } else {
+                    t("meetings.detail.empty")
+                },
+            )
+        } else {
+            let view = cx.entity().downgrade();
+            div()
+                .id("transcript-lines")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .when(dim_old, |d| d.opacity(0.45))
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::on_key_down))
+                // A drag let go outside the transcript ends there.
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                        if this.drag_start.take().is_some() {
+                            cx.notify();
+                        }
+                    }),
+                )
+                .child(
+                    list(self.transcript_list.clone(), move |ix, _, cx| {
+                        view.update(cx, |this, cx| match this.blocks.get(ix).cloned() {
+                            Some(block) => div()
+                                .w_full()
+                                .border_b_1()
+                                .border_color(design::tone(cx).hairline)
+                                .child(this.render_block(ix, &block, cx))
+                                .into_any_element(),
+                            None => div().into_any_element(),
+                        })
+                        .unwrap_or_else(|_| div().into_any_element())
+                    })
+                    .size_full(),
+                )
+                .test_support()
+                .into_any_element()
+        };
+        v_flex()
+            .id("meeting-transcript")
+            .size_full()
+            .min_h_0()
+            .children(self.render_find_bar(cx))
+            .children(self.render_speakers(cx))
+            .child(lines)
+            .test_support()
             .into_any_element()
     }
 
@@ -2551,24 +3342,15 @@ impl MeetingDetail {
     /// The summary view has notes loaded, or the meeting record says it
     /// has a summary that has not arrived in the view yet.
     fn has_notes(&self, cx: &App) -> bool {
-        self.meeting.as_ref().is_some_and(|m| m.has_summary)
-            || self
-                .summary_view
-                .as_ref()
-                .is_some_and(|v| v.read(cx).has_summary())
+        self.meeting.as_ref().is_some_and(|m| m.has_summary) || self.summary.read(cx).has_summary()
     }
 
     /// Notes when they exist. With only a transcript, the default copies
     /// that instead. Nothing is marked copied unless text was written.
     fn copy_notes(&mut self, cx: &mut Context<Self>) {
-        let view_has = self
-            .summary_view
-            .as_ref()
-            .is_some_and(|v| v.read(cx).has_summary());
+        let view_has = self.summary.read(cx).has_summary();
         if view_has {
-            if let Some(v) = self.summary_view.clone() {
-                v.update(cx, |v, cx| v.copy(cx));
-            }
+            self.summary.update(cx, |v, cx| v.copy(cx));
             self.flash_copied(cx);
             return;
         }
@@ -2601,17 +3383,24 @@ impl MeetingDetail {
     fn copy_button(&self, cx: &mut Context<Self>) -> DropdownButton {
         let copied = self.notes_copied;
         let notes = self.has_notes(cx);
+        let label = if copied {
+            t("meetings.copy.copied")
+        } else if notes {
+            t("meetings.copy.notes")
+        } else {
+            t("meetings.copy.transcript")
+        };
+        let icon_only = self.layout.compact;
         let main = Button::new("summary-copy")
             .ghost()
             .small()
-            .pill()
             .icon(icon(if copied { "check" } else { "copy" }))
-            .label(if copied {
-                t("meetings.copy.copied")
-            } else if notes {
-                t("meetings.copy.notes")
-            } else {
-                t("meetings.copy.transcript")
+            .map(|b| {
+                if icon_only {
+                    b.tooltip(label)
+                } else {
+                    b.label(label)
+                }
             })
             .on_click(cx.listener(|this, _, _, cx| this.copy_notes(cx)));
         let weak = cx.entity().downgrade();
@@ -2632,9 +3421,7 @@ impl MeetingDetail {
                     PopupMenuItem::new(t("meetings.copy.summaryOnly")).on_click(move |_, _, cx| {
                         weak_summary
                             .update(cx, |this, cx| {
-                                if let Some(v) = this.summary_view.clone() {
-                                    v.update(cx, |v, cx| v.copy_summary_only(cx));
-                                }
+                                this.summary.update(cx, |v, cx| v.copy_summary_only(cx));
                             })
                             .ok();
                     }),
@@ -2813,39 +3600,64 @@ impl MeetingDetail {
                     .test_support()
             })
             .collect();
+        let open = self.what_changed_open;
+        let accent = tone.accent_text;
         Some(
-            design::panel(cx)
+            div()
                 .id("what-changed")
+                .flex_none()
+                .px(dp(12.))
+                .pt(dp(8.))
                 .child(
-                    design::section(false, cx).child(
+                    design::notice(accent).child(
                         v_flex()
                             .w_full()
-                            .gap(dp(8.))
+                            .gap(dp(6.))
                             .child(
                                 h_flex()
                                     .w_full()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(design::eyebrow(t("meetings.changed.title"), cx))
+                                    .gap(dp(8.))
+                                    .child(icon("git-compare").xsmall().text_color(accent))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(dp(12.))
+                                            .text_color(tone.text)
+                                            .child(format!(
+                                                "{} · {}",
+                                                t("meetings.changed.title"),
+                                                line_count
+                                            )),
+                                    )
+                                    .child(
+                                        Button::new("what-changed-details")
+                                            .ghost()
+                                            .xsmall()
+                                            .label(if open {
+                                                t("meetings.changed.hide")
+                                            } else {
+                                                t("meetings.changed.details")
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.what_changed_open = !this.what_changed_open;
+                                                cx.notify();
+                                            })),
+                                    )
                                     .child(
                                         Button::new("what-changed-dismiss")
                                             .ghost()
                                             .xsmall()
-                                            .label(t("meetings.changed.dismiss"))
+                                            .icon(icon("x"))
+                                            .tooltip(t("meetings.changed.dismiss"))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.what_changed = None;
                                                 cx.notify();
                                             })),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .text_size(design::TEXT_BODY)
-                                    .text_color(tone.text)
-                                    .child(line_count),
-                            )
-                            .children(shifts)
-                            .children(bars),
+                            .when(open, |d| d.children(shifts).children(bars)),
                     ),
                 )
                 .test_support()
@@ -2853,30 +3665,108 @@ impl MeetingDetail {
         )
     }
 
-    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = [
-            (DetailTab::Notes, "notes", t("meetings.detail.notesTab")),
+    /// The segmented control over the notes column; with `transcript`
+    /// (one column) Transcript is its last option.
+    fn render_tabs(&self, transcript: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let items = self.summary.read(cx).item_count();
+        let tickets = self.tickets.read(cx).count();
+        let notes = self.detail_tab == DetailTab::Notes || self.layout.side_by_side;
+        let with_count = |key: &str, n: usize| {
+            if n == 0 {
+                t(key)
+            } else {
+                SharedString::from(format!("{} {n}", t(key)))
+            }
+        };
+        let mut tabs: Vec<(&'static str, SharedString, bool, Option<NotesTab>)> = vec![
             (
-                DetailTab::Transcript,
-                "transcript",
-                t("meetings.detail.transcript"),
+                "notes",
+                t("meetings.detail.notesTab"),
+                notes && self.notes_tab == NotesTab::Summary,
+                Some(NotesTab::Summary),
+            ),
+            (
+                "items",
+                with_count("meetings.detail.itemsTab", items),
+                notes && self.notes_tab == NotesTab::ActionItems,
+                Some(NotesTab::ActionItems),
+            ),
+            (
+                "tickets",
+                with_count("meetings.detail.ticketsTab", tickets),
+                notes && self.notes_tab == NotesTab::Tickets,
+                Some(NotesTab::Tickets),
             ),
         ];
-        h_flex().child(
-            design::segmented(cx).children(tabs.into_iter().map(|(tab, id, label)| {
-                design::segment(
-                    SharedString::from(format!("meeting-detail-tab-{id}")),
-                    label,
-                    self.detail_tab == tab,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.detail_tab = tab;
-                    cx.notify();
-                }))
-                .test_support()
-            })),
-        )
+        if transcript {
+            tabs.push((
+                "transcript",
+                t("meetings.detail.transcript"),
+                self.detail_tab == DetailTab::Transcript,
+                None,
+            ));
+        }
+        design::segmented(cx).children(tabs.into_iter().map(|(id, label, selected, tab)| {
+            design::segment(
+                SharedString::from(format!("meeting-detail-tab-{id}")),
+                label,
+                selected,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                match tab {
+                    Some(tab) => {
+                        if this.notes_tab != tab {
+                            this.notes_scroll.set_offset(point(px(0.), px(0.)));
+                        }
+                        this.notes_tab = tab;
+                        this.detail_tab = DetailTab::Notes;
+                    }
+                    None => this.select_tab(DetailTab::Transcript, cx),
+                }
+                cx.notify();
+            }))
+            .test_support()
+        }))
+    }
+
+    /// A column's header bar.
+    fn column_header(&self, id: &'static str, cx: &App) -> Stateful<Div> {
+        let tone = design::tone(cx);
+        h_flex()
+            .id(id)
+            .flex_none()
+            .w_full()
+            .h(dp(36.))
+            .px(dp(10.))
+            .gap(dp(6.))
+            .border_b_1()
+            .border_color(tone.hairline)
+    }
+
+    /// The notes column's content in its own scroll region.
+    fn render_notes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let body: AnyElement = match self.notes_tab {
+            NotesTab::Summary | NotesTab::ActionItems => self.summary.clone().into_any_element(),
+            NotesTab::Tickets => self.tickets.clone().into_any_element(),
+        };
+        let _ = cx;
+        div()
+            .id("meeting-notes-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.notes_scroll)
+            .child(
+                div()
+                    .w_full()
+                    .px(dp(14.))
+                    .pt(dp(12.))
+                    .pb(dp(20.))
+                    .child(body),
+            )
+            .into_any_element()
     }
 
     /// Copy the transcript as `[mm:ss] Speaker: text` lines under the
@@ -2924,34 +3814,105 @@ impl MeetingDetail {
 }
 
 impl Render for MeetingDetail {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Keyed views stay mounted on either tab. Skipping them when the
-        // transcript is showing would change the hook order.
-        let summary = self.render_summary(window, cx);
-        let tickets = self.render_tickets(window, cx);
-        let body: AnyElement = match self.detail_tab {
-            DetailTab::Notes => v_flex()
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tone = design::tone(cx);
+        let side = self.layout.side_by_side;
+        let section = match self.notes_tab {
+            NotesTab::ActionItems => SummarySection::ActionItems,
+            _ => SummarySection::Notes,
+        };
+        self.summary.update(cx, |v, _| v.set_section(section));
+        let model_banner = self
+            .meeting
+            .as_ref()
+            .filter(|m| matches!(m.status, MeetingStatus::Recorded | MeetingStatus::Failed))
+            .and_then(|_| meeting_model_missing(cx))
+            .map(|missing| {
+                div()
+                    .flex_none()
+                    .px(dp(12.))
+                    .pt(dp(8.))
+                    .child(render_model_download("detail", &missing, cx))
+            });
+        let body: AnyElement = if side {
+            h_flex()
+                .flex_1()
+                .min_h_0()
                 .w_full()
-                .gap(dp(22.))
-                .child(summary)
-                .child(tickets)
-                .into_any_element(),
-            DetailTab::Transcript => v_flex()
+                .items_stretch()
+                .child(
+                    v_flex()
+                        .id("meeting-notes-column")
+                        .flex_1()
+                        .flex_basis(px(0.))
+                        .min_w_0()
+                        .h_full()
+                        .border_r_1()
+                        .border_color(tone.hairline)
+                        .child(
+                            self.column_header("meeting-notes-header", cx)
+                                .child(self.render_tabs(false, cx)),
+                        )
+                        .child(self.render_notes(cx)),
+                )
+                .child(
+                    v_flex()
+                        .id("meeting-transcript-column")
+                        .flex_1()
+                        .flex_basis(px(0.))
+                        .min_w_0()
+                        .h_full()
+                        .child(
+                            self.column_header("meeting-transcript-header", cx)
+                                .child(
+                                    div()
+                                        .text_size(design::TEXT_BODY)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(tone.text)
+                                        .child(t("meetings.detail.transcript")),
+                                )
+                                .child(div().flex_1())
+                                .child(self.transcript_tools(cx)),
+                        )
+                        .child(self.render_transcript(cx)),
+                )
+                .into_any_element()
+        } else {
+            let transcript = self.detail_tab == DetailTab::Transcript;
+            v_flex()
+                .flex_1()
+                .min_h_0()
                 .w_full()
-                .gap(dp(22.))
-                .children(self.render_speakers(cx))
-                .child(self.render_transcript(cx))
-                .into_any_element(),
+                .child(
+                    self.column_header("meeting-notes-header", cx)
+                        .child(self.render_tabs(true, cx))
+                        .child(div().flex_1())
+                        .when(transcript, |d| d.child(self.transcript_tools(cx))),
+                )
+                .child(if transcript {
+                    self.render_transcript(cx)
+                } else {
+                    self.render_notes(cx)
+                })
+                .into_any_element()
         };
         v_flex()
             .id("meeting-detail")
-            .w_full()
-            .gap(dp(22.))
+            .size_full()
+            .min_h_0()
+            .min_w_0()
             .child(self.render_header(cx))
             .children(self.render_what_changed(cx))
             .children(self.render_quality_notice(cx))
-            .child(self.render_tabs(cx))
+            .children(model_banner)
             .child(body)
             .test_support()
     }
+}
+
+/// The user's home directory (the save panel starts in its Documents).
+fn dirs_home() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }

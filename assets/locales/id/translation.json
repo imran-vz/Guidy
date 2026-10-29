@@ -36,23 +36,12 @@
     "about": "Tentang"
   },
   "usage": {
-    "title": "Penggunaan",
-    "description": "Biaya penyedia AI cloud, dan pekerjaan yang dilakukan model di Mac ini.",
-    "cloud": "Cloud",
     "local": "Di Mac ini",
     "refresh": "Segarkan",
     "total": "Total biaya",
     "last30Days": "30 hari terakhir",
     "callsTitle": "Panggilan",
-    "byModel": "Per model",
-    "byFeature": "Per fitur",
     "empty": "Belum ada panggilan AI cloud.",
-    "calls_one": "{{count}} panggilan",
-    "calls_other": "{{count}} panggilan",
-    "average": "rata-rata {{cost}}",
-    "highest": "tertinggi {{cost}}",
-    "tokens": "{{input}} token masuk / {{output}} token keluar",
-    "unknownPrice": "harga tidak diketahui",
     "feature": {
       "dictation": "Dikte",
       "meetingTranscription": "Transkripsi rapat",
@@ -61,37 +50,17 @@
       "other": "Lainnya"
     },
     "localAudio": "Audio ditranskripsi",
-    "localWords": "Kata",
-    "localTokens": "Token LLM",
-    "localCloudEquivalent": "Setara cloud",
     "localEmpty": "Belum ada yang dijalankan di model lokal.",
-    "localByModel": "Model lokal",
-    "localByFeature": "Pekerjaan lokal per fitur",
     "kind": {
       "transcription": "Transkripsi",
       "llm": "LLM bawaan"
     },
-    "runs_one": "{{count}} kali dijalankan",
-    "runs_other": "{{count}} kali dijalankan",
-    "audio": "audio {{duration}}",
-    "words": "{{count}} kata",
-    "realtime": "{{speed}} waktu nyata",
-    "promptSpeed": "prompt {{speed}}",
-    "generationSpeed": "pembuatan {{speed}}",
-    "loadTime": "dimuat dalam {{time}}",
-    "localNote": "Kecepatan waktu nyata adalah durasi audio ÷ waktu pemrosesan, tanpa waktu memuat; dikte yang didekode langsung saat Anda berbicara tidak diukur waktunya. Setara cloud menghitung audio dengan harga ${{price}} per menit (OpenAI Whisper).",
     "estimateNote": "~ menandai jumlah yang diperkirakan dari harga per token yang dipublikasikan; penyedia yang melaporkan biayanya sendiri (seperti OpenRouter) bersifat pasti. Periksa dasbor penyedia Anda untuk tagihan.",
     "reportedNote": "Jumlah sesuai laporan penyedia. Periksa dasbor penyedia Anda untuk tagihan.",
-    "clear": "Hapus riwayat",
     "clearTitle": "Hapus riwayat penggunaan?",
     "clearConfirm": "Panggilan, biaya, dan eksekusi model lokal yang tercatat akan dihapus. Penggunaan yang ditampilkan pada ringkasan rapat tetap ada."
   },
   "onboarding": {
-    "subtitle": "Untuk memulai, pilih model transkripsi",
-    "existingModelsTitle": "Model yang Kompatibel",
-    "downloadModelsTitle": "Tersedia untuk Diunduh",
-    "showAllModels": "Tampilkan semua {{total}} model",
-    "showFewerModels": "Tampilkan lebih sedikit model",
     "recommended": "Direkomendasikan",
     "customModelDescription": "Tidak didukung secara resmi",
     "migration": {
@@ -101,7 +70,6 @@
       "oldFormat": "Format lama",
       "failed": "Unduhan gagal",
       "retry": "Coba lagi",
-      "chooseAnother": "Pilih model lain",
       "download": "Unduh model ({{size}})",
       "continue": "Lanjutkan",
       "timeRemaining": "Sisa {{time}}"
@@ -150,7 +118,6 @@
       "grant": "Berikan Izin",
       "granted": "Diizinkan",
       "waiting": "Menunggu...",
-      "allGranted": "Semua siap!",
       "errors": {
         "checkFailed": "Gagal memeriksa izin. Silakan coba lagi.",
         "requestFailed": "Gagal meminta izin. Silakan coba lagi."
@@ -164,10 +131,6 @@
     "active": "Aktif",
     "switching": "Beralih...",
     "noModelsAvailable": "Tidak ada model yang tersedia",
-    "verifying": "Memverifikasi {{modelName}}...",
-    "verifyingGeneric": "Memverifikasi...",
-    "downloading": "Mengunduh {{percentage}}%",
-    "downloadingMultiple": "Mengunduh {{count}} model...",
     "modelReady": "Model Siap",
     "loading": "Memuat {{modelName}}...",
     "loadingGeneric": "Memuat...",
@@ -176,27 +139,17 @@
     "noModelDownloadRequired": "Model Belum Tersedia — Perlu Diunduh",
     "deleteModel": "Hapus {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
-    "cancel": "Batal",
     "cancelDownload": "Batalkan unduhan",
     "capabilities": {
-      "languageSelection": "Mendukung beberapa bahasa masukan",
-      "singleLanguage": "Hanya mendukung bahasa ini",
       "languageCount": "{{total}} bahasa",
       "languageOnly": "Hanya {{language}}",
-      "translation": "Dapat menerjemahkan ke bahasa Inggris",
-      "translate": "Terjemahkan",
-      "streaming": "Menampilkan transkripsi langsung saat Anda berbicara"
+      "translate": "Terjemahkan"
     },
     "download": "Unduh",
     "use": "Gunakan"
   },
   "settings": {
-    "modelSettings": {
-      "title": "Pengaturan {{model}}"
-    },
     "general": {
-      "title": "Umum",
-      "description": "Cara memulai dikte, bahasa yang didengarkan, dan suara yang Anda dengar.",
       "shortcutsGroup": "Pintasan",
       "shortcut": {
         "title": "Pintasan Guidy",
@@ -227,7 +180,6 @@
       },
       "language": {
         "title": "Bahasa",
-        "description": "Pilih bahasa untuk pengenalan ucapan. Opsi Otomatis akan mendeteksi bahasa, sedangkan memilih bahasa tertentu dapat meningkatkan akurasi untuk bahasa tersebut.",
         "searchPlaceholder": "Cari bahasa...",
         "noResults": "Bahasa tidak ditemukan",
         "auto": "Otomatis"
@@ -248,13 +200,8 @@
       }
     },
     "models": {
-      "title": "Model Transkripsi",
-      "description": "Pilih model transkripsi atau unduh model tambahan. Setiap model menawarkan tingkat akurasi dan kecepatan yang berbeda.",
       "searchPlaceholder": "Cari model berdasarkan nama…",
-      "yourModels": "Model yang Diunduh",
-      "availableModels": "Tersedia untuk Diunduh",
       "deleteConfirm": "Yakin ingin menghapus {{modelName}}? Anda harus mengunduhnya lagi untuk menggunakannya.",
-      "deleteActiveConfirm": "{{modelName}} adalah model aktif Anda. Menghapusnya akan menghentikan transkripsi sampai Anda memilih model baru. Yakin ingin melanjutkan?",
       "deleteTitle": "Hapus Model",
       "retiredNotice": {
         "title": "Model lama tidak lagi berfungsi dengan Guidy",
@@ -269,16 +216,13 @@
         "translation": "Saring model yang mendukung penerjemahan ke bahasa Inggris"
       },
       "rescan": {
-        "label": "Pindai Ulang",
         "tooltip": "Pindai ulang model yang ditambahkan ke folder model atau cache Hugging Face dari luar Guidy"
       },
       "noModelsMatch": "Tidak ada model yang cocok dengan kriteria ini."
     },
     "sound": {
-      "title": "Suara",
       "microphone": {
         "title": "Mikrofon",
-        "description": "Pilih perangkat mikrofon yang Anda inginkan",
         "placeholder": "Pilih mikrofon...",
         "loading": "Memuat..."
       },
@@ -294,18 +238,14 @@
       },
       "outputDevice": {
         "title": "Perangkat Keluaran",
-        "description": "Pilih perangkat keluaran audio yang Anda inginkan untuk suara umpan balik",
         "placeholder": "Pilih perangkat keluaran...",
         "loading": "Memuat..."
       },
       "volume": {
-        "title": "Volume",
-        "description": "Sesuaikan volume suara umpan balik audio"
+        "title": "Volume"
       }
     },
     "advanced": {
-      "title": "Lanjutan",
-      "description": "Startup, penempelan, penyesuaian transkripsi, dan riwayat.",
       "groups": {
         "app": "Aplikasi",
         "output": "Keluaran",
@@ -332,7 +272,8 @@
       },
       "startHidden": {
         "label": "Mulai dalam Keadaan Tersembunyi",
-        "description": "Jalankan ke baki sistem tanpa membuka jendela."
+        "description": "Jalankan ke baki sistem tanpa membuka jendela.",
+        "descriptionMac": "Mulai di bar menu tanpa membuka jendela."
       },
       "autostart": {
         "label": "Jalankan saat Komputer Dinyalakan",
@@ -340,12 +281,13 @@
       },
       "showTrayIcon": {
         "label": "Tampilkan Ikon Baki Sistem",
-        "description": "Tampilkan ikon Guidy di baki sistem."
+        "description": "Tampilkan ikon Guidy di baki sistem.",
+        "descriptionMac": "Tampilkan ikon Guidy di bar menu."
       },
       "overlay": {
         "style": {
-          "title": "Overlay",
           "description": "Pilih overlay perekaman: Tidak Ada menyembunyikannya, Minimal menampilkan indikator ringkas, dan Langsung menampilkan transkripsi secara waktu nyata saat Anda berbicara (hanya model yang mendukung streaming — cari lencana Streaming di pemilih model). Di Linux, 'Tidak Ada' direkomendasikan.",
+          "descriptionMac": "Pilih overlay perekaman: Tidak Ada menyembunyikannya, Minimal menampilkan indikator ringkas, dan Langsung menampilkan transkripsi secara waktu nyata saat Anda berbicara (hanya model yang mendukung streaming — cari lencana Streaming di pemilih model).",
           "options": {
             "none": "Tidak Ada",
             "minimal": "Minimal",
@@ -392,6 +334,7 @@
       "autoSubmit": {
         "title": "Kirim Otomatis",
         "description": "Kirim kombinasi tombol yang dipilih secara otomatis setelah teks dimasukkan. Cmd+Enter berlaku di macOS, sedangkan Windows/Linux menggunakan Super+Enter.",
+        "descriptionMac": "Kirim kombinasi tombol yang dipilih secara otomatis setelah teks dimasukkan.",
         "options": {
           "off": "Nonaktif",
           "enter": "Enter",
@@ -457,16 +400,13 @@
       }
     },
     "postProcessing": {
-      "title": "Pascaproses",
-      "description": "Rapikan atau tulis ulang transkripsi dengan model AI sebelum ditempel.",
       "hotkey": {
         "title": "Pintasan"
       },
       "api": {
         "title": "API",
         "provider": {
-          "title": "Penyedia",
-          "description": "Pilih penyedia yang kompatibel dengan OpenAI atau Anthropic."
+          "title": "Penyedia"
         },
         "builtin": {
           "label": "Model bawaan (di Mac ini)",
@@ -475,7 +415,6 @@
         },
         "apiFormat": {
           "title": "Format API",
-          "description": "Format permintaan yang diharapkan oleh endpoint kustom Anda.",
           "options": {
             "openai": "Kompatibel dengan OpenAI (Chat Completions)",
             "anthropic": "Anthropic Messages"
@@ -486,13 +425,11 @@
         },
         "baseUrl": {
           "title": "URL Dasar",
-          "description": "URL dasar API untuk penyedia yang dipilih. Hanya penyedia kustom yang dapat diedit.",
           "placeholder": "https://api.openai.com/v1",
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
           "title": "Kunci API",
-          "description": "Kunci API untuk penyedia yang dipilih.",
           "placeholder": "sk-...",
           "saveFailed": "Gagal menyimpan kunci API"
         },
@@ -500,54 +437,33 @@
           "title": "Model",
           "descriptionCustom": "Masukkan pengenal model yang diharapkan oleh endpoint kustom Anda.",
           "descriptionDefault": "Pilih model yang disediakan oleh penyedia yang dipilih.",
-          "placeholderWithOptions": "Cari atau pilih model",
           "placeholderNoOptions": "Ketik nama model",
           "refreshModels": "Segarkan model"
         }
       },
       "prompts": {
-        "title": "Prompt",
-        "selectedPrompt": {
-          "title": "Prompt Terpilih",
-          "description": "Pilih templat untuk menyempurnakan transkripsi atau buat yang baru. Gunakan ${output} dalam teks prompt untuk merujuk ke hasil transkripsi."
-        },
-        "noPrompts": "Tidak ada prompt yang tersedia",
-        "selectPrompt": "Pilih prompt",
         "createNew": "Buat Prompt Baru",
         "promptLabel": "Label Prompt",
         "promptLabelPlaceholder": "Masukkan nama prompt",
         "promptInstructions": "Instruksi Prompt",
         "promptInstructionsPlaceholder": "Tulis instruksi yang dijalankan setelah transkripsi. Contoh: Perbaiki tata bahasa dan kejelasan teks berikut: ${output}",
         "promptTip": "Tips: Gunakan <code>${output}</code> untuk menyisipkan teks hasil transkripsi ke prompt Anda.",
-        "updatePrompt": "Perbarui Prompt",
-        "deletePrompt": "Hapus Prompt",
-        "createPrompt": "Buat Prompt",
-        "cancel": "Batal",
-        "selectToEdit": "Pilih prompt di atas untuk melihat dan mengedit detailnya.",
-        "createFirst": "Klik 'Buat Prompt Baru' di atas untuk membuat prompt pascaproses pertama Anda."
+        "deletePrompt": "Hapus Prompt"
       }
     },
     "history": {
-      "title": "Riwayat",
-      "openFolder": "Buka Folder Rekaman",
-      "loading": "Memuat riwayat...",
-      "empty": "Belum ada transkripsi. Mulai merekam untuk mengisi riwayat Anda!",
       "copyToClipboard": "Salin transkripsi ke papan klip",
       "copyError": "Gagal menyalin transkripsi ke papan klip.",
       "save": "Simpan transkripsi",
       "unsave": "Hapus dari daftar tersimpan",
       "delete": "Hapus entri",
-      "deleteError": "Gagal menghapus entri. Silakan coba lagi.",
       "retranscribe": "Transkripsikan ulang",
-      "retranscribeError": "Gagal mentranskripsikan ulang. Silakan coba lagi.",
       "transcribing": "Mentranskripsikan...",
       "transcriptionFailed": "Transkripsi gagal. Anda dapat mentranskripsikan ulang menggunakan ikon coba lagi."
     },
     "debug": {
-      "title": "Debug",
       "logDirectory": {
-        "title": "Direktori Log",
-        "description": "Lokasi penyimpanan file log"
+        "title": "Direktori Log"
       },
       "logLevel": {
         "title": "Tingkat Log",
@@ -555,7 +471,6 @@
       },
       "liveLogs": {
         "title": "Log Waktu Nyata",
-        "description": "Tampilkan log aplikasi secara waktu nyata untuk mendiagnosis masalah tanpa membuka file log. Hanya log yang dihasilkan saat panel ini terbuka yang ditampilkan; mengikuti pengaturan Tingkat Log di atas.",
         "live": "Waktu Nyata",
         "paused": "Dijeda",
         "pause": "Jeda",
@@ -573,8 +488,7 @@
         "title": "Pratinjau Yang Baru",
         "description": "Buka catatan rilis terbaru yang disertakan tanpa menandainya sebagai telah dilihat",
         "button": "Pratinjau",
-        "noNotes": "Tidak ada catatan rilis yang disertakan",
-        "error": "Gagal menampilkan pratinjau catatan rilis"
+        "noNotes": "Tidak ada catatan rilis yang disertakan"
       },
       "onboardingPreview": {
         "title": "Pratinjau Penyiapan Awal",
@@ -631,11 +545,6 @@
         "description": "Pilih backend pintasan keyboard.",
         "bindingsReset": "Pintasan keyboard tidak kompatibel dan telah dikembalikan ke nilai awal"
       },
-      "paths": {
-        "appData": "Data Aplikasi:",
-        "models": "Model:",
-        "settings": "Pengaturan:"
-      },
       "pasteDelay": {
         "title": "Jeda Tempel (Sebelum)",
         "description": "Jeda (dalam milidetik) setelah menyalin teks sebelum mengirim perintah tempel. Tingkatkan jika tidak ada yang ditempel."
@@ -678,11 +587,6 @@
       }
     },
     "about": {
-      "title": "Tentang",
-      "version": {
-        "title": "Versi",
-        "description": "Versi Guidy saat ini"
-      },
       "author": {
         "title": "Dibuat oleh",
         "description": "Imran"
@@ -692,18 +596,7 @@
         "description": "Tampilkan catatan rilis setelah Guidy diperbarui"
       },
       "appDataDirectory": {
-        "title": "Direktori Data Aplikasi",
-        "description": "Lokasi Guidy menyimpan datanya"
-      },
-      "sourceCode": {
-        "title": "Kode Sumber",
-        "description": "Lihat kode sumber dan berkontribusi",
-        "button": "Lihat di GitHub"
-      },
-      "supportDevelopment": {
-        "title": "Dukung Pengembangan",
-        "description": "Bantu kami terus mengembangkan Guidy",
-        "button": "Donasi"
+        "title": "Direktori Data Aplikasi"
       },
       "acknowledgments": {
         "title": "Ucapan Terima Kasih",
@@ -712,12 +605,6 @@
           "description": "Pustaka tensor berkinerja tinggi untuk inferensi pembelajaran mesin di perangkat",
           "details": "Fitur ucapan-ke-teks lokal Guidy dibangun menggunakan transcribe.cpp dan ggml. Terima kasih kepada Georgi Gerganov dan para kontributor atas karya luar biasa mereka."
         }
-      },
-      "hero": {
-        "headline": "Ucapan ke teks yang tetap di Mac ini",
-        "lede": "Tekan pintasan, berbicaralah, dan Guidy mengetik ke aplikasi yang aktif. Transkripsi berjalan secara lokal.",
-        "engine": "Mesin",
-        "model": "Model"
       }
     }
   },
@@ -744,7 +631,6 @@
     "delete": "Hapus",
     "back": "Kembali",
     "close": "Tutup",
-    "open": "Buka",
     "copy": "Salin",
     "clear": "Bersihkan",
     "noOptionsFound": "Tidak ada opsi yang ditemukan"
@@ -772,12 +658,10 @@
     "transcriptionFailedTitle": "Transkripsi Gagal"
   },
   "appLanguage": {
-    "title": "Bahasa Aplikasi",
-    "description": "Ubah bahasa antarmuka Guidy"
+    "title": "Bahasa Aplikasi"
   },
   "theme": {
     "title": "Tema Aplikasi",
-    "description": "Pilih apakah Guidy mengikuti tema sistem atau selalu menggunakan tema terang atau gelap",
     "options": {
       "system": "Sistem",
       "light": "Terang",
@@ -803,7 +687,6 @@
   "meetings": {
     "title": "Rapat",
     "selection": {
-      "hint": "Seret, atau Shift-klik, untuk menandai beberapa baris",
       "count_one": "{{count}} baris dipilih",
       "count_other": "{{count}} baris dipilih",
       "keys": "Shift-klik: rentang · ⌘-klik: tambah atau hapus · Esc: kosongkan",
@@ -812,7 +695,6 @@
     },
     "speakersRedo": {
       "action": "Ulangi pembicara",
-      "tooltip": "Bedakan para pembicara lagi dengan {{model}}. Transkrip tetap sama. Baris yang Anda tandai dan pembicara yang Anda beri nama tetap pada orangnya; sisanya dicocokkan ulang berdasarkan suara.",
       "standard": "Model pembicara standar",
       "download": "Unduhan {{size}}, sekali saja",
       "error": "Gagal mengulangi pembicara",
@@ -826,7 +708,6 @@
       "yesterday": "Kemarin"
     },
     "copy": {
-      "summary": "Salin",
       "transcript": "Salin transkrip",
       "copied": "Disalin",
       "notes": "Salin catatan",
@@ -866,7 +747,6 @@
       "openNotes": "Buka catatan",
       "expand": "Tampilkan transkrip langsung",
       "collapse": "Ciutkan",
-      "liveTitle": "Transkrip langsung",
       "liveHint": "Sejauh yang terdengar. Transkrip lengkap dengan nama pembicara dibuat saat rapat berakhir.",
       "callTitle": "Panggilan {{app}}",
       "callPrompt": "Buat catatan rapat?",
@@ -875,7 +755,6 @@
       "startFailed": "Gagal memulai. Coba lagi?",
       "dismiss": "Jangan sekarang"
     },
-    "description": "Rekam rapat di Mac ini, lalu baca transkrip dengan nama para pembicara.",
     "init": {
       "starting": "Memulai catatan rapat...",
       "failed": "Catatan rapat gagal dimulai",
@@ -900,7 +779,6 @@
       "titleNeedsSummary": "Buat ringkasan rapat terlebih dahulu: judul ditulis berdasarkan ringkasan itu."
     },
     "model": {
-      "download": "Unduh model rapat",
       "downloadError": "Gagal mengunduh model rapat"
     },
     "tabs": {
@@ -911,31 +789,19 @@
     "recorder": {
       "start": "Mulai catatan rapat",
       "stop": "Hentikan catatan rapat",
-      "recording": "Merekam",
-      "idle": "Tidak merekam",
       "startError": "Gagal memulai perekaman",
       "stopError": "Gagal menghentikan perekaman",
       "disabled": "Aktifkan catatan rapat di Pengaturan untuk merekam."
     },
-    "upcoming": {
-      "title": "Mendatang",
-      "empty": "Tidak ada rapat kalender mendatang dengan tautan panggilan.",
-      "start": "Mulai"
-    },
     "list": {
-      "title": "Rekaman",
-      "empty": "Belum ada rapat. Mulai catatan rapat untuk merekamnya.",
       "loading": "Memuat rapat...",
       "loadError": "Gagal memuat rapat",
-      "speakerModelMissing": "Rekaman tidak diproses sampai model pengenalan pembicara diunduh.",
       "minutes": "{{count}} mnt",
-      "open": "Buka",
       "rename": "Ganti nama",
       "delete": "Hapus",
       "process": "Proses",
       "retry": "Coba lagi",
       "cancelProcessing": "Batalkan pemrosesan",
-      "save": "Simpan",
       "cancel": "Batal",
       "titlePlaceholder": "Judul rapat",
       "deleteTitle": "Hapus rapat?",
@@ -979,7 +845,6 @@
       "share": "Porsi",
       "youSpoke": "Anda berbicara",
       "minutes": "Mnt",
-      "speakersToName": "{{count}} perlu diberi nama",
       "notesTab": "Catatan"
     },
     "speaker": {
@@ -1005,12 +870,10 @@
     },
     "people": {
       "title": "Orang",
-      "description": "Orang yang telah Anda beri nama dalam rapat. Guidy mengenali suara mereka di rapat berikutnya.",
       "empty": "Belum ada orang. Beri nama pembicara dalam rapat untuk menambahkannya.",
       "loadError": "Gagal memuat daftar orang",
       "voiceprints_one": "{{count}} sidik suara",
       "voiceprints_other": "{{count}} sidik suara",
-      "edit": "Edit",
       "merge": "Gabungkan",
       "mergeInto": "Gabungkan ke...",
       "mergeHint": "Pilih orang yang dipertahankan. Sidik suara dan nama pembicara dipindahkan ke orang tersebut.",
@@ -1035,7 +898,6 @@
       "renameError": "Gagal memperbarui orang",
       "namePlaceholder": "Nama",
       "emailPlaceholder": "Email (opsional)",
-      "save": "Simpan",
       "cancel": "Batal",
       "voice": {
         "title": "Suara Anda",
@@ -1060,7 +922,6 @@
       }
     },
     "settings": {
-      "general": "Catatan rapat",
       "enabled": {
         "title": "Catatan rapat",
         "description": "Rekam rapat dengan mikrofon dan audio komputer Anda. Mengaktifkan ini akan meminta akses kalender, audio sistem, dan notifikasi."
@@ -1077,7 +938,6 @@
         "requestAgain": "Minta lagi",
         "openSettings": "Buka Pengaturan Sistem"
       },
-      "you": "Anda",
       "userName": {
         "title": "Nama Anda",
         "description": "Trek mikrofon Anda selalu diberi label dengan nama ini.",
@@ -1128,7 +988,6 @@
         "description": "Membedakan suara dan mengenali orang yang pernah Anda beri nama. Menggunakan {{name}} ({{trainedOn}}), {{size}}. Hanya diunduh saat Anda mengeklik Unduh.",
         "ready": "Sudah diunduh",
         "download": "Unduh ({{size}})",
-        "retry": "Coba unduh lagi",
         "failed": "Unduhan gagal: {{error}}"
       },
       "retention": {
@@ -1178,9 +1037,6 @@
         "minutes": "{{count}} mnt"
       },
       "advanced": {
-        "title": "Lanjutan",
-        "show": "Tampilkan pengaturan lanjutan",
-        "hide": "Sembunyikan pengaturan lanjutan",
         "matchThreshold": {
           "title": "Ambang pencocokan otomatis",
           "description": "Kemiripan suara yang pada atau di atas nilai ini membuat pembicara diberi nama secara otomatis. Di bawahnya, kecocokan akan menanyakan \"Konfirmasi?\"."
@@ -1197,9 +1053,7 @@
       "turnModels": {
         "title": "Deteksi giliran pembicara",
         "description": "Memisahkan baris saat suara berganti ({{size}}). Sampai model ini diunduh, baris dipisah pada jeda.",
-        "ready": "Siap",
-        "downloading": "Mengunduh",
-        "download": "Unduh ({{size}})"
+        "descriptionReady": "Memisahkan baris saat suara berganti."
       },
       "callSuggestions": {
         "title": "Sarankan catatan saat panggilan",
@@ -1207,7 +1061,6 @@
       }
     },
     "search": {
-      "placeholder": "Cari judul, ringkasan, dan transkrip",
       "searching": "Mencari...",
       "empty": "Tidak ada rapat yang cocok dengan \"{{query}}\".",
       "count_one": "1 rapat",
@@ -1247,30 +1100,14 @@
       "rankUp": "↑{{n}}",
       "rankDown": "↓{{n}}"
     },
-    "checklist": {
-      "title": "Penyiapan",
-      "models": "Model",
-      "note": "Anda bisa merekam sebelum model selesai diunduh. Pemrosesan menunggu sampai model siap.",
-      "downloading": "Mengunduh",
-      "downloadingPercent": "Mengunduh {{percent}}%",
-      "ready": "Siap",
-      "notDownloaded": "Belum diunduh",
-      "download": "Unduh",
-      "dismiss": "Tutup",
-      "optional": "Opsional"
-    },
     "downloads": {
       "activity": "Mengunduh {{name}} · {{percent}}%",
       "activityFailed": "Unduhan gagal · {{name}}",
-      "multiple": "Mengunduh {{count}} model",
-      "cancel": "Batal",
       "retry": "Coba lagi",
       "done": "{{name}} telah diunduh",
       "failed": "Gagal mengunduh {{name}}",
       "startError": "Gagal memulai unduhan",
       "empty": "Tidak ada unduhan",
-      "queued": "Dalam antrean",
-      "doneShort": "Selesai",
       "failedShort": "Gagal",
       "cancelled": "Dibatalkan"
     },
@@ -1293,7 +1130,6 @@
       "actionItems": "Tindak lanjut",
       "generate": "Buat ringkasan",
       "regenerate": "Buat ulang",
-      "regenerateWith": "Buat ulang dengan...",
       "generateWith": "Buat dengan {{model}}",
       "otherModels": "Model lain",
       "otherModel": "Model lain…",
@@ -1375,34 +1211,22 @@
       }
     },
     "llm": {
-      "heading": "Ringkasan",
-      "provider": "Penyedia",
-      "providerDescription": "Model yang digunakan untuk ringkasan rapat dan tindak lanjut. Pascaproses dikte tetap menggunakan penyedianya sendiri.",
       "builtin": "Bawaan (di Mac ini)",
       "builtinDescription": "Menjalankan model lokal dengan llama.cpp. Tidak ada data yang keluar dari Mac Anda.",
-      "model": "Model",
-      "modelDescription": "Centang model untuk menambahkannya ke model Anda. Hanya model yang menghasilkan teks yang ditampilkan. \"Cocok untuk ringkasan\" berarti model mendukung keluaran terstruktur, yang diperlukan ringkasan.",
       "modelPlaceholder": "ID model",
       "pickModel": "Pilih model",
-      "noLocalModels": "Unduh model di bawah",
-      "usingPostProcessModel": "Menggunakan model pascaproses ({{model}})",
       "refreshModels": "Segarkan",
       "testConnection": "Uji koneksi",
-      "testDescription": "Periksa apakah penyedia, kunci, dan model berfungsi.",
       "apple": "Apple Intelligence",
       "appleDescription": "Model di perangkat pada Mac Apple silicon dengan Apple Intelligence diaktifkan.",
-      "appleAvailable": "Tersedia",
       "appleUnavailable": "Apple Intelligence tidak tersedia di Mac ini",
       "activeHeading": "Ringkasan dibuat oleh",
-      "place": "Tempat ringkasan dijalankan",
-      "placeDescription": "Hanya opsi yang dipilih yang digunakan.",
       "tabCloud": "Penyedia cloud",
       "tabLocal": "Di Mac ini",
       "onThisMac": "Mac ini · offline",
       "apiKey": "Kunci API",
       "apiKeyDescription": "Disimpan di Rantai Kunci Anda dan digunakan bersama Pascaproses.",
       "getKey": "Dapatkan kunci {{provider}}",
-      "modelDescriptionCustom": "Ketik ID model yang diharapkan endpoint Anda lalu tekan Enter untuk menambahkannya, atau centang salah satu yang ditampilkan.",
       "searchModels": "Cari model",
       "goodOnly": "Cocok untuk ringkasan",
       "goodForSummaries": "ringkasan",
@@ -1425,12 +1249,10 @@
       "appleUnavailableHint": "Tidak tersedia di Mac ini. Aktifkan di Pengaturan Sistem > Apple Intelligence & Siri.",
       "unavailable": "tidak tersedia",
       "yourModels": "Model Anda",
-      "yourModelsDescription": "Buat ringkasan menawarkan setiap model di sini, sehingga Anda dapat memilih satu per rapat. Model yang dipilih menjadi default.",
       "yourModelsEmpty": "Belum ada model cloud. Pilih penyedia di bawah, tambahkan kunci API-nya, lalu centang model yang Anda inginkan.",
       "default": "default",
       "removeModel": "Hapus dari model Anda",
-      "addFrom": "Tambahkan model dari",
-      "addFromDescription": "Pilih penyedia untuk memasukkan kuncinya dan centang model yang ingin ditambahkan. Ini tidak mengubah default."
+      "addFrom": "Tambahkan model dari"
     },
     "local": {
       "heading": "Model lokal",
@@ -1438,9 +1260,7 @@
       "default": "Default",
       "recommendedRam": "Direkomendasikan untuk RAM {{gb}} GB+",
       "notEnoughRam": "Memori Mac ini lebih kecil dari yang direkomendasikan untuk model ini.",
-      "downloaded": "Sudah diunduh",
-      "download": "Unduh",
-      "downloading": "Mengunduh {{percentage}}%"
+      "downloaded": "Sudah diunduh"
     },
     "linear": {
       "heading": "Linear",
@@ -1456,10 +1276,7 @@
       "connectedAs": "Terhubung sebagai {{name}}"
     },
     "byok": {
-      "testConnection": "Uji koneksi",
-      "testDescription": "Periksa URL dasar, kunci API, dan model dengan permintaan kecil.",
-      "baseUrlEditable": "URL dasar API untuk penyedia ini. Ganti setiap {placeholder} (mis. ID akun Cloudflare Anda).",
-      "cloudflareHint": "Cloudflare: masukkan ID akun Anda (dan ID gateway untuk AI Gateway) ke dalam URL dasar."
+      "testDescription": "Periksa URL dasar, kunci API, dan model dengan permintaan kecil."
     }
   }
 }

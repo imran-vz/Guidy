@@ -1,7 +1,7 @@
 //! Merging the two tracks into one timeline, with the D9 echo safety net.
 //!
-//! Without headphones the remote speakers leak into the mic. Voice
-//! Processing I/O removes most of it; what survives shows up as a mic
+//! Without headphones the remote speakers leak into the mic. Echo
+//! cancellation (`meetings::native::aec`) removes most of it; what survives shows up as a mic
 //! segment that overlaps a system segment in time and says (nearly) the same
 //! words. Such a mic copy is dropped, so the speech is attributed to the
 //! remote speaker rather than the user.

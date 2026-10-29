@@ -131,6 +131,7 @@ impl ModelManager {
     ) -> Result<HttpDownloadOutcome> {
         let app_handle = self.app_handle.clone();
         let id = model_id.to_string();
+        let tracker_id = crate::downloads::stt_id(model_id);
         Self::download_http_resumable_with_events(
             model_id,
             url,
@@ -139,11 +140,19 @@ impl ModelManager {
             expected_sha256,
             cancel_token,
             &move |event| {
+                let tracker = crate::downloads::global();
                 let _ = match event {
                     HttpDownloadEvent::Progress(progress) => {
+                        tracker.progress(
+                            &app_handle,
+                            &tracker_id,
+                            progress.downloaded,
+                            progress.total,
+                        );
                         app_handle.emit("model-download-progress", progress)
                     }
                     HttpDownloadEvent::VerificationStarted => {
+                        tracker.verifying(&app_handle, &tracker_id);
                         app_handle.emit("model-verification-started", &id)
                     }
                     HttpDownloadEvent::VerificationCompleted => {
@@ -383,7 +392,9 @@ impl ModelManager {
 /// (the built-in LLM's GGUFs, `crate::llm::local_models`). Same transport and
 /// robustness as model downloads; leaves the verified bytes in
 /// `partial_path` (the caller renames it). Returns `false` when cancelled
-/// (the partial is kept for resume).
+/// (the partial is kept for resume). `on_verifying` runs when every byte is
+/// there and the checksum starts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn download_file(
     id: &str,
     url: &str,
@@ -392,6 +403,7 @@ pub(crate) async fn download_file(
     expected_sha256: Option<&str>,
     cancel_token: &CancellationToken,
     on_progress: &(dyn Fn(&DownloadProgress) + Send + Sync),
+    on_verifying: &(dyn Fn() + Send + Sync),
 ) -> Result<bool> {
     let outcome = ModelManager::download_http_resumable_with_events(
         id,
@@ -400,10 +412,10 @@ pub(crate) async fn download_file(
         expected_size,
         expected_sha256,
         cancel_token,
-        &|event| {
-            if let HttpDownloadEvent::Progress(progress) = event {
-                on_progress(progress);
-            }
+        &|event| match event {
+            HttpDownloadEvent::Progress(progress) => on_progress(progress),
+            HttpDownloadEvent::VerificationStarted => on_verifying(),
+            HttpDownloadEvent::VerificationCompleted => {}
         },
     )
     .await?;

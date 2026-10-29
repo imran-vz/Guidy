@@ -2,7 +2,7 @@
 //!
 //! The UI layer (the `guidy` app crate)
 //! creates an [`host::AppHandle`], installs its [`host::Shell`], and drives
-//! startup through [`initialize_app`] / [`run_headless`].
+//! startup through [`create_managers`] + [`initialize_app`] / [`run_headless`].
 
 pub mod actions;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -158,31 +158,58 @@ fn should_force_show_permissions_window(app: &AppHandle) -> bool {
     false
 }
 
-fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool) {
+/// The managers [`initialize_app`] registers. Building them is the slow
+/// part of startup (the model registry scans the models folder and the
+/// shared Hugging Face cache, the history database migrates), so
+/// [`create_managers`] may run on any thread while the UI draws its first
+/// frame.
+pub struct CoreManagers {
+    model: Arc<ModelManager>,
+    transcription: Arc<TranscriptionManager>,
+    recording: Arc<AudioRecordingManager>,
+    history: Arc<HistoryManager>,
+}
+
+/// Build the model, transcription, recording and history managers. Blocks
+/// (disk scans, database migrations): call it off the UI thread. Fails, with
+/// a message for the user, when one can't start (e.g. the app data folder
+/// isn't writable).
+pub fn create_managers(app_handle: &AppHandle) -> Result<CoreManagers, String> {
+    // The audio recorder receives the streaming router explicitly, so
+    // always-on microphone startup can wire live-preview frames even before
+    // managed state is populated.
+    let model = Arc::new(
+        ModelManager::new(app_handle)
+            .map_err(|e| format!("Failed to initialize model manager: {e:#}"))?,
+    );
+    let transcription = Arc::new(
+        TranscriptionManager::new(app_handle, model.clone())
+            .map_err(|e| format!("Failed to initialize transcription manager: {e:#}"))?,
+    );
+    let recording = Arc::new(
+        AudioRecordingManager::new(app_handle, transcription.stream_router())
+            .map_err(|e| format!("Failed to initialize recording manager: {e:#}"))?,
+    );
+    let history = Arc::new(
+        HistoryManager::new(app_handle)
+            .map_err(|e| format!("Failed to initialize history manager: {e:#}"))?,
+    );
+    Ok(CoreManagers {
+        model,
+        transcription,
+        recording,
+        history,
+    })
+}
+
+fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool, managers: CoreManagers) {
     // Note: Enigo (keyboard/mouse simulation) is NOT initialized here.
     // The UI calls `initialize_enigo` after onboarding completes. This avoids
     // triggering permission dialogs on macOS before the user is ready.
-
-    // Initialize the managers. The audio recorder receives the streaming router
-    // explicitly, so always-on microphone startup can wire live-preview frames
-    // even before managed state is populated.
-    let model_manager =
-        Arc::new(ModelManager::new(app_handle).expect("Failed to initialize model manager"));
-    let transcription_manager = Arc::new(
-        TranscriptionManager::new(app_handle, model_manager.clone())
-            .expect("Failed to initialize transcription manager"),
-    );
-    let recording_manager = Arc::new(
-        AudioRecordingManager::new(app_handle, transcription_manager.stream_router())
-            .expect("Failed to initialize recording manager"),
-    );
-    let history_manager =
-        Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
-
-    app_handle.manage(recording_manager.clone());
-    app_handle.manage(model_manager.clone());
-    app_handle.manage(transcription_manager.clone());
-    app_handle.manage(history_manager.clone());
+    app_handle.manage(managers.recording);
+    app_handle.manage(managers.model);
+    app_handle.manage(managers.transcription);
+    app_handle.manage(managers.history);
     app_handle.manage(tray::TrayState::new());
 
     // Note: Shortcuts are NOT initialized here either; the UI calls
@@ -598,11 +625,13 @@ pub fn startup_decision(
 }
 
 /// Full interactive startup (everything but window creation, which the UI
-/// owns). Must run on the main thread.
+/// owns), with the managers from [`create_managers`]. Must run on the main
+/// thread.
 pub fn initialize_app(
     app_handle: &AppHandle,
     cli_args: &CliArgs,
     build_tray: bool,
+    managers: CoreManagers,
 ) -> StartupDecision {
     app_handle.manage(cli_args.clone());
 
@@ -625,7 +654,7 @@ pub fn initialize_app(
 
     app_handle.manage(TranscriptionCoordinator::new(app_handle.clone()));
 
-    initialize_core_logic(app_handle, build_tray);
+    initialize_core_logic(app_handle, build_tray, managers);
 
     // Secure Input monitor (macOS): detects stuck secure input that
     // silently blocks keyed shortcuts, warns the user, and activates
