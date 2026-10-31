@@ -1,5 +1,7 @@
 # Guidy
 
+CI is disabled. Run [local verification](docs/LOCAL_CHECKS.md) on the development device before submitting changes.
+
 Offline speech-to-text for the desktop. Press a shortcut, speak, and Guidy pastes the transcript into the focused app. Transcription runs locally.
 
 Website: [guidy.imran.codes](https://guidy.imran.codes). Made by [Imran](https://imran.codes).
@@ -18,7 +20,7 @@ Guidy is pure Rust on GPUI, with [gpui-kit](https://gpui-kit.com) components and
 
 ## Build and run
 
-Requires stable Rust and CMake. Linux also needs ALSA, GTK 3, xkbcommon, Wayland/X11, fontconfig and Vulkan dev packages (see `.github/workflows/ci.yml`).
+Requires stable Rust and CMake. Linux also needs ALSA, GTK 3, xkbcommon, Wayland/X11, fontconfig and Vulkan dev packages (see [local verification](docs/LOCAL_CHECKS.md)).
 
 ```sh
 cargo run -p guidy-app            # the app
@@ -41,7 +43,7 @@ Debug builds also read these variables:
 cargo xtask test          # unit, UI (headless GPUI) and CLI tests
 cargo xtask test --full   # plus the real-model engine tests (needs a downloaded model)
 cargo xtask parity        # every baseline test, command, event and PARITY row is covered
-cargo xtask gate          # test + parity; this is what CI runs
+cargo xtask gate          # test + parity; run locally before submitting changes
 ```
 
 ## Packaging
