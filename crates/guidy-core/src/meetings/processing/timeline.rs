@@ -100,20 +100,28 @@ fn system_text_near(system: &[RawSegment], t0: i64, t1: i64) -> String {
 /// reply ("yes", "right") too easily matches words said nearby.
 pub const ECHO_MIN_TOKENS: usize = 3;
 
-/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: its [`tokens`], with
-/// each character of a script written without spaces counted as one.
+/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: what spaces separate
+/// (not [`tokens`], which can cut one word of some scripts into several), with
+/// each ideograph or kana counted as one and Thai at about four characters a
+/// word, as those scripts aren't written with spaces between words.
 fn word_count(text: &str) -> usize {
-    let unspaced = |c: char| {
+    let per_char = |c: char| {
         matches!(c as u32,
-            0x0E00..=0x0E7F // Thai
-            | 0x3040..=0x30FF // Kana
+            0x3040..=0x30FF // Kana
             | 0x3400..=0x9FFF // CJK ideographs
             | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFF66..=0xFF9D // Halfwidth kana
+            | 0x20000..=0x2FFFF // Supplementary CJK ideographs
         )
     };
-    tokens(text)
-        .iter()
-        .map(|t| t.chars().filter(|c| unspaced(*c)).count().max(1))
+    let thai = |c: char| matches!(c as u32, 0x0E00..=0x0E7F);
+    text.split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .map(|w| {
+            let chars = w.chars().filter(|c| per_char(*c)).count();
+            let thai_chars = w.chars().filter(|c| thai(*c)).count();
+            (chars + thai_chars / 4).max(1)
+        })
         .sum()
 }
 
@@ -280,6 +288,14 @@ mod tests {
     fn a_script_without_spaces_counts_each_character() {
         assert_eq!(word_count("ship it"), 2);
         assert_eq!(word_count("明日リリース"), 6);
+        // Five kana and a voicing mark.
+        assert_eq!(word_count("ｱﾘｶﾞﾄｳ"), 5);
+        assert_eq!(word_count("𠀀𠀁𠀂"), 3);
+        // One word, however a tokenizer would cut it.
+        assert_eq!(word_count("स्वास्थ्य"), 1);
+        assert_eq!(word_count("1,000.00"), 1);
+        assert_eq!(word_count("ครับ"), 1);
+        assert_eq!(word_count("... -- !"), 0);
         let system = vec![seg(Track::System, 1000, 4000, "明日リリースします")];
         let mic = vec![seg(Track::Mic, 1200, 3000, "明日リリースします")];
         assert_eq!(
