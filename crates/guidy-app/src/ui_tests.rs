@@ -1642,6 +1642,7 @@ mod banners_and_events {
         let state = setup(cx, FakeBackend::new());
         let (w, _) = open(cx, |_, cx| StatusBar::new(cx));
         assert!(!exists(cx, w, "download-activity"));
+        let selector = state.read_with(cx, |s, _| s.selector_status);
         let mut item = DownloadItem::new(
             "separation:titanet_large",
             "TitaNet",
@@ -1653,9 +1654,19 @@ mod banners_and_events {
             cx,
             &state,
             guidy_core::downloads::DOWNLOADS_CHANGED_EVENT,
+            serde_json::to_value(vec![item.clone()]).unwrap(),
+        );
+        assert!(exists(cx, w, "download-activity"));
+        // Verifying shows here too, and neither touches the model selector.
+        item.state = DownloadState::Verifying;
+        dispatch(
+            cx,
+            &state,
+            guidy_core::downloads::DOWNLOADS_CHANGED_EVENT,
             serde_json::to_value(vec![item]).unwrap(),
         );
         assert!(exists(cx, w, "download-activity"));
+        assert_eq!(state.read_with(cx, |s, _| s.selector_status), selector);
         let (middle, activity_x) = cx
             .update_window(w, |_, window, cx| {
                 window.render_frame(cx);
