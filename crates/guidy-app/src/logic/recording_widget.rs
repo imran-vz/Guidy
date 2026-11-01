@@ -1384,7 +1384,7 @@ mod tests {
         // A low disk can't hide it: the notice beside a question shows failures.
         let both = RecordingHealth {
             low_disk: true,
-            ..unknown.clone()
+            ..unknown
         };
         assert_eq!(
             health_notice(&both),
