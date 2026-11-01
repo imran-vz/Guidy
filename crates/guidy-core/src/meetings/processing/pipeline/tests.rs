@@ -2157,6 +2157,83 @@ fn a_unit_with_echo_taken_out_stays_the_users_and_points_at_its_unit() {
 }
 
 #[test]
+fn store_voiceprints_skips_a_trimmed_mic_units_mixed_embedding() {
+    use Track::{Mic, System};
+    let f = fixture();
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 10_000, 19_000, Some(axis(2))),
+        (System, 0, 3_000, Some(axis(1))),
+    ]);
+    let phrase = ["ship", "it", "now"];
+    let mut mixed = spoken(0, &phrase);
+    let local = spoken(7_000, &["my", "connection", "dropped"]);
+    mixed.text = format!("{} {}", mixed.text, local.text);
+    mixed.words.extend(local.words);
+    cache.transcripts = vec![
+        Some(mixed),
+        Some(spoken(10_000, &["what", "about", "the", "budget"])),
+        Some(spoken(0, &phrase)),
+    ];
+    let config = PipelineConfig::default();
+    let clustering = cluster_units(&cache, &config, &[], &[]);
+    let built = build_transcript(&cache, &clustering, &config);
+    let stored = f
+        .store
+        .replace_transcript(f.id, &built.0, &built.1)
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let pipeline = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config,
+        mic: None,
+        system: None,
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Default::default(),
+        turns: None,
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    };
+    pipeline
+        .store_voiceprints(&cache, &clustering, &built, &stored)
+        .unwrap();
+    let embeddings = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    let trimmed = stored
+        .1
+        .iter()
+        .find(|s| s.text == "my connection dropped")
+        .unwrap();
+    assert!(embeddings.iter().all(|e| e.segment_id != trimmed.id));
+    assert_eq!(embeddings.len(), 2, "clean mic and system prints remain");
+    for (track, voice) in [(Mic, axis(2)), (System, axis(1))] {
+        let segment = stored
+            .1
+            .iter()
+            .find(|s| s.track == track && s.id != trimmed.id)
+            .unwrap();
+        let embedding = embeddings
+            .iter()
+            .find(|e| e.segment_id == segment.id)
+            .unwrap();
+        assert_eq!(embedding.embedding, voice);
+        assert_eq!(embedding.duration_ms, segment.t1_ms - segment.t0_ms);
+    }
+}
+
+#[test]
 fn redoing_the_speakers_takes_no_words_from_a_stored_mic_line() {
     use Track::{Mic, System};
     // The user repeated the remote's phrase just after its echo came out.

@@ -230,7 +230,7 @@ fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
     if m.words.is_empty() || !timed {
         return None;
     }
-    let mut out = Vec::with_capacity(m.words.len());
+    let mut out: Vec<(String, bool)> = Vec::with_capacity(m.words.len());
     let mut next = 0;
     // Punctuation comes from the text; an entry of it adds none of its own.
     let attach_marks = |next: &mut usize, out: &mut Vec<(String, bool)>| {
@@ -1032,6 +1032,16 @@ mod tests {
     }
 
     #[test]
+    fn standalone_punctuation_attaches_to_the_previous_word() {
+        let mut mic = over(Track::Mic, 0, 2_000, &["sounds", "good"]);
+        mic.text = "sounds good !".into();
+        assert_eq!(
+            word_texts(&mic),
+            Some(vec![("sounds".into(), true), ("good !".into(), true)])
+        );
+    }
+
+    #[test]
     fn marks_come_from_the_text_once_and_are_not_lost() {
         let echo = over(Track::System, 0, 3_000, &["ship", "it", "now"]);
         let spread = [
@@ -1056,7 +1066,7 @@ mod tests {
         // Attached in the text as well as listed apart: not doubled.
         mic.text = "Ship it now. Sounds good!".into();
         assert_eq!(
-            left_of(mic, &[echo.clone()]),
+            left_of(mic, std::slice::from_ref(&echo)),
             vec![(5_000, 7_100, "Sounds good!".to_string())]
         );
         // Alone in the text, with no entry of its own: not dropped.
