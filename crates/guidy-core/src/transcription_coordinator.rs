@@ -166,8 +166,8 @@ enum Effect {
         binding_id: String,
         hotkey_string: String,
     },
-    /// Discard the recording. The state moves when the executor has finished,
-    /// through [`CoordinatorState::on_cancel_effect_done`].
+    /// Discard the recording. The executor applies [`CoordinatorState::on_cancel`]
+    /// itself when it has finished, so no later command can see the old session.
     Cancel,
 }
 
@@ -233,9 +233,6 @@ struct CoordinatorState {
     last_press: Option<Instant>,
     pending_release: Option<PendingRelease>,
     pending_press: Option<PendingPress>,
-    /// `notify_cancel` messages from our own [`Effect::Cancel`] still in the
-    /// queue. The state already moved, so they must not touch a newer session.
-    own_cancels_queued: u32,
 }
 
 impl CoordinatorState {
@@ -246,7 +243,6 @@ impl CoordinatorState {
             last_press: None,
             pending_release: None,
             pending_press: None,
-            own_cancels_queued: 0,
         }
     }
 
@@ -560,23 +556,6 @@ impl CoordinatorState {
         }
     }
 
-    /// [`Effect::Cancel`] has finished, so the recording is gone. Moving now
-    /// rather than on its queued notification keeps a gesture queued meanwhile
-    /// from being read as a repeat of the hold just discarded.
-    fn on_cancel_effect_done(&mut self) {
-        self.on_cancel(true);
-        self.own_cancels_queued += 1;
-    }
-
-    /// A `notify_cancel` arrived. Our own were applied when the effect finished.
-    fn on_cancel_notified(&mut self, recording_was_active: bool) {
-        if self.own_cancels_queued > 0 {
-            self.own_cancels_queued -= 1;
-        } else {
-            self.on_cancel(recording_was_active);
-        }
-    }
-
     fn on_processing_finished(&mut self) -> Option<Effect> {
         self.stage = Stage::Idle;
         self.hold = None;
@@ -695,7 +674,7 @@ impl TranscriptionCoordinator {
                         }
                         Command::Cancel {
                             recording_was_active,
-                        } => state.on_cancel_notified(recording_was_active),
+                        } => state.on_cancel(recording_was_active),
                         Command::ProcessingFinished => {
                             if let Some(effect) = state.on_processing_finished() {
                                 run_effect(&app, &mut state, effect);
@@ -820,11 +799,11 @@ fn run_effect(app: &AppHandle, state: &mut CoordinatorState, effect: Effect) {
             hotkey_string,
         } => stop(app, &binding_id, &hotkey_string),
         // Runs here like `stop`, and may wait the same way on recorder cleanup.
-        // Its notify_cancel only queues on this thread's own channel, so it
-        // can't deadlock or re-enter the state machine.
+        // This is the cancel without its `notify_cancel`: a notification would
+        // queue behind gestures sent meanwhile and reset the session they start.
         Effect::Cancel => {
-            crate::utils::cancel_current_operation(app);
-            state.on_cancel_effect_done();
+            let recording_was_active = crate::utils::discard_current_operation(app);
+            state.on_cancel(recording_was_active);
         }
     }
 }
@@ -1836,29 +1815,25 @@ mod tests {
             gesture(&mut state, GestureIntent::Abort, t0 + ms(100)),
             Some(Effect::Cancel)
         );
-        state.on_cancel_effect_done();
+        state.on_cancel(true);
         assert_eq!(state.stage, Stage::Idle);
     }
 
-    /// The effect's notify_cancel queues behind any gesture sent meanwhile.
+    /// The cancel is applied before the next command, so a hold queued while
+    /// it ran starts fresh instead of reading as a repeat of the discarded one.
     #[test]
-    fn hold_queued_during_abort_survives_its_cancel_notification() {
+    fn hold_queued_during_abort_starts_fresh() {
         let mut state = CoordinatorState::new();
         let t0 = Instant::now();
         gesture(&mut state, GestureIntent::HoldStart, t0);
         gesture(&mut state, GestureIntent::Abort, t0 + ms(100));
-        state.on_cancel_effect_done();
+        state.on_cancel(true);
 
         assert!(matches!(
             gesture(&mut state, GestureIntent::HoldStart, t0 + ms(400)),
             Some(Effect::Start { .. })
         ));
-        state.on_cancel_notified(true);
         assert_eq!(state.stage, Stage::Recording(BINDING.to_string()));
-
-        // A cancel from anywhere else still ends the session.
-        state.on_cancel_notified(true);
-        assert_eq!(state.stage, Stage::Idle);
     }
 
     #[test]
