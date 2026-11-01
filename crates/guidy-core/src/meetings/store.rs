@@ -817,7 +817,9 @@ impl MeetingsStore {
     }
 
     /// The newest meeting whose transcript has text (the tray's "Copy Last
-    /// Meeting Transcript"). A meeting still recording doesn't count.
+    /// Meeting Transcript"). A meeting still recording doesn't count. The
+    /// `TRIM` set is Rust's `char::is_whitespace`, so this agrees with the
+    /// export's `str::trim`.
     pub fn latest_transcribed_meeting(&self) -> Result<Option<MeetingId>> {
         Ok(self
             .conn
@@ -828,7 +830,11 @@ impl MeetingsStore {
                    AND EXISTS (
                        SELECT 1 FROM meeting_segments s
                        WHERE s.meeting_id = m.id
-                         AND TRIM(s.text, ' ' || char(9, 10, 13)) <> ''
+                         AND TRIM(s.text, char(
+                             9, 10, 11, 12, 13, 32, 133, 160, 5760,
+                             8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+                             8232, 8233, 8239, 8287, 12288
+                         )) <> ''
                    )
                  ORDER BY m.started_at DESC, m.id DESC
                  LIMIT 1",
@@ -2515,7 +2521,7 @@ pub(crate) mod tests {
         s.set_meeting_status(blank, MeetingStatus::Processed, None)
             .unwrap();
         let mut empty = segment(0, None, Track::Mic);
-        empty.text = " \n\t ".into();
+        empty.text = " \n\t\u{b}\u{c}\u{a0}\u{2003}\u{3000} ".into();
         s.replace_transcript(blank, &[], &[empty]).unwrap();
         assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(done));
 
