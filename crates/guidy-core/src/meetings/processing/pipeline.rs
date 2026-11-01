@@ -1409,7 +1409,9 @@ pub fn cluster_units_with(
     } else {
         let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
         let attached = cluster::attach_by_time(&spans, &system_labels);
-        let any_voice = system_labels.iter().any(Option::is_some);
+        // Voiceprints that placed nothing are not "no voiceprints": those
+        // lines stay unknown rather than all becoming one speaker.
+        let any_voice = system.iter().any(|&i| vector_of(i).is_some());
         for (&i, l) in system.iter().zip(attached) {
             labels[i] = if rejected[i] {
                 None
@@ -1476,11 +1478,12 @@ pub fn cluster_units_with(
     }
     let moved = move_to_voices(cache, config, known, &mut labels, &voices);
     if !moved.is_empty() && !matches!(source, ClusterSource::SystemLabels(_)) {
-        // Short lines follow the voices around them again. A line its own
-        // voice placed stays there: it may be all its new cluster holds.
+        // Short lines follow the voices around them again, those a voice
+        // named included. A line its own voice placed stays there: it may be
+        // all its new cluster holds.
         let system_labels: Vec<Option<usize>> = system
             .iter()
-            .map(|&i| labels[i].filter(|_| placed[i]))
+            .map(|&i| labels[i].filter(|_| placed[i] || voices[i].is_some()))
             .collect();
         if system_labels.iter().any(Option::is_some) {
             for (&i, l) in system

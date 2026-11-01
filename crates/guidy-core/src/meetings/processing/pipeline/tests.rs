@@ -1675,6 +1675,84 @@ fn a_moved_line_without_a_better_voiceprint_keeps_its_new_cluster() {
     assert_eq!(c.matches[line_1].person_id, Some(9));
 }
 
+/// A checkpoint of these `(track, t0_ms, t1_ms, voiceprint)` lines, all with
+/// speech.
+fn cache_of(lines: &[(Track, i64, i64, Option<Vec<f32>>)]) -> ProcessingCache {
+    let mut cache = ProcessingCache::new();
+    cache.units = lines
+        .iter()
+        .map(|(track, t0_ms, t1_ms, _)| Unit {
+            track: *track,
+            span: vad::Span {
+                t0_ms: *t0_ms,
+                t1_ms: *t1_ms,
+            },
+        })
+        .collect();
+    cache.transcripts = (0..lines.len())
+        .map(|i| {
+            Some(UnitTranscript {
+                text: format!("line {i}"),
+                words: Vec::new(),
+            })
+        })
+        .collect();
+    cache.embeddings = lines.iter().map(|l| Some(l.3.clone())).collect();
+    cache
+}
+
+/// Axis `k` of a 4-d voiceprint.
+fn axis(k: usize) -> Vec<f32> {
+    let mut v = vec![0f32; 4];
+    v[k] = 1.0;
+    v
+}
+
+#[test]
+fn system_voices_too_brief_to_place_stay_unknown_not_one_speaker() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (Mic, 5_000, 9_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(1))),
+        (System, 15_000, 19_000, Some(axis(2))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![Some(0), Some(0), None, None]);
+}
+
+#[test]
+fn short_speech_follows_a_line_placed_only_by_its_own_voice() {
+    use Track::System;
+    let (a, b, c) = (axis(0), axis(1), axis(2));
+    let lines = [
+        (System, 0, 4_000, Some(a.clone())),
+        (System, 8_000, 12_000, Some(b.clone())),
+        (System, 16_000, 20_000, Some(a.clone())),
+        (System, 24_000, 28_000, Some(b.clone())),
+        (System, 40_000, 42_000, Some(c)),
+        (System, 42_100, 42_600, None),
+    ];
+    let cache = cache_of(&lines);
+    // The better model hears line 4 as equally near both clusters.
+    let source = ClusterSource::Vectors(vec![
+        Some(a.clone()),
+        Some(b.clone()),
+        Some(a),
+        Some(b),
+        Some(vec![1.0, 1.0, 0.0, 0.0]),
+        None,
+    ]);
+    let known = [KnownVoice {
+        person_id: 5,
+        prints: vec![vec![0.1, 0.0, 1.0, 0.0], vec![-0.1, 0.0, 1.0, 0.0]],
+    }];
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &known, &[], &source);
+    assert_eq!(c.voices[4], Some(5));
+    assert!(c.labels[4].is_some());
+    assert_eq!(c.labels[5], c.labels[4]);
+}
+
 /// A meeting of [`system_turns`] with this separation model.
 fn run_with_separation_model(f: &Fixture, model: &mut dyn Embedder) -> Result<()> {
     let cancel = AtomicBool::new(false);
