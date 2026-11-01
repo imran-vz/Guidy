@@ -116,7 +116,7 @@ def synthesize(text, voice, rate, work):
     """16 kHz mono 16-bit PCM of `text`, as bytes."""
     aiff = work / "clip.aiff"
     wav = work / "clip.wav"
-    choice = ["-v", voice] if voice else []
+    choice = [] if voice is None else ["-v", voice]
     subprocess.run(["say", *choice, "-r", str(rate), "-o", str(aiff), text], check=True)
     subprocess.run(
         ["afconvert", "-f", "WAVE", "-d", f"LEI16@{SAMPLE_RATE}", "-c", "1", str(aiff), str(wav)],
@@ -163,7 +163,7 @@ def main():
     parser.add_argument("out", type=pathlib.Path)
     parser.add_argument("--voice", help="a voice from `say -v ?` (default: the system's)")
     args = parser.parse_args()
-    if args.voice:
+    if args.voice is not None:
         require_voice(args.voice)
     args.out.mkdir(parents=True, exist_ok=True)
     meetings = []

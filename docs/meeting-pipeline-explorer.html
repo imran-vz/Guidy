@@ -393,10 +393,10 @@ FIG.echo = () => {
   b+=T(10,54,'mic',{size:10.5,w:600,fill:C.mic})+R(120,44,200,22,'#fbe3e0',C.red)+T(128,59,'"ship the beta on friday"',{size:10.5,fill:C.red});
   b+=R(345,44,150,22,C.micS,C.mic)+T(353,59,'"sounds good"',{size:10.5,fill:C.mic});
   b+=L(120,76,120,96,C.ink3,{dash:'2 2'})+L(320,76,320,96,C.ink3,{dash:'2 2'})+T(220,92,'overlaps in time (± 750 ms)',{size:9.5,anchor:'middle',fill:C.ink3});
-  b+=T(10,120,'similarity = max( share of mic words also heard on system , Levenshtein of the token strings )',{size:10.5,fill:C.ink2});
-  b+=T(10,138,'"ship the beta on friday" vs system words → 1.0 ≥ 0.6 → echo: dropped',{size:10.5,fill:C.red,w:600});
+  b+=T(10,120,'each mic word is matched to system words said in the same order, within ± 750 ms',{size:10.5,fill:C.ink2});
+  b+=T(10,138,'"ship the beta on friday" → a run of 5 matching words → echo: dropped',{size:10.5,fill:C.red,w:600});
   b+=T(10,156,'"sounds good" → not on system → kept as you',{size:10.5,fill:C.green,w:600});
-  b+=T(10,180,'Fewer than 3 mic words are never an echo. Bleed AEC3 missed would otherwise credit Alice\'s words to you.',{size:10.5,fill:C.ink3});
+  b+=T(10,180,'A run of fewer than 3 words is never an echo. Bleed AEC3 missed would otherwise credit Alice\'s words to you.',{size:10.5,fill:C.ink3});
   return svg(560,190,b);
 };
 
@@ -556,9 +556,9 @@ const N = [
   files:['src/meetings/processing/cluster.rs','src/meetings/processing/pipeline.rs (cluster_units_with)','src/meetings/processing/deepgram.rs']},
  {id:'merge',x:1284,y:388,w:186,h:84,kind:'both',band:'Processing',title:'Merge + echo net',tech:'one timeline · D9',
   call:['Merge stage','echo net (D9)','timeline merge','pins'],fig:'echo',sub:'merge',
-  body:`<p>Combines the mic and system tracks into one timeline and writes the transcript. Before that, the <b>echo net</b> removes mic lines that are just the remote speaker leaking through your speakers, so their words aren't credited to you.</p>`,
-  steps:['For each mic segment of at least 3 words, collect system words within ±750 ms (shorter replies are never echoes).','Similarity = the larger of the share of mic words heard on the system track and the Levenshtein similarity.','≥ 0.6: it\'s an echo, dropped. The cluster stage left the same lines out.','Apply pins (lines you assigned by hand).','Sort by start time, replace the stored transcript, keep per-segment voiceprints, delete the checkpoint.'],
-  nums:[['slack_ms','750'],['echo threshold','0.6'],['ECHO_MIN_TOKENS','3']],
+  body:`<p>Combines the mic and system tracks into one timeline and writes the transcript. Before that, the <b>echo net</b> removes mic words that are just the remote speaker leaking through your speakers, so their words aren't credited to you. One mic line can hold both, so it decides word by word and your own words stay.</p>`,
+  steps:['For each mic segment of at least 3 words, collect system words within ±750 ms (shorter replies are never echoes).','Match the mic words to them, in order and close in time.','Runs of at least 3 matching words go; the rest stays yours, as one or more lines. Without usable word times, a line goes only if every word matches.','The cluster stage left out lines that lost words, and they keep no voiceprint. Redoing the speakers takes no words from the stored transcript.','Apply pins (lines you assigned by hand).','Sort by start time, replace the stored transcript, keep per-segment voiceprints, delete the checkpoint.'],
+  nums:[['slack_ms','750'],['ECHO_MIN_TOKENS','3']],
   files:['src/meetings/processing/timeline.rs','src/meetings/processing/pipeline.rs (merge, apply_pins, build_transcript)']},
 
  // band 3: afterwards
