@@ -12,7 +12,7 @@
 //! notes, until the call ends or the hint is dismissed.
 
 use guidy_core::meetings::calls::{
-    holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange,
+    holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange, END_GRACE_MS,
 };
 use guidy_core::meetings::types::{
     format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState,
@@ -492,8 +492,13 @@ impl WidgetModel {
                     || (c.app_id == tracked.app_id && c.source != tracked.source))
         });
         if new_call {
-            // Off the microphone now, or back already for another service.
-            let released = self.presence.released_at().or(self.last_release);
+            // Off the microphone now, or back for another service straight
+            // after letting go. A longer way back says nothing about when the
+            // audio stopped being this call's, so it all stays.
+            let new_since = self.call.as_ref().map_or(i64::MIN, |c| c.since);
+            let released = self.presence.released_at().or(self
+                .last_release
+                .filter(|at| (0..=END_GRACE_MS).contains(&(new_since.saturating_sub(*at)))));
             self.stop_released_ago = released.map(|at| (now - at).max(0));
             return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
         }
@@ -1048,6 +1053,28 @@ mod tests {
             Some(CallCommand::Stop)
         );
         assert_eq!(m.take_stop_released_ago(), Some((1, 3_000)));
+    }
+
+    #[test]
+    fn a_release_long_before_the_next_call_does_not_cut_audio() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 4_000));
+        // Polling resumes a minute later (a sleep), with the page not known.
+        let unknown = Call {
+            source: CallSource::BrowserUnknown,
+            since: 65_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        m.apply_call_poll(poll(&browser, None, 65_000));
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(unknown), 84_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), None);
     }
 
     #[test]
