@@ -17,6 +17,11 @@
 //! echo detection doesn't run: mic bleed shows up as false alarm. "Old
 //! clustering" is the previous cut rule without the two tiers; the tracks stay
 //! apart, so a baseline of the old mixed tracks needs a pre-change commit.
+//!
+//! `DER` leaves out a 250 ms collar around each reference boundary and is `N/A`
+//! when that leaves no reference speech to score. `der0` has no collar. For the
+//! risk of splitting one voice, `scripts/gen_diar_cases.py` writes a manifest of
+//! single-speaker cases; there the thing to read is `speakers=found/expected`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -43,6 +48,9 @@ const COLLAR_MS: i64 = 250;
 const MAX_RTTM_SECONDS: f64 = 86_400.0;
 /// A hypothesis speaker's name for the user's mic lines.
 const YOU: &str = "you";
+/// Said first in the output, so no number here is mistaken for the whole product.
+const NOT_TRANSCRIBED: &str = "Nothing is transcribed here: every line counts as speech and text \
+                               echo removal doesn't run, so mic bleed shows up as false alarm.";
 const CUTS: [f32; 3] = [0.4, 0.5, 0.6];
 
 /// One speaker's stretch; `speaker: None` is speech left to an unknown speaker.
@@ -170,12 +178,31 @@ struct Score {
     confusion: f64,
     /// How many speakers too many or too few.
     speaker_count_error: usize,
+    /// How many speakers the reference has, and how many the hypothesis has
+    /// (unknown speech isn't one): which way the count is off.
+    ref_speakers: usize,
+    hyp_speakers: usize,
+    /// Reference speech left to score after the collars, in speaker-frames.
+    scored_frames: u64,
     /// How much of each hypothesis speaker is one reference speaker.
     purity: f64,
     /// How much of each reference speaker is one hypothesis speaker.
     coverage: f64,
     /// The share of hypothesis speech left to an unknown speaker.
     unknown_share: f64,
+}
+
+impl Score {
+    /// The DER, if any reference speech was left to score: collars can take all
+    /// of it, and then `der` says nothing about the reference.
+    fn scored_der(&self) -> Option<f64> {
+        (self.scored_frames > 0).then_some(self.der)
+    }
+}
+
+/// A DER for printing.
+fn der_text(der: Option<f64>) -> String {
+    der.map_or_else(|| "N/A".to_string(), |d| format!("{d:.3}"))
 }
 
 fn share(part: u64, whole: u64) -> f64 {
@@ -297,6 +324,9 @@ fn score(reference: &[Turn], hypothesis: &[Turn], collar_ms: i64) -> Score {
         false_alarm: share(false_alarm, whole),
         confusion: share(confusion, whole),
         speaker_count_error: ref_ids.len().abs_diff(hyp_ids.len()),
+        ref_speakers: ref_ids.len(),
+        hyp_speakers: hyp_ids.len(),
+        scored_frames: total,
         purity: share(best_of_each_hyp, hyp_on_ref),
         coverage: share(best_of_each_ref, ref_frames.iter().sum()),
         unknown_share: share(unknown, hyp_speech),
@@ -693,21 +723,26 @@ fn run_grid(manifest_path: &Path, vad_model: PathBuf) -> Result<()> {
             }
         }
     }
-    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    println!("{NOT_TRANSCRIBED}\n");
+    let mut totals: BTreeMap<String, Means> = BTreeMap::new();
     for m in &manifest.meetings {
         let mut meeting = load(base, m, &mut models)?;
         for &row in &rows {
             let hypothesis = diarize(&mut meeting, &models, row)?;
             let s = score(&meeting.reference, &hypothesis, COLLAR_MS);
+            let no_collar = score(&meeting.reference, &hypothesis, 0);
             println!(
-                "{:<20} {} DER={:.3} miss={:.3} fa={:.3} conf={:.3} count_err={} purity={:.3} \
-                 coverage={:.3} unknown={:.3}{}",
+                "{:<20} {} DER={} der0={} miss={:.3} fa={:.3} conf={:.3} speakers={}/{} \
+                 count_err={} purity={:.3} coverage={:.3} unknown={:.3}{}",
                 m.name,
                 row.label(),
-                s.der,
+                der_text(s.scored_der()),
+                der_text(no_collar.scored_der()),
                 s.missed,
                 s.false_alarm,
                 s.confusion,
+                s.hyp_speakers,
+                s.ref_speakers,
                 s.speaker_count_error,
                 s.purity,
                 s.coverage,
@@ -721,20 +756,60 @@ fn run_grid(manifest_path: &Path, vad_model: PathBuf) -> Result<()> {
                 }
             );
             let total = totals.entry(row.label()).or_default();
-            total.0 += s.der;
-            total.1 += 1;
+            total.der.add(s.scored_der());
+            total.der0.add(no_collar.scored_der());
         }
     }
-    let mut means: Vec<(f64, String)> = totals
-        .into_iter()
-        .map(|(label, (sum, n))| (sum / n.max(1) as f64, label))
-        .collect();
-    means.sort_by(|a, b| a.0.total_cmp(&b.0));
-    println!("\nMean DER, best first:");
-    for (der, label) in means {
-        println!("{der:.3}  {label}");
+    let mut means: Vec<(Means, String)> = totals.into_iter().map(|(l, m)| (m, l)).collect();
+    means.sort_by(|a, b| a.0.sort_key().total_cmp(&b.0.sort_key()));
+    println!("\nMean DER over what could be scored, best first:");
+    for (m, label) in means {
+        println!(
+            "DER={:<5} der0={:<5} n/a={}  {label}",
+            der_text(m.der.mean()),
+            der_text(m.der0.mean()),
+            m.der.not_scored
+        );
     }
     Ok(())
+}
+
+/// A running mean that leaves out what couldn't be scored, and counts it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Mean {
+    sum: f64,
+    scored: usize,
+    not_scored: usize,
+}
+
+impl Mean {
+    fn add(&mut self, der: Option<f64>) {
+        match der {
+            Some(d) => {
+                self.sum += d;
+                self.scored += 1;
+            }
+            None => self.not_scored += 1,
+        }
+    }
+
+    fn mean(&self) -> Option<f64> {
+        (self.scored > 0).then(|| self.sum / self.scored as f64)
+    }
+}
+
+/// One row's means over the meetings, with and without the collar.
+#[derive(Debug, Clone, Copy, Default)]
+struct Means {
+    der: Mean,
+    der0: Mean,
+}
+
+impl Means {
+    /// By the collared mean; a row with nothing scored goes last.
+    fn sort_key(&self) -> f64 {
+        self.der.mean().unwrap_or(f64::INFINITY)
+    }
 }
 
 /// Run through `cargo xtask diar-eval <manifest.json>`, which sets
@@ -873,6 +948,68 @@ mod tests {
     fn nothing_to_score_is_not_a_number() {
         let s = score(&[], &[], COLLAR_MS);
         assert_eq!(s, Score::default());
+    }
+
+    /// Twelve alternating 0.5 s clips, 80 ms apart, as measured in the lab.
+    fn half_second_handoffs() -> Vec<Turn> {
+        (0..12)
+            .map(|k| {
+                let t0 = k * 580;
+                turn(t0, t0 + 500, if k % 2 == 0 { "a" } else { "b" })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collars_that_take_all_the_reference_speech_leave_no_der() {
+        let r = half_second_handoffs();
+        // One speaker over the lot: wrong, and the collar would hide it as 0.
+        let h = vec![turn(0, 6_880, "x")];
+        let s = score(&r, &h, COLLAR_MS);
+        assert_eq!(s.scored_frames, 0);
+        assert_eq!(s.scored_der(), None);
+        assert_eq!(der_text(s.scored_der()), "N/A");
+        // Without the collar it scores: half confused, plus the 11 gaps of 80 ms
+        // as false alarm, over 6 s of reference.
+        let s = score(&r, &h, 0);
+        let want = (300.0 + 88.0) / 600.0;
+        assert!((s.scored_der().unwrap() - want).abs() < 1e-9, "{s:?}");
+        assert_eq!(der_text(Some(0.25)), "0.250");
+    }
+
+    #[test]
+    fn a_perfect_score_with_speech_left_is_still_a_number() {
+        let r = two_speakers();
+        assert_eq!(score(&r, &r, COLLAR_MS).scored_der(), Some(0.0));
+    }
+
+    #[test]
+    fn one_voice_split_in_three_shows_as_too_many_speakers() {
+        let r = vec![turn(0, 30_000, "a")];
+        let h = vec![
+            turn(0, 10_000, "x"),
+            turn(10_000, 20_000, "y"),
+            turn(20_000, 30_000, "z"),
+        ];
+        let s = score(&r, &h, COLLAR_MS);
+        assert_eq!((s.hyp_speakers, s.ref_speakers), (3, 1));
+        assert_eq!(s.speaker_count_error, 2);
+        assert_eq!(s.purity, 1.0);
+        // Most of it goes to speakers the mapping can't give it to.
+        assert!(s.confusion > 0.6, "{s:?}");
+    }
+
+    #[test]
+    fn means_leave_out_what_could_not_be_scored() {
+        let mut m = Means::default();
+        assert_eq!(m.der.mean(), None);
+        assert_eq!(m.sort_key(), f64::INFINITY);
+        m.der.add(Some(0.5));
+        m.der.add(None);
+        m.der.add(Some(0.1));
+        assert!((m.der.mean().unwrap() - 0.3).abs() < 1e-9);
+        assert_eq!(m.der.not_scored, 1);
+        assert!((m.sort_key() - 0.3).abs() < 1e-9);
     }
 
     #[test]
