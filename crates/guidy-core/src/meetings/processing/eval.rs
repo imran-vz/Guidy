@@ -150,8 +150,8 @@ fn best_assignment(weights: &[Vec<u64>], cols: usize) -> Vec<Option<usize>> {
         }
     }
     let mut out = vec![None; rows];
-    for j in 1..=n {
-        let (row, col) = (owner[j] - 1, j - 1);
+    for (j, &row_owner) in owner.iter().enumerate().skip(1) {
+        let (row, col) = (row_owner - 1, j - 1);
         if row < rows && col < cols && weights[row][col] > 0 {
             out[row] = Some(col);
         }
