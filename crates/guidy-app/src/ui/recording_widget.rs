@@ -278,15 +278,16 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
     .detach();
 }
 
-/// Tell the recorder whether a call is behind the recording, when that changed
-/// or the recording did (a new one starts knowing of none).
+/// Tell the recorder whether a call is behind the recording.
 fn tell_in_call(told: &mut (Option<i64>, bool), cx: &mut App) {
     let Some(state) = RecordingWidgetState::global(cx) else {
         return;
     };
     let model = &state.read(cx).model;
     let now = (model.meeting_id(), model.recording_in_call());
-    if now == *told {
+    // Told again every poll while recording: these go out of order on the
+    // background executor, and the last one is what stays.
+    if now == *told && now.0.is_none() {
         return;
     }
     *told = now;

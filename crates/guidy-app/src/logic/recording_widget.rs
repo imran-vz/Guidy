@@ -325,6 +325,7 @@ impl WidgetModel {
     /// recording goes on until it's stopped by hand, but one the user is being
     /// asked about still stops if they don't answer.
     pub fn apply_idle_poll(&mut self, now: i64) -> Option<CallCommand> {
+        self.keep_silence_warning_in_view();
         self.set_call(None);
         self.record_next = None;
         if self.left_at.is_none() {
@@ -332,6 +333,14 @@ impl WidgetModel {
             return None;
         }
         self.stop_if_unanswered(now)
+    }
+
+    /// The no-audio warning's Keep shows beside the floater, not over the open
+    /// panel: it can't be reopened over it either.
+    fn keep_silence_warning_in_view(&mut self) {
+        if self.health().silence_stop_at.is_some() {
+            self.expanded = false;
+        }
     }
 
     fn stop_if_unanswered(&mut self, now: i64) -> Option<CallCommand> {
@@ -350,6 +359,7 @@ impl WidgetModel {
             now,
         } = poll;
         let record = matches!(detection, Some(Detection::Record(_)));
+        self.keep_silence_warning_in_view();
         self.set_call(current);
         if self.recorder.is_recording() {
             return self.follow_recording_call(apps, record, now);
@@ -488,10 +498,7 @@ impl WidgetModel {
             self.recording_stopped();
         }
         self.recorder = state;
-        // Said beside the floater, not behind the open panel.
-        if self.health().silence_stop_at.is_some() {
-            self.expanded = false;
-        }
+        self.keep_silence_warning_in_view();
     }
 
     /// Stopped during a call: don't offer notes for it again. One that ended

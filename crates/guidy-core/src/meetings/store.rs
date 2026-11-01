@@ -3822,7 +3822,7 @@ pub(crate) mod tests {
     #[test]
     fn why_a_recording_ended_early_stays_through_processing() {
         use crate::meetings::recorder::{INTERRUPTED_PREFIX, STOPPED_NO_AUDIO};
-        assert!(INTERRUPTED_LIKE.starts_with(INTERRUPTED_PREFIX));
+        assert!(INTERRUPTED_PREFIX.starts_with(INTERRUPTED_LIKE.trim_end_matches('%')));
         assert!(STOPPED_NO_AUDIO_LIKE.contains(STOPPED_NO_AUDIO));
         let s = MeetingsStore::open_in_memory().unwrap();
         let interrupted = format!("{INTERRUPTED_PREFIX}10:30");
