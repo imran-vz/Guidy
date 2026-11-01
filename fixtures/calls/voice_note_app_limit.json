@@ -1,6 +1,6 @@
 {
   "name": "voice_note_app_limit",
-  "description": "Known limit: a WhatsApp voice note past 4 s looks like a call and is offered. R6 (offer within 5 s) and R9 (none for voice notes) cannot both hold for a 5-6 s note.",
+  "description": "A WhatsApp voice note has input without output, so a 6 s one gets no offer. The known limit moves to 20 s: a note held that long is offered, because a call app may close its output during silence and no call must be lost.",
   "steps": [
     {
       "from": 0,
@@ -15,11 +15,25 @@
       "from": 7000,
       "to": 20000,
       "apps": []
+    },
+    {
+      "from": 21000,
+      "to": 50000,
+      "apps": [
+        {
+          "id": "net.whatsapp.WhatsApp"
+        }
+      ]
+    },
+    {
+      "from": 51000,
+      "to": 60000,
+      "apps": []
     }
   ],
   "offers": [
     {
-      "t": 4000,
+      "t": 41000,
       "source": "whats_app"
     }
   ]

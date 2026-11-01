@@ -635,7 +635,7 @@ pub fn set_notification_handler(handler: impl Fn(&str, &str) + Send + Sync + 'st
 
 // ===== Calls in other apps =================================================
 
-/// A process capturing audio, as the bridge reports it.
+/// A process capturing or playing audio, as the bridge reports it.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct InputProcess {
@@ -643,17 +643,29 @@ pub struct InputProcess {
     pub bundle: String,
     pub name: String,
     pub parents: Vec<String>,
+    /// It is playing audio.
+    pub output: bool,
+    /// It is only playing audio, not capturing: listed so that an app whose
+    /// helpers split the two directions still counts as having both.
+    pub output_only: bool,
 }
 
 /// One entry per app: a browser's or a call app's helpers hold the microphone
-/// as one. Processes nothing is known about are dropped.
+/// as one. Processes nothing is known about are dropped. An app is
+/// `output_running` when any process of it plays audio.
 pub fn input_apps_from(processes: &[InputProcess]) -> Vec<crate::meetings::calls::InputApp> {
     use crate::meetings::calls::InputApp;
     let mut apps: Vec<InputApp> = Vec::new();
-    for p in processes {
+    for p in processes.iter().filter(|p| !p.output_only) {
         let app = InputApp::resolved(p.pid, &p.bundle, &p.name, &p.parents);
         if !app.canonical.is_empty() && !apps.iter().any(|a| a.canonical == app.canonical) {
             apps.push(app);
+        }
+    }
+    for p in processes.iter().filter(|p| p.output || p.output_only) {
+        let canonical = crate::meetings::calls::canonical_app(&p.bundle, &p.name, &p.parents);
+        if let Some(app) = apps.iter_mut().find(|a| a.canonical == canonical) {
+            app.output_running = true;
         }
     }
     apps

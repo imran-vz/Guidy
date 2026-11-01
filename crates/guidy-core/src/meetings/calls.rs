@@ -3,8 +3,9 @@
 //! [`crate::meetings::native::audio_input_apps`] reports, polled by the app.
 //!
 //! An observation is who holds the microphone now. A known service counts as
-//! a call after [`CONFIRM_MS`] (voice-note apps after
-//! [`VOICE_NOTE_APP_CONFIRM_MS`]); a browser on an unknown page after
+//! a call after [`CONFIRM_MS`]; a voice-note app after
+//! [`VOICE_NOTE_APP_CONFIRM_MS`] if it is also playing audio, else after
+//! [`VOICE_NOTE_APP_SILENT_CONFIRM_MS`]; a browser on an unknown page after
 //! [`UNKNOWN_PAGE_CONFIRM_MS`]: voice notes and dictation fields open the
 //! microphone for seconds, calls hold it for minutes. The count follows the
 //! app, not the page: finding out which page it is mid-run keeps it. Losing
@@ -25,12 +26,16 @@ use crate::meetings::call_sites;
 
 /// Microphone held this long (ms) by a known service: a call.
 pub const CONFIRM_MS: i64 = 2_000;
-/// The same for apps that also record voice notes (WhatsApp, Slack). Longer
-/// than [`CONFIRM_MS`] to pass over the shortest of those; short enough, with
-/// a 1 s poll, to offer within the 5 s the scorecard allows. A voice note past
-/// this still gets an offer: the first seconds of the two look the same
-/// (`fixtures/calls/voice_note_app_limit.json`).
+/// The same for apps that also record voice notes (WhatsApp, Slack), while
+/// the app is also playing audio: a call has both directions, a voice note
+/// only input. Short enough, with a 1 s poll, to offer within the 5 s the
+/// scorecard allows.
 pub const VOICE_NOTE_APP_CONFIRM_MS: i64 = 4_000;
+/// The same app with no audio output. A call app may close its output during
+/// silence, so a long enough hold still counts and no call is lost. A voice
+/// note past this still gets an offer
+/// (`fixtures/calls/voice_note_app_limit.json`).
+pub const VOICE_NOTE_APP_SILENT_CONFIRM_MS: i64 = 20_000;
 /// Microphone held this long (ms) by a browser on an unknown page: a call.
 /// The microphone may have been taken up to one 1 s poll before it was first
 /// seen, so this offers within the 20 s the plan and scorecard allow.
@@ -102,10 +107,12 @@ impl CallSource {
         }
     }
 
-    /// How long the microphone must be held before this is a call.
-    pub fn confirm_ms(&self) -> i64 {
+    /// How long the microphone must be held before this is a call, given
+    /// whether the same app is also playing audio now.
+    pub fn confirm_ms(&self, output_running: bool) -> i64 {
         match self {
-            Self::WhatsApp | Self::Slack => VOICE_NOTE_APP_CONFIRM_MS,
+            Self::WhatsApp | Self::Slack if output_running => VOICE_NOTE_APP_CONFIRM_MS,
+            Self::WhatsApp | Self::Slack => VOICE_NOTE_APP_SILENT_CONFIRM_MS,
             Self::BrowserSite(host) if !call_sites::is_known_site(host) => UNKNOWN_PAGE_CONFIRM_MS,
             Self::BrowserUnknown => UNKNOWN_PAGE_CONFIRM_MS,
             _ => CONFIRM_MS,
@@ -260,6 +267,8 @@ pub struct InputApp {
     pub is_browser: bool,
     /// The page, for a browser, when it could be read.
     pub page: Option<PageInfo>,
+    /// The app, or any of its helpers, is playing audio now.
+    pub output_running: bool,
 }
 
 impl std::fmt::Debug for InputApp {
@@ -286,6 +295,7 @@ impl InputApp {
             is_browser: is_browser_app(&canonical),
             canonical,
             page: None,
+            output_running: false,
         }
     }
 
@@ -674,7 +684,10 @@ impl CallDetector {
         // Of those held long enough: the surest, then the longest held.
         let mut confirmed: Option<(String, CallSource, i64)> = None;
         for ((app_id, source), run) in eligible.into_iter().zip(&self.pending) {
-            if now - run.since < source.confirm_ms() {
+            let output_running = apps
+                .iter()
+                .any(|a| a.output_running && a.app_id() == app_id);
+            if now - run.since < source.confirm_ms(output_running) {
                 continue;
             }
             let better = confirmed.as_ref().is_none_or(|(best_id, best, since)| {
@@ -789,6 +802,13 @@ mod tests {
         InputApp {
             bundle_id: id.into(),
             ..Default::default()
+        }
+    }
+
+    fn app_playing(id: &str) -> InputApp {
+        InputApp {
+            output_running: true,
+            ..app(id)
         }
     }
 
@@ -947,7 +967,7 @@ mod tests {
     #[test]
     fn a_call_survives_a_short_gap_and_ends_after_the_grace() {
         let mut d = CallDetector::default();
-        let wa = [app("net.whatsapp.WhatsApp")];
+        let wa = [app_playing("net.whatsapp.WhatsApp")];
         d.observe(&wa, 0);
         d.observe(&wa, 2_000);
         let call = d.observe(&wa, VOICE_NOTE_APP_CONFIRM_MS).unwrap();
@@ -961,6 +981,39 @@ mod tests {
         d.observe(&wa, 42_000);
         let next = d.observe(&wa, 40_000 + VOICE_NOTE_APP_CONFIRM_MS).unwrap();
         assert_eq!(next.since, 40_000);
+    }
+
+    #[test]
+    fn eight_hours_of_six_second_voice_notes_offer_nothing() {
+        let mut d = CallDetector::default();
+        let wa = [app("net.whatsapp.WhatsApp")];
+        for note in 0..240i64 {
+            let start = note * 120_000;
+            for ms in (0..=6_000).step_by(1_000) {
+                assert_eq!(d.detect(&wa, &[], start + ms), None, "note {note}");
+            }
+            for ms in (7_000..120_000).step_by(1_000) {
+                assert_eq!(d.detect(&[], &[], start + ms), None, "note {note}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_voice_note_apps_wait_for_output() {
+        for id in ["net.whatsapp.WhatsApp", "com.tinyspeck.slackmacgap"] {
+            let mut d = CallDetector::default();
+            assert_eq!(d.observe(&[app(id)], 0), None);
+            assert_eq!(d.observe(&[app(id)], 19_999), None);
+            assert!(d.observe(&[app(id)], 20_000).is_some(), "{id}");
+            let mut d = CallDetector::default();
+            assert_eq!(d.observe(&[app_playing(id)], 0), None);
+            assert_eq!(d.observe(&[app_playing(id)], 3_999), None);
+            assert!(d.observe(&[app_playing(id)], 4_000).is_some(), "{id}");
+        }
+        // Other sources don't look at it.
+        let mut d = CallDetector::default();
+        assert_eq!(d.observe(&[app("us.zoom.xos")], 0), None);
+        assert!(d.observe(&[app("us.zoom.xos")], CONFIRM_MS).is_some());
     }
 
     #[test]
@@ -1151,6 +1204,8 @@ mod tests {
         host: Option<String>,
         #[serde(default)]
         path: String,
+        #[serde(default)]
+        output: bool,
     }
 
     #[derive(Deserialize, Debug, PartialEq)]
@@ -1164,6 +1219,10 @@ mod tests {
     const FIXTURES: &[&str] = &[
         include_str!("../../../../fixtures/calls/voice_note_bursts.json"),
         include_str!("../../../../fixtures/calls/voice_note_app_limit.json"),
+        include_str!("../../../../fixtures/calls/voice_note_chime.json"),
+        include_str!("../../../../fixtures/calls/voice_note_app_call.json"),
+        include_str!("../../../../fixtures/calls/voice_note_app_output_late.json"),
+        include_str!("../../../../fixtures/calls/voice_note_app_silent_call.json"),
         include_str!("../../../../fixtures/calls/always_page_with_interrupted_run.json"),
         include_str!("../../../../fixtures/calls/back_to_back_browser_page_late.json"),
         include_str!("../../../../fixtures/calls/always_page_keeps_other_run.json"),
@@ -1201,6 +1260,7 @@ mod tests {
                         host: host.clone(),
                         path: a.path.clone(),
                     }),
+                    output_running: a.output,
                     ..Default::default()
                 })
                 .collect();

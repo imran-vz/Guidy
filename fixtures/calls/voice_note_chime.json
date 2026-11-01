@@ -1,0 +1,31 @@
+{
+  "name": "voice_note_chime",
+  "description": "Slack plays a chime in the first seconds of a voice note: output gone by the time it counts, so no offer.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 3000,
+      "apps": [
+        {
+          "id": "com.tinyspeck.slackmacgap",
+          "output": true
+        }
+      ]
+    },
+    {
+      "from": 4000,
+      "to": 8000,
+      "apps": [
+        {
+          "id": "com.tinyspeck.slackmacgap"
+        }
+      ]
+    },
+    {
+      "from": 9000,
+      "to": 30000,
+      "apps": []
+    }
+  ],
+  "offers": []
+}

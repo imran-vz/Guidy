@@ -2091,7 +2091,7 @@ private func parentPID(_ pid: pid_t) -> pid_t? {
     return parent > 1 && parent != pid ? parent : nil
 }
 
-/// A process capturing audio, as `{pid, bundle, name, parents}`. `parents` are
+/// A process using audio, as `{pid, bundle, name, parents}`. `parents` are
 /// the bundle ids up its parent chain, nearest first (empty for a parent with
 /// none): Chromium and Electron capture in helpers some of which have no
 /// bundle id. FaceTime captures in `avconferenced`, which isn't its child, so
@@ -2139,16 +2139,39 @@ public func guidyMbAudioInputProcesses() -> UnsafeMutablePointer<CChar>? {
     // Polled from a plain thread: AppKit's lookups would pile up without a pool.
     return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
         var out: [[String: Any]] = []
+        var playing: [(pid: pid_t, object: AudioObjectID)] = []
         for object in objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
-            let running = audioProperty(
+            let input = audioProperty(
                 object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal,
                 UInt32(0))
-            guard (running ?? 0) != 0,
+            let output = audioProperty(
+                object, kAudioProcessPropertyIsRunningOutput, kAudioObjectPropertyScopeGlobal,
+                UInt32(0))
+            let capturing = (input ?? 0) != 0
+            let isPlaying = (output ?? 0) != 0
+            guard capturing || isPlaying,
                 let pid = audioProperty(
                     object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0)),
                 pid != own
             else { continue }
-            out.append(describeProcess(pid: pid, audioBundle: processBundleID(object)))
+            guard capturing else {
+                playing.append((pid: pid, object: object))
+                continue
+            }
+            var process = describeProcess(pid: pid, audioBundle: processBundleID(object))
+            process["output"] = isPlaying
+            out.append(process)
+        }
+        // A helper may play while another captures. Only worth the lookups
+        // when something is capturing, which is rare.
+        if !out.isEmpty {
+            for entry in playing {
+                var process = describeProcess(
+                    pid: entry.pid, audioBundle: processBundleID(entry.object))
+                process["output"] = true
+                process["output_only"] = true
+                out.append(process)
+            }
         }
         guard let data = try? JSONSerialization.data(withJSONObject: out, options: []),
             let json = String(data: data, encoding: .utf8)

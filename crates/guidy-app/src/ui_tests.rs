@@ -4586,6 +4586,7 @@ mod recording_widget {
         poll(cx, END_GRACE_MS + 2_000);
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "net.whatsapp.WhatsApp".into(),
+            output_running: true,
             ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);

@@ -19,7 +19,8 @@
           "id": "com.google.Chrome"
         },
         {
-          "id": "com.tinyspeck.slackmacgap"
+          "id": "com.tinyspeck.slackmacgap",
+          "output": true
         }
       ]
     },
@@ -43,7 +44,8 @@
           "path": "/abc-defg-hij"
         },
         {
-          "id": "com.tinyspeck.slackmacgap"
+          "id": "com.tinyspeck.slackmacgap",
+          "output": true
         }
       ]
     }

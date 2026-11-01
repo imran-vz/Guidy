@@ -593,3 +593,38 @@ fn a_failed_post_is_not_tracked() {
         assert!(posted_notifications("native-test.failed").is_empty());
     }
 }
+
+#[test]
+fn an_apps_output_counts_across_its_helpers() {
+    let processes: Vec<InputProcess> = serde_json::from_str(
+        r#"[
+            {"pid": 2, "bundle": "", "name": "Slack Helper",
+             "parents": ["com.tinyspeck.slackmacgap"], "output": false},
+            {"pid": 3, "bundle": "com.tinyspeck.slackmacgap.helper", "name": "Slack Helper (Renderer)",
+             "parents": [], "output": true, "output_only": true},
+            {"pid": 4, "bundle": "net.whatsapp.WhatsApp", "name": "WhatsApp",
+             "parents": [], "output": false},
+            {"pid": 5, "bundle": "com.apple.Music", "name": "Music",
+             "parents": [], "output": true, "output_only": true}
+        ]"#,
+    )
+    .unwrap();
+    let apps = input_apps_from(&processes);
+    // Playing alone never puts an app on the microphone.
+    assert_eq!(apps.len(), 2);
+    assert_eq!(apps[0].canonical, "com.tinyspeck.slackmacgap");
+    assert!(apps[0].output_running);
+    // Another app's music isn't this app's output.
+    assert_eq!(apps[1].canonical, "net.whatsapp.WhatsApp");
+    assert!(!apps[1].output_running);
+}
+
+#[test]
+fn a_process_from_an_older_bridge_reads_as_capturing_without_output() {
+    let processes: Vec<InputProcess> =
+        serde_json::from_str(r#"[{"pid": 2, "bundle": "us.zoom.xos", "name": "", "parents": []}]"#)
+            .unwrap();
+    let apps = input_apps_from(&processes);
+    assert_eq!(apps.len(), 1);
+    assert!(!apps[0].output_running);
+}

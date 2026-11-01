@@ -1,0 +1,41 @@
+{
+  "name": "voice_note_app_call",
+  "description": "Calls have both directions: WhatsApp and Slack are offered at 4 s, inside the 5 s the scorecard allows.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 10000,
+      "apps": [
+        {
+          "id": "net.whatsapp.WhatsApp",
+          "output": true
+        }
+      ]
+    },
+    {
+      "from": 11000,
+      "to": 100000,
+      "apps": []
+    },
+    {
+      "from": 101000,
+      "to": 110000,
+      "apps": [
+        {
+          "id": "com.tinyspeck.slackmacgap",
+          "output": true
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 4000,
+      "source": "whats_app"
+    },
+    {
+      "t": 105000,
+      "source": "slack"
+    }
+  ]
+}
