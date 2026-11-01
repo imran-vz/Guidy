@@ -130,14 +130,14 @@ const FIG = {};
 FIG.capture = () => svg(560,200, ARROWDEF +
   box(10,20,130,44,'Microphone',C.micS,C.mic,{w:600}) +
   box(10,120,130,44,'Speakers / Meet tab',C.sysS,C.sys,{w:600}) +
-  box(185,12,150,60,'',C.micS,C.mic) + T(260,36,'AVAudioEngine',{anchor:'middle',w:600}) + T(260,54,'+ VPIO echo cancel*',{anchor:'middle',size:11,fill:C.ink2}) +
+  box(185,12,150,60,'',C.micS,C.mic) + T(260,36,'AVAudioEngine',{anchor:'middle',w:600}) + T(260,54,'plain input, AEC3 later*',{anchor:'middle',size:11,fill:C.ink2}) +
   box(185,112,150,60,'',C.sysS,C.sys) + T(260,136,'Core Audio',{anchor:'middle',w:600}) + T(260,154,'process tap → aggregate',{anchor:'middle',size:11,fill:C.ink2}) +
   box(375,62,80,60,'',C.bothS,C.both) + T(415,86,'AVAudio',{anchor:'middle',size:11,w:600}) + T(415,102,'Converter',{anchor:'middle',size:11,w:600}) +
   T(415,140,'any rate → 16 kHz',{anchor:'middle',size:10.5,fill:C.ink2}) + T(415,154,'mono f32',{anchor:'middle',size:10.5,fill:C.ink2}) +
   box(480,62,70,60,'Aligner',C.bothS,C.both,{w:600}) +
   L(140,42,183,42,C.mic,{arrow:1}) + L(140,142,183,142,C.sys,{arrow:1}) +
   L(335,42,373,80,C.mic,{arrow:1}) + L(335,142,373,104,C.sys,{arrow:1}) + L(455,92,478,92,C.ink2,{arrow:1}) +
-  T(10,195,'* VPIO is used only when the call plays through speakers. With headphones the plain mic is recorded.',{size:10.5,fill:C.ink3}));
+  T(10,195,'* Echo is removed in Rust (AEC3), with the system track as the reference. The mic itself is recorded plain.',{size:10.5,fill:C.ink3}));
 
 FIG.aligner = () => {
   let b = ARROWDEF + T(10,18,'wall clock since capture start →',{size:11,fill:C.ink3});
@@ -396,7 +396,7 @@ FIG.echo = () => {
   b+=T(10,120,'similarity = max( share of mic words also heard on system , Levenshtein of the token strings )',{size:10.5,fill:C.ink2});
   b+=T(10,138,'"ship the beta on friday" vs system words → 1.0 ≥ 0.6 → echo: dropped',{size:10.5,fill:C.red,w:600});
   b+=T(10,156,'"sounds good" → not on system → kept as you',{size:10.5,fill:C.green,w:600});
-  b+=T(10,180,'Speaker leakage that VPIO missed would otherwise credit Alice\'s words to you.',{size:10.5,fill:C.ink3});
+  b+=T(10,180,'Fewer than 3 mic words are never an echo. Bleed AEC3 missed would otherwise credit Alice\'s words to you.',{size:10.5,fill:C.ink3});
   return svg(560,190,b);
 };
 
@@ -427,8 +427,8 @@ FIG.uservoice = () => svg(560,150, ARROWDEF +
   box(10,30,140,36,'People › Your voice',C.micS,C.mic,{size:11,w:600}) + L(150,48,178,48,C.ink2,{arrow:1}) +
   box(180,30,140,36,'windows → prints',C.bothS,C.both,{size:11}) + L(320,48,348,48,C.ink2,{arrow:1}) +
   box(350,30,200,36,'user_voiceprints',C.storeS,C.store,{mono:1,size:11}) +
-  T(10,94,'With a sample: mic segments are embedded too. Similarity to you ≥ 0.5 → you;',{size:10.5,fill:C.ink2}) +
-  T(10,110,'less → someone else in the room, who gets clustered and named like a remote speaker.',{size:10.5,fill:C.ink2}) +
+  T(10,94,'With a sample: mic segments are embedded too, and clustered apart from the system track.',{size:10.5,fill:C.ink2}) +
+  T(10,110,'A mic cluster is someone else only with ≥ 8 s of speech and < 0.5 similarity to you; else it is you.',{size:10.5,fill:C.ink2}) +
   T(10,134,'Without a sample: every mic line is you (label = your display name, else "me").',{size:10.5,fill:C.ink3}));
 
 FIG.summarize = () => {
@@ -476,11 +476,11 @@ FIG.store = () => svg(560,120,
 // kind: mic | sys | both | store | llm | eph
 const N = [
  // band 1: recording
- {id:'mic',x:30,y:70,w:190,h:74,kind:'mic',band:'Recording',title:'Mic capture',tech:'AVAudioEngine + VPIO',
-  call:['Mic track','Track::Mic','VPIO = Voice Processing I/O'],fig:'capture',
-  body:`<p>Records your microphone. When the call plays through speakers, Apple's <b>Voice Processing I/O</b> (VPIO) unit cancels the remote voices bleeding back into the mic. With headphones it records the plain built-in mic instead, because VPIO grabs the output device and a Bluetooth headset mic drops to narrowband "hands-free" audio.</p>`,
-  steps:['Pick the device and decide if echo cancellation is worth it (speakers vs headphones).','Install a tap on the input bus; with VPIO the first channel is the processed voice.','Convert to 16 kHz mono float with <code>AVAudioConverter</code>.','Hand each chunk to the TimelineAligner, then to Rust over FFI.','If the device changes, rebuild the tap; after repeated VPIO failures, give up echo cancellation and record plain.'],
-  nums:[['Output rate','16 000 Hz mono f32'],['macOS API','AVAudioEngine, kAudioUnitSubType_VoiceProcessingIO']],
+ {id:'mic',x:30,y:70,w:190,h:74,kind:'mic',band:'Recording',title:'Mic capture',tech:'AVAudioEngine + AEC3',
+  call:['Mic track','Track::Mic','AEC3 = echo cancellation (WebRTC)'],fig:'capture',
+  body:`<p>Records your microphone as it is. When the call plays through speakers, the remote voices bleed into the mic, and <b>AEC3</b> (WebRTC's echo canceller, in Rust) removes them afterwards using the system track as the reference. Apple's Voice Processing I/O was tried first and dropped: it failed to start on common setups, took over the output device and could cut off the call app's own input. A Bluetooth headset's mic would drop the headset to narrowband "hands-free" audio, so with a Bluetooth input the built-in mic is recorded instead.</p>`,
+  steps:['Pick the input device (the built-in mic instead of a Bluetooth one).','Install a tap on the input bus.','Convert to 16 kHz mono float with <code>AVAudioConverter</code>.','Hand each chunk to the TimelineAligner, then to Rust over FFI.','In Rust, AEC3 cleans the mic against the system track.','If the device changes, rebuild the tap.'],
+  nums:[['Output rate','16 000 Hz mono f32'],['macOS API','AVAudioEngine, plain input'],['Echo cancellation','sonora (AEC3), meetings::native::aec']],
   files:['swift/meeting_bridge.swift','src/meetings/native/mod.rs','src/meetings/native/macos.rs']},
  {id:'sys',x:30,y:178,w:190,h:74,kind:'sys',band:'Recording',title:'System audio capture',tech:'Core Audio process tap',
   call:['System track','Track::System','process tap'],fig:'capture',
@@ -490,7 +490,7 @@ const N = [
   files:['swift/meeting_bridge.swift','src/meetings/native/mod.rs']},
  {id:'align',x:262,y:124,w:170,h:74,kind:'both',band:'Recording',title:'Timeline aligner',tech:'one clock, two tracks',
   call:['TimelineAligner','"track alignment"'],fig:'aligner',
-  body:`<p>Makes both tracks share one clock. Sample <i>n</i> of either track was captured <i>n</i>/16 000 seconds after you pressed Start. Without it, any hiccup (the tap delivering nothing while nothing plays, a VPIO restart) would slide one track against the other, and the echo net and speaker merge would compare the wrong moments.</p>`,
+  body:`<p>Makes both tracks share one clock. Sample <i>n</i> of either track was captured <i>n</i>/16 000 seconds after you pressed Start. Without it, any hiccup (the tap delivering nothing while nothing plays, a device change) would slide one track against the other, and the echo net and speaker merge would compare the wrong moments.</p>`,
   steps:['Each chunk\'s first sample belongs at target = (capture time − start) × 16 kHz.','Target ahead of what was emitted by more than the tolerance: pad silence up to it (a gap).','Target behind: drop the overlapping head; drop a chunk that overlaps entirely.','Within tolerance: emit as is (no click-inducing micro-corrections).','A timer pads silence while a stream delivers nothing, so a dead stream keeps pace.'],
   nums:[['Origin','one startNanos shared by both aligners']],
   files:['swift/meeting_bridge.swift (TimelineAligner)']},
@@ -532,7 +532,7 @@ const N = [
   files:['src/meetings/processing/vad.rs','src/audio_toolkit/vad/silero.rs','assets/resources/models/silero-vad-v6.2-F32.gguf']},
  {id:'turns',x:546,y:388,w:150,h:84,kind:'sys',band:'Processing',title:'Turn splitter',tech:'pyannote + TitaNet',
   call:['turn detection','speaker-change split','TurnDetection','turns::find_changes'],fig:'turns',
-  body:`<p>This is the "voice splitter". VAD only cuts at pauses, but on a call one person often starts right as another stops. This step finds <b>changes of voice inside one VAD span</b> on the system track and cuts there, so each line has one speaker.</p><p>Two sources propose cuts, and a cut is kept only if voiceprints on both sides clearly differ, so neither source can split a line alone. It runs inside the VAD stage, only with your consent to download the models.</p>`,
+  body:`<p>This is the "voice splitter". VAD only cuts at pauses, but on a call one person often starts right as another stops. This step finds <b>changes of voice inside one VAD span</b> on the system track and cuts there, so each line has one speaker.</p><p>Two sources propose cuts, and a cut is kept only if voiceprints on both sides clearly differ, so neither source can split a line alone. It runs inside the VAD stage once the models are on disk (setup offers them, on by default, about 107 MB). Redoing the speakers runs it on a stored transcript too, giving each word to the piece holding its midpoint. If the segmentation model fails, the scan carries on alone.</p>`,
   steps:['Skip spans shorter than 3 s.','<b>Model proposals:</b> pyannote segmentation-3.0 reports speaker turns; a change between turns of different speakers (turns ≥ 1 s) is proposed.','<b>Scan proposals:</b> 1.5 s TitaNet voiceprints every 0.5 s; a dip in before/after similarity ≤ 0.10 is proposed.','Proposals within 1 s are one change (the model\'s time wins).','<b>Confirm:</b> compare up to 3 s each side (at least 1.5 s). Keep a model cut if similarity < 0.40, a scan-only cut if < 0.25.','Snap each kept cut to the quietest VAD frame within 300 ms.'],
   nums:[['Segmentation model','pyannote segmentation-3.0 (ONNX, sherpa-onnx)'],['Scan/confirm model','NVIDIA TitaNet Large (101 MB)'],['Setting','meetings.speaker_turn_models_consent'],['Without models','TitaNet only: scan alone; neither: pauses only']],
   files:['src/meetings/processing/turns.rs','src/meetings/processing/speaker_model.rs']},
@@ -551,14 +551,14 @@ const N = [
  {id:'cluster',x:1092,y:388,w:160,h:84,kind:'both',band:'Processing',title:'Cluster & match',tech:'agglomerative',
   call:['Cluster stage','diarization','clustering','matching','Diarizer'],fig:'cluster',sub:'match',
   body:`<p>This is <b>diarization</b>: deciding who spoke when. Voiceprints are grouped so each group is one voice ("clusters"), then each group is compared with the people you have named before.</p><p>Clustering uses <b>average-linkage agglomerative clustering</b>: start with every segment alone, keep joining the two closest groups, and stop where the distances suddenly jump. That jump decides the number of speakers, so there is no fixed limit.</p>`,
-  steps:['Build a dendrogram of merges by cosine distance.','Cut at the midpoint of the largest jump between merge heights inside 0.35–0.65 (jump ≥ 0.1), else at 0.5.','Remove outliers: a member with < 0.4 similarity to the rest of its cluster becomes unknown.','Short or un-embedded segments join a cluster only if the nearest labelled lines before and after agree, within 2 s.','Match each cluster centroid to known people (confirm ≥ 0.65, suggest ≥ 0.45).','Alternatives (Redo speakers): a bigger speaker model (CAM++, ResNet152/293, TitaNet), or Deepgram cloud diarization.'],
-  nums:[['min / max / default cut','0.35 / 0.65 / 0.50'],['min_gap','0.10'],['OUTLIER_MIN_SIMILARITY','0.40'],['ATTACH_MAX_GAP_MS','2 000'],['LINE_MATCH_MARGIN','0.10']],
+  steps:['Each track is clustered on its own; only a known person joins them. Mic echoes are left out.','Only lines of at least 3 s form clusters (below that a voiceprint can dip within one voice).','Build a dendrogram of merges by cosine distance.','Cut at the midpoint of the largest jump between merge heights that ends above 0.5 (jump ≥ 0.1), clamped to 0.35–0.65, else at 0.5.','Remove outliers: a member with < 0.4 similarity to the rest of its cluster becomes unknown.','A cluster with under 6 s of speech dissolves. With fewer than 2 long lines, or nothing left, every line clusters as before.','Other lines join the nearest duration-weighted centroid at ≥ 0.35 and 0.1 ahead of the next. A dissolved long line that matches none stays unknown.','Other short or un-embedded segments join a cluster only if the nearest labelled lines before and after agree, within 2 s.','Match each cluster centroid to known people (confirm ≥ 0.65, suggest ≥ 0.45).','By default TitaNet tells voices apart once downloaded, else ResNet34. If it fails, ResNet34 takes over with a warning.','Alternatives (Redo speakers): a bigger speaker model (CAM++, ResNet152/293, TitaNet), or Deepgram cloud diarization.'],
+  nums:[['min / max / default cut','0.35 / 0.65 / 0.50'],['min_gap','0.10'],['ANCHOR_MIN_MS / MIN_CLUSTER_MS','3 000 / 6 000'],['OTHERS_ON_MIC_MIN_MS','8 000'],['OUTLIER_MIN_SIMILARITY','0.40'],['ATTACH_MAX_GAP_MS','2 000'],['LINE_MATCH_MARGIN','0.10']],
   files:['src/meetings/processing/cluster.rs','src/meetings/processing/pipeline.rs (cluster_units_with)','src/meetings/processing/deepgram.rs']},
  {id:'merge',x:1284,y:388,w:186,h:84,kind:'both',band:'Processing',title:'Merge + echo net',tech:'one timeline · D9',
   call:['Merge stage','echo net (D9)','timeline merge','pins'],fig:'echo',sub:'merge',
   body:`<p>Combines the mic and system tracks into one timeline and writes the transcript. Before that, the <b>echo net</b> removes mic lines that are just the remote speaker leaking through your speakers, so their words aren't credited to you.</p>`,
-  steps:['For each mic segment, collect system words within ±750 ms.','Similarity = the larger of the share of mic words heard on the system track and the Levenshtein similarity.','≥ 0.6: it\'s an echo, dropped.','Apply pins (lines you assigned by hand).','Sort by start time, replace the stored transcript, keep per-segment voiceprints, delete the checkpoint.'],
-  nums:[['slack_ms','750'],['echo threshold','0.6']],
+  steps:['For each mic segment of at least 3 words, collect system words within ±750 ms (shorter replies are never echoes).','Similarity = the larger of the share of mic words heard on the system track and the Levenshtein similarity.','≥ 0.6: it\'s an echo, dropped. The cluster stage left the same lines out.','Apply pins (lines you assigned by hand).','Sort by start time, replace the stored transcript, keep per-segment voiceprints, delete the checkpoint.'],
+  nums:[['slack_ms','750'],['echo threshold','0.6'],['ECHO_MIN_TOKENS','3']],
   files:['src/meetings/processing/timeline.rs','src/meetings/processing/pipeline.rs (merge, apply_pins, build_transcript)']},
 
  // band 3: afterwards
@@ -716,7 +716,7 @@ addEventListener('hashchange',fromHash); fromHash();
 /* ------------------------------------------------------ trace a sentence */
 const TRACE=[
  ['sys','Alice says "let\'s ship the beta on Friday" in Meet. The process tap captures it on the system track.'],
- ['mic','Your speakers leak a quieter copy into the mic. VPIO removes most of it, but not all.'],
+ ['mic','Your speakers leak a quieter copy into the mic. AEC3 removes most of it, but not all.'],
  ['align','Both chunks are stamped onto the same clock, so they line up in time.'],
  ['rec','The writer thread encodes both tracks.'],
  ['live','Within about a second the sentence appears in the live view (in memory only).'],

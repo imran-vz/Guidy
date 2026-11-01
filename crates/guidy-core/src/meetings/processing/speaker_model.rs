@@ -10,9 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
+#[cfg(test)]
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use super::SAMPLE_RATE;
@@ -134,7 +136,7 @@ pub const SPEAKER_MODEL_STATUS_EVENT: &str = "meetings://speaker-model-status";
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SpeakerModelStatus {
-    /// Not on disk; it downloads on first use (or via `download_speaker_model`).
+    /// Not on disk; it downloads only when the user asks (`download_speaker_model`).
     Missing,
     Downloading {
         downloaded: u64,
@@ -191,7 +193,7 @@ impl ModelFile {
     }
 
     pub fn installed(&self, path: &Path) -> bool {
-        std::fs::metadata(path).is_ok_and(|m| m.len() == self.size)
+        has_size(path, self.size)
     }
 }
 
@@ -346,8 +348,14 @@ pub fn speaker_model_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(speaker_model_dir(app)?.join(SPEAKER_MODEL_FILE))
 }
 
+/// Whether the file at `path` is there, whole. ("Installed" means only this:
+/// a file of the right size can still fail to load.)
+fn has_size(path: &Path, size: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() == size)
+}
+
 fn is_installed(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.len() == SPEAKER_MODEL_SIZE)
+    has_size(path, SPEAKER_MODEL_SIZE)
 }
 
 /// Whether the speaker model is on disk (no download).
@@ -401,8 +409,7 @@ pub fn separation_model_path(app: &AppHandle, id: SpeakerModelId) -> Result<Path
 /// Whether a separation model is on disk.
 pub fn separation_model_installed(app: &AppHandle, id: SpeakerModelId) -> bool {
     let size = separation_model(id).size;
-    separation_model_path(app, id)
-        .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == size))
+    separation_model_path(app, id).is_ok_and(|p| has_size(&p, size))
 }
 
 /// The model that tells voices apart for the `setting` (see
@@ -484,11 +491,6 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
     if file.installed(&path) {
         return Ok(path);
     }
-    let lock = file_lock(&path);
-    let _guard = lock.lock();
-    if file.installed(&path) {
-        return Ok(path);
-    }
     set_status(
         app,
         SpeakerModelStatus::Downloading {
@@ -497,7 +499,7 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
         },
     );
     let last_emit = Mutex::new(std::time::Instant::now());
-    let result = download_tracked(app, &file, &path, &|downloaded, total| {
+    let result = ensure_file(app, &file, &|downloaded, total| {
         let mut last = last_emit.lock();
         if last.elapsed() >= std::time::Duration::from_millis(250) {
             *last = std::time::Instant::now();
@@ -505,7 +507,7 @@ pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
         }
     });
     match result {
-        Ok(()) => {
+        Ok(path) => {
             set_status(app, SpeakerModelStatus::Ready);
             Ok(path)
         }
@@ -552,24 +554,14 @@ fn request_download(app: &AppHandle, id: &str) {
 }
 
 /// Download `url` to `dest` through `dest.part`, verifying its SHA-256 before
-/// the final rename. A mismatch deletes the partial file.
+/// the final rename. A mismatch deletes the partial file. For tests fetching
+/// real models; the app downloads through [`download_tracked`].
+#[cfg(test)]
 pub async fn download_verified(
     url: &str,
     dest: &Path,
     sha256: &str,
-    on_progress: impl FnMut(u64, Option<u64>),
-) -> Result<()> {
-    download_verified_cancellable(url, dest, sha256, on_progress, || false).await
-}
-
-/// [`download_verified`] that stops when `cancel` returns true
-/// ([`crate::downloads::DownloadCancelled`]), deleting the partial file.
-pub async fn download_verified_cancellable(
-    url: &str,
-    dest: &Path,
-    sha256: &str,
     mut on_progress: impl FnMut(u64, Option<u64>),
-    cancel: impl Fn() -> bool,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -602,19 +594,10 @@ pub async fn download_verified_cancellable(
             .map_err(|_| anyhow::anyhow!("download stalled"))?;
         let Some(chunk) = next else { break };
         let chunk = chunk.context("download interrupted")?;
-        if cancel() {
-            drop(file);
-            let _ = std::fs::remove_file(&part);
-            return Err(crate::downloads::DownloadCancelled.into());
-        }
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
-    }
-    if cancel() {
-        let _ = std::fs::remove_file(&part);
-        return Err(crate::downloads::DownloadCancelled.into());
     }
     file.flush().await?;
     drop(file);
@@ -673,8 +656,9 @@ impl SpeakerEmbedder {
 
 /// Speaker segmentation model: pyannote segmentation-3.0 (MIT), exported by
 /// sherpa-onnx. It finds where the voice changes inside a line (see
-/// [`super::turns`]); it downloads in the background with the speaker
-/// model and, until it is there, the voiceprint scan finds changes alone.
+/// [`super::turns`]); it downloads in the background once the user agrees to
+/// the speaker-turn models and, until it is there, the voiceprint scan finds
+/// changes alone.
 pub const SEGMENTATION_MODEL_FILE: &str = "pyannote_segmentation_3_0.onnx";
 pub const SEGMENTATION_MODEL_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0/model.onnx";
 pub const SEGMENTATION_MODEL_SHA256: &str =
@@ -717,7 +701,7 @@ pub fn segmentation_model_path(app: &AppHandle) -> Result<PathBuf> {
 pub fn installed_segmentation_model(app: &AppHandle) -> Option<PathBuf> {
     segmentation_model_path(app)
         .ok()
-        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == SEGMENTATION_MODEL_SIZE))
+        .filter(|p| has_size(p, SEGMENTATION_MODEL_SIZE))
 }
 
 /// Queue the segmentation model's download (no-op when it is there, or

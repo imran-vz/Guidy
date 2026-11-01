@@ -1498,10 +1498,8 @@ pub enum ClusterSource {
     SystemLabels(Vec<Option<usize>>),
 }
 
-/// Cluster the units that have speech, each track on its own (system, plus
-/// mic speech that isn't the user's: see [`others_on_mic`]), and match the
-/// clusters to known people. Mic units keep `None` (the user) unless they are
-/// in a cluster.
+/// [`cluster_units_with`] the segments' own voiceprints.
+#[cfg(test)]
 pub fn cluster_units(
     cache: &ProcessingCache,
     config: &PipelineConfig,
@@ -1517,7 +1515,10 @@ pub fn cluster_units(
     )
 }
 
-/// [`cluster_units`], with the speakers decided by `source`.
+/// Cluster the units that have speech, each track on its own (system, plus
+/// mic speech that isn't the user's: see [`others_on_mic`]), and match the
+/// clusters to known people. Mic units keep `None` (the user) unless they are
+/// in a cluster. `source` decides who spoke which system segment.
 pub fn cluster_units_with(
     cache: &ProcessingCache,
     config: &PipelineConfig,

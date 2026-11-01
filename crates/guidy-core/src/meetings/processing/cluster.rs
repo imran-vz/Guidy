@@ -737,7 +737,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn short_segments_join_a_speaker_only_when_both_sides_agree() {
+    fn short_segments_join_a_speaker_unless_its_neighbours_disagree() {
         let spans = [
             (0, 5000),
             (5100, 5800),
