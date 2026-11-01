@@ -228,8 +228,8 @@ pub struct WidgetModel {
     /// For that stop: how long ago the call let go of the microphone. The
     /// note ends there.
     stop_released_ago: Option<i64>,
-    /// When the tracked call's app last let go of the microphone, for a stop
-    /// after it has already returned.
+    /// When the tracked call's app last let go of the microphone, until it is
+    /// seen back on the same service: for a stop after it returned for another.
     last_release: Option<i64>,
     /// Apps the call watcher should forget a snooze of
     /// ([`guidy_core::meetings::calls::CallDetector::unsnooze_app`]).
@@ -365,6 +365,7 @@ impl WidgetModel {
         self.left_at = None;
         self.recording_call = None;
         self.presence = CallPresence::default();
+        self.last_release = None;
     }
 
     /// A poll with the feature off: nothing is followed from here on. A
@@ -441,6 +442,7 @@ impl WidgetModel {
             self.recording_call = self.call.clone();
             self.presence = CallPresence::default();
             self.left_at = None;
+            self.last_release = None;
         }
         // Decided now, while its own call is still ending: it stands for this
         // call and no other.
@@ -452,10 +454,8 @@ impl WidgetModel {
         if released_at.is_some() {
             self.last_release = released_at;
         }
-        match self
-            .presence
-            .observe(holds_microphone(apps, &tracked.app_id), now)
-        {
+        let holding = holds_microphone(apps, &tracked.app_id);
+        match self.presence.observe(holding, now) {
             Some(PresenceChange::Left) => self.left_at = Some(now),
             // Off the microphone past the grace, then back with the question
             // unanswered ("Keep" unties the call): the next call. Right away,
@@ -468,6 +468,16 @@ impl WidgetModel {
                 return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
             }
             None => {}
+        }
+        // Back on the same service: that release was a mute, not this note's
+        // end.
+        if holding
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|c| c.source == tracked.source)
+        {
+            self.last_release = None;
         }
         // The question shows beside the floater, not over the open panel.
         if self.left_at.is_some() {
@@ -1023,9 +1033,10 @@ mod tests {
         m.set_call(Some(chrome(1)));
         m.set_recorder(recording(1));
         m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
-        // Let go at 11 s, back at 12 s for another service, under the grace.
+        // Let go at 11 s, back at 12 s for another service, under the grace:
+        // the detector drops the old call and is confirming the new one.
         m.apply_call_poll(poll(&[], Some(chrome(1)), 11_000));
-        m.apply_call_poll(poll(&browser, Some(chrome(1)), 12_000));
+        m.apply_call_poll(poll(&browser, None, 12_000));
         assert!(m.recorder.is_recording());
         let teams = Call {
             source: CallSource::Teams,
@@ -1037,6 +1048,28 @@ mod tests {
             Some(CallCommand::Stop)
         );
         assert_eq!(m.take_stop_released_ago(), Some((1, 3_000)));
+    }
+
+    #[test]
+    fn a_release_followed_by_the_same_service_does_not_cut_a_later_switch() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 4_000));
+        // Rejoined: a mute. Audio after this belongs to the note.
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 5_000));
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 100_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(teams), 102_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), None);
     }
 
     #[test]
