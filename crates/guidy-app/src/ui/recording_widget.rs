@@ -1631,12 +1631,12 @@ impl RecordingWidgetView {
                     hint_action(
                         "recording-widget-left-keep",
                         t("meetings.widget.keep"),
-                        |cx| keep_recording(cx),
+                        keep_recording,
                     ),
                     hint_action(
                         "recording-widget-left-stop",
                         t("meetings.widget.stop"),
-                        |cx| stop(cx),
+                        stop,
                     ),
                 ],
             ));
@@ -1679,7 +1679,7 @@ impl RecordingWidgetView {
         .on_click(|_, _, cx| dismiss_call(cx))
         .test_support();
         let mut controls: Vec<AnyElement> = Vec::new();
-        if m.more_open {
+        if m.more_open && !starting {
             if call.source.can_always_record() {
                 controls.push(hint_action(
                     "recording-widget-hint-always",

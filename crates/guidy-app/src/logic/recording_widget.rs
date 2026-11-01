@@ -133,9 +133,9 @@ pub struct WidgetModel {
     left_at: Option<i64>,
     /// A stop was asked for by the watcher and hasn't reported in.
     stopping: bool,
-    /// The call (by its start) to record once this recording is stopped: its
-    /// provider is Always, and it came on while this one's call was ending.
-    record_next: Option<i64>,
+    /// The call to record once this recording is stopped: its provider is
+    /// Always, and it came on while this one's call was ending.
+    record_next: Option<Call>,
     /// The waveform (both sources together).
     wave: VecDeque<f32>,
     /// Recent levels per source: mic, system.
@@ -261,7 +261,7 @@ impl WidgetModel {
             return self.follow_recording_call(apps, record, now);
         }
         let chosen = self.record_next.take();
-        let wanted = record || self.call.as_ref().is_some_and(|c| Some(c.since) == chosen);
+        let wanted = record || (chosen.is_some() && chosen == self.call);
         if wanted && self.hint_call().is_some() && self.begin_start() {
             return Some(CallCommand::Start);
         }
@@ -295,7 +295,7 @@ impl WidgetModel {
         // Decided now, while its own call is still ending: it stands for this
         // call and no other.
         if record {
-            self.record_next = self.call.as_ref().map(|c| c.since);
+            self.record_next = self.call.clone();
         }
         let tracked = self.recording_call.clone()?;
         match self
@@ -333,6 +333,7 @@ impl WidgetModel {
     /// (a second click starts nothing).
     pub fn begin_start(&mut self) -> bool {
         self.start_failed = false;
+        self.more_open = false;
         !std::mem::replace(&mut self.starting, true)
     }
 
@@ -892,6 +893,34 @@ mod tests {
         let apps = holding("com.hnc.Discord");
         assert_eq!(m.apply_call_poll(poll(&apps, Some(discord), 51_000)), None);
         assert!(m.hinting(), "offered, not recorded");
+    }
+
+    #[test]
+    fn an_always_decision_stays_with_its_app_when_another_shares_its_start() {
+        let mut m = WidgetModel::default();
+        let apps = holding("com.microsoft.teams2");
+        let (mut discord, teams) = (call(2_000), call(2_000));
+        discord.app_id = "com.hnc.Discord".into();
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&holding("us.zoom.xos"), Some(call(1)), 0));
+        m.apply_call_poll(CallPoll {
+            apps: &[],
+            current: Some(discord.clone()),
+            detection: Some(Detection::Record(discord)),
+            now: 3_000,
+        });
+        m.set_recorder(RecorderState::Idle);
+        assert_eq!(m.apply_call_poll(poll(&apps, Some(teams), 9_000)), None);
+    }
+
+    #[test]
+    fn starting_closes_the_choices() {
+        let mut m = WidgetModel::default();
+        m.set_call(Some(call(1)));
+        m.more_open = true;
+        assert!(m.begin_start());
+        assert!(!m.more_open);
     }
 
     #[test]
