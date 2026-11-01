@@ -40,6 +40,21 @@ Run each scenario at least 10 times on macOS and log results in the table at the
 - Granola is cloud-only for transcription. Guidy works locally and offers cloud summaries.
 - User reports (low confidence, via an aggregator) describe silent failures with no error.
 
+## Proxy evidence so far (not passes)
+
+From `main` on 2026-11-01, on a real Mac with real audio devices but no real calls.
+
+| ID | Evidence | Still needed |
+|---|---|---|
+| R3/R7/R10 | Chrome holding the real mic: helper attributed, offer 19.8 s, end seen 9 s after close (2 runs) | Real Meet calls and visible prompts |
+| R9 | Real bridge reports input and output flags; 240 simulated voice notes give 0 offers | Real WhatsApp and Slack calls and notes, 8 hours of use |
+| R11 | Real recorder split on temp data | Real back-to-back calls |
+| R12/R13 | Default-device switches: gaps under 400 ms | Physical AirPods and monitor |
+| R14 | Destroyed tap: warning within 4.0 s, held about 1 s | Warning seen in the installed app |
+| R17 | Real recorder `kill -9`, 3 runs: 0.4 s lost | Installed-app relaunch |
+| R18 | Draft store `kill -9`, 5 runs: at most 801 ms lost | Typing in the installed app |
+| R20 | 20-minute capture: 28 ms drift extrapolated to 3 hours; 120 s cap holds, peak 74.5 MiB | A 3-hour real recording |
+
 ## Results log
 
 Fill this in on real calls. Only hardware runs count as passes.
