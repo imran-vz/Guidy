@@ -116,7 +116,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 
 | ID | Behavior | Cover |
 |---|---|---|
-| W-01 | Sidebar: general, history, models, advanced, postprocessing (if post_process_enabled), debug (if debug_mode), about | test: sidebar_sections_follow_settings, test: sidebar_visibility |
+| W-01 | Sidebar: general, history, models, advanced, postprocessing (if post_process_enabled), storage, debug (if debug_mode), about | test: sidebar_sections_follow_settings, test: sidebar_visibility |
 | W-02 | Cmd/Ctrl+Shift+D toggles debug_mode | test: debug_shortcut_toggles_debug_mode |
 | W-03 | Scroll resets to top when the section changes | test: navigation_switches_pages |
 | W-04 | Accessibility-missing banner [mac] (request → verify → recheck) | test: accessibility_banner_when_permission_missing |
@@ -124,6 +124,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | W-06 | Status bar: model selector (left); update status • version (right) | test: status_bar_shows_model_and_version |
 | W-07 | Optimistic setting update with isUpdating spinner and rollback on error; reset to default | test: failed_setting_rolls_back, test: optimistic_update_applies_and_commits, test: reset_uses_defaults |
 | W-08 | Settings row: title + description inline or as a tooltip; disabled state | test: shortcut_rows, test: output_device_and_volume_follow_audio_feedback |
+| W-09 | Storage page: disk bar (capacity, occupied, free, Guidy's share), buckets largest first, refresh keeps the last report, partial and failed scans inline, Open folder per row; below its roots the scan follows no symlink; it counts a file once and deletes nothing | test: storage_report_renders, test: storage_failure_is_inline, test: storage_failed_refresh_keeps_the_last_report, test: storage_partial_scan_is_inline, test: storage_open_folder_is_recorded, test: storage_measures_again_on_each_visit, test: classifies_every_bucket, test: symlink_is_not_followed, test: hardlink_counts_once, test: overlapping_roots_count_once_and_data_dir_wins, test: unreadable_dir_gives_partial_results_and_an_error, test: fractions_divide_the_disk, test: tiny_share_keeps_a_sliver |
 
 ## G. General page
 

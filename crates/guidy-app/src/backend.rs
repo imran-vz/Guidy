@@ -74,6 +74,15 @@ pub trait Backend: Send + Sync + 'static {
     fn clear_llm_usage(&self) -> BackendResult<()> {
         Ok(())
     }
+    /// What Guidy keeps on disk (the Storage page). Walks the data directory:
+    /// call off the UI thread.
+    fn storage_report(&self) -> BackendResult<guidy_core::storage::StorageReport> {
+        Ok(Default::default())
+    }
+    /// Show a Storage row's folder.
+    fn open_storage_category(&self, _category: guidy_core::storage::Category) -> BackendResult<()> {
+        Ok(())
+    }
     fn initialize_enigo(&self) -> BackendResult<()>;
     fn initialize_shortcuts(&self) -> BackendResult<()>;
     fn cancel_operation(&self);
@@ -556,6 +565,14 @@ impl Backend for CoreBackend {
 
     fn llm_usage_report(&self) -> BackendResult<guidy_core::llm::usage::UsageReport> {
         guidy_core::llm::usage::report().map_err(|e| format!("{e:#}"))
+    }
+
+    fn storage_report(&self) -> BackendResult<guidy_core::storage::StorageReport> {
+        guidy_core::storage::report(&self.a())
+    }
+
+    fn open_storage_category(&self, category: guidy_core::storage::Category) -> BackendResult<()> {
+        guidy_core::storage::open_category(&self.a(), category)
     }
 
     fn clear_llm_usage(&self) -> BackendResult<()> {

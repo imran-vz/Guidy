@@ -315,6 +315,17 @@ fn hf_caches() -> Vec<Cache> {
     caches
 }
 
+/// The shared Hugging Face cache holding any of `model_paths` (canonical; a
+/// portable upgrade can still be using the previous cache), else the active
+/// one.
+pub fn hf_cache_dir(model_paths: &[PathBuf]) -> PathBuf {
+    hf_caches()
+        .iter()
+        .map(|cache| fs::canonicalize(cache.path()).unwrap_or_else(|_| cache.path().clone()))
+        .find(|dir| model_paths.iter().any(|path| path.starts_with(dir)))
+        .unwrap_or_else(|| Cache::from_env().path().clone())
+}
+
 fn hf_cached_path(repo_id: &str, revision: &str, filename: &str) -> Option<PathBuf> {
     hf_cached_path_in(&hf_caches(), repo_id, revision, filename)
 }
@@ -1905,13 +1916,7 @@ impl ModelManager {
         models
             .iter()
             .filter_map(|m| {
-                let path = match &m.source {
-                    ModelSource::HuggingFace { repo_id, revision } => {
-                        hf_cached_path(repo_id, revision, &m.filename)
-                            .unwrap_or_else(|| self.models_dir.join(&m.filename))
-                    }
-                    _ => self.models_dir.join(&m.filename),
-                };
+                let path = self.downloaded_path(m);
                 fs::metadata(&path).ok().map(|meta| {
                     if meta.is_dir() {
                         crate::downloads::dir_size(&path)
@@ -1921,6 +1926,39 @@ impl ModelManager {
                 })
             })
             .sum()
+    }
+
+    /// Where a downloaded model lives: the models dir or the shared Hugging
+    /// Face cache.
+    fn downloaded_path(&self, model: &ModelInfo) -> PathBuf {
+        match &model.source {
+            ModelSource::HuggingFace { repo_id, revision } => {
+                hf_cached_path(repo_id, revision, &model.filename)
+                    .unwrap_or_else(|| self.models_dir.join(&model.filename))
+            }
+            _ => self.models_dir.join(&model.filename),
+        }
+    }
+
+    /// The real location of every downloaded model. Hugging Face snapshot
+    /// paths are symlinks: this canonicalizes them to their blobs. A path that
+    /// can't be resolved is kept, so whoever reads it sees why.
+    pub fn downloaded_paths(&self) -> Vec<PathBuf> {
+        let models: Vec<ModelInfo> = self
+            .available_models
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|m| m.is_downloaded)
+            .cloned()
+            .collect();
+        models
+            .iter()
+            .map(|m| {
+                let path = self.downloaded_path(m);
+                fs::canonicalize(&path).unwrap_or(path)
+            })
+            .collect()
     }
 
     async fn download_model_inner(

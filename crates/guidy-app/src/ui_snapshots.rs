@@ -599,6 +599,43 @@ fn people() -> Vec<Person> {
 }
 
 /// Settings and data for a populated, onboarded app.
+/// A plausible Storage report: 18 GB of a 494 GB disk.
+fn storage() -> guidy_core::storage::StorageReport {
+    use guidy_core::storage::{BucketUsage, Category, DiskSpace, StorageReport};
+    let sizes = [
+        (Category::Models, 9_400_000_000),
+        (Category::SharedModels, 4_100_000_000),
+        (Category::MeetingAudio, 3_200_000_000),
+        (Category::DictationRecordings, 840_000_000),
+        (Category::Databases, 212_000_000),
+        (Category::MeetingWorkingFiles, 96_000_000),
+        (Category::Configuration, 24_000),
+        (Category::Cache, 310_000),
+        (Category::Logs, 18_000_000),
+        (Category::Backups, 0),
+        (Category::AppFiles, 420_000_000),
+        (Category::Other, 2_000_000),
+    ];
+    let total_bytes = sizes.iter().map(|(_, bytes)| *bytes).sum();
+    StorageReport {
+        buckets: sizes
+            .iter()
+            .map(|(category, bytes)| BucketUsage {
+                category: *category,
+                bytes: *bytes,
+            })
+            .collect(),
+        total_bytes,
+        same_device_bytes: total_bytes,
+        disk: Some(DiskSpace {
+            total_bytes: 494_000_000_000,
+            free_bytes: 187_000_000_000,
+        }),
+        error_count: 0,
+        first_error_path: None,
+    }
+}
+
 fn populate(h: &Harness) {
     {
         let mut d = h.backend.data.lock();
@@ -607,6 +644,7 @@ fn populate(h: &Harness) {
         d.loaded_model = Some("parakeet-tdt-0.6b-v3".into());
         d.history = history();
         d.usage = usage();
+        d.storage = storage();
         d.pp_models = vec!["claude-sonnet-4-5".into(), "gpt-4.1-mini".into()];
     }
     h.backend.with_settings(|s| {
@@ -1725,6 +1763,17 @@ mod settings_pages {
         w
     }
 
+    /// The storage report could not be measured.
+    fn storage_error(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+        populate(h);
+        h.backend.data.lock().fail_settings = vec!["storage_report".into()];
+        h.install();
+        let (w, main) = h.open_main(size);
+        h.cx.update(|cx| main.update(cx, |m, cx| m.select_section(Section::Storage, cx)));
+        h.settle();
+        w
+    }
+
     pub(super) fn shots(add: &mut dyn FnMut(&str, Size<Pixels>, Build)) {
         add("history-selected", default_size(), history_selected);
         add("history-selected-min", min_size(), history_selected);
@@ -1733,6 +1782,7 @@ mod settings_pages {
         add("advanced-limit-confirm", tall_size(), limit_confirm);
         add("postprocessing-discard", default_size(), prompt_discard);
         add("usage-error", default_size(), usage_error);
+        add("storage-error", default_size(), storage_error);
     }
 }
 // ---- end settings pages redesign -------------------------------------------------
@@ -1746,7 +1796,7 @@ fn shots() -> Vec<Shot> {
             build,
         })
     };
-    let sections: [(&str, Build); 9] = [
+    let sections: [(&str, Build); 10] = [
         ("general", section_build!(Section::General)),
         ("history", section_build!(Section::History)),
         ("meetings", section_build!(Section::Meetings)),
@@ -1754,6 +1804,7 @@ fn shots() -> Vec<Shot> {
         ("advanced", section_build!(Section::Advanced)),
         ("postprocessing", section_build!(Section::PostProcessing)),
         ("usage", section_build!(Section::Usage)),
+        ("storage", section_build!(Section::Storage)),
         ("debug", section_build!(Section::Debug)),
         ("about", section_build!(Section::About)),
     ];

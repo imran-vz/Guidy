@@ -100,6 +100,8 @@ Contrast: `text_faint` must reach ≥ 4.5:1 for text it renders; light
   selection; selection is neutral gray, accent-tinted while focused.
   ⌘1…⌘9 are fixed per section (General, History, Meetings, Models,
   Advanced, Post Process, Usage, Debug, About); hidden sections ignore them.
+  Storage, after Usage, has no shortcut: all nine are taken. It is in the
+  View menu and the sidebar.
   "Show Sidebar" (collapsing it) is not implemented yet.
 - ⌘W closes an open dialog or sheet first, then the window.
 - The window frame and section are saved in `window-state.json` in the app
