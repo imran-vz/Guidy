@@ -754,7 +754,9 @@ impl ModelsPage {
                         .icon(icon("key-round"))
                         .label(t("models.actions.addKey"))
                         .on_click(|_, _, cx| {
-                            crate::windows::show_section(Section::PostProcessing, cx)
+                            cx.defer(|cx| {
+                                crate::windows::show_section(Section::PostProcessing, cx)
+                            });
                         }),
                 );
             }
@@ -1153,7 +1155,9 @@ impl ModelsPage {
                         .small()
                         .label(t("models.actions.edit"))
                         .on_click(|_, _, cx| {
-                            crate::windows::show_section(Section::PostProcessing, cx)
+                            cx.defer(|cx| {
+                                crate::windows::show_section(Section::PostProcessing, cx)
+                            });
                         }),
                 );
             if let Some(chip) = required_by_chip(&features, cx) {
@@ -1175,7 +1179,9 @@ impl ModelsPage {
                             .icon(icon("key-round"))
                             .label(t("models.actions.addKey"))
                             .on_click(|_, _, cx| {
-                                crate::windows::show_section(Section::PostProcessing, cx)
+                                cx.defer(|cx| {
+                                    crate::windows::show_section(Section::PostProcessing, cx)
+                                });
                             }),
                     )
                     .into_any_element(),

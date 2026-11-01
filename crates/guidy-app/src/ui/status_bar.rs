@@ -603,7 +603,12 @@ fn downloads_list(cx: &mut App) -> impl IntoElement {
                     .xsmall()
                     .label(t("models.statusBar.showModels"))
                     .on_click(|_, _, cx| {
-                        crate::windows::show_section(crate::ui::main_window::Section::Models, cx)
+                        cx.defer(|cx| {
+                            crate::windows::show_section(
+                                crate::ui::main_window::Section::Models,
+                                cx,
+                            )
+                        });
                     }),
             ),
         )
