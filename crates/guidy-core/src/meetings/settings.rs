@@ -68,7 +68,9 @@ pub struct MeetingSettings {
     pub live_model: Option<String>,
     /// Speaker model that tells voices apart in every meeting (an id of
     /// [`crate::meetings::processing::speaker_model::SEPARATION_MODELS`]).
-    /// Empty: the standard one. Known people are always recognized with
+    /// Empty: automatic, TitaNet once it is downloaded, else the standard
+    /// one (see `speaker_model::pick_separation_model`). Known people are
+    /// always recognized with
     /// the standard model, so changing it keeps everyone's voiceprints.
     pub speaker_separation_model: String,
     /// Where the controls of a recording in progress are shown.

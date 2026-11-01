@@ -1,7 +1,7 @@
 //! The user's recorded voice (People > Your voice): a short speech sample
 //! from the dictation microphone, cut into windows and embedded. With it,
 //! processing diarizes the mic track too, so other people in the room get
-//! their own speakers (see `pipeline::cluster_units`).
+//! their own speakers (see `pipeline::cluster_units_with`).
 
 use anyhow::{bail, Result};
 

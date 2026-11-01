@@ -22,6 +22,7 @@ use anyhow::{bail, Result};
 use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use super::cloud::CloudTranscriber;
+use super::cluster::ClusterParams;
 use super::pipeline::{
     next_stage, Diarizer, Embedder, Pipeline, PipelineConfig, SegmentTranscriber, TurnDetection,
 };
@@ -749,14 +750,10 @@ impl Processor {
             embedder: None,
             model: SpeakerModelId::Resnet34,
         };
-        // Without a redo's choice, the model chosen in settings, once it is
+        // Without a redo's choice, the model settings call for, once it is
         // downloaded (a run never waits on that download).
         let diarization = diarization.unwrap_or_else(|| {
-            let chosen = SpeakerModelId::parse(
-                &crate::settings::get_settings(&inner.app)
-                    .meetings
-                    .speaker_separation_model,
-            );
+            let chosen = super::speaker_model::effective_separation_model(&inner.app);
             if chosen.is_standard()
                 || super::speaker_model::separation_model_installed(&inner.app, chosen)
             {
@@ -774,6 +771,10 @@ impl Processor {
             app: &inner.app,
             embedder: None,
             model: SpeakerModelId::Resnet34,
+        };
+        let cluster_params = match diarization {
+            DiarizationEngine::Model(m) => ClusterParams::for_model(m),
+            DiarizationEngine::Deepgram => ClusterParams::default(),
         };
         let mut deepgram = None;
         let diarizer = match diarization {
@@ -831,6 +832,7 @@ impl Processor {
                 segmentation,
                 voices,
                 segmenter: None,
+                load_failed: false,
             });
         let turns = titanet_ready.then(|| TurnDetection {
             segmenter: segmenter.as_mut().map(|s| s as &mut dyn TurnSegmenter),
@@ -846,6 +848,7 @@ impl Processor {
             meetings_dir: &inner.meetings_dir,
             config: PipelineConfig {
                 preferred_language: Some(settings.app_language.clone()),
+                cluster: cluster_params,
                 ..PipelineConfig::from_settings(&settings.meetings)
             },
             mic,
@@ -1063,12 +1066,23 @@ struct LazySegmenter {
     /// The speaker model it links its windows' speakers with.
     voices: std::path::PathBuf,
     segmenter: Option<PyannoteSegmenter>,
+    /// Loading failed once: don't load a broken model again for every span.
+    load_failed: bool,
 }
 
 impl TurnSegmenter for LazySegmenter {
     fn turns(&mut self, pcm: &[f32]) -> Result<Vec<Turn>> {
         if self.segmenter.is_none() {
-            self.segmenter = Some(PyannoteSegmenter::new(&self.segmentation, &self.voices)?);
+            if self.load_failed {
+                bail!("the speaker segmentation model didn't load");
+            }
+            match PyannoteSegmenter::new(&self.segmentation, &self.voices) {
+                Ok(segmenter) => self.segmenter = Some(segmenter),
+                Err(e) => {
+                    self.load_failed = true;
+                    return Err(e);
+                }
+            }
         }
         self.segmenter.as_mut().expect("loaded").turns(pcm)
     }

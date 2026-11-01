@@ -10,9 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
+#[cfg(test)]
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use super::SAMPLE_RATE;
@@ -134,7 +136,7 @@ pub const SPEAKER_MODEL_STATUS_EVENT: &str = "meetings://speaker-model-status";
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SpeakerModelStatus {
-    /// Not on disk; it downloads on first use (or via `download_speaker_model`).
+    /// Not on disk; it downloads only when the user asks (`download_speaker_model`).
     Missing,
     Downloading {
         downloaded: u64,
@@ -191,7 +193,7 @@ impl ModelFile {
     }
 
     pub fn installed(&self, path: &Path) -> bool {
-        std::fs::metadata(path).is_ok_and(|m| m.len() == self.size)
+        has_size(path, self.size)
     }
 }
 
@@ -249,6 +251,18 @@ fn ensure_file(
     file: &ModelFile,
     on_progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<PathBuf> {
+    ensure_file_reporting(app, file, &|| {}, on_progress, &|_| {})
+}
+
+/// [`ensure_file`], telling when a download starts and how it ended, both
+/// under the file's lock, so a deletion waiting on it reports after them.
+fn ensure_file_reporting(
+    app: &AppHandle,
+    file: &ModelFile,
+    on_start: &dyn Fn(),
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    on_end: &dyn Fn(&Result<()>),
+) -> Result<PathBuf> {
     let path = file.path(app)?;
     if file.installed(&path) {
         return Ok(path);
@@ -258,8 +272,10 @@ fn ensure_file(
     if file.installed(&path) {
         return Ok(path);
     }
-    download_tracked(app, file, &path, on_progress)?;
-    Ok(path)
+    on_start();
+    let result = download_tracked(app, file, &path, on_progress);
+    on_end(&result);
+    result.map(|()| path)
 }
 
 /// Download `file` to `dest` through the download tracker: resumable from
@@ -346,8 +362,14 @@ pub fn speaker_model_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(speaker_model_dir(app)?.join(SPEAKER_MODEL_FILE))
 }
 
+/// Whether the file at `path` is there, whole. ("Installed" means only this:
+/// a file of the right size can still fail to load.)
+fn has_size(path: &Path, size: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() == size)
+}
+
 fn is_installed(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.len() == SPEAKER_MODEL_SIZE)
+    has_size(path, SPEAKER_MODEL_SIZE)
 }
 
 /// Whether the speaker model is on disk (no download).
@@ -401,8 +423,31 @@ pub fn separation_model_path(app: &AppHandle, id: SpeakerModelId) -> Result<Path
 /// Whether a separation model is on disk.
 pub fn separation_model_installed(app: &AppHandle, id: SpeakerModelId) -> bool {
     let size = separation_model(id).size;
-    separation_model_path(app, id)
-        .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == size))
+    separation_model_path(app, id).is_ok_and(|p| has_size(&p, size))
+}
+
+/// The model that tells voices apart for the `setting` (see
+/// `MeetingSettings::speaker_separation_model`): empty means automatic, TitaNet
+/// once it is on disk, else the standard one.
+pub fn pick_separation_model(setting: &str, titanet_installed: bool) -> SpeakerModelId {
+    if !setting.trim().is_empty() {
+        SpeakerModelId::parse(setting)
+    } else if titanet_installed {
+        SpeakerModelId::TitanetLarge
+    } else {
+        SpeakerModelId::Resnet34
+    }
+}
+
+/// The model that tells voices apart with the current settings, for a run and
+/// for what the app offers (see [`pick_separation_model`]).
+pub fn effective_separation_model(app: &AppHandle) -> SpeakerModelId {
+    pick_separation_model(
+        &crate::settings::get_settings(app)
+            .meetings
+            .speaker_separation_model,
+        separation_model_installed(app, SpeakerModelId::TitanetLarge),
+    )
 }
 
 /// A separation model's path, downloading it first if needed (the user
@@ -456,50 +501,41 @@ pub fn delete_segmentation_model(app: &AppHandle) -> Result<()> {
 /// worker thread, never from inside the async runtime.
 pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
     let file = download_file_for(speaker_download_id()).expect("the standard model");
-    let path = file.path(app)?;
-    if file.installed(&path) {
-        return Ok(path);
-    }
-    let lock = file_lock(&path);
-    let _guard = lock.lock();
-    if file.installed(&path) {
-        return Ok(path);
-    }
-    set_status(
-        app,
-        SpeakerModelStatus::Downloading {
-            downloaded: 0,
-            total: SPEAKER_MODEL_SIZE,
-        },
-    );
+    let failure = |e: &anyhow::Error| format!("Could not download the speaker voice model: {e:#}");
+    let cancelled = |e: &anyhow::Error| e.is::<crate::downloads::DownloadCancelled>();
     let last_emit = Mutex::new(std::time::Instant::now());
-    let result = download_tracked(app, &file, &path, &|downloaded, total| {
-        let mut last = last_emit.lock();
-        if last.elapsed() >= std::time::Duration::from_millis(250) {
-            *last = std::time::Instant::now();
-            set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
-        }
-    });
-    match result {
-        Ok(()) => {
-            set_status(app, SpeakerModelStatus::Ready);
-            Ok(path)
-        }
-        Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {
-            set_status(app, SpeakerModelStatus::Missing);
-            Err(e)
-        }
-        Err(e) => {
-            let error = format!("Could not download the speaker voice model: {e:#}");
+    ensure_file_reporting(
+        app,
+        &file,
+        &|| {
             set_status(
                 app,
-                SpeakerModelStatus::Failed {
-                    error: error.clone(),
+                SpeakerModelStatus::Downloading {
+                    downloaded: 0,
+                    total: SPEAKER_MODEL_SIZE,
                 },
-            );
-            bail!(error)
+            )
+        },
+        &|downloaded, total| {
+            let mut last = last_emit.lock();
+            if last.elapsed() >= std::time::Duration::from_millis(250) {
+                *last = std::time::Instant::now();
+                set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
+            }
+        },
+        &|result| match result {
+            Ok(()) => set_status(app, SpeakerModelStatus::Ready),
+            Err(e) if cancelled(e) => set_status(app, SpeakerModelStatus::Missing),
+            Err(e) => set_status(app, SpeakerModelStatus::Failed { error: failure(e) }),
+        },
+    )
+    .map_err(|e| {
+        if cancelled(&e) {
+            e
+        } else {
+            anyhow::anyhow!(failure(&e))
         }
-    }
+    })
 }
 
 /// Queue the model's download (no-op when installed or already queued).
@@ -528,24 +564,14 @@ fn request_download(app: &AppHandle, id: &str) {
 }
 
 /// Download `url` to `dest` through `dest.part`, verifying its SHA-256 before
-/// the final rename. A mismatch deletes the partial file.
+/// the final rename. A mismatch deletes the partial file. For tests fetching
+/// real models; the app downloads through [`download_tracked`].
+#[cfg(test)]
 pub async fn download_verified(
     url: &str,
     dest: &Path,
     sha256: &str,
-    on_progress: impl FnMut(u64, Option<u64>),
-) -> Result<()> {
-    download_verified_cancellable(url, dest, sha256, on_progress, || false).await
-}
-
-/// [`download_verified`] that stops when `cancel` returns true
-/// ([`crate::downloads::DownloadCancelled`]), deleting the partial file.
-pub async fn download_verified_cancellable(
-    url: &str,
-    dest: &Path,
-    sha256: &str,
     mut on_progress: impl FnMut(u64, Option<u64>),
-    cancel: impl Fn() -> bool,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -578,19 +604,10 @@ pub async fn download_verified_cancellable(
             .map_err(|_| anyhow::anyhow!("download stalled"))?;
         let Some(chunk) = next else { break };
         let chunk = chunk.context("download interrupted")?;
-        if cancel() {
-            drop(file);
-            let _ = std::fs::remove_file(&part);
-            return Err(crate::downloads::DownloadCancelled.into());
-        }
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
-    }
-    if cancel() {
-        let _ = std::fs::remove_file(&part);
-        return Err(crate::downloads::DownloadCancelled.into());
     }
     file.flush().await?;
     drop(file);
@@ -649,8 +666,9 @@ impl SpeakerEmbedder {
 
 /// Speaker segmentation model: pyannote segmentation-3.0 (MIT), exported by
 /// sherpa-onnx. It finds where the voice changes inside a line (see
-/// [`super::turns`]); it downloads in the background with the speaker
-/// model and, until it is there, the voiceprint scan finds changes alone.
+/// [`super::turns`]); it downloads in the background once the user agrees to
+/// the speaker-turn models and, until it is there, the voiceprint scan finds
+/// changes alone.
 pub const SEGMENTATION_MODEL_FILE: &str = "pyannote_segmentation_3_0.onnx";
 pub const SEGMENTATION_MODEL_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0/model.onnx";
 pub const SEGMENTATION_MODEL_SHA256: &str =
@@ -693,7 +711,7 @@ pub fn segmentation_model_path(app: &AppHandle) -> Result<PathBuf> {
 pub fn installed_segmentation_model(app: &AppHandle) -> Option<PathBuf> {
     segmentation_model_path(app)
         .ok()
-        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == SEGMENTATION_MODEL_SIZE))
+        .filter(|p| has_size(p, SEGMENTATION_MODEL_SIZE))
 }
 
 /// Queue the segmentation model's download (no-op when it is there, or
@@ -779,6 +797,27 @@ impl super::turns::TurnSegmenter for PyannoteSegmenter {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn an_empty_setting_picks_titanet_once_it_is_installed() {
+        use SpeakerModelId::{Resnet34, TitanetLarge};
+        for (setting, installed, want) in [
+            ("", true, TitanetLarge),
+            ("", false, Resnet34),
+            ("  ", true, TitanetLarge),
+            ("resnet34", true, Resnet34),
+            ("resnet34", false, Resnet34),
+            ("titanet_large", true, TitanetLarge),
+            ("titanet_large", false, TitanetLarge),
+            ("unknown", true, Resnet34),
+        ] {
+            assert_eq!(
+                pick_separation_model(setting, installed),
+                want,
+                "{setting:?}"
+            );
+        }
+    }
 
     /// A speaker model file loads and embeds the fixture: halves of one
     /// voice are similar, the voice and silence-free noise aren't. Run with

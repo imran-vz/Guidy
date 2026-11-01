@@ -3,12 +3,14 @@
 //! - [`agglomerate`]: average-linkage agglomerative clustering on cosine
 //!   distance with an adaptive stopping threshold, so there is no speaker
 //!   limit.
+//! - [`two_tier`]: clusters from the longer lines only, the shorter ones
+//!   assigned to them afterwards.
 //! - [`match_clusters`]: each cluster centroid against every known person's
 //!   voiceprints, with the confident / suggest thresholds from settings.
 
 use serde::{Deserialize, Serialize};
 
-use crate::meetings::types::PersonId;
+use crate::meetings::types::{PersonId, SpeakerModelId};
 
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
@@ -63,10 +65,13 @@ pub struct ClusterParams {
     pub max_threshold: f32,
     /// Cut used when the merge heights show no clear gap.
     pub default_threshold: f32,
-    /// A jump between consecutive merge heights at least this large, inside
-    /// `[min_threshold, max_threshold]`, is taken as the boundary between
-    /// "same speaker" and "different speakers".
+    /// A jump between consecutive merge heights at least this large, ending
+    /// above `default_threshold` and starting at most at `max_threshold`, is
+    /// taken as the boundary between "same speaker" and "different speakers".
     pub min_gap: f32,
+    /// The rules before the two tiers: any jump within the window cuts, and
+    /// every line clusters as an equal. For comparing them in evaluation.
+    pub legacy: bool,
 }
 
 impl Default for ClusterParams {
@@ -79,7 +84,16 @@ impl Default for ClusterParams {
             max_threshold: 0.65,
             default_threshold: 0.5,
             min_gap: 0.1,
+            legacy: false,
         }
+    }
+}
+
+impl ClusterParams {
+    /// The parameters for voiceprints of `model`. All models share the
+    /// default values until the evaluation harness measures them apart.
+    pub fn for_model(_model: SpeakerModelId) -> Self {
+        Self::default()
     }
 }
 
@@ -195,13 +209,19 @@ fn dendrogram(embeddings: &[Vec<f32>]) -> Vec<Merge> {
 }
 
 /// The adaptive cut: the midpoint of the largest jump between consecutive
-/// merge heights within the threshold window, or the default when no jump is
-/// large enough.
+/// merge heights that ends above the default cut, or the default when there
+/// is no such jump. A jump ending at or below the default sits among merges
+/// of one voice: cutting there would split that voice.
 fn choose_cut(heights: &[f32], p: &ClusterParams) -> f32 {
     let mut best: Option<(f32, f32)> = None; // (gap, cut)
     for w in heights.windows(2) {
         let (lo, hi) = (w[0], w[1]);
-        if hi < p.min_threshold || lo > p.max_threshold {
+        let too_low = if p.legacy {
+            hi < p.min_threshold
+        } else {
+            hi <= p.default_threshold
+        };
+        if too_low || lo > p.max_threshold {
             continue;
         }
         let gap = hi - lo;
@@ -246,6 +266,145 @@ pub fn agglomerate(embeddings: &[Vec<f32>], params: &ClusterParams) -> (Vec<usiz
         labels.push(*label_of_root.entry(root).or_insert(next));
     }
     (labels, label_of_root.len())
+}
+
+/// Only lines at least this long form clusters: a shorter voiceprint can dip
+/// far enough inside one voice (see `turns::TurnParams`) to look like another.
+pub const ANCHOR_MIN_MS: i64 = 3_000;
+/// A cluster with less speech than this is too little to call a speaker: its
+/// lines go back to being assigned.
+pub const MIN_CLUSTER_MS: i64 = 6_000;
+/// An assigned line must be at least this similar to its cluster's centroid...
+pub const ASSIGN_MIN_SIMILARITY: f32 = 0.35;
+/// ...and this far ahead of the next cluster's.
+pub const ASSIGN_MIN_LEAD: f32 = 0.1;
+
+/// What [`two_tier`] decides about one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// In this cluster (dense, from 0).
+    Cluster(usize),
+    /// Unlike the rest of its cluster (see [`reject_outliers`]), or an anchor
+    /// whose cluster dissolved that is like no other: long enough a voiceprint
+    /// to trust over the timing rule, so it stays an unknown speaker.
+    Outlier,
+    /// Not clearly anyone's: left to [`attach_by_time`].
+    Unplaced,
+}
+
+/// Every line clustered as an equal, without [`ANCHOR_MIN_MS`].
+fn cluster_all(vectors: &[Vec<f32>], params: &ClusterParams) -> (Vec<Tier>, usize) {
+    let (labels, k) = agglomerate(vectors, params);
+    let tiers = reject_outliers(vectors, &labels)
+        .into_iter()
+        .map(|l| l.map_or(Tier::Outlier, Tier::Cluster))
+        .collect();
+    (tiers, k)
+}
+
+/// Unit-length mean of unit-length copies of the vectors, each weighted by
+/// its duration (`None` when empty).
+fn weighted_centroid<'a>(members: impl IntoIterator<Item = (&'a [f32], i64)>) -> Option<Vec<f32>> {
+    let mut sum: Option<Vec<f32>> = None;
+    for (v, duration_ms) in members {
+        let weight = duration_ms.max(0) as f32;
+        let v = normalized(v);
+        let s = sum.get_or_insert_with(|| vec![0.0; v.len()]);
+        if s.len() == v.len() {
+            s.iter_mut().zip(&v).for_each(|(a, b)| *a += weight * b);
+        }
+    }
+    sum.map(|s| normalized(&s))
+}
+
+/// Cluster lines (`vectors[i]` lasted `durations_ms[i]`) in two tiers. Lines
+/// of at least [`ANCHOR_MIN_MS`] form the clusters; those with under
+/// [`MIN_CLUSTER_MS`] of speech dissolve. Every other line goes to the
+/// cluster whose duration-weighted centroid is clearly nearest (see
+/// [`ASSIGN_MIN_SIMILARITY`], [`ASSIGN_MIN_LEAD`]), else stays
+/// [`Tier::Unplaced`], or [`Tier::Outlier`] if it was an anchor. With fewer than two anchors, or nothing left after
+/// dissolving, every line is clustered as an equal instead. Returns one
+/// [`Tier`] per line and the number of clusters.
+pub fn two_tier(
+    vectors: &[Vec<f32>],
+    durations_ms: &[i64],
+    params: &ClusterParams,
+) -> (Vec<Tier>, usize) {
+    debug_assert_eq!(vectors.len(), durations_ms.len());
+    if params.legacy {
+        return cluster_all(vectors, params);
+    }
+    let anchors: Vec<usize> = (0..vectors.len())
+        .filter(|&i| durations_ms[i] >= ANCHOR_MIN_MS)
+        .collect();
+    if anchors.len() < 2 {
+        return cluster_all(vectors, params);
+    }
+    let anchor_vectors: Vec<Vec<f32>> = anchors.iter().map(|&i| vectors[i].clone()).collect();
+    let (labels, _) = agglomerate(&anchor_vectors, params);
+    let kept = reject_outliers(&anchor_vectors, &labels);
+
+    let mut speech_ms: std::collections::HashMap<usize, i64> = Default::default();
+    for (&i, l) in anchors.iter().zip(&kept) {
+        if let Some(l) = l {
+            *speech_ms.entry(*l).or_default() += durations_ms[i];
+        }
+    }
+    // Lasting clusters renumbered from 0, in order of first appearance.
+    let mut dense: std::collections::HashMap<usize, usize> = Default::default();
+    for l in kept.iter().flatten() {
+        if speech_ms[l] >= MIN_CLUSTER_MS {
+            let next = dense.len();
+            dense.entry(*l).or_insert(next);
+        }
+    }
+    if dense.is_empty() {
+        return cluster_all(vectors, params);
+    }
+    let k = dense.len();
+
+    let mut tiers = vec![Tier::Unplaced; vectors.len()];
+    for (&i, l) in anchors.iter().zip(&kept) {
+        tiers[i] = match l {
+            None => Tier::Outlier,
+            Some(l) => dense.get(l).map_or(Tier::Unplaced, |&c| Tier::Cluster(c)),
+        };
+    }
+    let centroids: Vec<Vec<f32>> = (0..k)
+        .filter_map(|c| {
+            weighted_centroid(
+                (0..vectors.len())
+                    .filter(|&i| tiers[i] == Tier::Cluster(c))
+                    .map(|i| (vectors[i].as_slice(), durations_ms[i])),
+            )
+        })
+        .collect();
+    let nearest = |v: &[f32]| -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        let mut next = f32::NEG_INFINITY;
+        for (c, centroid) in centroids.iter().enumerate() {
+            let s = cosine(v, centroid);
+            match best {
+                Some((_, b)) if s <= b => next = next.max(s),
+                _ => {
+                    next = best.map_or(next, |(_, b)| b);
+                    best = Some((c, s));
+                }
+            }
+        }
+        let (c, s) = best?;
+        (s >= ASSIGN_MIN_SIMILARITY && s - next >= ASSIGN_MIN_LEAD).then_some(c)
+    };
+    for (i, tier) in tiers.iter_mut().enumerate() {
+        if *tier == Tier::Unplaced {
+            *tier = match nearest(&vectors[i]) {
+                Some(c) => Tier::Cluster(c),
+                None if durations_ms[i] >= ANCHOR_MIN_MS => Tier::Outlier,
+                None => Tier::Unplaced,
+            };
+        }
+    }
+    (tiers, k)
 }
 
 /// Speech this close to its neighbours counts as part of the same turn.
@@ -523,7 +682,62 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn short_segments_join_a_speaker_only_when_both_sides_agree() {
+    fn jumps_among_merges_of_one_voice_do_not_split_it() {
+        let p = ClusterParams::default();
+        let heights = [0.20, 0.25, 0.38, 0.49];
+        assert_eq!(choose_cut(&heights, &p), p.default_threshold);
+        // Every merge happens: one cluster.
+        assert!(heights.iter().all(|h| *h <= choose_cut(&heights, &p)));
+        // A jump ending exactly at the default is still not above it.
+        assert_eq!(choose_cut(&[0.3, 0.5], &p), p.default_threshold);
+    }
+
+    #[test]
+    fn a_jump_straddling_the_default_still_splits() {
+        let p = ClusterParams::default();
+        let heights = [0.3, 0.45, 0.8];
+        let cut = choose_cut(&heights, &p);
+        assert!((cut - 0.625).abs() < 1e-6, "{cut}");
+        // The last merge doesn't happen: two clusters.
+        assert_eq!(heights.iter().filter(|h| **h <= cut).count(), 2);
+    }
+
+    #[test]
+    fn the_legacy_rules_cut_where_they_did() {
+        let p = ClusterParams {
+            legacy: true,
+            ..ClusterParams::default()
+        };
+        assert_eq!(choose_cut(&[0.20, 0.25, 0.38, 0.49], &p), p.min_threshold);
+        // Every line an equal, however short.
+        let vectors = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let (tiers, k) = two_tier(&vectors, &[1_600, 1_600], &p);
+        assert_eq!(k, 2);
+        assert_eq!(tiers, vec![Tier::Cluster(0), Tier::Cluster(1)]);
+    }
+
+    #[test]
+    fn heights_without_a_jump_give_the_default_cut() {
+        let p = ClusterParams::default();
+        for heights in [&[][..], &[0.9][..], &[0.6, 0.6, 0.6][..]] {
+            assert_eq!(choose_cut(heights, &p), p.default_threshold);
+        }
+    }
+
+    #[test]
+    fn every_model_shares_the_default_parameters_for_now() {
+        let (d, m) = (
+            ClusterParams::default(),
+            ClusterParams::for_model(SpeakerModelId::TitanetLarge),
+        );
+        assert_eq!(d.default_threshold, m.default_threshold);
+        assert_eq!(d.min_threshold, m.min_threshold);
+        assert_eq!(d.max_threshold, m.max_threshold);
+        assert_eq!(d.min_gap, m.min_gap);
+    }
+
+    #[test]
+    fn short_segments_join_a_speaker_unless_its_neighbours_disagree() {
         let spans = [
             (0, 5000),
             (5100, 5800),
@@ -550,6 +764,104 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(attach_by_time(&[(0, 1)], &[None]), vec![None]);
+    }
+
+    #[test]
+    fn noisy_short_lines_make_no_clusters() {
+        let mut rng = Lcg(31);
+        let base = rng.vector(128);
+        let mut vectors = vec![jitter(&mut rng, &base, 0.3), jitter(&mut rng, &base, 0.3)];
+        let mut durations = vec![5_000, 5_000];
+        for _ in 0..10 {
+            vectors.push(rng.vector(128));
+            durations.push(2_000);
+        }
+        let (tiers, k) = two_tier(&vectors, &durations, &ClusterParams::default());
+        assert_eq!(k, 1);
+        assert_eq!(&tiers[..2], &[Tier::Cluster(0), Tier::Cluster(0)]);
+        assert!(tiers[2..].iter().all(|t| *t == Tier::Unplaced), "{tiers:?}");
+    }
+
+    #[test]
+    fn a_short_line_joins_the_clearly_nearest_cluster_only() {
+        let (a, b) = (vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]);
+        let between = vec![1.0, 1.0, 0.0];
+        let vectors = vec![
+            a.clone(),
+            a.clone(),
+            b.clone(),
+            b.clone(),
+            vec![1.0, 0.2, 0.0],
+            between,
+        ];
+        let durations = [4_000, 4_000, 4_000, 4_000, 2_000, 2_000];
+        let (tiers, k) = two_tier(&vectors, &durations, &ClusterParams::default());
+        assert_eq!(k, 2);
+        assert_eq!(tiers[4], Tier::Cluster(0));
+        // As near one as the other: no lead.
+        assert_eq!(tiers[5], Tier::Unplaced);
+    }
+
+    #[test]
+    fn a_tiny_cluster_dissolves_and_labels_stay_dense() {
+        let (a, b) = (vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]);
+        // B comes first and has too little speech to be a speaker.
+        let vectors = vec![b, a.clone(), a];
+        let (tiers, k) = two_tier(&vectors, &[3_500, 4_000, 4_000], &ClusterParams::default());
+        assert_eq!(k, 1);
+        assert_eq!(
+            tiers,
+            vec![Tier::Outlier, Tier::Cluster(0), Tier::Cluster(0)]
+        );
+    }
+
+    #[test]
+    fn long_lines_dominate_the_centroid() {
+        let (a, b) = ([1.0f32, 0.0], [0.0f32, 1.0]);
+        let c = weighted_centroid([(&a[..], 30_000), (&b[..], 3_000)]).unwrap();
+        assert!(cosine(&c, &a) > 0.99, "{c:?}");
+        assert!((norm(&c) - 1.0).abs() < 1e-6);
+        assert!(weighted_centroid(std::iter::empty::<(&[f32], i64)>()).is_none());
+        // Weights of nothing: a zero vector, not NaN.
+        let c = weighted_centroid([(&a[..], 0)]).unwrap();
+        assert!(c.iter().all(|x| *x == 0.0), "{c:?}");
+    }
+
+    #[test]
+    fn durations_stay_with_their_vectors() {
+        // Which lines are anchors follows the durations, not the order.
+        let (a, b) = (vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]);
+        let vectors = vec![b, a.clone(), a];
+        let (tiers, k) = two_tier(&vectors, &[1_600, 4_000, 4_000], &ClusterParams::default());
+        assert_eq!(k, 1);
+        assert_eq!(tiers[0], Tier::Unplaced);
+    }
+
+    #[test]
+    fn fewer_than_two_anchors_cluster_every_line_as_before() {
+        let mut rng = Lcg(37);
+        let (a, b) = (rng.vector(64), rng.vector(64));
+        let vectors = vec![
+            jitter(&mut rng, &a, 0.3),
+            jitter(&mut rng, &b, 0.3),
+            jitter(&mut rng, &a, 0.3),
+            jitter(&mut rng, &b, 0.3),
+        ];
+        let params = ClusterParams::default();
+        let (labels, k) = agglomerate(&vectors, &params);
+        let want: Vec<Tier> = labels.iter().map(|l| Tier::Cluster(*l)).collect();
+        for durations in [[2_000, 2_000, 2_000, 2_000], [2_000, 9_000, 2_000, 2_000]] {
+            assert_eq!(two_tier(&vectors, &durations, &params), (want.clone(), k));
+        }
+        assert_eq!(two_tier(&[], &[], &params), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn two_brief_voices_are_not_dissolved_into_nothing() {
+        let vectors = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let (tiers, k) = two_tier(&vectors, &[4_000, 4_000], &ClusterParams::default());
+        assert_eq!(k, 2);
+        assert_eq!(tiers, vec![Tier::Cluster(0), Tier::Cluster(1)]);
     }
 
     #[test]

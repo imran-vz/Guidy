@@ -4,6 +4,8 @@
 //!   cargo xtask test --full   also the model-gated tests (real model + worker)
 //!   cargo xtask parity        PARITY.md / baseline-coverage gate (docs/baseline/)
 //!   cargo xtask gate          test + parity (what CI runs)
+//!   cargo xtask diar-eval <manifest.json>
+//!                             score diarization on labelled meetings
 
 use regex::Regex;
 use std::collections::BTreeSet;
@@ -267,14 +269,50 @@ fn parity() -> bool {
     ok
 }
 
+/// Run the ignored evaluation test in `meetings::processing::eval` on `manifest`.
+fn diar_eval(manifest: &str) -> bool {
+    let manifest = match Path::new(manifest).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{manifest}: {e}");
+            return false;
+        }
+    };
+    let mut c = cargo();
+    c.args([
+        "test",
+        "-p",
+        "guidy-core",
+        "--release",
+        "--lib",
+        "meetings::processing::eval::diar_eval",
+        "--",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+    ])
+    .env("GUIDY_DIAR_MANIFEST", manifest);
+    run(c)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let ok = match args.first().map(String::as_str) {
         Some("test") => test(args.iter().any(|a| a == "--full")),
         Some("parity") => parity(),
         Some("gate") => test(args.iter().any(|a| a == "--full")) && parity(),
+        Some("diar-eval") => match args.get(1) {
+            Some(manifest) => diar_eval(manifest),
+            None => {
+                eprintln!("usage: cargo xtask diar-eval <manifest.json>");
+                false
+            }
+        },
         _ => {
-            eprintln!("usage: cargo xtask <test [--full] | parity | gate [--full]>");
+            eprintln!(
+                "usage: cargo xtask <test [--full] | parity | gate [--full] | \
+                 diar-eval <manifest.json>>"
+            );
             false
         }
     };

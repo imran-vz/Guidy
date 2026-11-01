@@ -121,7 +121,8 @@ pub struct PipelineConfig {
     pub match_threshold: f32,
     pub suggest_threshold: f32,
     /// With the user's voice recorded, mic speech at least this similar to
-    /// it is the user's; less similar speech is someone else in the room.
+    /// it is the user's; less similar speech may be someone else in the room
+    /// (see [`OTHERS_ON_MIC_MIN_MS`]).
     pub user_voice_threshold: f32,
     /// Label of the mic speaker (the user).
     pub user_label: String,
@@ -201,7 +202,64 @@ pub fn cache_from_segments(
         })
         .collect();
     cache.embeddings = vec![None; sorted.len()];
+    cache.resplit_pending = true;
     cache
+}
+
+/// `transcript` shared out among `pieces`, the contiguous parts of its unit:
+/// each word goes to the one piece holding its midpoint. Pieces left without
+/// words are dropped. `None` when that leaves fewer than two, or nothing to
+/// go by: the unit stays whole.
+fn split_transcript(
+    transcript: &UnitTranscript,
+    pieces: &[vad::Span],
+) -> Option<Vec<(vad::Span, UnitTranscript)>> {
+    if pieces.len() < 2 || transcript.words.is_empty() {
+        return None;
+    }
+    // The text's own tokens keep their punctuation, when they line up.
+    let tokens: Vec<&str> = transcript.text.split_whitespace().collect();
+    let aligned = tokens.len() == transcript.words.len();
+    let mut shares: Vec<(Vec<Word>, Vec<&str>)> = vec![(Vec::new(), Vec::new()); pieces.len()];
+    // Never back to an earlier piece, so the words stay in the text's order.
+    let mut piece = 0;
+    for (k, word) in transcript.words.iter().enumerate() {
+        let midpoint = (word.t0_ms + word.t1_ms) / 2;
+        piece = pieces
+            .partition_point(|p| p.t1_ms <= midpoint)
+            .min(pieces.len() - 1)
+            .max(piece);
+        shares[piece].0.push(word.clone());
+        shares[piece].1.push(if aligned {
+            tokens[k]
+        } else {
+            word.text.as_str()
+        });
+    }
+    // Scripts written without spaces stay that way.
+    let separator = if tokens.len() > 1 { " " } else { "" };
+    let out: Vec<(vad::Span, UnitTranscript)> = pieces
+        .iter()
+        .zip(shares)
+        .filter(|(_, (words, _))| !words.is_empty())
+        .map(|(span, (words, text))| {
+            let text = text.join(separator);
+            // A word over a cut stays inside its own piece.
+            let words = words
+                .into_iter()
+                .map(|w| {
+                    let t0_ms = w.t0_ms.clamp(span.t0_ms, span.t1_ms);
+                    Word {
+                        t0_ms,
+                        t1_ms: w.t1_ms.clamp(t0_ms, span.t1_ms),
+                        text: w.text,
+                    }
+                })
+                .collect();
+            (*span, UnitTranscript { text, words })
+        })
+        .collect();
+    (out.len() >= 2).then_some(out)
 }
 
 /// The stage after `s` (`Done` stays `Done`).
@@ -854,7 +912,102 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
+    /// Cut the units of a stored transcript where the voice changes, as a
+    /// first run does before transcribing (see [`Self::split_turns`]), sharing
+    /// out their words instead. Without turn detection they stay whole.
+    fn resplit(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        let Some(mut detection) = self.turns.take() else {
+            return Ok(());
+        };
+        let result = self.resplit_with(&mut detection, cache);
+        self.turns = Some(detection);
+        result
+    }
+
+    fn resplit_with(
+        &mut self,
+        detection: &mut TurnDetection<'a>,
+        cache: &mut ProcessingCache,
+    ) -> Result<()> {
+        let params = self.config.turns;
+        let n = cache.units.len();
+        let mut units = Vec::with_capacity(n);
+        let mut transcripts = Vec::with_capacity(n);
+        let mut failed = false;
+        let mut last_report = Instant::now();
+        for i in 0..n {
+            let (unit, transcript) = (cache.units[i], cache.transcripts[i].take());
+            let splittable = !failed
+                && unit.track == Track::System
+                && unit.span.len_ms() >= params.min_span_ms
+                && transcript.as_ref().is_some_and(|t| !t.words.is_empty());
+            let mut changes = Vec::new();
+            if splittable {
+                self.check_cancel()?;
+                let pcm = self
+                    .source(unit.track)?
+                    .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
+                let found = turns::find_changes(
+                    &pcm,
+                    detection.segmenter.as_deref_mut(),
+                    &mut *detection.embedder,
+                    &params,
+                );
+                match found {
+                    Ok(found) => changes = found,
+                    Err(e) if super::is_cancelled(&e) => return Err(e),
+                    Err(e) => {
+                        log::warn!(
+                            "meeting {}: lines not split where the voice changes: {e:#}",
+                            self.meeting_id
+                        );
+                        failed = true;
+                    }
+                }
+            }
+            // No quiet frames to snap to: the cuts stay where they were found.
+            let pieces = turns::split_span(unit.span, &changes, &[], 0.0, &params);
+            let parts = transcript
+                .as_ref()
+                .and_then(|t| split_transcript(t, &pieces));
+            match parts {
+                Some(parts) => {
+                    for (span, t) in parts {
+                        units.push(Unit {
+                            track: unit.track,
+                            span,
+                        });
+                        transcripts.push(Some(t));
+                    }
+                }
+                None => {
+                    units.push(unit);
+                    transcripts.push(transcript);
+                }
+            }
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                self.progress(ProcessingStage::Voiceprints, 0.0, Some((i + 1, n)));
+            }
+        }
+        log::info!(
+            "meeting {}: {n} stored line(s) became {} at changes of voice",
+            self.meeting_id,
+            units.len()
+        );
+        cache.embeddings = vec![None; units.len()];
+        cache.transcripts = transcripts;
+        cache.units = units;
+        cache.clustering = None;
+        Ok(())
+    }
+
     fn voiceprints(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        if cache.resplit_pending {
+            self.resplit(cache)?;
+            cache.resplit_pending = false;
+            self.save(cache)?;
+        }
         let n = cache.units.len();
         // With the user's voice recorded, the mic track is diarized too.
         let embed_mic = !self.store.user_voiceprints()?.is_empty();
@@ -915,7 +1068,10 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
-    /// What the chosen [`Diarizer`] says about who spoke each unit.
+    /// What the chosen [`Diarizer`] says about who spoke each unit. A
+    /// separation model that fails (other than by a cancel) gives way to the
+    /// standard voiceprints, for the whole meeting: voiceprints of two models
+    /// can't be clustered together.
     fn cluster_source(&mut self, cache: &ProcessingCache) -> Result<ClusterSource> {
         let n = cache.units.len();
         match self.diarizer {
@@ -928,14 +1084,32 @@ impl<'a> Pipeline<'a> {
                     .filter(|&i| matches!(cache.embeddings.get(i), Some(Some(Some(_)))))
                     .collect();
                 for (k, &i) in todo.iter().enumerate() {
-                    let slot = &mut vectors[i];
                     self.check_cancel()?;
                     let unit = cache.units[i];
                     let pcm = self
                         .source(unit.track)?
                         .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
-                    if let Diarizer::Model(e) = &mut self.diarizer {
-                        *slot = e.embed(&pcm)?.map(|v| cluster::normalized(&v));
+                    let Diarizer::Model(model) = &mut self.diarizer else {
+                        unreachable!("matched above");
+                    };
+                    match model.embed(&pcm) {
+                        Ok(v) => vectors[i] = v.map(|v| cluster::normalized(&v)),
+                        // A model you stopped downloading isn't a failed one.
+                        Err(e)
+                            if super::is_cancelled(&e)
+                                || e.chain()
+                                    .any(|c| c.is::<crate::downloads::DownloadCancelled>()) =>
+                        {
+                            return Err(e)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "meeting {}: the speaker separation model failed; telling the \
+                                 voices apart with the standard one: {e:#}",
+                                self.meeting_id
+                            );
+                            return Ok(ClusterSource::Voiceprints);
+                        }
                     }
                     let done = (k + 1, todo.len());
                     self.progress(
@@ -1257,7 +1431,43 @@ fn offset_words(words: Vec<Word>, span: vad::Span) -> Vec<Word> {
         .collect()
 }
 
-/// Mic units with speech that isn't the user's: embedded ones that don't
+/// The transcribed units of each track, `(mic, system)`, with their indices.
+fn segments_by_track(
+    cache: &ProcessingCache,
+) -> (Vec<(usize, RawSegment)>, Vec<(usize, RawSegment)>) {
+    let (mut mic, mut system) = (Vec::new(), Vec::new());
+    for i in 0..cache.units.len() {
+        if let Some(seg) = cache.raw_segment(i) {
+            match seg.track {
+                Track::Mic => mic.push((i, seg)),
+                Track::System => system.push((i, seg)),
+            }
+        }
+    }
+    (mic, system)
+}
+
+/// Per unit, whether [`timeline::merge_timeline`] will drop it as an echo: the
+/// same flags on the same segments, so clustering never counts a line the
+/// transcript won't have.
+fn echo_units(cache: &ProcessingCache, echo: &EchoParams) -> Vec<bool> {
+    let (mic, system) = segments_by_track(cache);
+    let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
+    let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
+    let mut out = vec![false; cache.units.len()];
+    for ((i, _), is_echo) in mic
+        .iter()
+        .zip(timeline::echo_flags(&mic_segs, &sys_segs, echo))
+    {
+        out[*i] = is_echo;
+    }
+    out
+}
+
+/// The least speech a mic cluster needs to be someone other than the user.
+const OTHERS_ON_MIC_MIN_MS: i64 = 8_000;
+
+/// Mic units with speech that may not be the user's: embedded ones that don't
 /// sound like `user_voice`. Without a recorded voice (or a voiceprint for
 /// the unit, e.g. a short "yeah") mic speech stays the user's.
 fn others_on_mic(
@@ -1281,9 +1491,6 @@ fn others_on_mic(
         .collect()
 }
 
-/// Cluster the units that have speech (system, plus mic speech that isn't
-/// the user's: see [`others_on_mic`]) and match the clusters to known
-/// people. Mic units keep `None` (the user) unless they are in a cluster.
 /// What decides who spoke which segment.
 #[derive(Debug, Clone, Default)]
 pub enum ClusterSource {
@@ -1298,6 +1505,8 @@ pub enum ClusterSource {
     SystemLabels(Vec<Option<usize>>),
 }
 
+/// [`cluster_units_with`] the segments' own voiceprints.
+#[cfg(test)]
 pub fn cluster_units(
     cache: &ProcessingCache,
     config: &PipelineConfig,
@@ -1313,7 +1522,10 @@ pub fn cluster_units(
     )
 }
 
-/// [`cluster_units`], with the speakers decided by `source`.
+/// Cluster the units that have speech, each track on its own (system, plus
+/// mic speech that isn't the user's: see [`others_on_mic`]), and match the
+/// clusters to known people. Mic units keep `None` (the user) unless they are
+/// in a cluster. `source` decides who spoke which system segment.
 pub fn cluster_units_with(
     cache: &ProcessingCache,
     config: &PipelineConfig,
@@ -1323,61 +1535,71 @@ pub fn cluster_units_with(
 ) -> Clustering {
     let n = cache.units.len();
     let on_mic = others_on_mic(cache, config, user_voice);
-    let speech: Vec<usize> = (0..n)
+    let system: Vec<usize> = (0..n)
         .filter(|&i| {
-            (cache.units[i].track == Track::System || on_mic[i])
+            cache.units[i].track == Track::System
                 && cache.transcripts[i]
                     .as_ref()
                     .is_some_and(|t| !t.text.is_empty())
         })
         .collect();
+    let echoes = echo_units(cache, &config.echo);
+    let mic_others: Vec<usize> = (0..n).filter(|&i| on_mic[i] && !echoes[i]).collect();
+    let speech: Vec<usize> = mic_others.iter().chain(&system).copied().collect();
     let vector_of = |i: usize| -> Option<Vec<f32>> {
         match source {
             ClusterSource::Vectors(v) => v.get(i).cloned().flatten(),
             _ => cache.embeddings.get(i).cloned().flatten().flatten(),
         }
     };
-    let embedded: Vec<usize> = match source {
-        // The service's labels stand in for clustering.
-        ClusterSource::SystemLabels(_) => Vec::new(),
-        _ => speech
+    // One track's lines with a voiceprint, and what clustering them says.
+    let cluster_track = |units: &[usize]| -> (Vec<usize>, Vec<cluster::Tier>, usize) {
+        let embedded: Vec<usize> = units
             .iter()
             .copied()
             .filter(|&i| vector_of(i).is_some())
-            .collect(),
+            .collect();
+        let vectors: Vec<Vec<f32>> = embedded
+            .iter()
+            .map(|&i| vector_of(i).expect("embedded"))
+            .collect();
+        let durations: Vec<i64> = embedded
+            .iter()
+            .map(|&i| cache.units[i].span.len_ms())
+            .collect();
+        let (tiers, k) = cluster::two_tier(&vectors, &durations, &config.cluster);
+        (embedded, tiers, k)
     };
-    let mut is_embedded = vec![false; n];
-    for &i in &embedded {
-        is_embedded[i] = true;
-    }
-    let vectors: Vec<Vec<f32>> = embedded
-        .iter()
-        .map(|&i| vector_of(i).expect("embedded"))
-        .collect();
-    let (labels_embedded, k_embedded) = cluster::agglomerate(&vectors, &config.cluster);
+    // The tracks are clustered apart: an echo or a poor mic can't blend a
+    // remote voice with one in the room. Only a known person joins them.
+    let (embedded, tiers, k_embedded) = match source {
+        // The service's labels stand in for clustering.
+        ClusterSource::SystemLabels(_) => (Vec::new(), Vec::new(), 0),
+        _ => cluster_track(&system),
+    };
 
     // A segment unlike the rest of its cluster is someone else (or two
     // voices at once): unknown, for the user to name, not a guess.
     let mut labels: Vec<Option<usize>> = vec![None; n];
     let mut rejected = vec![false; n];
-    for (&i, l) in embedded
-        .iter()
-        .zip(cluster::reject_outliers(&vectors, &labels_embedded))
-    {
-        match l {
-            Some(l) => labels[i] = Some(l),
-            None => rejected[i] = true,
+    // Whose voiceprint placed it (or ruled it out); the rest go by timing.
+    let mut placed = vec![false; n];
+    for (&i, tier) in embedded.iter().zip(tiers) {
+        match tier {
+            cluster::Tier::Cluster(l) => {
+                labels[i] = Some(l);
+                placed[i] = true;
+            }
+            cluster::Tier::Outlier => {
+                rejected[i] = true;
+                placed[i] = true;
+            }
+            cluster::Tier::Unplaced => {}
         }
     }
-    // Short or un-embeddable system speech joins a cluster only inside that
-    // speaker's turn (see `attach_by_time`), else stays unknown; with no
-    // system voiceprints at all (no speaker model), it is one speaker.
-    // (Other people's mic speech is all embedded.)
-    let system: Vec<usize> = speech
-        .iter()
-        .copied()
-        .filter(|&i| cache.units[i].track == Track::System)
-        .collect();
+    // Short, unplaced or un-embeddable system speech joins a cluster only
+    // inside that speaker's turn (see `attach_by_time`), else stays unknown;
+    // with no system voiceprints at all (no speaker model), it is one speaker.
     let spans: Vec<(i64, i64)> = system
         .iter()
         .map(|&i| (cache.units[i].span.t0_ms, cache.units[i].span.t1_ms))
@@ -1389,7 +1611,9 @@ pub fn cluster_units_with(
     } else {
         let system_labels: Vec<Option<usize>> = system.iter().map(|&i| labels[i]).collect();
         let attached = cluster::attach_by_time(&spans, &system_labels);
-        let any_voice = system_labels.iter().any(Option::is_some);
+        // Voiceprints that placed nothing are not "no voiceprints": those
+        // lines stay unknown rather than all becoming one speaker.
+        let any_voice = system.iter().any(|&i| vector_of(i).is_some());
         for (&i, l) in system.iter().zip(attached) {
             labels[i] = if rejected[i] {
                 None
@@ -1403,38 +1627,38 @@ pub fn cluster_units_with(
     log::info!(
         "diarization: {} segment(s) with speech, {} with a voiceprint, {k_embedded} cluster(s), \
          {} unlike their cluster, {} left unknown",
-        speech.len(),
+        system.len(),
         embedded.len(),
         rejected.iter().filter(|r| **r).count(),
-        speech
-            .iter()
-            .filter(|&&i| labels[i].is_none() && cache.units[i].track == Track::System)
-            .count(),
+        system.iter().filter(|&&i| labels[i].is_none()).count(),
     );
 
-    // A cluster of mic speech only that still sounds like the user (as a
-    // whole, segments are noisier) is the user after all.
-    if !user_voice.is_empty() {
-        let mut raw: Vec<usize> = labels.iter().flatten().copied().collect();
-        raw.sort_unstable();
-        raw.dedup();
-        for l in raw {
-            let members: Vec<usize> = (0..n).filter(|&i| labels[i] == Some(l)).collect();
-            if members.iter().any(|&i| cache.units[i].track != Track::Mic) {
-                continue;
-            }
-            let c = cluster::centroid(
-                members
-                    .iter()
-                    .filter_map(|&i| cache.embeddings[i].as_ref()?.as_deref()),
-            );
-            let is_user = c
+    // The mic is the user unless a mic cluster is clearly someone else: enough
+    // speech, and not sounding like the user as a whole (segments are
+    // noisier). Anything uncertain stays the user's. Numbered past every
+    // system label, which a service's may leave holes in.
+    let mic_offset = labels.iter().flatten().max().map_or(0, |m| m + 1);
+    let (mic_embedded, mic_tiers, mic_k) = cluster_track(&mic_others);
+    for l in 0..mic_k {
+        let members: Vec<usize> = mic_embedded
+            .iter()
+            .zip(&mic_tiers)
+            .filter(|(_, tier)| **tier == cluster::Tier::Cluster(l))
+            .map(|(&i, _)| i)
+            .collect();
+        let speech_ms: i64 = members.iter().map(|&i| cache.units[i].span.len_ms()).sum();
+        let voice = cluster::centroid(
+            members
+                .iter()
+                .filter_map(|&i| cache.embeddings[i].as_ref()?.as_deref()),
+        );
+        let someone_else = speech_ms >= OTHERS_ON_MIC_MIN_MS
+            && voice
                 .and_then(|c| cluster::person_similarity(&c, user_voice))
-                .is_some_and(|s| s >= config.user_voice_threshold);
-            if is_user {
-                for i in members {
-                    labels[i] = None;
-                }
+                .is_some_and(|s| s < config.user_voice_threshold);
+        if someone_else {
+            for i in members {
+                labels[i] = Some(mic_offset + l);
             }
         }
     }
@@ -1456,17 +1680,19 @@ pub fn cluster_units_with(
     }
     let moved = move_to_voices(cache, config, known, &mut labels, &voices);
     if !moved.is_empty() && !matches!(source, ClusterSource::SystemLabels(_)) {
-        // Short lines follow the voices around them again.
+        // Short lines follow the voices around them again, those a voice
+        // named included. A line its own voice placed stays there: it may be
+        // all its new cluster holds.
         let system_labels: Vec<Option<usize>> = system
             .iter()
-            .map(|&i| labels[i].filter(|_| is_embedded[i]))
+            .map(|&i| labels[i].filter(|_| placed[i] || voices[i].is_some()))
             .collect();
         if system_labels.iter().any(Option::is_some) {
             for (&i, l) in system
                 .iter()
                 .zip(cluster::attach_by_time(&spans, &system_labels))
             {
-                if !is_embedded[i] {
+                if !placed[i] && voices[i].is_none() {
                     labels[i] = l;
                 }
             }
@@ -1766,17 +1992,7 @@ pub fn build_transcript(
     clustering: &Clustering,
     config: &PipelineConfig,
 ) -> (Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>) {
-    let n = cache.units.len();
-    let mut mic: Vec<(usize, RawSegment)> = Vec::new();
-    let mut system: Vec<(usize, RawSegment)> = Vec::new();
-    for i in 0..n {
-        if let Some(seg) = cache.raw_segment(i) {
-            match seg.track {
-                Track::Mic => mic.push((i, seg)),
-                Track::System => system.push((i, seg)),
-            }
-        }
-    }
+    let (mic, system) = segments_by_track(cache);
     let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
     let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
     let speakers_of = |units: &[(usize, RawSegment)]| -> Vec<Option<usize>> {

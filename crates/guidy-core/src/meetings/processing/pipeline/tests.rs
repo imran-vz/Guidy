@@ -301,14 +301,15 @@ fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
     // Everyone is in the room: only the mic hears them.
     let mic = [
         (USER, 1000, 4000),
-        (5, 5000, 8000),
-        (USER, 9000, 12000),
-        (5, 13000, 16000),
-        (6, 17000, 20000),
+        (5, 5000, 9500),
+        (USER, 10500, 12500),
+        (5, 13500, 18000),
+        (6, 19000, 23500),
+        (6, 24500, 29000),
     ];
     let r = run_tracks(&f, None, &mic, &[]);
     r.result.unwrap();
-    assert_eq!(r.embed_calls, 5);
+    assert_eq!(r.embed_calls, 6);
 
     let speakers = f.store.speakers(f.id).unwrap();
     let labels: Vec<&str> = speakers.iter().map(|s| s.cluster_label.as_str()).collect();
@@ -334,6 +335,7 @@ fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
             ("Speaker 1", "5"),
             ("Imran", "8"),
             ("Speaker 1", "5"),
+            ("Speaker 2", "6"),
             ("Speaker 2", "6"),
         ]
     );
@@ -645,6 +647,288 @@ fn a_stored_transcript_resumes_at_the_voiceprints() {
     let cache = cache_from_segments(&segments, false, true, 60_000);
     assert_eq!(cache.units.len(), 2);
     assert_eq!(cache.mic_ms, None);
+}
+
+#[test]
+fn an_outlier_line_gives_its_speaker_no_voiceprint() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speaker = f.store.speakers(f.id).unwrap()[1].clone();
+    let lines: Vec<i64> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(speaker.id))
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(lines.len(), 2);
+    let mut stored = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    for e in stored.iter_mut().filter(|e| e.segment_id == lines[0]) {
+        e.embedding = voice(15);
+    }
+    sidecar::write_embeddings(&f.store, f.id, &stored).unwrap();
+    let prints = naming::speaker_prints(&f.store, &speaker).unwrap();
+    assert_eq!(prints.len(), 1);
+    assert!(!prints.contains(&voice(15)));
+    let person = f.store.insert_person("Alice", None).unwrap().id;
+    assert_eq!(naming::store_prints(&f.store, &speaker, person).unwrap(), 1);
+    // Given to Alice anyway, by an earlier version say: renaming still takes
+    // it back, though it wouldn't be enrolled today.
+    f.store
+        .add_voiceprint(person, &voice(15), Some(f.id))
+        .unwrap();
+    naming::assign(
+        &f.store,
+        speaker.id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert!(f.store.voiceprints_for_person(person).unwrap().is_empty());
+}
+
+#[test]
+fn a_speaker_with_no_line_like_it_gets_no_print_but_a_lost_sidecar_keeps_the_centroid() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speaker = f.store.speakers(f.id).unwrap()[1].clone();
+    let lines: Vec<i64> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(speaker.id))
+        .map(|s| s.id)
+        .collect();
+    let mut stored = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    for e in stored.iter_mut().filter(|e| lines.contains(&e.segment_id)) {
+        e.embedding = voice(15);
+    }
+    sidecar::write_embeddings(&f.store, f.id, &stored).unwrap();
+    assert!(naming::speaker_prints(&f.store, &speaker)
+        .unwrap()
+        .is_empty());
+    sidecar::delete_embeddings(&f.store, f.id).unwrap();
+    let centroid = f.store.speaker_embedding(speaker.id).unwrap().unwrap();
+    assert_eq!(
+        naming::speaker_prints(&f.store, &speaker).unwrap(),
+        vec![centroid]
+    );
+}
+
+/// Twelve words, one a second from `t0_ms`, each lasting 900 ms.
+fn twelve_words(t0_ms: i64) -> Vec<Word> {
+    (0..12)
+        .map(|i| Word {
+            t0_ms: t0_ms + i * 1_000,
+            t1_ms: t0_ms + i * 1_000 + 900,
+            text: format!("w{i}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_cut_shares_out_the_words_by_midpoint() {
+    let span = vad::Span::new;
+    let transcript = |words: Vec<Word>, text: &str| UnitTranscript {
+        text: text.into(),
+        words,
+    };
+    let word = |t0_ms, t1_ms, text: &str| Word {
+        t0_ms,
+        t1_ms,
+        text: text.into(),
+    };
+    let pieces = [span(0, 1_000), span(1_000, 2_000)];
+    // Over the cut: its midpoint decides. On the cut: the later piece, once.
+    let t = transcript(
+        vec![
+            word(100, 300, "one"),
+            word(800, 1_100, "two"),
+            word(900, 1_100, "three"),
+            word(1_500, 1_500, "four"),
+        ],
+        "One, two three four.",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].1.text, "One, two");
+    assert_eq!(parts[1].1.text, "three four.");
+    assert_eq!(parts[0].1.words.len(), 2);
+    assert_eq!(parts[1].1.words.len(), 2);
+    assert_eq!((parts[0].0, parts[1].0), (pieces[0], pieces[1]));
+    assert_eq!(parts[0].1.words[1].t1_ms, 1_000, "clamped to its piece");
+    assert_eq!(parts[1].1.words[0].t0_ms, 1_000, "clamped to its piece");
+    // Overlapping words stay in the text's order; a reversed one is repaired.
+    let t = transcript(
+        vec![
+            word(100, 200, "zero"),
+            word(800, 1_800, "first"),
+            word(900, 1_000, "second"),
+            word(1_300, 1_100, "third"),
+        ],
+        "zero first second third",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "zero");
+    assert_eq!(parts[1].1.text, "first second third");
+    assert_eq!(parts[1].1.words[2].t1_ms, 1_300);
+    // Tokens that don't line up with the words: the words' own text.
+    let t = transcript(
+        vec![word(100, 200, "one"), word(1_100, 1_200, "two")],
+        "one two three",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "one");
+    assert_eq!(parts[1].1.text, "two");
+    // No spaces in the text: none added.
+    let t = transcript(vec![word(100, 200, "明"), word(1_100, 1_200, "日")], "明日");
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "明");
+    // All the words in one piece, none at all, or nothing cut: stays whole.
+    let t = transcript(vec![word(100, 200, "one")], "one");
+    assert!(split_transcript(&t, &pieces).is_none());
+    assert!(split_transcript(&transcript(Vec::new(), "text"), &pieces).is_none());
+    assert!(split_transcript(&t, &pieces[..1]).is_none());
+}
+
+/// One stored line holding two voices, its checkpoint ready for a redo, with
+/// a hand-made pin on it. Returns the person pinned.
+fn stored_line_of_two_voices(f: &Fixture) -> PersonId {
+    let words = twelve_words(1_000);
+    let text = words
+        .iter()
+        .map(|w| w.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = Segment {
+        id: 1,
+        meeting_id: f.id,
+        track: Track::System,
+        t0_ms: 1_000,
+        t1_ms: 13_000,
+        text,
+        words,
+        speaker_id: None,
+    };
+    let cache = cache_from_segments(&[line], false, true, 30_000);
+    assert!(cache.resplit_pending);
+    sidecar::write_cache(&f.store, f.id, &cache).unwrap();
+    f.store
+        .set_processing_stage_if_processing(f.id, Some(ProcessingStage::Transcribe))
+        .unwrap();
+    let person = f.store.insert_person("Alice", None).unwrap().id;
+    f.store
+        .replace_segment_pins(
+            f.id,
+            &[SegmentPin {
+                track: Track::System,
+                t0_ms: 1_000,
+                t1_ms: 13_000,
+                person_id: person,
+                by_hand: true,
+            }],
+        )
+        .unwrap();
+    person
+}
+
+/// Redo the speakers of [`stored_line_of_two_voices`]. Returns how many
+/// system lines the transcriber was asked for, and the run's result.
+fn redo_stored_line(f: &Fixture, detect: bool) -> (usize, Result<()>) {
+    let cancel = AtomicBool::new(false);
+    let calls = Rc::new(Cell::new(0));
+    let mut transcriber = FakeTranscriber {
+        calls: calls.clone(),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let (mut segmenter, mut voices) = (FakeSegmenter, ShareOfVoices);
+    let system = [(0, 1_000, 7_008), (1, 7_008, 13_000)];
+    let result = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config: PipelineConfig::default(),
+        mic: None,
+        system: Some(Box::new(PcmSource::new(render(30_000, &system)))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Default::default(),
+        turns: detect.then_some(TurnDetection {
+            segmenter: Some(&mut segmenter),
+            embedder: &mut voices,
+        }),
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    }
+    .run();
+    (calls.get(), result)
+}
+
+#[test]
+fn redoing_the_speakers_splits_a_line_of_two_voices_and_keeps_its_pin() {
+    let f = fixture();
+    let person = stored_line_of_two_voices(&f);
+    let (transcribed, result) = redo_stored_line(&f, true);
+    result.unwrap();
+    assert_eq!(
+        transcribed, 0,
+        "words are shared out, not transcribed again"
+    );
+    let segments = f.store.segments(f.id).unwrap();
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    assert_eq!((segments[0].t0_ms, segments[0].t1_ms), (1_000, 7_008));
+    assert_eq!((segments[1].t0_ms, segments[1].t1_ms), (7_008, 13_000));
+    assert_eq!(segments[0].text, "w0 w1 w2 w3 w4 w5");
+    assert_eq!(segments[1].text, "w6 w7 w8 w9 w10 w11");
+    // The pin holds on both pieces, and moves onto them.
+    for s in &segments {
+        let speaker = f.store.get_speaker(s.speaker_id.unwrap()).unwrap().unwrap();
+        assert_eq!(speaker.person_id, Some(person));
+    }
+    let pins = f.store.segment_pins(f.id).unwrap();
+    assert_eq!(pins.len(), 2, "{pins:?}");
+    assert!(pins.iter().all(|p| p.by_hand && p.person_id == person));
+}
+
+#[test]
+fn a_split_line_with_no_pin_keeps_its_two_voices_apart() {
+    let f = fixture();
+    stored_line_of_two_voices(&f);
+    f.store.replace_segment_pins(f.id, &[]).unwrap();
+    redo_stored_line(&f, true).1.unwrap();
+    let segments = f.store.segments(f.id).unwrap();
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    // The second piece has too little speech for a speaker of its own, and
+    // sounds like nobody: unknown, not the first voice's.
+    assert!(segments[0].speaker_id.is_some());
+    assert_eq!(segments[1].speaker_id, None);
+}
+
+#[test]
+fn without_turn_detection_a_redo_keeps_the_line_whole() {
+    let f = fixture();
+    stored_line_of_two_voices(&f);
+    redo_stored_line(&f, false).1.unwrap();
+    assert_eq!(f.store.segments(f.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_checkpoint_from_before_the_flag_needs_no_split() {
+    let cache = ProcessingCache::new();
+    let mut json: serde_json::Value = serde_json::to_value(&cache).unwrap();
+    json.as_object_mut().unwrap().remove("resplit_pending");
+    let old: ProcessingCache = serde_json::from_value(json).unwrap();
+    assert!(!old.resplit_pending);
 }
 
 #[test]
@@ -1642,6 +1926,337 @@ fn a_better_models_voiceprints_decide_the_clusters() {
     ]);
     let c = cluster_units_with(&cache, &config, &[], &[], &source);
     assert_eq!(c.labels[1], Some(0));
+}
+
+/// A line only the standard model could embed, named by its voice as someone
+/// no cluster matches, is all its new cluster holds. The timing rule, run
+/// again after the move, must not take it back out.
+#[test]
+fn a_moved_line_without_a_better_voiceprint_keeps_its_new_cluster() {
+    let mut cache = two_close_voices_cache();
+    let (a, b) = (vec![1.0, 0.0, 0.0], vec![0.8, 0.6, 0.0]);
+    cache.embeddings = [&a, &b, &a, &a]
+        .iter()
+        .map(|v| Some(Some((*v).clone())))
+        .collect();
+    let source = ClusterSource::Vectors(vec![Some(a.clone()), None, Some(a.clone()), Some(a)]);
+    let known = [
+        KnownVoice {
+            person_id: 7,
+            prints: vec![vec![1.0, 0.1, 0.0], vec![1.0, -0.1, 0.05]],
+        },
+        KnownVoice {
+            person_id: 9,
+            prints: vec![vec![0.8, 0.6, 0.1], vec![0.75, 0.65, -0.05]],
+        },
+    ];
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &known, &[], &source);
+    assert_eq!(c.voices, vec![Some(7), Some(9), Some(7), Some(7)]);
+    let line_1 = c.labels[1].unwrap();
+    assert_ne!(c.labels[0], Some(line_1));
+    assert_eq!(c.matches[line_1].person_id, Some(9));
+}
+
+/// A checkpoint of these `(track, t0_ms, t1_ms, voiceprint)` lines, all with
+/// speech.
+fn cache_of(lines: &[(Track, i64, i64, Option<Vec<f32>>)]) -> ProcessingCache {
+    let mut cache = ProcessingCache::new();
+    cache.units = lines
+        .iter()
+        .map(|(track, t0_ms, t1_ms, _)| Unit {
+            track: *track,
+            span: vad::Span {
+                t0_ms: *t0_ms,
+                t1_ms: *t1_ms,
+            },
+        })
+        .collect();
+    cache.transcripts = (0..lines.len())
+        .map(|i| {
+            Some(UnitTranscript {
+                text: format!("line {i}"),
+                words: Vec::new(),
+            })
+        })
+        .collect();
+    cache.embeddings = lines.iter().map(|l| Some(l.3.clone())).collect();
+    cache
+}
+
+/// Axis `k` of a 4-d voiceprint.
+fn axis(k: usize) -> Vec<f32> {
+    let mut v = vec![0f32; 4];
+    v[k] = 1.0;
+    v
+}
+
+#[test]
+fn the_tracks_are_clustered_apart() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (Mic, 5_000, 9_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(1))),
+        (System, 15_000, 19_000, Some(axis(2))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![Some(0), Some(0), Some(1), Some(2)]);
+}
+
+#[test]
+fn a_user_like_mic_line_never_joins_a_system_cluster() {
+    use Track::{Mic, System};
+    // The same voice on both tracks, enough of it on the mic to be a speaker.
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (Mic, 5_000, 9_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(0))),
+        (System, 15_000, 19_000, Some(axis(0))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![Some(0), Some(0), Some(1), Some(1)]);
+    // Too little of it on the mic: the user's, with no system cluster to join.
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(0))),
+        (System, 15_000, 19_000, Some(axis(0))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![None, Some(0), Some(0)]);
+    // Sounding like the user: never clustered at all, however much of it.
+    let cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(3))),
+        (Mic, 10_000, 19_000, Some(axis(3))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![None, None]);
+}
+
+#[test]
+fn echo_units_are_left_out_of_clustering_and_the_transcript() {
+    use Track::{Mic, System};
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 20_000, 29_000, Some(axis(0))),
+        (System, 0, 9_000, Some(axis(1))),
+        (System, 10_000, 19_000, Some(axis(1))),
+        (System, 20_000, 29_000, Some(axis(1))),
+    ]);
+    let say = |text: &str| {
+        Some(UnitTranscript {
+            text: text.into(),
+            words: Vec::new(),
+        })
+    };
+    cache.transcripts = vec![
+        say("let's ship the release on friday"),
+        say("what about the budget though"),
+        say("let's ship the release on friday"),
+        say("something else entirely here"),
+        say("we can look at numbers next"),
+    ];
+    let config = PipelineConfig::default();
+    // Line 1's 9 s alone is enough for a mic speaker; line 0 would add to it.
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert_eq!(c.labels[0], None, "an echo is nobody's");
+    assert!(c.labels[1].is_some());
+    assert_ne!(c.labels[1], c.labels[2]);
+    assert_eq!(c.voices[0], None);
+    // The merge drops the same line, and only it.
+    let (_, segments, units) = build_transcript(&cache, &c, &config);
+    assert_eq!(segments.len(), 4);
+    assert!(!units.contains(&0));
+    // A mic line no longer an echo counts again: 18 s in one cluster.
+    cache.transcripts[0] = say("completely different words said here");
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert!(c.labels[0].is_some());
+    assert_eq!(c.labels[0], c.labels[1]);
+}
+
+#[test]
+fn without_a_recorded_voice_every_mic_line_is_the_users() {
+    use Track::Mic;
+    let cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 10_000, 19_000, Some(axis(1))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[]);
+    assert_eq!(c.labels, vec![None, None]);
+}
+
+#[test]
+fn only_a_known_person_joins_the_tracks() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 5_000, Some(axis(0))),
+        (Mic, 6_000, 11_000, Some(axis(0))),
+        (System, 12_000, 16_000, Some(axis(0))),
+        (System, 17_000, 21_000, Some(axis(0))),
+    ]);
+    let known = [KnownVoice {
+        person_id: 3,
+        prints: vec![vec![1.0, 0.1, 0.0, 0.0], vec![1.0, -0.1, 0.0, 0.0]],
+    }];
+    let c = cluster_units(&cache, &PipelineConfig::default(), &known, &[axis(3)]);
+    assert_eq!(c.voices, vec![Some(3); 4]);
+    assert!(c.labels[0].is_some());
+    assert!(c.labels.iter().all(|l| *l == c.labels[0]), "{:?}", c.labels);
+    assert_eq!(c.matches[c.labels[0].unwrap()].person_id, Some(3));
+}
+
+#[test]
+fn a_diarization_service_keeps_the_speakers_in_the_room() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 5_000, Some(axis(0))),
+        (Mic, 6_000, 11_000, Some(axis(0))),
+        (Mic, 12_000, 14_000, Some(axis(3))),
+        (System, 15_000, 19_000, None),
+        (System, 20_000, 24_000, None),
+    ]);
+    // The service's labels have holes; the mic's must clear the highest.
+    let source = ClusterSource::SystemLabels(vec![None, None, None, Some(0), Some(7)]);
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &[], &[axis(3)], &source);
+    let labels = &c.labels;
+    assert_eq!(labels[0], labels[1]);
+    assert!(labels[0].is_some());
+    assert_eq!(labels[2], None, "the user's own voice");
+    assert!(labels[3].is_some() && labels[4].is_some());
+    assert_ne!(labels[3], labels[4]);
+    assert_ne!(labels[0], labels[3]);
+    assert_ne!(labels[0], labels[4]);
+    assert_eq!(c.centroids.len(), 3);
+}
+
+#[test]
+fn short_speech_follows_a_line_placed_only_by_its_own_voice() {
+    use Track::System;
+    let (a, b, c) = (axis(0), axis(1), axis(2));
+    let lines = [
+        (System, 0, 4_000, Some(a.clone())),
+        (System, 8_000, 12_000, Some(b.clone())),
+        (System, 16_000, 20_000, Some(a.clone())),
+        (System, 24_000, 28_000, Some(b.clone())),
+        (System, 40_000, 42_000, Some(c)),
+        (System, 42_100, 42_600, None),
+    ];
+    let cache = cache_of(&lines);
+    // The better model hears line 4 as equally near both clusters.
+    let source = ClusterSource::Vectors(vec![
+        Some(a.clone()),
+        Some(b.clone()),
+        Some(a),
+        Some(b),
+        Some(vec![1.0, 1.0, 0.0, 0.0]),
+        None,
+    ]);
+    let known = [KnownVoice {
+        person_id: 5,
+        prints: vec![vec![0.1, 0.0, 1.0, 0.0], vec![-0.1, 0.0, 1.0, 0.0]],
+    }];
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &known, &[], &source);
+    assert_eq!(c.voices[4], Some(5));
+    assert!(c.labels[4].is_some());
+    assert_eq!(c.labels[5], c.labels[4]);
+}
+
+/// A meeting of [`system_turns`] with this separation model.
+fn run_with_separation_model(f: &Fixture, model: &mut dyn Embedder) -> Result<()> {
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config: PipelineConfig::default(),
+        mic: None,
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Diarizer::Model(model),
+        turns: None,
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    }
+    .run()
+}
+
+/// Fails on its `fail_on`th call (from 1), with what `error` makes.
+struct FailingModel {
+    calls: usize,
+    fail_on: usize,
+    error: fn() -> anyhow::Error,
+}
+
+impl Embedder for FailingModel {
+    fn embed(&mut self, _: &[f32]) -> Result<Option<Vec<f32>>> {
+        self.calls += 1;
+        if self.calls == self.fail_on {
+            return Err((self.error)());
+        }
+        // Would put every line in one cluster, if it were ever used.
+        Ok(Some(vec![1.0; 16]))
+    }
+}
+
+#[test]
+fn a_failed_separation_model_falls_back_to_the_standard_voiceprints() {
+    // Failing part-way drops its earlier vectors too.
+    for fail_on in [1, 3] {
+        let f = fixture();
+        let mut model = FailingModel {
+            calls: 0,
+            fail_on,
+            error: || anyhow::anyhow!("corrupt model"),
+        };
+        run_with_separation_model(&f, &mut model).unwrap();
+        assert_eq!(model.calls, fail_on, "stops at the first failure");
+        let segments = f.store.segments(f.id).unwrap();
+        let speaker = |ms: i64| {
+            let at = |s: &&Segment| s.t0_ms <= ms && ms < s.t1_ms;
+            segments.iter().find(at).unwrap().speaker_id
+        };
+        assert_eq!(speaker(1000), speaker(13000));
+        assert_eq!(speaker(5000), speaker(17000));
+        assert_eq!(speaker(9000), speaker(21000));
+        assert_ne!(speaker(1000), speaker(5000));
+        assert_ne!(speaker(5000), speaker(9000));
+    }
+}
+
+#[test]
+fn a_cancelled_separation_model_cancels_the_run() {
+    let f = fixture();
+    let mut model = FailingModel {
+        calls: 0,
+        fail_on: 1,
+        error: || Cancelled.into(),
+    };
+    let e = run_with_separation_model(&f, &mut model).unwrap_err();
+    assert!(crate::meetings::processing::is_cancelled(&e), "{e:#}");
+    assert!(f.store.segments(f.id).unwrap().is_empty());
+}
+
+#[test]
+fn a_cancelled_model_download_stops_the_run_rather_than_falling_back() {
+    let f = fixture();
+    let mut model = FailingModel {
+        calls: 0,
+        fail_on: 1,
+        error: || crate::downloads::DownloadCancelled.into(),
+    };
+    let e = run_with_separation_model(&f, &mut model).unwrap_err();
+    assert!(e.is::<crate::downloads::DownloadCancelled>(), "{e:#}");
+    assert!(f.store.segments(f.id).unwrap().is_empty());
 }
 
 /// What the user said (a speaker named, a line tagged) survives running

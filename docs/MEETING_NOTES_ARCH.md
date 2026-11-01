@@ -11,6 +11,15 @@ contracts between the workstreams.
   calls) cannot run here, so the match thresholds are settings
   (`meetings.speaker_match_threshold`, default 0.65, and
   `speaker_suggest_threshold`, default 0.45). Sortformer is not used.
+- **Telling speakers apart:** the mic is the user unless a mic-only cluster has
+  at least 8 s of speech and doesn't sound like them; tracks are clustered apart
+  and join only through a known person. Lines of at least 3 s form the clusters;
+  shorter ones are assigned to them or follow the timing rule. An empty
+  `meetings.speaker_separation_model` means TitaNet once it is on disk, else
+  ResNet34, which still does known-person matching. These clustering values are
+  starting points, uncalibrated per model; measure them with
+  `cargo xtask diar-eval <manifest.json>` (`processing/eval.rs`), and keep a
+  default only if real-call DER improves and "you" precision doesn't fall.
 - **llama.cpp:** a separate helper binary, `crates/guidy-llm` (`llama-cpp-2`
   with Metal). Two static copies of ggml can't link into one binary, so a
   worker *mode* of `guidy` is impossible. The app starts `guidy-llm` next to

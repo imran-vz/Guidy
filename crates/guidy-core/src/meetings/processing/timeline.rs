@@ -96,10 +96,51 @@ fn system_text_near(system: &[RawSegment], t0: i64, t1: i64) -> String {
     out.join(" ")
 }
 
+/// Mic segments with fewer tokens than this are never called echoes: a short
+/// reply ("yes", "right") too easily matches words said nearby.
+pub const ECHO_MIN_TOKENS: usize = 3;
+
+/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: what spaces separate,
+/// and joining punctuation outside numbers ("10:30" is one), not [`tokens`],
+/// which can cut one word of some scripts into several; with
+/// each ideograph or kana counted as one and Thai at about four characters a
+/// word, as those scripts aren't written with spaces between words.
+fn word_count(text: &str) -> usize {
+    let per_char = |c: char| {
+        matches!(c as u32,
+            0x3040..=0x30FF // Kana
+            | 0x3400..=0x9FFF // CJK ideographs
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFF66..=0xFF9D // Halfwidth kana
+            | 0x20000..=0x3FFFF // Supplementary CJK ideographs
+        )
+    };
+    let thai = |c: char| matches!(c as u32, 0x0E00..=0x0E7F);
+    let joiner = |c: char| matches!(c, ',' | '-' | ';' | ':' | '/' | '–' | '—');
+    text.split_whitespace()
+        .flat_map(|w| {
+            let number = w.chars().any(|c| c.is_ascii_digit());
+            w.split(move |c: char| !number && joiner(c))
+        })
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .map(|w| {
+            let chars = w
+                .chars()
+                .filter(|c| per_char(*c) && c.is_alphanumeric())
+                .count();
+            let thai_chars = w.chars().filter(|c| thai(*c)).count();
+            (chars + thai_chars / 4).max(1)
+        })
+        .sum()
+}
+
 /// For each mic segment, whether it is an echo of the system track.
 pub fn echo_flags(mic: &[RawSegment], system: &[RawSegment], p: &EchoParams) -> Vec<bool> {
     mic.iter()
         .map(|m| {
+            if word_count(&m.text) < ECHO_MIN_TOKENS {
+                return false;
+            }
             let (t0, t1) = (m.t0_ms - p.slack_ms, m.t1_ms + p.slack_ms);
             if !system.iter().any(|s| s.overlaps(t0, t1)) {
                 return false;
@@ -238,6 +279,49 @@ mod tests {
         assert_eq!(tl[0].speaker, Some(0));
         assert_eq!(tl[1].segment.text, "Sounds good to me.");
         assert_eq!(tl[1].speaker, Some(9));
+    }
+
+    #[test]
+    fn a_short_reply_is_kept_and_a_three_word_echo_dropped() {
+        let system = vec![seg(Track::System, 1000, 4000, "yes ship it now")];
+        let p = EchoParams::default();
+        for reply in ["Yes.", "yes ship"] {
+            let mic = vec![seg(Track::Mic, 1200, 2000, reply)];
+            assert_eq!(echo_flags(&mic, &system, &p), vec![false], "{reply}");
+        }
+        let mic = vec![seg(Track::Mic, 1200, 3000, "ship it now")];
+        assert_eq!(echo_flags(&mic, &system, &p), vec![true]);
+    }
+
+    #[test]
+    fn a_script_without_spaces_counts_each_character() {
+        assert_eq!(word_count("ship it"), 2);
+        assert_eq!(word_count("明日リリース"), 6);
+        // Five kana and a voicing mark.
+        assert_eq!(word_count("ｱﾘｶﾞﾄｳ"), 5);
+        assert_eq!(word_count("𠀀𠀁𠀂"), 3);
+        // One word, however a tokenizer would cut it.
+        assert_eq!(word_count("स्वास्थ्य"), 1);
+        assert_eq!(word_count("1.5"), 1);
+        assert_eq!(word_count("1,000,000"), 1);
+        assert_eq!(word_count("10:30 AM"), 2);
+        // Marks in a kana block aren't words; words joined by punctuation are.
+        assert_eq!(word_count("はい・・・"), 2);
+        assert_eq!(word_count("ship,it,now"), 3);
+        assert_eq!(word_count("let's-ship it"), 3);
+        assert_eq!(word_count("ครับ"), 1);
+        assert_eq!(word_count("... -- !"), 0);
+        let system = vec![seg(Track::System, 1000, 4000, "明日リリースします")];
+        let mic = vec![seg(Track::Mic, 1200, 3000, "明日リリースします")];
+        assert_eq!(
+            echo_flags(&mic, &system, &EchoParams::default()),
+            vec![true]
+        );
+        let mic = vec![seg(Track::Mic, 1200, 1500, "明日")];
+        assert_eq!(
+            echo_flags(&mic, &system, &EchoParams::default()),
+            vec![false]
+        );
     }
 
     #[test]

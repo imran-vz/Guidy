@@ -5085,11 +5085,21 @@ mod line_tagging {
         // Downloaded: it can be deleted, and meetings go back to the
         // standard model.
         assert!(exists(cx, w, "meetings-separation-delete"));
+        view.update(cx, |_, cx| {
+            crate::ui::pages::meetings::settings::update_meetings(cx, |m| {
+                m.speaker_turn_models_consent = true
+            })
+        });
+        cx.run_until_parked();
+        assert!(backend.settings().meetings.speaker_turn_models_consent);
         with_window(cx, w, |window, cx| {
             window.click("meetings-separation-delete", cx)
         });
         assert!(meetings.called("delete_separation_model titanet_large"));
         assert_eq!(backend.settings().meetings.speaker_separation_model, "");
+        // The next run must not fetch it again.
+        assert!(!backend.settings().meetings.speaker_turn_models_consent);
+        assert!(backend.settings().meetings.speaker_turn_prompt_dismissed);
         // The standard one needs no download.
         view.update(cx, |v, cx| {
             v.choose_separation_model(SpeakerModelId::Resnet34, cx)
