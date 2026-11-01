@@ -400,12 +400,15 @@ fn remove_prints_from_others(
     speaker: &MeetingSpeaker,
     keep: PersonId,
 ) -> Result<()> {
-    // Every print this speaker could have given, enrolled now or not.
-    let mut prints: Vec<Vec<f32>> = speaker_lines(store, speaker)?
-        .into_iter()
-        .map(|e| e.embedding)
-        .collect();
-    prints.extend(store.speaker_embedding(speaker.id)?);
+    // What this speaker could have given before filtering: a print the filter
+    // rejects today may still be enrolled. Not the centroid while lines have
+    // prints: it can equal a line tagged as someone else.
+    let lines = speaker_lines(store, speaker)?;
+    let prints = if lines.is_empty() {
+        speaker_prints(store, speaker)?
+    } else {
+        pick_prints(lines, None)
+    };
     for v in store.voiceprints()? {
         if v.person_id != keep
             && v.source_meeting_id == Some(speaker.meeting_id)
