@@ -184,6 +184,24 @@ impl ModifierGesture {
         }
     }
 
+    /// When the first tap of a possible double-press was released, if one is
+    /// waiting. The listeners never report a click with no modifier held, so
+    /// the driver uses this to ask the OS whether one happened between taps.
+    pub fn awaiting_second_since(&self) -> Option<Instant> {
+        match self.state {
+            State::AwaitSecond { released_at } => Some(released_at),
+            _ => None,
+        }
+    }
+
+    /// The driver learned of a click after the first tap. The binding is up,
+    /// so this skips `Dirty`: the press that follows starts a new gesture.
+    pub fn on_click_between_taps(&mut self) {
+        if matches!(self.state, State::AwaitSecond { .. }) {
+            self.state = State::Idle;
+        }
+    }
+
     /// The binding is going away (unregister or suspend). A hold in progress
     /// must not leave a recording running with no key to end it.
     pub fn reset(&mut self) -> Option<GestureIntent> {
@@ -221,13 +239,18 @@ impl ModifierGesture {
                 .is_some_and(|changed| changed.intersects(self.binding))
     }
 
-    /// A different modifier going down.
+    /// A different modifier going down. Fn is read from the flags for the same
+    /// reason as in [`Self::is_press_edge`].
     fn is_extra_modifier(&self, event: &KeyEvent) -> bool {
         event.key.is_none()
-            && event.is_key_down
-            && event
-                .changed_modifier
-                .is_some_and(|changed| !changed.intersects(self.binding))
+            && event.changed_modifier.is_some_and(|changed| {
+                let going_down = if changed == Modifiers::FN {
+                    event.modifiers.contains(Modifiers::FN)
+                } else {
+                    event.is_key_down
+                };
+                going_down && !changed.intersects(self.binding)
+            })
     }
 
     /// Before a hold starts, a key, click or extra modifier means the press
@@ -650,6 +673,41 @@ mod tests {
         );
         assert_eq!(g.state, State::Idle);
         assert_eq!(g.on_missed_release(t0 + ms(900)), None);
+    }
+
+    #[test]
+    fn inverted_fn_edge_is_still_an_extra_modifier() {
+        let t0 = Instant::now();
+        let mut g = option();
+        g.on_event(&down(OPT), t0);
+        // Fn pressed, but a lost event inverted handy-keys' toggle.
+        let both = OPT | Modifiers::FN;
+        g.on_event(&edge(Modifiers::FN, both, false), t0 + ms(50));
+        assert_eq!(g.state, State::Dirty);
+        assert_eq!(g.tick(t0 + ms(400)), None);
+
+        // The mirror image: Fn released, but reported as a key-down.
+        let mut g = option();
+        g.on_event(&down(OPT), t0);
+        g.on_event(&edge(Modifiers::FN, OPT, true), t0 + ms(50));
+        assert_eq!(g.state, State::FirstDown { pressed_at: t0 });
+    }
+
+    #[test]
+    fn click_between_taps_blocks_double_but_not_a_new_hold() {
+        let t0 = Instant::now();
+        let mut g = option();
+        assert_eq!(g.awaiting_second_since(), None);
+        g.on_event(&down(OPT), t0);
+        g.on_click_between_taps();
+        assert_eq!(g.state, State::FirstDown { pressed_at: t0 });
+        g.on_event(&up(OPT), t0 + ms(50));
+        assert_eq!(g.awaiting_second_since(), Some(t0 + ms(50)));
+        g.on_click_between_taps();
+        assert_eq!(g.state, State::Idle);
+
+        g.on_event(&down(OPT), t0 + ms(100));
+        assert_eq!(g.tick(t0 + ms(100) + ARM), Some(GestureIntent::HoldStart));
     }
 
     #[test]
