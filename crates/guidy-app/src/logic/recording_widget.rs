@@ -228,6 +228,9 @@ pub struct WidgetModel {
     /// For that stop: how long ago the call let go of the microphone. The
     /// note ends there.
     stop_released_ago: Option<i64>,
+    /// Apps the call watcher should forget a snooze of
+    /// ([`guidy_core::meetings::calls::CallDetector::unsnooze_app`]).
+    pending_unsnoozes: Vec<String>,
     /// That stop is because the call's app came back, unanswered: a new call,
     /// so it stands as having left.
     split_on_return: bool,
@@ -259,6 +262,7 @@ impl Default for WidgetModel {
             stopping: false,
             stop_released_ago: None,
             split_on_return: false,
+            pending_unsnoozes: Vec::new(),
             record_next: None,
             wave: VecDeque::from(vec![0.0; BARS]),
             sources: [
@@ -339,6 +343,11 @@ impl WidgetModel {
     /// The apps to snooze since the last poll.
     pub fn take_snoozes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_snoozes)
+    }
+
+    /// The apps to forget a snooze of since the last poll.
+    pub fn take_unsnoozes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_unsnoozes)
     }
 
     /// The call behind the recording has ended and the user is being asked:
@@ -447,6 +456,7 @@ impl WidgetModel {
             Some(PresenceChange::Back) => {
                 self.left_at = None;
                 self.split_on_return = true;
+                self.pending_unsnoozes.push(tracked.app_id.clone());
                 self.stop_released_ago = released_at.map(|at| (now - at).max(0));
                 return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
             }
@@ -473,10 +483,11 @@ impl WidgetModel {
         self.stop_if_unanswered(now)
     }
 
-    /// How long before the stop just asked for the note's call let go of the
-    /// microphone, if that is where the note ends.
-    pub fn take_stop_released_ago(&mut self) -> Option<i64> {
-        self.stop_released_ago.take()
+    /// The recording the stop just asked for is of, and how long before it
+    /// the note's call let go of the microphone, if that is where it ends.
+    pub fn take_stop_released_ago(&mut self) -> Option<(i64, i64)> {
+        let ago = self.stop_released_ago.take()?;
+        Some((self.meeting_id()?, ago))
     }
 
     /// Starting a recording from the hint, until it reports in.
@@ -542,6 +553,7 @@ impl WidgetModel {
                 call: self.call.clone(),
                 dismissed: self.dismissed,
                 pending_snoozes: std::mem::take(&mut self.pending_snoozes),
+                pending_unsnoozes: std::mem::take(&mut self.pending_unsnoozes),
                 ..Self::default()
             };
         }
@@ -923,7 +935,9 @@ mod tests {
             Some(CallCommand::Stop)
         );
         assert!(m.left_call().is_none());
-        assert_eq!(m.take_stop_released_ago(), Some(19_000));
+        assert_eq!(m.take_stop_released_ago(), Some((1, 19_000)));
+        // Whatever snooze it had was the old call's.
+        assert_eq!(m.take_unsnoozes(), ["us.zoom.xos"]);
         assert_eq!(m.apply_call_poll(poll(&zoom, None, 21_000)), None);
         m.set_recorder(RecorderState::Idle);
         // Not snoozed: the new call gets its offer.
@@ -980,7 +994,7 @@ mod tests {
             m.apply_call_poll(poll(&teams_apps, Some(teams), 1_000 + END_GRACE_MS)),
             Some(CallCommand::Stop)
         );
-        assert_eq!(m.take_stop_released_ago(), Some(END_GRACE_MS));
+        assert_eq!(m.take_stop_released_ago(), Some((1, END_GRACE_MS)));
     }
 
     #[test]

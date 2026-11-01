@@ -903,8 +903,19 @@ impl MeetingRecorder {
     /// [`Self::stop`] for a note that ended `released_ago_ms` before `now`,
     /// when its call let go of the microphone: the note ends there, and its
     /// tracks too, so the next call's first seconds aren't in it.
-    pub fn stop_released(&self, now: i64, released_ago_ms: i64) -> Result<Option<MeetingId>> {
+    ///
+    /// Only for recording `id`: by the time this runs it may have stopped and
+    /// another started, which must not lose its audio.
+    pub fn stop_released(
+        &self,
+        id: MeetingId,
+        now: i64,
+        released_ago_ms: i64,
+    ) -> Result<Option<MeetingId>> {
         let _op = self.op.lock();
+        if self.current_meeting_id() != Some(id) {
+            return Ok(None);
+        }
         self.stop_holding_op(now, Some(released_ago_ms))
     }
 
@@ -925,19 +936,15 @@ impl MeetingRecorder {
         send_owed_silence(&session.flow, &session.tx, &session.capture_log);
         let _ = session.tx.send(WriterMsg::Finish);
         let mut errors = std::mem::take(&mut *session.capture_errors.lock());
-        let mut whole_tracks = Vec::new();
         match session.writer.take().map(|w| w.join()) {
             Some(Ok((mic, sys))) => {
-                for (which, r) in [(Track::Mic, mic), (Track::System, sys)] {
-                    let track = which.as_str();
+                for (track, r) in [(Track::Mic, mic), (Track::System, sys)] {
+                    let track = track.as_str();
                     match r {
-                        Ok(s) => {
-                            log::info!(
-                                "meetings: {track} track of meeting {id}: {} ms",
-                                s.duration_ms()
-                            );
-                            whole_tracks.push(which);
-                        }
+                        Ok(s) => log::info!(
+                            "meetings: {track} track of meeting {id}: {} ms",
+                            s.duration_ms()
+                        ),
                         Err(e) => errors.push(format!("{track} track: {e:#}")),
                     }
                 }
@@ -945,18 +952,23 @@ impl MeetingRecorder {
             Some(Err(_)) => errors.push("audio writer panicked".into()),
             None => {}
         }
+        // Before the error is settled: a track that fails to cut is the next
+        // call's audio in this note, so it is said. A track that failed to
+        // write is cut too, whatever it got to hold.
+        let ended_at = released_ago_ms.map_or(now, |ago| {
+            let end = (now - ago.max(0)).max(session.started_at);
+            let keep_ms = (end - session.started_at - session.audio_starts_ms).max(0);
+            for track in [Track::Mic, Track::System] {
+                if let Err(e) = self.cut_track(id, track, keep_ms, &session.capture_log) {
+                    errors.push(format!("{} track: {e:#}", track.as_str()));
+                }
+            }
+            end
+        });
         let error = (!errors.is_empty()).then(|| errors.join("; "));
         if let Some(e) = &error {
             log::error!("meetings: meeting {id}: {e}");
         }
-        let ended_at = released_ago_ms.map_or(now, |ago| {
-            let end = (now - ago.max(0)).max(session.started_at);
-            let keep_ms = (end - session.started_at - session.audio_starts_ms).max(0);
-            for track in whole_tracks {
-                self.cut_track(id, track, keep_ms, &session.capture_log);
-            }
-            end
-        });
         let pending = PendingFinish {
             meeting_id: id,
             ended_at,
@@ -999,25 +1011,21 @@ impl MeetingRecorder {
             .with_context(|| format!("finish recording meeting {id}"))
     }
 
-    /// Keep a finished track's first `keep_ms`. On a failure the note just
-    /// keeps the rest.
-    fn cut_track(&self, id: MeetingId, track: Track, keep_ms: i64, log: &CaptureLog) {
+    /// Keep a track's first `keep_ms`.
+    fn cut_track(&self, id: MeetingId, track: Track, keep_ms: i64, log: &CaptureLog) -> Result<()> {
         let path = self
             .deps
             .audio_dir
             .join(audio_store::track_file_name(id, track));
         let keep = keep_ms as u64 * audio_store::SAMPLE_RATE as u64 / 1_000;
-        match audio_store::truncate_track(&path, keep) {
+        let cut = audio_store::truncate_track(&path, keep);
+        match &cut {
             Ok(true) => log.append(track, &format!("cut:{keep}")),
             Ok(false) => {}
-            Err(e) => {
-                log::warn!(
-                    "meetings: cutting the {} track of meeting {id} failed: {e:#}",
-                    track.as_str()
-                );
-                log.append(track, "cut:failed");
-            }
+            Err(_) => log.append(track, "cut:failed"),
         }
+        cut.map(|_| ())
+            .with_context(|| format!("couldn't end it at the end of the call ({keep} samples)"))
     }
 
     fn is_pending(&self, id: MeetingId) -> bool {

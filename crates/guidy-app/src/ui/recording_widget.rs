@@ -258,6 +258,9 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
             for app_id in cx.update(take_snoozes) {
                 detector.snooze_app(app_id, now);
             }
+            for app_id in cx.update(take_unsnoozes) {
+                detector.unsnooze_app(&app_id);
+            }
             let detection = detector.detect(&apps, &choices, now);
             let current = detector.current().cloned();
             cx.update(|cx| {
@@ -310,6 +313,12 @@ fn run_call_changes(
         Some(CallCommand::Stop) => stop_for_call(cx),
         None => {}
     }
+}
+
+fn take_unsnoozes(cx: &mut App) -> Vec<String> {
+    RecordingWidgetState::global(cx)
+        .map(|state| state.update(cx, |s, _| s.model.take_unsnoozes()))
+        .unwrap_or_default()
 }
 
 fn take_snoozes(cx: &mut App) -> Vec<String> {
@@ -465,13 +474,16 @@ fn stop(cx: &mut App) {
 fn stop_for_call(cx: &mut App) {
     let released_ago = RecordingWidgetState::global(cx)
         .and_then(|state| state.update(cx, |s, _| s.model.take_stop_released_ago()));
-    let Some(released_ago) = released_ago else {
+    let Some((meeting_id, released_ago)) = released_ago else {
         stop(cx);
         return;
     };
     let backend = AppState::global(cx).read(cx).meetings.clone();
+    // However long this waits to run, the release doesn't move.
+    let asked = std::time::Instant::now();
     cx.background_spawn(async move {
-        if let Err(e) = backend.stop_recording_released(released_ago) {
+        let waited = asked.elapsed().as_millis() as i64;
+        if let Err(e) = backend.stop_recording_released(meeting_id, released_ago + waited) {
             log::error!("Stopping the meeting from the recording widget failed: {e}");
         }
     })

@@ -1569,7 +1569,7 @@ fn a_note_stopped_at_its_release_ends_there_and_its_tracks_with_it() {
         r.capture.feed(Track::Mic, &[0.1; 16_000]);
         r.capture.feed(Track::System, &[0.1; 16_000]);
     }
-    r.rec.stop_released(T0 + 10_000, 6_000).unwrap();
+    r.rec.stop_released(id, T0 + 10_000, 6_000).unwrap();
 
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.ended_at, Some(T0 + 4_000));
@@ -1599,4 +1599,27 @@ fn a_plain_stop_keeps_the_whole_track() {
         .join(audio_store::track_file_name(id, Track::Mic));
     let total = TrackReader::open(&path).unwrap().total_samples().unwrap();
     assert_eq!(total, 5 * 16_000);
+}
+
+#[test]
+fn a_late_release_stop_leaves_a_later_recording_alone() {
+    let r = rig();
+    let first = r.rec.start(None, T0).unwrap();
+    r.rec.stop(T0 + 1_000).unwrap();
+    let second = r.rec.start(None, T0 + 2_000).unwrap();
+    assert_eq!(r.rec.stop_released(first, T0 + 3_000, 500).unwrap(), None);
+    assert_eq!(r.rec.current_meeting_id(), Some(second));
+}
+
+#[test]
+fn a_track_that_cannot_be_cut_says_so() {
+    let r = rig();
+    let path = r.dir.path().join("x.capture.jsonl");
+    let log = CaptureLog::new(path.clone());
+    // No such track file.
+    let err = r.rec.cut_track(999, Track::Mic, 1_000, &log).unwrap_err();
+    assert!(format!("{err:#}").contains("couldn't end it"), "{err:#}");
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("cut:failed"));
 }

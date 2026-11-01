@@ -759,6 +759,13 @@ impl CallDetector {
         });
     }
 
+    /// The app's call ended and it came back: a new call, whatever snoozed
+    /// the old one (a displaced browser's snooze lasts while it holds the
+    /// microphone).
+    pub fn unsnooze_app(&mut self, app_id: &str) {
+        self.snoozed.retain(|s| s.app_id != app_id);
+    }
+
     /// Forget everything (the feature was turned off).
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -1023,6 +1030,20 @@ mod tests {
         assert_eq!(d.observe(&chime, 4_000), None);
         assert_eq!(d.observe(&wa, 5_000), None);
         assert_eq!(d.observe(&wa, 6_000), None);
+    }
+
+    #[test]
+    fn unsnoozing_lets_an_app_be_offered_again() {
+        let mut d = CallDetector::default();
+        let zoom = [app("us.zoom.xos")];
+        d.snooze_app("us.zoom.xos".into(), 0);
+        for t in (0..4_000).step_by(1_000) {
+            assert_eq!(d.observe(&zoom, t), None);
+        }
+        d.unsnooze_app("us.zoom.xos");
+        d.observe(&zoom, 4_000);
+        assert_eq!(d.observe(&zoom, 5_000), None);
+        assert!(d.observe(&zoom, 4_000 + CONFIRM_MS).is_some());
     }
 
     #[test]
