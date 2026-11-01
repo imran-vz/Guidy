@@ -354,6 +354,34 @@ fn without_a_recorded_voice_the_mic_is_the_user() {
 }
 
 #[test]
+fn a_line_of_a_second_gets_a_voiceprint_and_a_shorter_one_none() {
+    let f = fixture();
+    // With the VAD's 150 ms padding each way: about 1.3 s and 0.9 s.
+    let r = run_tracks(&f, None, &[], &[(0, 1_000, 2_000), (1, 5_000, 5_600)]);
+    r.result.unwrap();
+    assert_eq!(r.embed_calls, 1);
+}
+
+#[test]
+fn tagging_a_short_line_stores_no_voiceprint() {
+    let f = fixture();
+    run_tracks(&f, None, &[], &[(0, 1_000, 2_000)])
+        .result
+        .unwrap();
+    let line = f.store.segments(f.id).unwrap().remove(0);
+    let person = naming::assign_segment(
+        &f.store,
+        line.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert!(f.store.voiceprints_for_person(person).unwrap().is_empty());
+}
+
+#[test]
 fn processes_a_meeting_end_to_end() {
     let f = fixture();
     let r = run(&f, None);

@@ -139,7 +139,7 @@ impl PipelineConfig {
             turns: TurnParams::default(),
             cluster: ClusterParams::default(),
             echo: EchoParams::default(),
-            min_embed_ms: 1_500,
+            min_embed_ms: 1_000,
             match_threshold: s.speaker_match_threshold,
             suggest_threshold: s.speaker_suggest_threshold.min(s.speaker_match_threshold),
             user_voice_threshold: 0.5,

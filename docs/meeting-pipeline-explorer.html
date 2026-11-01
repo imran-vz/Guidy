@@ -298,7 +298,7 @@ FIG.turns = () => {
   const pts=[];for(let i=0;i<=52;i++){const t=i/52;const d=Math.abs(t-.46);let v=.75-.65*Math.exp(-(d*d)/.002)+.05*Math.sin(i*1.7);if(Math.abs(t-.22)<.025)v=.06;pts.push(`${x0+t*w},${60+(1-v)*60}`);}
   b+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${C.both}" stroke-width="1.6"/>`;
   b+=L(x0,60+(1-.1)*60,x0+w,60+(1-.1)*60,C.red,{dash:'4 3'})+T(x0+w,60+(1-.1)*60-3,'scan dip ≤ 0.10',{size:9.5,anchor:'end',fill:C.red});
-  b+=T(x0,132,'similarity of 1.5 s TitaNet voiceprints before vs after, every 0.5 s',{size:9.5,fill:C.ink3});
+  b+=T(x0,132,'similarity of 0.5 s TitaNet voiceprints before vs after, every 0.25 s',{size:9.5,fill:C.ink3});
   // candidates
   b+=`<path d="M ${x0+w*.46-6} 148 l 6 10 l 6 -10 z" fill="${C.both}"/>`+T(x0+w*.46,172,'pyannote: change',{size:9.5,anchor:'middle',fill:C.both});
   b+=`<circle cx="${x0+w*.22}" cy="153" r="5" fill="none" stroke="${C.ink3}" stroke-width="1.4"/>`+T(x0+w*.22,172,'scan only',{size:9.5,anchor:'middle',fill:C.ink3});
@@ -339,7 +339,7 @@ FIG.language = () => {
 
 FIG.voiceprints = () => {
   let b=ARROWDEF;
-  b+=box(10,40,110,40,'segment ≥ 1.5 s',C.sysS,C.sys,{size:11});
+  b+=box(10,40,110,40,'segment ≥ 1 s',C.sysS,C.sys,{size:11});
   b+=R(150,24,160,72,'#fff',C.both)+T(230,46,'WeSpeaker ResNet34-LM',{anchor:'middle',size:11.5,w:600})+T(230,64,'sherpa-onnx, 26.5 MB',{anchor:'middle',size:10.5,fill:C.ink2})+T(230,80,'trained on VoxCeleb',{anchor:'middle',size:10.5,fill:C.ink2});
   b+=L(120,60,148,60,C.ink2,{arrow:1})+L(310,60,338,60,C.ink2,{arrow:1});
   let x=340; for(let i=0;i<32;i++){const v=Math.sin(i*2.3)*.5+.5; b+=`<rect x="${x+i*6.5}" y="${40+(1-v)*18}" width="5" height="${4+v*18}" fill="${C.both}" opacity="${.35+v*.6}"/>`;}
@@ -533,7 +533,7 @@ const N = [
  {id:'turns',x:546,y:388,w:150,h:84,kind:'sys',band:'Processing',title:'Turn splitter',tech:'pyannote + TitaNet',
   call:['turn detection','speaker-change split','TurnDetection','turns::find_changes'],fig:'turns',
   body:`<p>This is the "voice splitter". VAD only cuts at pauses, but on a call one person often starts right as another stops. This step finds <b>changes of voice inside one VAD span</b> on the system track and cuts there, so each line has one speaker.</p><p>Two sources propose cuts, and a cut is kept only if voiceprints on both sides clearly differ, so neither source can split a line alone. It runs inside the VAD stage once the models are on disk (setup offers them, on by default, about 107 MB). Redoing the speakers runs it on a stored transcript too, giving each word to the piece holding its midpoint. If the segmentation model fails, the scan carries on alone.</p>`,
-  steps:['Skip spans shorter than 3 s.','<b>Model proposals:</b> pyannote segmentation-3.0 reports speaker turns; a change between turns of different speakers (turns ≥ 1 s) is proposed.','<b>Scan proposals:</b> 1.5 s TitaNet voiceprints every 0.5 s; a dip in before/after similarity ≤ 0.10 is proposed.','Proposals within 1 s are one change (the model\'s time wins).','<b>Confirm:</b> compare up to 3 s each side (at least 1.5 s). Keep a model cut if similarity < 0.40, a scan-only cut if < 0.25.','Snap each kept cut to the quietest VAD frame within 300 ms.'],
+  steps:['Skip spans shorter than 3 s.','<b>Model proposals:</b> pyannote segmentation-3.0 reports speaker turns; a change between turns of different speakers (turns ≥ 1 s) is proposed.','<b>Scan proposals:</b> 0.5 s TitaNet voiceprints every 0.25 s; a dip in before/after similarity ≤ 0.10 is proposed.','Proposals within 1 s are one change (the model\'s time wins).','<b>Confirm:</b> compare up to 3 s each side (at least 1 s). Keep a model cut if similarity < 0.40, a scan-only cut if < 0.25.','Snap each kept cut to the quietest VAD frame within 300 ms.'],
   nums:[['Segmentation model','pyannote segmentation-3.0 (ONNX, sherpa-onnx)'],['Scan/confirm model','NVIDIA TitaNet Large (101 MB)'],['Setting','meetings.speaker_turn_models_consent'],['Without models','TitaNet only: scan alone; neither: pauses only']],
   files:['src/meetings/processing/turns.rs','src/meetings/processing/speaker_model.rs']},
  {id:'transcribe',x:728,y:388,w:150,h:84,kind:'both',band:'Processing',title:'Transcribe',tech:'Parakeet TDT v3',
@@ -545,8 +545,8 @@ const N = [
  {id:'voiceprints',x:910,y:388,w:150,h:84,kind:'both',band:'Processing',title:'Voiceprints',tech:'ResNet34 · 256-d',
   call:['Voiceprints stage','speaker embedding','Embedder'],fig:'voiceprints',sub:'uservoice',
   body:`<p>Computes a <b>voiceprint</b> (speaker embedding) for each segment: 256 numbers describing how the voice sounds. Prints of the same person point the same way, which is what clustering and recognising people rely on.</p>`,
-  steps:['For each segment with text and ≥ 1.5 s long:','system track always; mic track only if you recorded "Your voice".','Run WeSpeaker ResNet34-LM through sherpa-onnx (CPU, in-process).','Normalise to unit length, store in the checkpoint.'],
-  nums:[['Model','WeSpeaker ResNet34-LM, VoxCeleb, 26.5 MB'],['min_embed_ms','1 500'],['Runs','in-process CPU, 2 threads']],
+  steps:['For each segment with text and ≥ 1 s long:','system track always; mic track only if you recorded "Your voice".','Run WeSpeaker ResNet34-LM through sherpa-onnx (CPU, in-process).','Normalise to unit length, store in the checkpoint.'],
+  nums:[['Model','WeSpeaker ResNet34-LM, VoxCeleb, 26.5 MB'],['min_embed_ms','1 000'],['Runs','in-process CPU, 2 threads']],
   files:['src/meetings/processing/pipeline.rs (voiceprints)','src/meetings/processing/speaker_model.rs','src/meetings/processing/user_voice.rs']},
  {id:'cluster',x:1092,y:388,w:160,h:84,kind:'both',band:'Processing',title:'Cluster & match',tech:'agglomerative',
   call:['Cluster stage','diarization','clustering','matching','Diarizer'],fig:'cluster',sub:'match',
