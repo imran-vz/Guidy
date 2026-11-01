@@ -75,6 +75,7 @@ impl HealthNotice {
                 | Self::AudioDropping
                 | Self::MicLost
                 | Self::SystemLost
+                | Self::SystemPermissionUnknown
         )
     }
 

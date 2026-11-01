@@ -602,8 +602,11 @@ impl MeetingRecorder {
             .context("spawn meeting writer")?;
 
         let mut tracker = HealthTracker::new(meeting.started_at);
-        tracker.set_permissions(preflight.mic_granted, preflight.system_granted);
-        tracker.set_system_permission_unreadable(preflight.system_unknown);
+        tracker.set_preflight_permissions(
+            preflight.mic_granted,
+            preflight.system_granted,
+            preflight.system_unknown,
+        );
         tracker.set_low_disk(is_low_disk(preflight));
         if preflight.system_unknown {
             log::warn!("meetings: can't read the system audio permission");
@@ -761,8 +764,11 @@ impl MeetingRecorder {
             let mut tracker = s.tracker.lock();
             if let Some(preflight) = preflight {
                 s.last_preflight = now;
-                tracker.set_permissions(preflight.mic_granted, preflight.system_granted);
-                tracker.set_system_permission_unreadable(preflight.system_unknown);
+                tracker.set_preflight_permissions(
+                    preflight.mic_granted,
+                    preflight.system_granted,
+                    preflight.system_unknown,
+                );
                 tracker.set_low_disk(is_low_disk(preflight));
             }
             for (i, track) in [Track::Mic, Track::System].into_iter().enumerate() {

@@ -17,9 +17,10 @@ pub const NO_SAMPLES_RECONNECTING_MS: i64 = 5_000;
 pub const NO_SAMPLES_LOST_MS: i64 = 9_000;
 /// Reported stalled this long: lost. The native watchdog says so up to 3.5 s
 /// after the last callback, and the stream's padding keeps samples flowing, so
-/// [`NO_SAMPLES_LOST_MS`] alone would never see it. This makes it 9 s from the
-/// last callback too.
-pub const STALLED_LOST_MS: i64 = 5_500;
+/// [`NO_SAMPLES_LOST_MS`] alone would never see it. Counted from the tick
+/// before the report, and shown on a 1 s tick, this makes it 9 s from the last
+/// callback too.
+pub const STALLED_LOST_MS: i64 = 4_500;
 /// A permission status that can't be read is shown unless sound has reached
 /// the track this recently, which proves access.
 pub const UNREADABLE_PERMISSION_QUIET_MS: i64 = 5_000;
@@ -86,6 +87,9 @@ struct TrackState {
     stalled: bool,
     /// When `stalled` was reported, to the tick.
     stalled_at: i64,
+    /// Stalled or failed was reported since the last tick: sound counted in
+    /// this tick may be from before that, so it says nothing about recovery.
+    reported_since_tick: bool,
     failed: bool,
     write_failed: bool,
     denied: bool,
@@ -175,12 +179,16 @@ impl HealthTracker {
                     state.stalled = true;
                     state.stalled_at = last_tick;
                 }
+                state.reported_since_tick = true;
             }
             CaptureMessage::Recovered => {
                 state.stalled = false;
                 state.failed = false;
             }
-            CaptureMessage::Failed => state.failed = true,
+            CaptureMessage::Failed => {
+                state.failed = true;
+                state.reported_since_tick = true;
+            }
             CaptureMessage::Restarted => state.failed = false,
             CaptureMessage::Gap(_) => {}
             CaptureMessage::Dropping => state.delivery_dropping = true,
@@ -199,9 +207,19 @@ impl HealthTracker {
         self.system.denied = !system_granted;
     }
 
-    /// The system audio permission can't be read right now.
-    pub fn set_system_permission_unreadable(&mut self, unreadable: bool) {
-        self.system_permission_unreadable = unreadable;
+    /// [`Self::set_permissions`] from a preflight, where the system status may
+    /// be unreadable: that says nothing new, so a refusal already seen stands.
+    pub fn set_preflight_permissions(
+        &mut self,
+        mic_granted: bool,
+        system_granted: bool,
+        system_unreadable: bool,
+    ) {
+        self.mic.denied = !mic_granted;
+        if !system_unreadable {
+            self.system.denied = !system_granted;
+        }
+        self.system_permission_unreadable = system_unreadable;
     }
 
     pub fn set_in_call(&mut self, in_call: bool, now: i64) {
@@ -236,6 +254,7 @@ impl HealthTracker {
             state.last_samples = now;
             state.last_sound = now;
             state.stalled_at = now;
+            state.reported_since_tick = false;
         }
         self.no_audio_since = now;
     }
@@ -256,10 +275,13 @@ impl HealthTracker {
             }
             if flow.sound {
                 state.last_sound = now;
-                // Sound reaching the track says more than any report.
-                state.failed = false;
-                state.stalled = false;
+                // Sound reaching the track says more than any older report.
+                if !state.reported_since_tick {
+                    state.failed = false;
+                    state.stalled = false;
+                }
             }
+            state.reported_since_tick = false;
         }
         if mic.sound || system.sound {
             self.no_audio_since = now;
@@ -351,9 +373,10 @@ mod tests {
         assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
         // The watchdog's report, at its latest.
         h.on_message(Track::Mic, CaptureMessage::Stalled);
-        run(&mut h, 4_000, 8_000, ZEROS, LIVE);
-        assert_eq!(h.health(8_000).mic, SourceHealth::Reconnecting);
-        run(&mut h, 9_000, 9_000, ZEROS, LIVE);
+        run(&mut h, 4_000, 7_000, ZEROS, LIVE);
+        assert_eq!(h.health(7_000).mic, SourceHealth::Reconnecting);
+        run(&mut h, 8_000, 9_000, ZEROS, LIVE);
+        assert_eq!(h.health(8_000).mic, SourceHealth::Lost);
         assert_eq!(h.health(9_000).mic, SourceHealth::Lost);
         // A repeated report doesn't restart the count.
         h.on_message(Track::Mic, CaptureMessage::Stalled);
@@ -365,6 +388,23 @@ mod tests {
         h.on_message(Track::Mic, CaptureMessage::Stalled);
         run(&mut h, 13_000, 13_000, ZEROS, LIVE);
         assert_eq!(h.health(13_000).mic, SourceHealth::Reconnecting);
+    }
+
+    #[test]
+    fn sound_from_before_a_report_does_not_clear_it() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, LIVE);
+        // Sound at 1.1 s, reported stalled at 1.4 s, ticked at 2 s.
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        run(&mut h, 2_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Reconnecting);
+        // Sound after it does.
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
+        // The same for a failure.
+        h.on_message(Track::System, CaptureMessage::Failed);
+        run(&mut h, 4_000, 4_000, LIVE, LIVE);
+        assert_eq!(h.health(4_000).system, SourceHealth::Lost);
     }
 
     #[test]
@@ -390,7 +430,7 @@ mod tests {
     #[test]
     fn an_unreadable_permission_is_shown_unless_sound_proves_access() {
         let mut h = HealthTracker::new(0);
-        h.set_system_permission_unreadable(true);
+        h.set_preflight_permissions(true, true, true);
         // Not counted as refused.
         run(&mut h, 1_000, 6_000, LIVE, ZEROS);
         let health = h.health(6_000);
@@ -402,8 +442,21 @@ mod tests {
         assert!(!h.health(7_000).system_permission_unknown);
         run(&mut h, 8_000, 12_000, LIVE, ZEROS);
         assert!(h.health(12_000).system_permission_unknown);
-        h.set_system_permission_unreadable(false);
+        h.set_preflight_permissions(true, true, false);
         assert!(!h.health(12_000).system_permission_unknown);
+    }
+
+    #[test]
+    fn an_unreadable_status_does_not_undo_a_refusal() {
+        let mut h = HealthTracker::new(0);
+        h.set_preflight_permissions(true, false, false);
+        assert_eq!(h.health(0).system, SourceHealth::Lost);
+        h.set_preflight_permissions(true, true, true);
+        let health = h.health(0);
+        assert_eq!(health.system, SourceHealth::Lost);
+        assert!(health.system_denied);
+        h.set_preflight_permissions(true, true, false);
+        assert_eq!(h.health(0).system, SourceHealth::Healthy);
     }
 
     #[test]
@@ -424,8 +477,8 @@ mod tests {
         // No report at all, but sound.
         h.on_message(Track::Mic, CaptureMessage::Failed);
         h.on_message(Track::Mic, CaptureMessage::Stalled);
-        run(&mut h, 1_000, 1_000, LIVE, LIVE);
-        assert_eq!(h.health(1_000).mic, SourceHealth::Healthy);
+        run(&mut h, 1_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Healthy);
     }
 
     #[test]

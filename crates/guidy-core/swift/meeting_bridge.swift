@@ -417,13 +417,15 @@ private func otherProcessIsPlaying() -> Bool {
         mSelector: kAudioHardwarePropertyProcessObjectList,
         mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var size: UInt32 = 0
+    // A list that can't be read proves nothing: assume something plays, so a
+    // dead tap still gets reported rather than called idle.
     guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0
-    else { return false }
+    else { return true }
     var objects = [AudioObjectID](
         repeating: AudioObjectID(kAudioObjectUnknown),
         count: Int(size) / MemoryLayout<AudioObjectID>.size)
     guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else {
-        return false
+        return true
     }
     let own = getpid()
     return objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).contains { object in
@@ -432,7 +434,9 @@ private func otherProcessIsPlaying() -> Bool {
             UInt32(0))
         let pid = audioProperty(
             object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0))
-        return (running ?? 0) != 0 && pid != own
+        // No readable pid: it may be our own output.
+        guard let pid = pid, (running ?? 0) != 0 else { return false }
+        return pid != own
     }
 }
 
