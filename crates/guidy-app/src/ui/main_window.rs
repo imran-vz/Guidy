@@ -19,7 +19,7 @@ use crate::ui::pages::Page;
 use crate::ui::pages::{
     about::AboutPage, advanced::AdvancedPage, debug::DebugPage, general::GeneralPage,
     history::HistoryPage, meetings::MeetingsPage, models::ModelsPage,
-    post_processing::PostProcessingPage, usage::UsagePage,
+    post_processing::PostProcessingPage, storage::StoragePage, usage::UsagePage,
 };
 use crate::ui::status_bar::StatusBar;
 use crate::ui::whats_new::WhatsNewGate;
@@ -40,6 +40,7 @@ pub enum Section {
     Advanced,
     PostProcessing,
     Usage,
+    Storage,
     Debug,
     About,
 }
@@ -54,6 +55,7 @@ impl Section {
             Section::Advanced => "advanced",
             Section::PostProcessing => "postprocessing",
             Section::Usage => "usage",
+            Section::Storage => "storage",
             Section::Debug => "debug",
             Section::About => "about",
         }
@@ -68,6 +70,7 @@ impl Section {
             "advanced" => Section::Advanced,
             "postprocessing" => Section::PostProcessing,
             "usage" => Section::Usage,
+            "storage" => Section::Storage,
             "debug" => Section::Debug,
             "about" => Section::About,
             _ => return None,
@@ -84,6 +87,7 @@ impl Section {
             Section::Advanced => "sidebar.advanced",
             Section::PostProcessing => "sidebar.postProcessing",
             Section::Usage => "sidebar.usage",
+            Section::Storage => "sidebar.storage",
             Section::Debug => "sidebar.debug",
             Section::About => "sidebar.about",
         }
@@ -98,6 +102,7 @@ impl Section {
             Section::Advanced => "cog",
             Section::PostProcessing => "sparkles",
             Section::Usage => "coins",
+            Section::Storage => "hard-drive",
             Section::Debug => "flask-conical",
             Section::About => "info",
         }
@@ -142,6 +147,7 @@ struct Pages {
     advanced: Option<Entity<AdvancedPage>>,
     post_processing: Option<Entity<PostProcessingPage>>,
     usage: Option<Entity<UsagePage>>,
+    storage: Option<Entity<StoragePage>>,
     debug: Option<Entity<DebugPage>>,
     about: Option<Entity<AboutPage>>,
 }
@@ -315,6 +321,12 @@ impl MainWindow {
                 page.update(cx, |p, cx| p.reload(cx));
             }
         }
+        // So do files: measure again on each visit, with no timers.
+        if section == Section::Storage {
+            if let Some(page) = &self.pages.storage {
+                page.update(cx, |p, cx| p.reload(cx));
+            }
+        }
         cx.notify();
     }
 
@@ -476,6 +488,7 @@ impl MainWindow {
             Section::Advanced => page!(advanced, AdvancedPage),
             Section::PostProcessing => page!(post_processing, PostProcessingPage),
             Section::Usage => page!(usage, UsagePage),
+            Section::Storage => page!(storage, StoragePage),
             Section::Debug => page!(debug, DebugPage),
             Section::About => page!(about, AboutPage),
         }

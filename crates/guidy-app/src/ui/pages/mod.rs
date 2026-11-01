@@ -13,6 +13,7 @@ pub mod history;
 pub mod meetings;
 pub mod models;
 pub mod post_processing;
+pub mod storage;
 pub mod usage;
 
 use gpui_kit::{AnyElement, App, Context, Render, SharedString, Window};

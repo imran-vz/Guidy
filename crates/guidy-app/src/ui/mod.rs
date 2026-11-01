@@ -45,6 +45,7 @@ gpui_kit::actions!(
         ShowAdvanced,
         ShowPostProcessing,
         ShowUsage,
+        ShowStorage,
         ShowDebug,
         ShowAbout,
     ]
@@ -119,6 +120,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &ShowAdvanced, cx| show_section(Section::Advanced, cx));
     cx.on_action(|_: &ShowPostProcessing, cx| show_section(Section::PostProcessing, cx));
     cx.on_action(|_: &ShowUsage, cx| show_section(Section::Usage, cx));
+    cx.on_action(|_: &ShowStorage, cx| show_section(Section::Storage, cx));
     cx.on_action(|_: &ShowDebug, cx| show_section(Section::Debug, cx));
     cx.on_action(|_: &ShowAbout, cx| show_section(Section::About, cx));
 }
@@ -191,6 +193,7 @@ fn set_app_menus_for(sections: &[&'static str], cx: &mut App) {
             Section::Advanced => MenuItem::action(label, ShowAdvanced),
             Section::PostProcessing => MenuItem::action(label, ShowPostProcessing),
             Section::Usage => MenuItem::action(label, ShowUsage),
+            Section::Storage => MenuItem::action(label, ShowStorage),
             Section::Debug => MenuItem::action(label, ShowDebug),
             Section::About => MenuItem::action(label, ShowAbout),
         })

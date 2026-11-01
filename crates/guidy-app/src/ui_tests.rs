@@ -282,6 +282,7 @@ mod main_window {
             "nav-history",
             "nav-models",
             "nav-advanced",
+            "nav-storage",
             "nav-about",
         ] {
             assert!(exists(cx, w, id), "{id}");
@@ -5391,6 +5392,149 @@ mod shell {
         let (outer, inner) = view.read_with(cx, |v, _| (v.outer.offset(), v.inner.offset()));
         assert!(inner.y < px(0.), "the list scrolled");
         assert_eq!(outer.y, px(0.), "the page did not");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Storage page
+// ---------------------------------------------------------------------------
+mod storage_page {
+    use super::*;
+    use crate::ui::main_window::{MainWindow, Section};
+    use crate::ui::pages::storage::StoragePage;
+    use guidy_core::storage::{BucketUsage, Category, DiskSpace, StorageReport};
+
+    fn report() -> StorageReport {
+        StorageReport {
+            buckets: Category::ALL
+                .iter()
+                .map(|category| BucketUsage {
+                    category: *category,
+                    bytes: match category {
+                        Category::Models => 9_000_000_000,
+                        Category::SharedModels => 4_000_000_000,
+                        Category::Logs => 2_000_000,
+                        _ => 0,
+                    },
+                })
+                .collect(),
+            total_bytes: 13_002_000_000,
+            same_device_bytes: 13_002_000_000,
+            disk: Some(DiskSpace {
+                total_bytes: 500_000_000_000,
+                free_bytes: 200_000_000_000,
+            }),
+            error_count: 0,
+            first_error_path: None,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn storage_report_renders(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().storage = report();
+        setup(cx, backend);
+        let (w, _) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "storage-bar"));
+        assert!(exists(cx, w, "storage-row-models"));
+        assert!(exists(cx, w, "storage-row-shared-models"));
+        assert!(exists(cx, w, "storage-row-logs"));
+        // Empty buckets get no row.
+        assert!(!exists(cx, w, "storage-row-backups"));
+        assert!(exists(cx, w, "storage-manage-models"));
+        assert!(!exists(cx, w, "storage-partial"));
+        assert!(!exists(cx, w, "storage-error"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_failure_is_inline(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().fail_settings = vec!["storage_report".into()];
+        setup(cx, backend.clone());
+        let (w, page) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "storage-error"));
+        assert!(!exists(cx, w, "storage-bar"));
+        backend.data.lock().fail_settings.clear();
+        backend.data.lock().storage = report();
+        page.update(cx, |p, cx| p.reload(cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "storage-error"));
+        assert!(exists(cx, w, "storage-row-models"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_failed_refresh_keeps_the_last_report(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().storage = report();
+        setup(cx, backend.clone());
+        let (w, page) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        backend.data.lock().fail_settings = vec!["storage_report".into()];
+        page.update(cx, |p, cx| p.reload(cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "storage-error"));
+        assert!(exists(cx, w, "storage-row-models"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_partial_scan_is_inline(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().storage = StorageReport {
+            error_count: 3,
+            first_error_path: Some("/data/recordings".into()),
+            ..report()
+        };
+        setup(cx, backend);
+        let (w, _) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        assert!(exists(cx, w, "storage-partial"));
+        assert!(exists(cx, w, "storage-row-models"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_open_folder_is_recorded(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().storage = report();
+        setup(cx, backend.clone());
+        let (w, _) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| window.click("storage-open-logs", cx));
+        assert!(backend.called("open_storage_category Logs"));
+        assert!(!exists(cx, w, "storage-open-error"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_open_failure_is_inline(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.data.lock().storage = report();
+        backend.data.lock().fail_settings = vec!["open_storage_category".into()];
+        setup(cx, backend);
+        let (w, _) = open_page(cx, StoragePage::new);
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| window.click("storage-open-logs", cx));
+        assert!(exists(cx, w, "storage-open-error"));
+    }
+
+    #[gpui_kit::test]
+    fn storage_measures_again_on_each_visit(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        main.update(cx, |m, cx| m.select_section(Section::Storage, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "page-storage"));
+        // The first measurement, started by the render above, has finished.
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "storage-row-models"));
+        backend.data.lock().storage = report();
+        main.update(cx, |m, cx| m.select_section(Section::General, cx));
+        cx.run_until_parked();
+        main.update(cx, |m, cx| m.select_section(Section::Storage, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "storage-row-models"));
     }
 }
 
