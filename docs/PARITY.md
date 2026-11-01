@@ -234,8 +234,8 @@ Removed from the baseline: `is_model_loading`. It had no caller in this app, and
 
 | ID | Behavior | Cover |
 |---|---|---|
-| F-01 | Startup step machine: returning vs new user; permission checks [mac]/[win]; migration; model; done → init enigo + shortcuts + device refresh | test: new_user_goes_through_permissions_then_model_picker, test: returning_user_initializes_input_and_devices, test: returning_users_skip_to_done_or_migration, test: startup_initializes_dictation_without_a_window, test: reopening_the_window_keeps_the_session_state |
-| F-02 | Permission onboarding: per-permission states, 1 s polling, stop after 3 errors with toast, 300 ms completion; [win] mic-only path; other platforms skip | test: permission_grant_polls_until_granted, test: new_user_goes_through_permissions_then_model_picker |
+| F-01 | Startup step machine: a new user goes Welcome → Permissions → Setup; a returning user gets permission checks [mac]/[win], then migration if needed; done → init enigo + shortcuts + device refresh | test: new_user_goes_welcome_permissions_setup_and_back, test: finish_queues_downloads_and_completes_without_waiting, test: returning_user_initializes_input_and_devices, test: returning_users_skip_to_done_or_migration, test: missing_permissions_send_returning_users_to_permissions, test: startup_initializes_dictation_without_a_window, test: reopening_the_window_keeps_the_session_state |
+| F-02 | Permission onboarding: per-permission states, 1 s polling after the user acts, Continue needs the microphone and moves on only when pressed, Accessibility can be skipped; [win] mic-only path; other platforms skip | test: permission_grant_polls_until_granted, test: new_user_goes_welcome_permissions_setup_and_back, test: microphone_is_required_but_accessibility_can_be_skipped, manual: HW-01 |
 | F-03 | Model picker: existing models, 2 featured recommended, show all/fewer, download → select, cancel, back when opened from migration, cards disabled during selection | test: picker_downloads_then_selects_and_finishes, test: picker_groups_feature_two_recommended, test: picker_unlocks_after_a_failed_download |
 | F-04 | Retired-model migration: choose phase, parallel downloads with progress/retry, select target before deleting old, ETA + MB/s, choose another | test: retired_model_migration_replaces_and_finishes, test: full_flow_selects_target_before_deleting_and_wraps_up, test: failed_target_can_retry, test: migration_failed_download_offers_retry |
 | F-05 | What's New gate: highest note ≤ app version and > last seen; dismiss saves; markdown allowlist (http/https/mailto links, safe images) | test: shows_unseen_note_and_records_dismissal, test: respects_the_toggle, test: note_links_are_allowlisted, test: whats_new_waits_for_onboarding |
@@ -266,7 +266,7 @@ Removed from the baseline: `is_model_loading`. It had no caller in this app, and
 
 | ID | Check | Platforms |
 |---|---|---|
-| HW-01 | First-run mic + accessibility permission prompts | mac, win |
+| HW-01 | First-run mic + accessibility permission prompts. Windows asks only for the microphone; Linux skips the step | mac, win, lin |
 | HW-02 | Dictate into TextEdit/Notepad/gedit, Chrome, Terminal with each paste method | all |
 | HW-03 | Hold / toggle / push-to-talk / cancel on a physical keyboard | all |
 | HW-04 | Tray menu: every item in T-01 acts (both copy items paste the right text, Meetings… and Settings… open the right section with the window closed and open, Check for Updates… shows its result in the footer) + model switching and Unload Model; icon states in light and dark menu bar | all |

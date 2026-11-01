@@ -417,16 +417,65 @@ mod main_window {
         });
         assert!(backend.called("request_microphone_permission"));
         backend.data.lock().microphone = true;
-        cx.executor().advance_clock(Duration::from_millis(1100));
+        // The grant isn't seen until the check due at 1 s, so Continue stays off.
+        cx.executor().advance_clock(Duration::from_millis(900));
         cx.run_until_parked();
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        // Granting doesn't move on by itself: the user presses Continue.
         cx.executor().advance_clock(Duration::from_millis(400));
         cx.run_until_parked();
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
         assert!(exists(cx, w, "microphone-permission"));
         with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
         assert_eq!(
             main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Setup)
         );
+    }
+
+    /// PARITY F-02 (Continue needs the microphone; Accessibility is optional)
+    #[gpui_kit::test]
+    fn microphone_is_required_but_accessibility_can_be_skipped(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.onboarding_completed = false);
+        backend.data.lock().microphone = false;
+        backend.data.lock().accessibility = false;
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        if crate::logic::keyboard::OsType::current() != crate::logic::keyboard::OsType::MacOs {
+            return;
+        }
+        with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions),
+            "no microphone: Continue is off"
+        );
+        with_window(cx, w, |window, cx| {
+            window.click("grant-microphone-permission", cx)
+        });
+        backend.data.lock().microphone = true;
+        cx.executor().advance_clock(Duration::from_millis(1100));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Setup)
+        );
+        assert!(!backend.called("request_accessibility_permission"));
     }
 
     /// PARITY W-02
@@ -1204,8 +1253,9 @@ mod onboarding_flows {
         w
     }
 
-    /// PARITY F-03: Finish queues the downloads, marks onboarding complete
-    /// and opens the app at once; the model is selected when it's done.
+    /// PARITY F-01 (new user, input starts only when done), F-03: Finish
+    /// queues the downloads, marks onboarding complete and opens the app at
+    /// once; the model is selected when it's done.
     #[gpui_kit::test]
     fn finish_queues_downloads_and_completes_without_waiting(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
@@ -1214,7 +1264,12 @@ mod onboarding_flows {
         backend.data.lock().models = vec![rec.clone()];
         let w = at_setup(cx, &backend);
         let state = cx.update(|cx| AppState::global(cx));
+        assert!(!backend.called("initialize_enigo"));
+        assert!(!backend.called("initialize_shortcuts"));
         with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("initialize_enigo"));
+        assert!(backend.called("initialize_shortcuts"));
+        assert!(backend.called("get_available_microphones"));
         assert!(
             backend.called("request_download stt:rec"),
             "{:?}",
