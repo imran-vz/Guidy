@@ -252,6 +252,9 @@ pub struct SummaryView {
     pending_summary_draft: Option<SummaryDraft>,
     /// The editor holds text recovered from a draft.
     draft_restored: bool,
+    /// Action items with a save running (count per item). `items` already
+    /// shows the new text, but it stays in the draft until the save succeeds.
+    item_saves_running: HashMap<ActionItemId, usize>,
     /// The shown error is the autosave's, so its next success clears it.
     draft_error: Option<String>,
     // "Regenerate with..." picker.
@@ -388,6 +391,7 @@ impl SummaryView {
             pending_draft: None,
             pending_summary_draft: None,
             draft_restored: false,
+            item_saves_running: HashMap::new(),
             draft_error: None,
             picker_open: false,
             picker: MeetingsLlmChoice::default(),
@@ -507,7 +511,7 @@ impl SummaryView {
         // What was typed in the last moment goes with the meeting it was
         // typed in, while the inputs still hold it.
         if self.draft_debouncer.is_dirty() {
-            self.hold_and_write_draft(cx);
+            self.write_draft(cx);
         }
         self.draft_debouncer.reset();
         self.draft_timer = None;
@@ -516,6 +520,7 @@ impl SummaryView {
         self.draft_write_held = false;
         self.pending_draft = None;
         self.pending_summary_draft = None;
+        self.item_saves_running.clear();
         // The half-typed item belongs to the meeting left behind.
         self.clear_new_item = true;
         self.draft_restored = false;
@@ -781,7 +786,11 @@ impl SummaryView {
             short_summary: self.short_summary.read(cx).value().to_string(),
             decisions: self.decisions.read(cx).value().to_string(),
             topics: self.topics.read(cx).value().to_string(),
-            based_on_generated_at: self.summary.as_ref().map_or(0, |s| s.generated_at),
+            // Where the edit started, not what `summary` has since become.
+            based_on_generated_at: self
+                .summary_baseline
+                .as_ref()
+                .map_or(0, |b| b.based_on_generated_at),
         });
         let items = self
             .items
@@ -792,7 +801,8 @@ impl SummaryView {
                 let due = inputs.due.read(cx).value().to_string();
                 let unchanged = text.trim() == item.text
                     && due.trim() == item.due.as_deref().unwrap_or_default();
-                (!unchanged).then_some((item.id, ItemDraft { text, due }))
+                let unconfirmed = self.item_saves_running.contains_key(&item.id);
+                (!unchanged || unconfirmed).then_some((item.id, ItemDraft { text, due }))
             })
             .collect();
         let new_item = self.new_item.read(cx).value().to_string();
@@ -851,6 +861,8 @@ impl SummaryView {
         let id = self.meeting_id;
         let draft = self.draft_snapshot(cx);
         let revision = next_revision();
+        // A reopen reads this from now on, even before the file has it.
+        self.backend.hold_meeting_draft(id, revision, draft.clone());
         self.run(
             cx,
             move |b| b.save_meeting_draft(id, revision, &draft),
@@ -875,17 +887,6 @@ impl SummaryView {
                 }
             },
         );
-    }
-
-    /// [`Self::write_draft`] for when the inputs are about to change: a
-    /// reopen of this meeting sees the draft even before the file does.
-    fn hold_and_write_draft(&mut self, cx: &mut Context<Self>) {
-        if !self.draft_loaded || self.pending_draft.is_some() {
-            return;
-        }
-        self.backend
-            .hold_meeting_draft(self.meeting_id, next_revision(), self.draft_snapshot(cx));
-        self.write_draft(cx);
     }
 
     /// The view is going away with text not yet written.
@@ -1048,10 +1049,21 @@ impl SummaryView {
         }
         let id = item.id;
         let attempted = (item.text.clone(), item.due.clone());
+        let meeting_id = self.meeting_id;
+        *self.item_saves_running.entry(id).or_default() += 1;
         self.run(
             cx,
             move |b| b.update_action_item(&item),
             move |this, r, cx| {
+                if this.meeting_id != meeting_id {
+                    return;
+                }
+                if let Some(running) = this.item_saves_running.get_mut(&id) {
+                    *running -= 1;
+                    if *running == 0 {
+                        this.item_saves_running.remove(&id);
+                    }
+                }
                 if let Err(e) = r {
                     this.error = Some(error_message(&e));
                     // Not saved: back to what is stored, so the typed text
@@ -2267,6 +2279,8 @@ mod ui {
 
     /// Past the longest debounce, with the write finished.
     fn let_the_draft_write(cx: &mut TestAppContext) {
+        // A timer's delay starts when its task first runs.
+        cx.run_until_parked();
         cx.executor()
             .advance_clock(std::time::Duration::from_secs(1));
         cx.run_until_parked();
