@@ -21,12 +21,6 @@ pub struct RawSegment {
     pub words: Vec<Word>,
 }
 
-impl RawSegment {
-    pub fn overlaps(&self, t0_ms: i64, t1_ms: i64) -> bool {
-        self.t0_ms < t1_ms && t0_ms < self.t1_ms
-    }
-}
-
 /// Lowercased alphanumeric tokens (apostrophes kept inside words).
 pub fn tokens(text: &str) -> Vec<String> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
@@ -223,37 +217,42 @@ fn matched_in_order(mic: &[Timed], heard: &[Timed], slack_ms: i64) -> Vec<bool> 
 
 /// Per word of `m`, the text it stands for and whether a space comes before it,
 /// when the words can decide for the segment: inside it, in time order, with
-/// real times, and lining up with what its text says. Only a run of ideographs
+/// some real time, and lining up with what its text says. Only a run of ideographs
 /// or kana may span several words, as those count by character anyway. Any
 /// other mismatch (fragments of a word, one entry for two words, text the words
 /// leave out) would miscount the minimum or lose text, so it's `None`.
 fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
     let timed = m.words.windows(2).all(|w| w[0].t0_ms <= w[1].t0_ms)
-        && m.words.iter().all(|w| {
-            let real = w.t1_ms > w.t0_ms || atoms(&w.text).is_empty();
-            real && m.t0_ms <= w.t0_ms && w.t1_ms <= m.t1_ms
-        });
+        && m.words.iter().any(|w| w.t1_ms > w.t0_ms)
+        && m.words
+            .iter()
+            .all(|w| m.t0_ms <= w.t0_ms && w.t0_ms <= w.t1_ms && w.t1_ms <= m.t1_ms);
     if m.words.is_empty() || !timed {
         return None;
     }
     let mut out = Vec::with_capacity(m.words.len());
     let mut next = 0;
-    // An entry with nothing to match (punctuation) stays on the word before.
+    // Punctuation comes from the text; an entry of it adds none of its own.
     let attach_marks = |next: &mut usize, out: &mut Vec<(String, bool)>| {
         while let Some(w) = m.words.get(*next).filter(|w| atoms(&w.text).is_empty()) {
-            out.push((w.text.clone(), false));
+            out.push((String::new(), false));
             *next += 1;
         }
     };
     for token in m.text.split_whitespace() {
         let wanted = atoms(token);
         if wanted.is_empty() {
+            // A mark standing alone in the text stays on what it follows.
+            if let Some((text, _)) = out.last_mut() {
+                text.push(' ');
+                text.push_str(token);
+            }
             continue;
         }
         attach_marks(&mut next, &mut out);
         let spelled = wanted.concat();
         let word = m.words.get(next)?;
-        if atoms(&word.text).concat() == spelled {
+        if atoms(&word.text) == wanted {
             out.push((token.to_string(), true));
             next += 1;
         } else if token
@@ -392,6 +391,10 @@ fn echo_cut(m: &RawSegment, system: &[RawSegment], p: &EchoParams) -> EchoCut {
             pieces.push(piece_of(m, k..end, &texts));
         }
         k = end;
+    }
+    // Words with no length can't say where what's left of the audio is.
+    if pieces.iter().any(|piece| piece.t1_ms <= piece.t0_ms) {
+        return EchoCut::Whole;
     }
     EchoCut::Trimmed(pieces)
 }
@@ -990,6 +993,81 @@ mod tests {
     }
 
     #[test]
+    fn a_word_with_no_length_is_fine_if_what_is_kept_has_some() {
+        let echo = over(Track::System, 0, 3_000, &["ship", "it", "now"]);
+        let mut mic = joined(&[
+            RawSegment {
+                track: Track::Mic,
+                ..echo.clone()
+            },
+            over(Track::Mic, 5_000, 7_000, &["sounds", "good"]),
+        ]);
+        mic.words[1].t1_ms = mic.words[1].t0_ms;
+        mic.words[4].t0_ms = 7_000;
+        assert_eq!(
+            left_of(mic, &[echo]),
+            vec![(5_000, 7_000, "sounds good".to_string())]
+        );
+    }
+
+    #[test]
+    fn marks_come_from_the_text_once_and_are_not_lost() {
+        let echo = over(Track::System, 0, 3_000, &["ship", "it", "now"]);
+        let spread = [
+            (0, 1_000),
+            (1_000, 2_000),
+            (2_000, 3_000),
+            (3_000, 3_100),
+            (5_000, 6_000),
+            (6_000, 7_000),
+            (7_000, 7_100),
+        ];
+        let mut mic = over(
+            Track::Mic,
+            0,
+            8_000,
+            &["ship", "it", "now", ".", "sounds", "good", "!"],
+        );
+        for (word, (t0, t1)) in mic.words.iter_mut().zip(spread) {
+            word.t0_ms = t0;
+            word.t1_ms = t1;
+        }
+        // Attached in the text as well as listed apart: not doubled.
+        mic.text = "Ship it now. Sounds good!".into();
+        assert_eq!(
+            left_of(mic, &[echo.clone()]),
+            vec![(5_000, 7_100, "Sounds good!".to_string())]
+        );
+        // Alone in the text, with no entry of its own: not dropped.
+        let mut mic = joined(&[
+            RawSegment {
+                track: Track::Mic,
+                ..echo.clone()
+            },
+            over(Track::Mic, 5_000, 7_000, &["sounds", "good"]),
+        ]);
+        mic.text = "ship it now sounds good !".into();
+        assert_eq!(
+            left_of(mic, &[echo]),
+            vec![(5_000, 7_000, "sounds good !".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_word_cut_at_punctuation_is_not_three_words() {
+        let system = [over(Track::System, 0, 2_000, &["a", "b", "c"])];
+        let p = EchoParams::default();
+        let mut mic = over(
+            Track::Mic,
+            0,
+            2_000,
+            &["a-b-c", "my", "connection", "dropped"],
+        );
+        mic.text = "abc my connection dropped".into();
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
     fn a_mark_entry_stays_on_its_word() {
         let echo = over(Track::System, 0, 3_000, &["ship", "it", "now"]);
         let mut mic = over(
@@ -1017,7 +1095,7 @@ mod tests {
         mic.text = "ship it now . sounds good !".into();
         assert_eq!(
             left_of(mic, &[echo]),
-            vec![(5_000, 7_100, "sounds good!".to_string())]
+            vec![(5_000, 7_100, "sounds good !".to_string())]
         );
     }
 
