@@ -405,13 +405,33 @@ private func deviceName(_ id: AudioObjectID) -> String? {
     return cf as String
 }
 
-/// Something is playing on the default output (so a tap should be hearing it).
-private func outputIsRunning() -> Bool {
-    guard let output = defaultDevice(input: false) else { return false }
-    let running = audioProperty(
-        output, kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal,
-        UInt32(0))
-    return (running ?? 0) != 0
+/// Another process is producing output, so a tap should be hearing it. A
+/// device merely being open says nothing: a USB headset held for its microphone
+/// counts as running with nothing playing.
+private func otherProcessIsPlaying() -> Bool {
+    guard #available(macOS 14.0, *) else { return false }
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyProcessObjectList,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0
+    else { return false }
+    var objects = [AudioObjectID](
+        repeating: AudioObjectID(kAudioObjectUnknown),
+        count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else {
+        return false
+    }
+    let own = getpid()
+    return objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).contains { object in
+        let running = audioProperty(
+            object, kAudioProcessPropertyIsRunningOutput, kAudioObjectPropertyScopeGlobal,
+            UInt32(0))
+        let pid = audioProperty(
+            object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0))
+        return (running ?? 0) != 0 && pid != own
+    }
 }
 
 /// The microphone chosen in Guidy's settings, by name (`nil`: the default).
@@ -491,10 +511,13 @@ private final class MicCapture {
     private var lastAudioNanos: UInt64
     private var stalled = false
     private var stalledSinceNanos: UInt64 = 0
+    /// Rebuilds in a row that brought no audio back. Guarded by `stateLock`.
+    private var rebuildsWithoutAudio = 0
     /// On `controlQueue`: a restart chain is under way, and its failure was
-    /// already reported.
+    /// already reported; when the watchdog may rebuild again.
     private var recovering = false
     private var reportedFailure = false
+    private var nextWatchdogNanos: UInt64 = 0
     /// On `tickQueue`: ticks since the last health check.
     private var ticksSinceCheck = 0
 
@@ -579,28 +602,36 @@ private final class MicCapture {
         }
     }
 
+    /// Under `stateLock`, the event too: a buffer arriving right now can't
+    /// report recovering first.
     private func markStalled() {
         stateLock.lock()
-        let isNew = !stalled
-        if isNew {
+        defer { stateLock.unlock() }
+        if !stalled {
             stalled = true
-            stalledSinceNanos = nowNanos()
-        }
-        stateLock.unlock()
-        if isNew {
+            stalledSinceNanos = lastAudioNanos
             sink.event(GUIDY_MB_STREAM_MIC, eventStalled)
         }
     }
 
-    /// Watchdog, on `controlQueue`: no buffers, or the engine stopped.
+    /// Watchdog, on `controlQueue`: no buffers, or the engine stopped. A device
+    /// that starts but brings no audio is rebuilt with the same backoff as one
+    /// that fails to start.
     private func checkHealth() {
         if stopped || recovering { return }
         stateLock.lock()
         let last = lastAudioNanos
+        let tries = rebuildsWithoutAudio
         stateLock.unlock()
         let now = nowNanos()
         let silent = now > last ? now - last : 0
         if engine.isRunning && silent < watchdogNanos { return }
+        if now < nextWatchdogNanos { return }
+        let delay = rebuildDelays[min(tries, rebuildDelays.count - 1)]
+        nextWatchdogNanos = now + UInt64(delay * 1e9)
+        stateLock.lock()
+        rebuildsWithoutAudio += 1
+        stateLock.unlock()
         recovering = true
         restartGeneration += 1
         restart(generation: restartGeneration, attempt: 1)
@@ -781,12 +812,13 @@ private final class MicCapture {
             stateLock.unlock()
             resampler = rebuilt
         }
-        noteAudio()
         let frames = Int(buffer.frameLength)
         guard frames > 0, let source = buffer.floatChannelData,
               let mono = resampler.makeInputBuffer(frames: frames),
               let destination = mono.floatChannelData?[0]
         else { return }
+        // Only a buffer with audio in it counts as alive.
+        noteAudio()
         // The first channel only: the built-in array's extra channels are
         // other capsules of the same mic, not worth mixing in.
         if buffer.format.isInterleaved {
@@ -815,12 +847,12 @@ private final class MicCapture {
     private func noteAudio() {
         let now = nowNanos()
         stateLock.lock()
+        defer { stateLock.unlock() }
         lastAudioNanos = now
-        let wasStalled = stalled
-        let since = stalledSinceNanos
-        stalled = false
-        stateLock.unlock()
-        if wasStalled {
+        rebuildsWithoutAudio = 0
+        if stalled {
+            stalled = false
+            let since = stalledSinceNanos
             sink.event(GUIDY_MB_STREAM_MIC, eventRecovered)
             sink.event(GUIDY_MB_STREAM_MIC, eventGap(now > since ? now - since : 0))
         }
@@ -1108,8 +1140,10 @@ private final class SystemTapCapture {
     private var rebuildGeneration = 0
     private var recovering = false
     private var reportedFailure = false
-    /// When the last quiet rebuild of an idle tap was.
+    /// When the last quiet rebuild of an idle tap was, and when the watchdog
+    /// may rebuild again.
     private var lastIdleRebuildNanos: UInt64 = 0
+    private var nextWatchdogNanos: UInt64 = 0
 
     // Touched only on ioQueue (and while the IOProc is stopped).
     private var resampler: MonoResampler?
@@ -1120,6 +1154,7 @@ private final class SystemTapCapture {
     private var stalled = false
     private var stalledSinceNanos: UInt64 = 0
     private var ticksSinceCheck = 0
+    private var rebuildsWithoutAudio = 0
 
     private(set) var framesReceived = 0
     private(set) var peak: Float = 0
@@ -1217,9 +1252,7 @@ private final class SystemTapCapture {
             self.ticksSinceCheck += 1
             if self.ticksSinceCheck >= 5 {
                 self.ticksSinceCheck = 0
-                let now = nowNanos()
-                let silent = now > self.lastAudioNanos ? now - self.lastAudioNanos : 0
-                self.controlQueue.async { self.checkHealth(silentNanos: silent) }
+                self.controlQueue.async { self.checkHealth() }
             }
         }
         timer.resume()
@@ -1341,12 +1374,19 @@ private final class SystemTapCapture {
     /// nothing: with something playing on the output and no callbacks the
     /// stream is stalled; with nothing playing it is rebuilt only now and then,
     /// and nothing is reported.
-    private func checkHealth(silentNanos: UInt64) {
+    private func checkHealth() {
         if stopped || recovering { return }
-        if silentNanos < watchdogNanos {
+        // Read now, not when this was queued: a rebuild may have just worked.
+        let (last, tries) = ioQueue.sync { (self.lastAudioNanos, self.rebuildsWithoutAudio) }
+        let now = nowNanos()
+        if now <= last || now - last < watchdogNanos {
             return
         }
-        if outputIsRunning() {
+        if otherProcessIsPlaying() {
+            if now < nextWatchdogNanos { return }
+            let delay = rebuildDelays[min(tries, rebuildDelays.count - 1)]
+            nextWatchdogNanos = now + UInt64(delay * 1e9)
+            ioQueue.sync { self.rebuildsWithoutAudio += 1 }
             recovering = true
             rebuildGeneration += 1
             rebuild(generation: rebuildGeneration, attempt: 1, quiet: false)
@@ -1357,10 +1397,11 @@ private final class SystemTapCapture {
         ioQueue.sync {
             if self.stalled {
                 self.stalled = false
+                let since = self.stalledSinceNanos
                 self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRecovered)
+                self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventGap(now > since ? now - since : 0))
             }
         }
-        let now = nowNanos()
         if now > lastIdleRebuildNanos && now - lastIdleRebuildNanos >= idleRebuildNanos {
             lastIdleRebuildNanos = now
             recovering = true
@@ -1373,7 +1414,7 @@ private final class SystemTapCapture {
         ioQueue.sync {
             if !self.stalled {
                 self.stalled = true
-                self.stalledSinceNanos = nowNanos()
+                self.stalledSinceNanos = self.lastAudioNanos
                 self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventStalled)
             }
         }
@@ -1383,7 +1424,7 @@ private final class SystemTapCapture {
     /// the first attempt, the tap too. Retried with backoff until Stop.
     private func rebuild(generation: Int, attempt: Int, quiet: Bool) {
         if stopped || generation != rebuildGeneration { return }
-        if !quiet && outputIsRunning() {
+        if !quiet && otherProcessIsPlaying() {
             markStalled()
         }
         teardownDevice()
@@ -1422,15 +1463,6 @@ private final class SystemTapCapture {
     ) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         guard let resampler = resampler else { return }
-        let arrived = nowNanos()
-        lastAudioNanos = arrived
-        if stalled {
-            stalled = false
-            sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRecovered)
-            sink?.event(
-                GUIDY_MB_STREAM_SYSTEM,
-                eventGap(arrived > stalledSinceNanos ? arrived - stalledSinceNanos : 0))
-        }
 
         var frames = 0
         for buffer in buffers where buffer.mNumberChannels > 0 && buffer.mData != nil {
@@ -1438,6 +1470,18 @@ private final class SystemTapCapture {
             frames = frames == 0 ? count : min(frames, count)
         }
         guard frames > 0 else { return }
+
+        // Only a buffer with audio in it counts as alive.
+        let arrived = nowNanos()
+        lastAudioNanos = arrived
+        rebuildsWithoutAudio = 0
+        if stalled {
+            stalled = false
+            sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRecovered)
+            sink?.event(
+                GUIDY_MB_STREAM_SYSTEM,
+                eventGap(arrived > stalledSinceNanos ? arrived - stalledSinceNanos : 0))
+        }
 
         if scratch == nil || Int(scratch!.frameCapacity) < frames {
             scratch = resampler.makeInputBuffer(frames: max(frames, 4096))
@@ -1512,6 +1556,8 @@ private final class CaptureSession {
     private var sleepAssertion: IOPMAssertionID?
     /// When the Mac last went to sleep, on the main thread's notifications.
     private var sleptAt: Date?
+    /// Guards `mic` and `system` once running: a wake can come during a stop.
+    private let streamsLock = NSLock()
 
     init(sink: CaptureSink) {
         self.sink = sink
@@ -1548,6 +1594,8 @@ private final class CaptureSession {
         let slept = sleptAt.map { Date().timeIntervalSince($0) } ?? 0
         sleptAt = nil
         let nanos = UInt64(max(slept, 0) * 1e9)
+        streamsLock.lock()
+        defer { streamsLock.unlock() }
         mic?.wake(sleptNanos: nanos)
         if #available(macOS 14.2, *) {
             (system as? SystemTapCapture)?.wake(sleptNanos: nanos)
@@ -1566,12 +1614,15 @@ private final class CaptureSession {
             IOPMAssertionRelease(assertion)
             sleepAssertion = nil
         }
-        if #available(macOS 14.2, *) {
-            (system as? SystemTapCapture)?.stop()
-        }
-        system = nil
-        mic?.stop()
+        streamsLock.lock()
+        let (stoppingMic, stoppingSystem) = (mic, system)
         mic = nil
+        system = nil
+        streamsLock.unlock()
+        if #available(macOS 14.2, *) {
+            (stoppingSystem as? SystemTapCapture)?.stop()
+        }
+        stoppingMic?.stop()
     }
 }
 

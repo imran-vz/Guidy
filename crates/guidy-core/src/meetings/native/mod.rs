@@ -472,9 +472,10 @@ pub fn set_preferred_microphone(name: Option<&str>) {
 ///   too, the echo of the meeting playing through the speakers is removed
 ///   from it ([`aec`], AEC3 with the system track as reference).
 /// - System: a process tap of all output except Guidy's own process. The
-///   stream is continuous and wall-clock aligned: silence is filled in while
-///   nothing plays (the tap itself delivers nothing then), and it is rebuilt
-///   when the default output device changes. Without the system-audio grant
+///   stream is continuous and wall-clock aligned: silence is filled in
+///   whenever the tap delivers nothing (whether an idle tap does is unverified:
+///   `docs/plans/meetings.md`, Risks), and it is rebuilt when the default output
+///   device changes. Without the system-audio grant
 ///   the tap starts but the stream is all silence.
 pub fn start_capture(callbacks: CaptureCallbacks) -> Result<CaptureHandle> {
     start_capture_streams(CaptureStreams::default(), callbacks)
