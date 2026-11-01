@@ -354,6 +354,34 @@ fn without_a_recorded_voice_the_mic_is_the_user() {
 }
 
 #[test]
+fn a_line_of_a_second_gets_a_voiceprint_and_a_shorter_one_none() {
+    let f = fixture();
+    // With the VAD's 150 ms padding each way: about 1.3 s and 0.9 s.
+    let r = run_tracks(&f, None, &[], &[(0, 1_000, 2_000), (1, 5_000, 5_600)]);
+    r.result.unwrap();
+    assert_eq!(r.embed_calls, 1);
+}
+
+#[test]
+fn tagging_a_short_line_stores_no_voiceprint() {
+    let f = fixture();
+    run_tracks(&f, None, &[], &[(0, 1_000, 2_000)])
+        .result
+        .unwrap();
+    let line = f.store.segments(f.id).unwrap().remove(0);
+    let person = naming::assign_segment(
+        &f.store,
+        line.id,
+        PersonRef::New {
+            display_name: "Alice".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert!(f.store.voiceprints_for_person(person).unwrap().is_empty());
+}
+
+#[test]
 fn processes_a_meeting_end_to_end() {
     let f = fixture();
     let r = run(&f, None);
@@ -2071,6 +2099,107 @@ fn echo_units_are_left_out_of_clustering_and_the_transcript() {
     let c = cluster_units(&cache, &config, &[], &[axis(3)]);
     assert!(c.labels[0].is_some());
     assert_eq!(c.labels[0], c.labels[1]);
+}
+
+/// A line of `words`, each 500 ms from `t0`.
+fn spoken(t0: i64, words: &[&str]) -> UnitTranscript {
+    UnitTranscript {
+        text: words.join(" "),
+        words: words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| Word {
+                t0_ms: t0 + i as i64 * 500,
+                t1_ms: t0 + (i as i64 + 1) * 500,
+                text: w.to_string(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_unit_with_echo_taken_out_stays_the_users_and_points_at_its_unit() {
+    use Track::{Mic, System};
+    // Bleed, then the user's own words, on one mic unit. Its voiceprint is
+    // mostly the remote voice, unlike the user's: it must not become a guest.
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(1))),
+        (Mic, 10_000, 19_000, Some(axis(0))),
+        (System, 0, 4_000, Some(axis(1))),
+        (System, 20_000, 29_000, Some(axis(1))),
+    ]);
+    let bleed = ["let's", "ship", "the", "release", "friday"];
+    let mut mixed = spoken(0, &bleed);
+    let mine = spoken(7_000, &["sorry", "my", "line", "dropped"]);
+    mixed.text = format!("{} {}", mixed.text, mine.text);
+    mixed.words.extend(mine.words);
+    cache.transcripts = vec![
+        Some(mixed),
+        Some(spoken(10_000, &["what", "about", "the", "budget"])),
+        Some(spoken(0, &bleed)),
+        Some(spoken(20_000, &["we", "can", "look", "next"])),
+    ];
+    let config = PipelineConfig::default();
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert_eq!(c.labels[0], None);
+    let (speakers, segments, units) = build_transcript(&cache, &c, &config);
+    let user = speakers.iter().find(|s| s.is_user).unwrap().id;
+    let kept = segments
+        .iter()
+        .find(|s| s.track == Mic && s.t0_ms < 10_000)
+        .unwrap();
+    assert_eq!(kept.text, "sorry my line dropped");
+    assert_eq!((kept.t0_ms, kept.t1_ms), (7_000, 9_000));
+    assert_eq!(kept.speaker_id, Some(user));
+    let at = segments.iter().position(|s| s == kept).unwrap();
+    assert_eq!(units[at], 0, "still knows which unit it came from");
+    assert!(units.iter().all(|&u| u < cache.units.len()));
+}
+
+#[test]
+fn redoing_the_speakers_takes_no_words_from_a_stored_mic_line() {
+    use Track::{Mic, System};
+    // The user repeated the remote's phrase just after its echo came out.
+    let phrase = ["ship", "it", "now"];
+    let mut cache = cache_of(&[
+        (Mic, 0, 1_500, Some(axis(0))),
+        (System, 0, 1_500, Some(axis(1))),
+    ]);
+    cache.transcripts = vec![Some(spoken(0, &phrase)), Some(spoken(0, &phrase))];
+    let config = PipelineConfig::default();
+    let c = cluster_units(&cache, &config, &[], &[]);
+    let mic_lines = |cache: &ProcessingCache| {
+        let (_, segments, _) = build_transcript(cache, &c, &config);
+        segments.iter().filter(|s| s.track == Mic).count()
+    };
+    assert_eq!(mic_lines(&cache), 0, "a first run takes the echo out");
+    cache.echo_removed = true;
+    assert_eq!(mic_lines(&cache), 1, "a redo goes by the stored transcript");
+    assert!(!labels_echo_units(&cache, &c, &config.echo));
+}
+
+#[test]
+fn a_checkpoint_that_labelled_an_echo_unit_is_clustered_again() {
+    use Track::{Mic, System};
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(1))),
+        (System, 0, 9_000, Some(axis(1))),
+    ]);
+    let phrase = ["ship", "it", "now"];
+    cache.transcripts = vec![Some(spoken(0, &phrase)), Some(spoken(0, &phrase))];
+    let echo = EchoParams::default();
+    let mut c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert!(!labels_echo_units(&cache, &c, &echo), "fresh clustering");
+    c.labels[0] = Some(1);
+    assert!(labels_echo_units(&cache, &c, &echo), "an old checkpoint");
+}
+
+#[test]
+fn a_checkpoint_from_before_the_echo_flag_goes_over_its_echo() {
+    let mut json: serde_json::Value = serde_json::to_value(ProcessingCache::new()).unwrap();
+    json.as_object_mut().unwrap().remove("echo_removed");
+    let old: ProcessingCache = serde_json::from_value(json).unwrap();
+    assert!(!old.echo_removed);
 }
 
 #[test]

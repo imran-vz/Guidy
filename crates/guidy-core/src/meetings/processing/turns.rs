@@ -64,15 +64,20 @@ impl Default for TurnParams {
     /// Calibrated on call audio with TitaNet voiceprints: across a model's
     /// change the 3 s sides score 0.04-0.33, inside one voice 0.5-0.85;
     /// 1.5 s windows inside one voice dip to ~0.15.
+    ///
+    /// The scan and `min_side_ms` are a trial. On synthetic TTS they took 1.15 s
+    /// handoffs from 38.8% to 4.9% DER, but other lengths still fail, and how
+    /// often they split one voice is unmeasured. `eval.rs` compares them with
+    /// the earlier 1500/500/1500 values.
     fn default() -> Self {
         Self {
             min_span_ms: 3_000,
             min_turn_ms: 1_000,
-            scan_window_ms: 1_500,
-            scan_hop_ms: 500,
+            scan_window_ms: 500,
+            scan_hop_ms: 250,
             scan_threshold: 0.1,
             side_ms: 3_000,
-            min_side_ms: 1_500,
+            min_side_ms: 1_000,
             confirm_threshold: 0.4,
             scan_confirm_threshold: 0.25,
             merge_ms: 1_000,
@@ -343,7 +348,7 @@ mod tests {
             .unwrap()
             .is_empty());
         // Too short to compare two windows.
-        assert!(scan_candidates(2_000, &mut voices(1_000), &p())
+        assert!(scan_candidates(800, &mut voices(400), &p())
             .unwrap()
             .is_empty());
     }
@@ -368,7 +373,7 @@ mod tests {
         let kept = confirm(14_000, &[c(3_000), c(6_000)], &mut embed, &p()).unwrap();
         assert_eq!(kept, vec![6_000]);
         // Too close to an end to compare.
-        assert!(confirm(7_000, &[c(6_000)], &mut voices(6_000), &p())
+        assert!(confirm(6_900, &[c(6_000)], &mut voices(6_000), &p())
             .unwrap()
             .is_empty());
     }
@@ -390,6 +395,30 @@ mod tests {
         assert_eq!(changes, vec![7_000]);
         // Too short to search.
         assert!(find_changes(&pcm[..SAMPLE_RATE * 2], None, &mut Tone, &p())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn rapid_handoffs_are_found() {
+        // Twelve 1.25 s turns, on the scan's grid. Too short for 1.5 s windows.
+        let mut pcm = Vec::new();
+        for k in 0..12 {
+            let sample = if k % 2 == 0 { 0.5f32 } else { -0.5 };
+            pcm.extend(vec![sample; SAMPLE_RATE * 5 / 4]);
+        }
+        let want: Vec<i64> = (1..12).map(|k| k * 1_250).collect();
+        assert_eq!(
+            find_changes(&pcm, None, &mut SignOfSamples, &p()).unwrap(),
+            want
+        );
+        let before = TurnParams {
+            scan_window_ms: 1_500,
+            scan_hop_ms: 500,
+            min_side_ms: 1_500,
+            ..p()
+        };
+        assert!(find_changes(&pcm, None, &mut SignOfSamples, &before)
             .unwrap()
             .is_empty());
     }

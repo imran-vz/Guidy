@@ -306,6 +306,12 @@ pub struct ProcessingCache {
     /// the checkpoint that holds the cut units, so a resume can't cut twice.
     #[serde(default)]
     pub resplit_pending: bool,
+    /// These units are a stored transcript: its echo already came out, so what
+    /// remains is the user's. Going over it again could only take their words:
+    /// a phrase repeated after its echo would match the system words that
+    /// matched the echo. Redoing the speakers never changes what was said.
+    #[serde(default)]
+    pub echo_removed: bool,
 }
 
 impl ProcessingCache {
