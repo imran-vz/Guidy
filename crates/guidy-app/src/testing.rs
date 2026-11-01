@@ -35,6 +35,7 @@ pub struct FakeData {
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
     pub usage: guidy_core::llm::usage::UsageReport,
+    pub storage: guidy_core::storage::StorageReport,
     /// The download tracker's list (`Backend::downloads`).
     pub downloads: Vec<guidy_core::downloads::DownloadItem>,
     /// LLMs and speaker models (`Backend::other_models`).
@@ -286,6 +287,19 @@ impl Backend for FakeBackend {
             return Err("usage database is locked".into());
         }
         Ok(self.data.lock().usage.clone())
+    }
+    fn storage_report(&self) -> BackendResult<guidy_core::storage::StorageReport> {
+        if self.fails("storage_report") {
+            return Err("the data folder can't be located".into());
+        }
+        Ok(self.data.lock().storage.clone())
+    }
+    fn open_storage_category(&self, category: guidy_core::storage::Category) -> BackendResult<()> {
+        self.rec(format!("open_storage_category {category:?}"));
+        if self.fails("open_storage_category") {
+            return Err("no application can open the folder".into());
+        }
+        Ok(())
     }
     fn clear_llm_usage(&self) -> BackendResult<()> {
         self.rec("clear_llm_usage");
