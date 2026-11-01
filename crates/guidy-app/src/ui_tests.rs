@@ -445,7 +445,7 @@ mod main_window {
             main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Permissions)
         );
-        advance(cx, 900);
+        advance(cx, 800);
         assert_eq!(checks(), first + 1);
         advance(cx, 200);
         assert_eq!(checks(), first + 2);

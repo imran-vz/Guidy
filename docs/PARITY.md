@@ -266,7 +266,7 @@ Removed from the baseline: `is_model_loading`. It had no caller in this app, and
 
 | ID | Check | Platforms |
 |---|---|---|
-| HW-01 | First-run mic + accessibility permission prompts. Windows asks only for the microphone; Linux skips the step | mac, win, lin |
+| HW-01 | First-run mic + accessibility permission prompts; each row shows Checking, Waiting and Granted. Windows asks only for the microphone; Linux skips the step | mac, win, lin |
 | HW-02 | Dictate into TextEdit/Notepad/gedit, Chrome, Terminal with each paste method | all |
 | HW-03 | Hold / toggle / push-to-talk / cancel on a physical keyboard | all |
 | HW-04 | Tray menu: every item in T-01 acts (both copy items paste the right text, Meetings… and Settings… open the right section with the window closed and open, Check for Updates… shows its result in the footer) + model switching and Unload Model; icon states in light and dark menu bar | all |
