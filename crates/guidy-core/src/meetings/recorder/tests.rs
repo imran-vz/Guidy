@@ -318,7 +318,7 @@ fn manual_start_links_to_the_event_happening_now() {
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.calendar_event_id.as_deref(), Some("now"));
     assert_eq!(m.title, "Event now");
-    assert_eq!(m.calendar_event.as_ref().unwrap().attendees.len(), 1);
+    assert_eq!(m.calendar_event.as_ref().unwrap().attendees.len(), 2);
     assert!(matches!(
         r.rec.state(),
         RecorderState::Recording { scheduled_end_at: Some(e), .. } if e == T0 + 25 * M
@@ -328,7 +328,10 @@ fn manual_start_links_to_the_event_happening_now() {
 #[test]
 fn explicit_event_id_is_linked_and_snapshotted() {
     let r = rig();
-    *r.calendar.events.lock() = vec![ev("a", T0 + 10 * M, T0 + 40 * M), ev("b", T0 - M, T0 + M)];
+    *r.calendar.events.lock() = vec![
+        ev("a", T0 + 10 * M, T0 + 40 * M),
+        ev("b", T0 - 30 * M, T0 - 20 * M),
+    ];
     let id = r.rec.start(Some("a".into()), T0).unwrap();
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.calendar_event_id.as_deref(), Some("a"));
@@ -559,7 +562,7 @@ fn calendar_prompts_once_at_start_time() {
     r.rec.tick(T0 - schedule::PROMPT_LEAD_MS - 1);
     assert!(r.notifier.posted.lock().is_empty());
     r.rec.tick(T0 - schedule::PROMPT_LEAD_MS);
-    assert_eq!(*r.calendar.queries.lock(), 1);
+    assert_eq!(*r.calendar.queries.lock(), 2, "read again to post");
     {
         let posted = r.notifier.posted.lock();
         assert_eq!(posted.len(), 1);
@@ -579,6 +582,41 @@ fn calendar_prompts_once_at_start_time() {
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     assert_eq!(m.title, "Event sync");
     assert_eq!(m.calendar_event.unwrap().end_at, T0 + 30 * M);
+}
+
+#[test]
+fn an_event_cancelled_or_renamed_since_the_last_read_is_not_prompted_stale() {
+    let r = rig();
+    *r.calendar.events.lock() = vec![ev("sync", T0, T0 + 30 * M), ev("gone", T0, T0 + 30 * M)];
+    r.rec.tick(T0 - 2 * M);
+    {
+        let mut events = r.calendar.events.lock();
+        events.retain(|e| e.id != "gone");
+        events[0].title = "Renamed".into();
+    }
+    r.rec.tick(T0 - schedule::PROMPT_LEAD_MS);
+    let posted = r.notifier.posted.lock();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0].title, "Take notes for Renamed?");
+}
+
+#[test]
+fn a_start_links_to_a_call_event_about_to_begin_or_just_over() {
+    let r = rig();
+    *r.calendar.events.lock() = vec![ev("sync", T0, T0 + 30 * M)];
+    let id = r.rec.start(None, T0 - 2 * M).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id.as_deref(), Some("sync"));
+    r.rec.stop(T0 - M).unwrap();
+
+    let id = r.rec.start(None, T0 + 40 * M).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id.as_deref(), Some("sync"));
+    r.rec.stop(T0 + 41 * M).unwrap();
+
+    let id = r.rec.start(None, T0 + 46 * M).unwrap();
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.calendar_event_id, None);
 }
 
 #[test]

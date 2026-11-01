@@ -1272,7 +1272,8 @@
       },
       "callSuggestions": {
         "title": "Suggest notes on calls",
-        "description": "When a call starts in another app or a browser, show the floater, stopped, with an offer to take notes."
+        "description": "When a Zoom, Google Meet or WhatsApp call starts, show the floater, stopped, with an offer to take notes.",
+        "anyCall": "When a call starts in another app or a browser, show the floater, stopped, with an offer to take notes."
       },
       "detectedCallsGroup": "Detected calls",
       "callPolicy": {

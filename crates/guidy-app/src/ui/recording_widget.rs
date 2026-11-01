@@ -219,8 +219,9 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
         let mut detector = CallDetector::default();
         // Unix ms on the executor's clock (faked in tests).
         let (epoch, t0) = (now_ms(), cx.background_executor().now());
+        let mut wait = CALL_POLL;
         loop {
-            cx.background_executor().timer(CALL_POLL).await;
+            cx.background_executor().timer(wait).await;
             let watching = cx.update(|cx| {
                 let state = AppState::global(cx).read(cx);
                 let settings = state.app_settings()?;
@@ -233,20 +234,25 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                     )
                 })
             });
+            let started = cx.background_executor().now();
             let Some((backend, name_browser_calls, choices)) = watching else {
                 detector.reset();
+                let now = epoch + (started - t0).as_millis() as i64;
                 cx.update(|cx| {
-                    if stop_following_calls(cx) {
-                        shown(cx);
-                    }
+                    let (changed, command) = apply_idle_poll(now, cx);
+                    run_call_changes(changed, command, shown, cx);
                 });
+                wait = CALL_POLL;
                 continue;
             };
             let apps = cx
                 .background_executor()
                 .spawn(async move { backend.audio_input_apps(name_browser_calls) })
                 .await;
-            let now = epoch + (cx.background_executor().now() - t0).as_millis() as i64;
+            let finished = cx.background_executor().now();
+            let now = epoch + (finished - t0).as_millis() as i64;
+            // Every second, however long reading the apps took.
+            wait = CALL_POLL.saturating_sub(finished - started);
             for app_id in cx.update(take_snoozes) {
                 detector.snooze_app(app_id, now);
             }
@@ -262,18 +268,27 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                     },
                     cx,
                 );
-                if changed {
-                    shown(cx);
-                }
-                match command {
-                    Some(CallCommand::Start) => start_recording(cx),
-                    Some(CallCommand::Stop) => stop(cx),
-                    None => {}
-                }
+                run_call_changes(changed, command, shown, cx);
             });
         }
     })
     .detach();
+}
+
+fn run_call_changes(
+    changed: bool,
+    command: Option<CallCommand>,
+    shown: fn(&mut App),
+    cx: &mut App,
+) {
+    if changed {
+        shown(cx);
+    }
+    match command {
+        Some(CallCommand::Start) => start_recording(cx),
+        Some(CallCommand::Stop) => stop(cx),
+        None => {}
+    }
 }
 
 fn take_snoozes(cx: &mut App) -> Vec<String> {
@@ -282,19 +297,20 @@ fn take_snoozes(cx: &mut App) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The watcher was turned off. Returns whether what's shown changed.
-fn stop_following_calls(cx: &mut App) -> bool {
+/// A poll with the watcher off: returns whether what's shown changed, and what
+/// to do.
+fn apply_idle_poll(now: i64, cx: &mut App) -> (bool, Option<CallCommand>) {
     let Some(state) = RecordingWidgetState::global(cx) else {
-        return false;
+        return (false, None);
     };
     state.update(cx, |s, cx| {
-        let visible = s.model.visible();
-        let had_call = s.model.call.is_some() || s.model.left_call().is_some();
-        s.model.stop_following_calls();
-        if had_call {
+        let before = (s.model.visible(), s.model.left_call().is_some());
+        let command = s.model.apply_idle_poll(now);
+        let after = (s.model.visible(), s.model.left_call().is_some());
+        if before != after {
             cx.notify();
         }
-        had_call && visible != s.model.visible()
+        (before.0 != after.0, command)
     })
 }
 
@@ -1679,8 +1695,9 @@ impl RecordingWidgetView {
         } else {
             controls.push(take.into_any_element());
         }
-        // Not for an unknown page: a choice would cover every page.
-        if call.source.provider().is_some() {
+        // Not for an unknown page: a choice would cover every page. Nothing
+        // to choose once a start is on its way, and no taking it back.
+        if call.source.provider().is_some() && !starting {
             controls.push(
                 icon_button(
                     "recording-widget-hint-more",
@@ -1693,7 +1710,9 @@ impl RecordingWidgetView {
                 .into_any_element(),
             );
         }
-        controls.push(dismiss.into_any_element());
+        if !starting {
+            controls.push(dismiss.into_any_element());
+        }
         Some(self.hint_bubble(r, content, "recording-widget-hint", text, controls))
     }
 

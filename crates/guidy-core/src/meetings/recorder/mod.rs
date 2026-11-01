@@ -749,15 +749,19 @@ impl MeetingRecorder {
         }
         let poll_due = {
             let mut p = self.prompts.lock();
-            let due = !p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t);
+            // Also right before a prompt: an event may have been cancelled,
+            // moved or renamed since the last read.
+            let due = !p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t)
+                || !schedule::events_to_prompt(&p.seen, now, |id| p.prompted.contains_key(id))
+                    .is_empty();
             if due {
                 p.last_poll = Some(now);
             }
             due
         };
         // The (slow) lookup runs without `op`, so it never holds up a start
-        // or stop. Read once a minute, judged every tick, so a prompt lands
-        // on time.
+        // or stop. Read about once a minute, judged every tick, so a prompt
+        // lands on time.
         let polled = if poll_due {
             match self.deps.calendar.events_between(
                 now - schedule::PROMPT_WINDOW_MS,

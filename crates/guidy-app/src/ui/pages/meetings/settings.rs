@@ -44,6 +44,7 @@ use guidy_core::downloads::format_bytes;
 use guidy_core::managers::transcription::meeting::{
     configured_meeting_model_missing, DEFAULT_MEETING_MODEL_ID, DEFAULT_MEETING_MODEL_NAME,
 };
+use guidy_core::meetings::call_sites::is_known_site;
 use guidy_core::meetings::calls::{set_policy, CallPolicy, KNOWN_PROVIDERS};
 use guidy_core::meetings::manager::PermissionReport;
 use guidy_core::meetings::processing::speaker_model::{
@@ -202,16 +203,28 @@ fn detected_call_rows(m: &MeetingSettings) -> Vec<AnyElement> {
             .map(|c| c.policy)
             .unwrap_or_default();
         let (on_key, on_label) = (key.clone(), label.clone());
+        // A site that merely held the microphone can't be set to record.
+        let can_always = KNOWN_PROVIDERS.iter().any(|(k, _)| *k == key) || is_known_site(&key);
+        let mut options = vec![DropdownOption::new(
+            "ask",
+            t("meetings.settings.callPolicy.ask"),
+        )];
+        if can_always {
+            options.push(DropdownOption::new(
+                "always",
+                t("meetings.settings.callPolicy.always"),
+            ));
+        }
+        options.push(DropdownOption::new(
+            "never",
+            t("meetings.settings.callPolicy.never"),
+        ));
         rows.push(
             SettingRow::new(SharedString::from(format!("meetings-call-{key}")), label)
                 .description(t("meetings.settings.callPolicy.description"))
                 .control(
                     Dropdown::new(SharedString::from(format!("meetings-call-{key}-dropdown")))
-                        .options(vec![
-                            DropdownOption::new("ask", t("meetings.settings.callPolicy.ask")),
-                            DropdownOption::new("always", t("meetings.settings.callPolicy.always")),
-                            DropdownOption::new("never", t("meetings.settings.callPolicy.never")),
-                        ])
+                        .options(options)
                         .selected(Some(match policy {
                             CallPolicy::Ask => "ask",
                             CallPolicy::Always => "always",
@@ -1342,7 +1355,7 @@ impl MeetingSettingsView {
                 "meetings-call-suggestions",
                 t("meetings.settings.callSuggestions.title"),
             )
-            .description(t("meetings.settings.callSuggestions.description"))
+            .description(t("meetings.settings.callSuggestions.anyCall"))
             .control(toggle(
                 "meetings-call-suggestions-toggle",
                 m.suggest_notes_on_calls,
