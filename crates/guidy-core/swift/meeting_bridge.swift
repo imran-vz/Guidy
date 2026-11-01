@@ -1613,35 +1613,126 @@ private func processBundleID(_ id: AudioObjectID) -> String? {
     return bundle.isEmpty ? nil : bundle
 }
 
-@_cdecl("guidy_mb_audio_input_bundle_ids")
-public func guidyMbAudioInputBundleIds() -> UnsafeMutablePointer<CChar>? {
-    guard #available(macOS 14.0, *) else { return jsonStrings([]) }
+/// The parent of `pid`, unless it is launchd or unknown.
+private func parentPID(_ pid: pid_t) -> pid_t? {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+    let parent = info.kp_eproc.e_ppid
+    return parent > 1 && parent != pid ? parent : nil
+}
+
+/// A process capturing audio, as `{pid, bundle, name, parents}`. `parents` are
+/// the bundle ids up its parent chain, nearest first (empty for a parent with
+/// none): Chromium and Electron capture in helpers some of which have no
+/// bundle id. FaceTime captures in `avconferenced`, which isn't its child, so
+/// FaceTime is added while it runs.
+private func describeProcess(pid: pid_t, audioBundle: String?) -> [String: Any] {
+    let running = NSRunningApplication(processIdentifier: pid)
+    let bundle = audioBundle ?? running?.bundleIdentifier ?? ""
+    var parents: [String] = []
+    var current = pid
+    for _ in 0..<4 {
+        guard let parent = parentPID(current) else { break }
+        parents.append(NSRunningApplication(processIdentifier: parent)?.bundleIdentifier ?? "")
+        current = parent
+    }
+    if bundle == "com.apple.avconferenced",
+        !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.FaceTime").isEmpty
+    {
+        parents.append("com.apple.FaceTime")
+    }
+    return [
+        "pid": Int(pid),
+        "bundle": bundle,
+        "name": running?.localizedName ?? "",
+        "parents": parents,
+    ]
+}
+
+@_cdecl("guidy_mb_audio_input_processes")
+public func guidyMbAudioInputProcesses() -> UnsafeMutablePointer<CChar>? {
+    guard #available(macOS 14.0, *) else { return strdup("[]") }
     let system = AudioObjectID(kAudioObjectSystemObject)
     var address = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyProcessObjectList,
         mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var size: UInt32 = 0
     guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0
-    else { return jsonStrings([]) }
+    else { return strdup("[]") }
     var objects = [AudioObjectID](
         repeating: AudioObjectID(kAudioObjectUnknown),
         count: Int(size) / MemoryLayout<AudioObjectID>.size)
     guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else {
-        return jsonStrings([])
+        return strdup("[]")
     }
     let own = getpid()
-    var out: [String] = []
-    for object in objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
-        let running = audioProperty(
-            object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal, UInt32(0))
-        let pid = audioProperty(
-            object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0))
-        guard (running ?? 0) != 0, pid != own,
-            let bundle = processBundleID(object), !out.contains(bundle)
-        else { continue }
-        out.append(bundle)
+    // Polled from a plain thread: AppKit's lookups would pile up without a pool.
+    return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
+        var out: [[String: Any]] = []
+        for object in objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
+            let running = audioProperty(
+                object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal,
+                UInt32(0))
+            guard (running ?? 0) != 0,
+                let pid = audioProperty(
+                    object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0)),
+                pid != own
+            else { continue }
+            out.append(describeProcess(pid: pid, audioBundle: processBundleID(object)))
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: out, options: []),
+            let json = String(data: data, encoding: .utf8)
+        else { return nil }
+        return strdup(json)
     }
-    return jsonStrings(out)
+}
+
+/// The address of the web page holding the app's focused element, read through
+/// Accessibility, for browsers without a scripting dictionary (Firefox). The
+/// outermost web area wins: focus in an iframe still reports the page.
+@_cdecl("guidy_mb_focused_web_url")
+public func guidyMbFocusedWebUrl(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    guard let bundleID = bundleID, AXIsProcessTrusted() else { return nil }
+    return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
+        for app in NSRunningApplication.runningApplications(
+            withBundleIdentifier: String(cString: bundleID))
+        {
+            let root = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(root, 0.25)
+            var focused: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                root, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+                let start = focused, CFGetTypeID(start) == AXUIElementGetTypeID()
+            else { continue }
+            var element = start as! AXUIElement
+            var address: String?
+            for _ in 0..<64 {
+                var role: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+                    == .success, (role as? String) == "AXWebArea"
+                {
+                    var value: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &value)
+                        == .success, let url = value as? URL
+                    {
+                        address = url.absoluteString
+                    }
+                }
+                var parent: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    element, kAXParentAttribute as CFString, &parent) == .success,
+                    let next = parent, CFGetTypeID(next) == AXUIElementGetTypeID()
+                else { break }
+                element = next as! AXUIElement
+            }
+            if let address = address {
+                return strdup(address)
+            }
+        }
+        return nil
+    }
 }
 
 @_cdecl("guidy_mb_window_titles")

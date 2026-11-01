@@ -21,6 +21,12 @@ pub struct MeetingSettings {
     /// Offer to take notes (the floater, stopped) when a call starts in
     /// another app or a browser ([`crate::meetings::calls`]).
     pub suggest_notes_on_calls: bool,
+    /// Per service or site: ask, always record, or never offer. Missing: ask.
+    pub call_providers: Vec<crate::meetings::calls::CallProviderChoice>,
+    /// Read the browser's front tab to name a call there. Off until the user
+    /// asks: the first read makes macOS ask for the Automation permission.
+    /// Pages stay in memory ([`crate::meetings::native::browser_tab`]).
+    pub name_browser_calls: bool,
     /// Minutes between "still recording" reminders.
     pub reminder_interval_minutes: u32,
     /// Name the mic track (always the user) is labelled with.
@@ -150,6 +156,8 @@ impl Default for MeetingSettings {
             audio_retention_days: Some(3),
             calendar_notifications: true,
             suggest_notes_on_calls: true,
+            call_providers: Vec::new(),
+            name_browser_calls: false,
             reminder_interval_minutes: 10,
             user_display_name: String::new(),
             user_emails: Vec::new(),
@@ -193,6 +201,8 @@ impl std::fmt::Debug for MeetingSettings {
             .field("audio_retention_days", &self.audio_retention_days)
             .field("calendar_notifications", &self.calendar_notifications)
             .field("suggest_notes_on_calls", &self.suggest_notes_on_calls)
+            .field("call_providers", &self.call_providers)
+            .field("name_browser_calls", &self.name_browser_calls)
             .field("reminder_interval_minutes", &self.reminder_interval_minutes)
             .field(
                 "user_display_name",

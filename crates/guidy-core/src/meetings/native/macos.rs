@@ -53,7 +53,8 @@ extern "C" {
     fn guidy_mb_remove_notification(notification_id: *const c_char);
     fn guidy_mb_set_notification_handler(cb: Option<NotificationCallback>);
 
-    fn guidy_mb_audio_input_bundle_ids() -> *mut c_char;
+    fn guidy_mb_audio_input_processes() -> *mut c_char;
+    fn guidy_mb_focused_web_url(bundle_id: *const c_char) -> *mut c_char;
     fn guidy_mb_window_titles(bundle_id: *const c_char) -> *mut c_char;
 }
 
@@ -313,8 +314,15 @@ fn strings(json: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(super) fn audio_input_bundle_ids() -> Vec<String> {
-    strings(unsafe { take_string(guidy_mb_audio_input_bundle_ids()) })
+pub(super) fn audio_input_processes() -> Vec<super::InputProcess> {
+    unsafe { take_string(guidy_mb_audio_input_processes()) }
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default()
+}
+
+pub(super) fn focused_web_url(bundle_id: &str) -> Option<String> {
+    let id = c_string(bundle_id);
+    unsafe { take_string(guidy_mb_focused_web_url(id.as_ptr())) }
 }
 
 pub(super) fn window_titles(bundle_id: &str) -> Vec<String> {

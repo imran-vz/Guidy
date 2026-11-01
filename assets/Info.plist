@@ -6,6 +6,8 @@
   <string>Request microphone access to transcribe audio locally</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Guidy records the other participants' audio (system audio) for meeting notes. Recordings stay on this Mac.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>When you turn on "Name browser calls", Guidy reads the address of your browser's front tab to name a call. It stays on this Mac.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Guidy reads your calendar to find meetings and their attendees for meeting notes.</string>
   <key>NSCalendarsUsageDescription</key>

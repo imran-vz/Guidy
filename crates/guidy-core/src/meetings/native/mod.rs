@@ -29,6 +29,7 @@ use crate::meetings::manager::PermissionReport;
 use crate::meetings::types::{Attendee, CalendarEvent, Track};
 
 mod aec;
+pub mod browser_tab;
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -616,43 +617,67 @@ pub fn set_notification_handler(handler: impl Fn(&str, &str) + Send + Sync + 'st
 
 // ===== Calls in other apps =================================================
 
-/// The other apps capturing from the microphone now, with their window
-/// titles for browsers ([`crate::meetings::calls::title_source`]: is Meet
-/// open?). Empty before macOS 14 and on other platforms. Titles need the
-/// Accessibility permission (dictation's paste has it); without it a Meet
-/// call in a browser goes unseen.
-pub fn audio_input_apps() -> Vec<crate::meetings::calls::InputApp> {
+/// A process capturing audio, as the bridge reports it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputProcess {
+    pub pid: i32,
+    pub bundle: String,
+    pub name: String,
+    pub parents: Vec<String>,
+}
+
+/// One entry per app: a browser's or a call app's helpers hold the microphone
+/// as one. Processes nothing is known about are dropped.
+pub fn input_apps_from(processes: &[InputProcess]) -> Vec<crate::meetings::calls::InputApp> {
+    use crate::meetings::calls::InputApp;
+    let mut apps: Vec<InputApp> = Vec::new();
+    for p in processes {
+        let app = InputApp::resolved(p.pid, &p.bundle, &p.name, &p.parents);
+        if !app.canonical.is_empty() && !apps.iter().any(|a| a.canonical == app.canonical) {
+            apps.push(app);
+        }
+    }
+    apps
+}
+
+/// The other apps capturing from the microphone now. Works with no extra
+/// permission. For browsers, when it can: window titles (Accessibility, which
+/// dictation's paste has), and with `name_browser_calls` the front tab's page
+/// (Automation, [`browser_tab`]). Without either a browser's call is still
+/// offered, unnamed. Empty before macOS 14 and on other platforms.
+pub fn audio_input_apps(name_browser_calls: bool) -> Vec<crate::meetings::calls::InputApp> {
     #[cfg(target_os = "macos")]
     {
-        use crate::meetings::calls::{title_source, InputApp};
-        macos::audio_input_bundle_ids()
-            .into_iter()
-            .map(|bundle_id| {
-                // Safari captures in WebKit's GPU process; other apps can too,
-                // but this bridge doesn't say which.
-                let canonical = if bundle_id.starts_with("com.apple.WebKit") {
-                    "com.apple.Safari".to_string()
-                } else {
-                    String::new()
-                };
-                let titles = title_source(if canonical.is_empty() {
-                    &bundle_id
-                } else {
-                    &canonical
-                })
-                .map(macos::window_titles)
-                .unwrap_or_default();
-                InputApp {
-                    titles,
-                    bundle_id,
-                    canonical,
-                    ..Default::default()
-                }
-            })
-            .collect()
+        static READER: std::sync::OnceLock<parking_lot::Mutex<browser_tab::TabReader>> =
+            std::sync::OnceLock::new();
+        let mut apps = input_apps_from(&macos::audio_input_processes());
+        let reader = READER.get_or_init(|| {
+            parking_lot::Mutex::new(browser_tab::TabReader::new(browser_tab::query_front_tab))
+        });
+        let mut reader = reader.lock();
+        let browsers: Vec<String> = apps
+            .iter()
+            .filter(|a| a.is_browser)
+            .map(|a| a.canonical.clone())
+            .collect();
+        reader.retain_apps(if name_browser_calls { &browsers } else { &[] });
+        let now = std::time::Instant::now();
+        for app in apps.iter_mut().filter(|a| a.is_browser) {
+            if name_browser_calls {
+                app.page = reader.page(&app.canonical, now);
+            }
+            if app.page.is_none() {
+                app.titles = macos::window_titles(&app.canonical);
+            }
+        }
+        apps
     }
     #[cfg(not(target_os = "macos"))]
-    Vec::new()
+    {
+        let _ = name_browser_calls;
+        Vec::new()
+    }
 }
 
 // ===== MeetingsManager support (permissions, upcoming events) ===============

@@ -108,9 +108,13 @@ void guidy_mb_remove_notification(const char *notification_id);
 void guidy_mb_set_notification_handler(guidy_mb_notification_cb cb);
 
 // ----- Calls in other apps ---------------------------------------------------
-// A JSON array of the bundle ids of the other processes capturing from an
-// input device now (macOS 14+; `[]` before), or NULL.
-char *guidy_mb_audio_input_bundle_ids(void);
+// A JSON array describing the other processes capturing from an input device
+// now, `{pid, bundle, name, parents}` with `parents` the bundle ids up its
+// parent chain, nearest first (macOS 14+; `[]` before), or NULL.
+char *guidy_mb_audio_input_processes(void);
+// The address of the web page holding the focused element of the running app
+// with `bundle_id` (Accessibility), or NULL.
+char *guidy_mb_focused_web_url(const char *bundle_id);
 // A JSON array of the window titles of the running apps with `bundle_id`
 // (Accessibility; `[]` without it), or NULL.
 char *guidy_mb_window_titles(const char *bundle_id);

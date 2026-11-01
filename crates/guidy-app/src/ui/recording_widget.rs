@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 /// Level poll / waveform scroll interval.
 const TICK: Duration = Duration::from_millis(90);
 /// How often the microphone's users are checked for a call.
-const CALL_POLL: Duration = Duration::from_secs(2);
+const CALL_POLL: Duration = Duration::from_secs(1);
 /// Pointer poll while shown: whether the window takes the pointer.
 const POINTER_POLL: Duration = Duration::from_millis(16);
 const WAVE_MAX: f32 = 16.;
@@ -225,13 +225,18 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                 let on = state
                     .app_settings()
                     .is_some_and(|s| s.meetings.enabled && s.meetings.suggest_notes_on_calls);
-                on.then(|| state.meetings.clone())
+                on.then(|| {
+                    let name_browser_calls = state
+                        .app_settings()
+                        .is_some_and(|s| s.meetings.name_browser_calls);
+                    (state.meetings.clone(), name_browser_calls)
+                })
             });
             let call = match backend {
-                Some(backend) => {
+                Some((backend, name_browser_calls)) => {
                     let apps = cx
                         .background_executor()
-                        .spawn(async move { backend.audio_input_apps() })
+                        .spawn(async move { backend.audio_input_apps(name_browser_calls) })
                         .await;
                     let now = epoch + (cx.background_executor().now() - t0).as_millis() as i64;
                     detector.observe(&apps, now)
