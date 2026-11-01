@@ -11,7 +11,7 @@ macOS only. The code is in `crates/guidy-app/src/ui_snapshots.rs`.
 ## Run
 
 ```sh
-# Everything (45 snapshots x light/dark = 90 PNGs, ~2 min after the build)
+# Everything (98 snapshots x light/dark = 196 PNGs, ~2 min after the build)
 cargo test -p guidy-app --lib ui_snapshots -- --ignored --nocapture
 
 # Only what you're working on: comma-separated substrings of the name
@@ -32,10 +32,11 @@ Images are at 2x scale (a 900x600 window gives a 1800x1200 PNG).
 
 | Name | What |
 | --- | --- |
-| `main-<section>` | Main window at its default size (`windows::MAIN_DEFAULT_*` = 900x600 pt), sidebar section selected: `general`, `history`, `meetings`, `models`, `advanced`, `postprocessing`, `usage`, `debug`, `about` |
+| `main-<section>` | Main window at its default size (`windows::MAIN_DEFAULT_*` = 900x600 pt), sidebar section selected: `general`, `history`, `meetings`, `models`, `advanced`, `postprocessing`, `usage`, `storage`, `debug`, `about` |
 | `main-<section>-full` | Same, but 2400 px tall, so content below the fold shows (pages scroll inside the window, so a taller window shows more) |
 | `main-<section>-min` | At the minimum window size (`windows::MAIN_WIDTH/HEIGHT` = 720x480 pt): every page must still work there |
 | `main-meetings-wide`, `main-models-wide` | 1440x900 |
+| `storage-error` | Storage page when the report can't be measured: the inline error with Try Again |
 | `meetings-people`, `meetings-settings` (+ `-full`) | Meetings page tabs |
 | `msettings-<category>` | One meeting settings pane (`setup`, `general`, `you`, `recording`, `transcription`, `speakers`, `ai`, `linear`, `integrations`) in a stand-in window frame; `msettings-ai-min`, `msettings-ai-wide`, `msettings-setup-min` at other sizes |
 | `mpeople-you`, `mpeople-person` (+ `-min`) | People list / detail: You selected, a person selected |

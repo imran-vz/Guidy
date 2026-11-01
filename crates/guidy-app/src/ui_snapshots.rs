@@ -1763,6 +1763,17 @@ mod settings_pages {
         w
     }
 
+    /// The storage report could not be measured.
+    fn storage_error(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+        populate(h);
+        h.backend.data.lock().fail_settings = vec!["storage_report".into()];
+        h.install();
+        let (w, main) = h.open_main(size);
+        h.cx.update(|cx| main.update(cx, |m, cx| m.select_section(Section::Storage, cx)));
+        h.settle();
+        w
+    }
+
     pub(super) fn shots(add: &mut dyn FnMut(&str, Size<Pixels>, Build)) {
         add("history-selected", default_size(), history_selected);
         add("history-selected-min", min_size(), history_selected);
@@ -1771,6 +1782,7 @@ mod settings_pages {
         add("advanced-limit-confirm", tall_size(), limit_confirm);
         add("postprocessing-discard", default_size(), prompt_discard);
         add("usage-error", default_size(), usage_error);
+        add("storage-error", default_size(), storage_error);
     }
 }
 // ---- end settings pages redesign -------------------------------------------------
