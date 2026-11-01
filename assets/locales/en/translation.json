@@ -52,9 +52,9 @@
     "loadFailed": "Couldn't measure storage: {{error}}",
     "openFailed": "Couldn't open the folder: {{error}}",
     "partial": "Couldn't read {{count}} item(s), starting with {{path}}. Totals are lower bounds.",
-    "sizeCaption": "Each file counts once, at the size the system reports for it on disk.",
+    "sizeCaption": "Sizes are what the system reports for each file. Linked copies count once where the system can identify them.",
     "freeCaption": "Free excludes purgeable space, so it can read lower than your file manager shows.",
-    "excludedCaption": "Not counted: Keychain secrets, exports you saved elsewhere, the launch-at-login item and update downloads in progress.",
+    "excludedCaption": "Not counted: secrets in your system's credential store, exports you saved elsewhere, the launch-at-login item and update downloads in progress.",
     "category": {
       "models": "Models",
       "sharedModels": "Shared models",
