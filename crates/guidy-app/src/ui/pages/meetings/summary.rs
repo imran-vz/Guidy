@@ -255,6 +255,9 @@ pub struct SummaryView {
     /// Action items with a save running (count per item). `items` already
     /// shows the new text, but it stays in the draft until the save succeeds.
     item_saves_running: HashMap<ActionItemId, usize>,
+    /// Counts meeting switches: a save started before one doesn't touch
+    /// `item_saves_running`, even when the same meeting is open again.
+    item_saves_epoch: u64,
     /// The shown error is the autosave's, so its next success clears it.
     draft_error: Option<String>,
     // "Regenerate with..." picker.
@@ -392,6 +395,7 @@ impl SummaryView {
             pending_summary_draft: None,
             draft_restored: false,
             item_saves_running: HashMap::new(),
+            item_saves_epoch: 0,
             draft_error: None,
             picker_open: false,
             picker: MeetingsLlmChoice::default(),
@@ -521,6 +525,7 @@ impl SummaryView {
         self.pending_draft = None;
         self.pending_summary_draft = None;
         self.item_saves_running.clear();
+        self.item_saves_epoch += 1;
         // The half-typed item belongs to the meeting left behind.
         self.clear_new_item = true;
         self.draft_restored = false;
@@ -1049,13 +1054,13 @@ impl SummaryView {
         }
         let id = item.id;
         let attempted = (item.text.clone(), item.due.clone());
-        let meeting_id = self.meeting_id;
+        let epoch = self.item_saves_epoch;
         *self.item_saves_running.entry(id).or_default() += 1;
         self.run(
             cx,
             move |b| b.update_action_item(&item),
             move |this, r, cx| {
-                if this.meeting_id != meeting_id {
+                if this.item_saves_epoch != epoch {
                     return;
                 }
                 if let Some(running) = this.item_saves_running.get_mut(&id) {

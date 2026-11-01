@@ -563,11 +563,7 @@ impl MeetingsManager {
         if let Err(e) = self.forget_processing(id) {
             log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
         }
-        if let Err(e) = self.drafts.save(
-            id,
-            crate::meetings::drafts::next_revision(),
-            &Default::default(),
-        ) {
+        if let Err(e) = self.drafts.forget(id) {
             log::warn!("meetings: deleting the draft of {id} failed: {e:#}");
         }
         if let Err(e) =
@@ -1182,11 +1178,8 @@ impl MeetingsManager {
         revision: u64,
         draft: &crate::meetings::drafts::MeetingDraft,
     ) -> Result<()> {
-        // A write already on its way when the meeting was deleted must not
-        // leave its notes behind.
-        if !draft.is_empty() && self.store.get_meeting(id)?.is_none() {
-            return Ok(());
-        }
+        // No database call here: an action item save holding the connection
+        // must not delay the very file that protects its text.
         self.drafts.save(id, revision, draft)?;
         Ok(())
     }

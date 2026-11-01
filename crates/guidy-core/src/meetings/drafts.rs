@@ -185,6 +185,17 @@ impl DraftStore {
         Ok(true)
     }
 
+    /// `id` was deleted: remove its draft and refuse any write still on its
+    /// way. Meeting ids aren't reused (`AUTOINCREMENT`).
+    pub fn forget(&self, id: MeetingId) -> anyhow::Result<()> {
+        let mut applied = self.applied.lock();
+        applied.insert(id, u64::MAX);
+        self.held.lock().remove(&id);
+        remove_if_present(&self.dir.join(format!("{id}.json.tmp")))?;
+        remove_if_present(&self.path(id))?;
+        Ok(())
+    }
+
     /// `id`'s draft. One that can't be read or parsed is treated as absent
     /// and logged: the next save replaces it.
     pub fn load(&self, id: MeetingId) -> Option<MeetingDraft> {
@@ -358,6 +369,19 @@ mod tests {
         assert_eq!(relaunched.load(1), None);
         // Discarding also removes the typed text the temp file held.
         assert!(!dir.path().join("drafts").join("1.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_write_on_its_way_cannot_bring_back_a_deleted_meetings_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DraftStore::new(dir.path());
+        store.save(1, 1, &draft()).unwrap();
+        store.hold(1, 2, draft());
+        store.forget(1).unwrap();
+        assert_eq!(store.load(1), None);
+        assert!(!store.save(1, next_revision(), &draft()).unwrap());
+        assert_eq!(store.load(1), None);
+        assert!(!dir.path().join("drafts").join("1.json").exists());
     }
 
     #[test]
