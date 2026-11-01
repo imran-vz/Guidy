@@ -301,7 +301,8 @@
         "title": "Dictation Key",
         "description": "Hold to speak, release to stop. Double-press to keep recording, then double-press again to stop.",
         "fnHint": "Hold to speak, release to stop. Double-press to keep recording, then double-press again to stop. In System Settings, set \"Press 🌐 key to\" to Do Nothing and avoid the double-Fn Dictation shortcut.",
-        "systemHint": "One-key dictation needs the Native Key Listener. Choose it under Keyboard Implementation in Advanced settings.",
+        "chordDescription": "Choose one key to hold or double-press, or keep a custom shortcut.",
+        "systemHint": "One-key dictation needs the Native Key Listener. Turn on Experimental Features in Advanced settings, then choose it under Keyboard Implementation.",
         "options": {
           "custom": "Custom",
           "fn": "Fn / Globe",

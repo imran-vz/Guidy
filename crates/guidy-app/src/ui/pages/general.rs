@@ -158,6 +158,7 @@ impl GeneralPage {
             .get("transcribe")
             .map(|b| b.current_binding.clone())
             .unwrap_or_default();
+        let single_modifier = is_single_modifier_binding(&transcribe_binding);
         // The system implementation can't register a lone modifier.
         let system_shortcuts = s.keyboard_implementation == KeyboardImplementation::Tauri;
         let mut dictation_options: Vec<DropdownOption> = dictation_key_presets(OsType::current())
@@ -174,8 +175,10 @@ impl GeneralPage {
             t("settings.general.dictationKey.systemHint")
         } else if transcribe_binding == "fn" {
             t("settings.general.dictationKey.fnHint")
-        } else {
+        } else if single_modifier {
             t("settings.general.dictationKey.description")
+        } else {
+            t("settings.general.dictationKey.chordDescription")
         };
         let transcribe_shortcut = self.transcribe_shortcut.clone();
         let mut shortcut_rows = vec![
@@ -198,7 +201,7 @@ impl GeneralPage {
             self.transcribe_shortcut.clone().into_any_element(),
         ];
         // A single modifier always uses hold and double-press.
-        if !is_single_modifier_binding(&transcribe_binding) {
+        if !single_modifier {
             shortcut_rows.push(
                 SettingRow::new(
                     "shortcut-activation",
