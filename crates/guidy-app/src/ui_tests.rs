@@ -1423,6 +1423,40 @@ mod onboarding_flows {
         assert!(backend.called("request_download stt:other"));
     }
 
+    /// PARITY F-03 (the model picked in the setup takes over when its
+    /// download finishes, even with a dictation model already in place)
+    #[gpui_kit::test]
+    fn a_chosen_model_takes_over_when_its_download_finishes(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut have = model("have");
+        have.is_downloaded = true;
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        let mut other = model("other");
+        backend.data.lock().models = vec![have.clone(), rec.clone(), other.clone()];
+        backend.data.lock().current_model = "have".into();
+        let w = at_setup(cx, &backend);
+        let state = cx.update(|cx| AppState::global(cx));
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-use", cx));
+        with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("request_download stt:other"));
+        assert!(!backend.called("set_active_model"), "{:?}", backend.calls());
+        other.is_downloaded = true;
+        backend.data.lock().models = vec![have, rec, other];
+        dispatch(
+            cx,
+            &state,
+            "model-download-complete",
+            serde_json::json!("other"),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert!(backend.called("set_active_model other"));
+    }
+
     /// PARITY F-03 (Cancel goes back to the setup and changes nothing)
     #[gpui_kit::test]
     fn picker_cancel_keeps_the_recommended_model(cx: &mut TestAppContext) {
