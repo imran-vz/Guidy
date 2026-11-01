@@ -32,6 +32,7 @@ mod aec;
 pub mod browser_tab;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod speaker_hints;
 
 use aec::EchoCanceller;
 

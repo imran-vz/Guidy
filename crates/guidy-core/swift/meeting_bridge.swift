@@ -2241,3 +2241,55 @@ public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMuta
     }
     return jsonStrings(titles)
 }
+
+/// The accessibility labels in the app's windows that mention speaking or
+/// talking, for `native/speaker_hints.rs` to read. What each app exposes has not
+/// been checked on real calls: the setting that reaches this is off by default.
+@_cdecl("guidy_mb_speaker_labels")
+public func guidyMbSpeakerLabels(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+    guard let bundleID = bundleID, AXIsProcessTrusted() else { return jsonStrings([]) }
+    let attributes = [kAXDescriptionAttribute, kAXTitleAttribute, kAXValueAttribute] as [String]
+    let deadline = Date().addingTimeInterval(0.2)
+    return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
+        var labels: [String] = []
+        var visited = 0
+        var queue: [AXUIElement] = []
+        for app in NSRunningApplication.runningApplications(
+            withBundleIdentifier: String(cString: bundleID))
+        {
+            let root = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(root, 0.05)
+            var windows: CFTypeRef?
+            if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &windows)
+                == .success, let list = windows as? [AXUIElement]
+            {
+                queue.append(contentsOf: list)
+            }
+        }
+        var next = 0
+        while next < queue.count, visited < 400, labels.count < 16, Date() < deadline {
+            let element = queue[next]
+            next += 1
+            visited += 1
+            AXUIElementSetMessagingTimeout(element, 0.05)
+            for attribute in attributes {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+                    == .success, let text = value as? String
+                {
+                    let lower = text.lowercased()
+                    if text.count <= 120, lower.contains("speak") || lower.contains("talk") {
+                        labels.append(text)
+                    }
+                }
+            }
+            var children: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+                == .success, let list = children as? [AXUIElement]
+            {
+                queue.append(contentsOf: list)
+            }
+        }
+        return jsonStrings(labels)
+    }
+}

@@ -55,7 +55,7 @@ This plan was agreed on through a design review. The decisions behind it are rec
 | D13 | Raw audio retention | 3 days by default. The user can choose 3, 7 or 30 days, or forever. Deleting audio never deletes voiceprints. |
 | D14 | Secrets | Every secret lives in the macOS Keychain, starting in task 1. |
 | D15 | Local models | Built-in llama.cpp (default) and Apple Intelligence, both offered to the user. |
-| D16 | Stop | Manual stop only, with recurring "still recording" reminders after the meeting should have ended (§3.1). |
+| D16 | Stop | Superseded by `docs/plans/meetings.md`: when the call behind a recording ends, ask Keep or Stop, and stop after 60 s with no answer. 15 minutes with no audio on both sources warns, then stops after 60 s with the reason shown. Always-record sessions follow the same rule. Recurring "still recording" reminders stay for the rest (§3.1). |
 | D17 | Sensitive data at rest | **(default)** The meetings database and the meeting audio are encrypted with a key held in the Keychain. Dictation history (`history.db`) is unchanged. |
 
 ---

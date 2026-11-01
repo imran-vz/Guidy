@@ -2326,6 +2326,7 @@ impl MeetingDetail {
                     let source = match s.source {
                         SuggestionSource::Attendee => t("meetings.speaker.attendee"),
                         SuggestionSource::KnownPerson => t("meetings.speaker.knownPerson"),
+                        SuggestionSource::MeetingApp => t("meetings.speaker.meetingApp"),
                     };
                     let mut tip = source.to_string();
                     if let Some(e) = &s.email {

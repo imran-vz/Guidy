@@ -1112,6 +1112,7 @@
       "suggestions": "Suggestions",
       "attendee": "Attendee",
       "knownPerson": "Known person",
+      "meetingApp": "Shown by the meeting app",
       "noSuggestions": "No suggestions",
       "newPerson": "New person",
       "namePlaceholder": "Name",
@@ -1295,6 +1296,10 @@
         "ask": "Ask",
         "always": "Always record",
         "never": "Never offer"
+      },
+      "speakerNamesFromApps": {
+        "title": "Speaker names from meeting apps",
+        "description": "Experimental. While recording, read who's speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac."
       },
       "nameBrowserCalls": {
         "title": "Name browser calls",

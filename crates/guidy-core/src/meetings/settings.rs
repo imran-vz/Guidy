@@ -27,6 +27,11 @@ pub struct MeetingSettings {
     /// asks: the first read makes macOS ask for the Automation permission.
     /// Pages stay in memory ([`crate::meetings::native::browser_tab`]).
     pub name_browser_calls: bool,
+    /// Sample the active speaker's name from Zoom, Teams and Meet in Chrome
+    /// through Accessibility while recording, as a suggestion for naming
+    /// speakers ([`crate::meetings::native::speaker_hints`]). Off by default:
+    /// what each app exposes hasn't been checked on real calls.
+    pub speaker_names_from_apps: bool,
     /// Minutes between "still recording" reminders.
     pub reminder_interval_minutes: u32,
     /// Name the mic track (always the user) is labelled with.
@@ -158,6 +163,7 @@ impl Default for MeetingSettings {
             suggest_notes_on_calls: true,
             call_providers: Vec::new(),
             name_browser_calls: false,
+            speaker_names_from_apps: false,
             reminder_interval_minutes: 10,
             user_display_name: String::new(),
             user_emails: Vec::new(),
@@ -203,6 +209,7 @@ impl std::fmt::Debug for MeetingSettings {
             .field("suggest_notes_on_calls", &self.suggest_notes_on_calls)
             .field("call_providers", &self.call_providers)
             .field("name_browser_calls", &self.name_browser_calls)
+            .field("speaker_names_from_apps", &self.speaker_names_from_apps)
             .field("reminder_interval_minutes", &self.reminder_interval_minutes)
             .field(
                 "user_display_name",

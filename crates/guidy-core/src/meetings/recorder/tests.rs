@@ -1328,3 +1328,36 @@ fn a_torn_track_left_by_a_crash_recovers_what_was_written() {
     assert!(!reader.is_complete());
     assert!(!reader.read_all().unwrap().is_empty());
 }
+
+#[test]
+fn speaker_names_are_sampled_only_with_the_setting_and_stay_local() {
+    let r = rig();
+    *r.capture.speaker.lock() = Some("Ann Lee".into());
+    // Off, the default: nothing written.
+    let id = r.rec.start(None, T0).unwrap();
+    r.rec.health_tick(T0 + 1_000);
+    r.rec.stop(T0 + 2_000).unwrap();
+    let audio = r.dir.path().join("meetings/audio");
+    assert!(!audio.join(audio_store::speakers_log_name(id)).exists());
+
+    r.settings.lock().speaker_names_from_apps = true;
+    let id = r.rec.start(None, T0 + 3_000).unwrap();
+    r.rec.health_tick(T0 + 4_000);
+    // None showing, or paused: no line.
+    *r.capture.speaker.lock() = None;
+    r.rec.health_tick(T0 + 5_000);
+    *r.capture.speaker.lock() = Some("Ben".into());
+    r.rec.set_paused(true, T0 + 6_000);
+    r.rec.health_tick(T0 + 6_500);
+    r.rec.set_paused(false, T0 + 7_000);
+    r.rec.health_tick(T0 + 8_000);
+    r.rec.stop(T0 + 9_000).unwrap();
+    let hints = crate::meetings::processing::speaker_hints::read_hints(&audio, id);
+    let got: Vec<(i64, &str)> = hints.iter().map(|h| (h.t, h.name.as_str())).collect();
+    assert_eq!(got, [(1_000, "Ann Lee"), (5_000, "Ben")]);
+
+    // Deleted with the tracks.
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    audio_store::delete_track_files(&audio, &m).unwrap();
+    assert!(!audio.join(audio_store::speakers_log_name(id)).exists());
+}

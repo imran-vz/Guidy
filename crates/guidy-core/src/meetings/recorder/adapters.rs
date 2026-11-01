@@ -127,6 +127,9 @@ impl CaptureBackend for NativeCapture {
             free_bytes: crate::downloads::free_space(audio_dir),
         }
     }
+    fn active_speaker(&self) -> Option<String> {
+        native::speaker_hints::active_speaker()
+    }
 }
 
 impl CalendarSource for NativeCalendar {

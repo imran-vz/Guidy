@@ -41,6 +41,16 @@ contracts between the workstreams.
   (encrypted) tracks, checking each copy, and moves the originals into
   `meetings-encrypted-backup-<stamp>/` in the app data dir.
 
+## Reliability overhaul (`docs/plans/meetings.md`)
+
+- Detection is pure: `calls.rs` follows the microphone by canonical app and `call_sites.rs` judges pages. A known service counts after 2 s, WhatsApp and Slack after 4 s (they record voice notes too), a browser on an unknown page after 19 s (offered within 20 s of the mic at a 1 s poll). It works with no new permission: a browser's call is offered unnamed. "Name browser calls" reads the front tab through Automation, kept in memory and never logged. `fixtures/calls/*.json` are timed observation sequences.
+- The offer is the floater's own bubble: Take notes, Not now, and "..." for Always or Never per provider (not for an unknown page). Unanswered, it closes after 20 s and the call is snoozed until its app has been off the microphone for 60 s. A call that ends asks Keep or Stop and stops after 60 s. A different service taking the microphone after that makes a separate note.
+- Calendar prompts land 50-65 s before the event, for events with a link and 2+ attendees, re-read just before posting. A start links to a call event beginning within 5 minutes or ended within 15.
+- Capture: each stream starts on its own, and only both failing fails the recording. A failed or dead stream is rebuilt with 0.5-5 s backoff until Stop, its track kept on the clock with silence. A wake rebuilds both. The bridge reports `state:stalled`, `state:recovered`, `state:gap:<ms>` and `state:restarted`. System audio with no callbacks while nothing plays is rebuilt quietly at most every 30 s: whether an idle tap delivers callbacks is still unverified on hardware.
+- `recorder/health.rs` turns those, the audio flowing, permissions, free space and a clock into `Healthy`, `Reconnecting`, `Silent` or `Lost` per source, in `RecorderState::Recording.health`. It warns and never stops, except that 15 minutes without audio on both sources stops after 60 s. The scheduler thread runs it every second.
+- Side files beside the tracks, deleted with them, with no database change: `<id>.capture.jsonl` (what happened to capture) and `<id>.speakers.jsonl` (names meeting apps showed). Why a recording ended early stays in `Meeting::error`, through processing.
+- Speaker names from meeting apps are off by default (`speaker_names_from_apps`): what each app exposes through Accessibility hasn't been checked on real calls. `processing/speaker_hints.rs` only ever adds a suggestion to the picker, and absent names change nothing.
+
 ## Shared contracts (already in the tree; change only with care)
 
 - `crates/guidy-core/src/meetings/types.rs`: every shared data type and the

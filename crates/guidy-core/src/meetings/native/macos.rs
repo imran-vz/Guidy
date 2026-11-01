@@ -56,6 +56,7 @@ extern "C" {
 
     fn guidy_mb_audio_input_processes() -> *mut c_char;
     fn guidy_mb_focused_web_url(bundle_id: *const c_char) -> *mut c_char;
+    fn guidy_mb_speaker_labels(bundle_id: *const c_char) -> *mut c_char;
     fn guidy_mb_window_titles(bundle_id: *const c_char) -> *mut c_char;
 }
 
@@ -330,6 +331,11 @@ pub(super) fn audio_input_processes() -> Vec<super::InputProcess> {
 pub(super) fn focused_web_url(bundle_id: &str) -> Option<String> {
     let id = c_string(bundle_id);
     unsafe { take_string(guidy_mb_focused_web_url(id.as_ptr())) }
+}
+
+pub(super) fn speaker_labels(bundle_id: &str) -> Vec<String> {
+    let id = c_string(bundle_id);
+    strings(unsafe { take_string(guidy_mb_speaker_labels(id.as_ptr())) })
 }
 
 pub(super) fn window_titles(bundle_id: &str) -> Vec<String> {

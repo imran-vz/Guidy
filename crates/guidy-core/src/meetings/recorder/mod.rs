@@ -53,6 +53,27 @@ pub const STOPPED_NO_AUDIO: &str = "Stopped after 15 minutes without audio";
 /// The start of the meeting's error when a crash ended the recording.
 pub const INTERRUPTED_PREFIX: &str = "Recording was interrupted; saved up to ";
 
+/// Appends the name a meeting app shows to `<id>.speakers.jsonl`, beside the
+/// tracks. Local only, and read back as a suggestion. Best effort.
+struct SpeakerLog {
+    path: PathBuf,
+}
+
+impl SpeakerLog {
+    fn append(&self, t_ms: i64, name: &str) {
+        use std::io::Write;
+        let line = serde_json::json!({ "t": t_ms, "name": name });
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut f| writeln!(f, "{line}"));
+        if written.is_err() {
+            log::debug!("meetings: couldn't append to the speakers log");
+        }
+    }
+}
+
 /// What flows through a recording, from the capture and writer threads, read
 /// by the health tick. All atomics: the audio threads must not wait.
 #[derive(Default)]
@@ -186,6 +207,9 @@ struct Session {
     /// The health last reported.
     health: RecordingHealth,
     last_preflight: i64,
+    /// Where to write the names meeting apps show: the setting was on when
+    /// this recording started.
+    speakers_log: Option<Arc<SpeakerLog>>,
 }
 
 impl Session {
@@ -515,6 +539,13 @@ impl MeetingRecorder {
         let log_path = self.deps.audio_dir.join(audio_store::capture_log_name(id));
         created.push(log_path.clone());
         let capture_log = CaptureLog::new(log_path);
+        let speakers_path = self.deps.audio_dir.join(audio_store::speakers_log_name(id));
+        created.push(speakers_path.clone());
+        let speakers_log = (self.deps.settings)().speaker_names_from_apps.then(|| {
+            Arc::new(SpeakerLog {
+                path: speakers_path,
+            })
+        });
 
         let flow = Arc::new(AudioFlow::default());
         let writer_flow = flow.clone();
@@ -624,6 +655,7 @@ impl MeetingRecorder {
             last_flow: [(0, 0); 2],
             health,
             last_preflight: meeting.started_at,
+            speakers_log,
         })
     }
 
@@ -631,13 +663,26 @@ impl MeetingRecorder {
     /// change, and stop it if 15 minutes without audio have run out. Never
     /// blocks on a start or stop.
     pub fn health_tick(&self, now: i64) {
-        let preflight_due = {
+        let (preflight_due, speakers) = {
             let session = self.session.lock();
             let Some(s) = session.as_ref() else {
                 return;
             };
-            !(0..PREFLIGHT_EVERY_MS).contains(&(now - s.last_preflight))
+            let speakers = s
+                .speakers_log
+                .clone()
+                .filter(|_| s.paused_at.is_none())
+                .map(|log| (log, now - s.started_at));
+            (
+                !(0..PREFLIGHT_EVERY_MS).contains(&(now - s.last_preflight)),
+                speakers,
+            )
         };
+        if let Some((log, t_ms)) = speakers {
+            if let Some(name) = self.deps.capture.active_speaker() {
+                log.append(t_ms, &name);
+            }
+        }
         // Outside the lock: reading permissions can take a moment.
         let preflight = preflight_due.then(|| self.deps.capture.preflight(&self.deps.audio_dir));
         let (id, health, stop) = {

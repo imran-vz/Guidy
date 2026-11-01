@@ -166,7 +166,7 @@ pub fn update_meetings(cx: &mut App, f: impl FnOnce(&mut MeetingSettings)) {
 
 /// The rows of the Detected calls group: naming browser calls, then the choice
 /// for each service and for each site one was made for.
-fn detected_call_rows(m: &MeetingSettings) -> Vec<AnyElement> {
+fn detected_call_rows(m: &MeetingSettings, updating: bool) -> Vec<AnyElement> {
     let naming = m.name_browser_calls;
     let mut rows = vec![SettingRow::new(
         "meetings-name-browser-calls",
@@ -187,6 +187,21 @@ fn detected_call_rows(m: &MeetingSettings) -> Vec<AnyElement> {
             }),
     )
     .into_any_element()];
+    let names_from_apps = m.speaker_names_from_apps;
+    rows.push(
+        SettingRow::new(
+            "meetings-speaker-names-from-apps",
+            t("meetings.settings.speakerNamesFromApps.title"),
+        )
+        .description(t("meetings.settings.speakerNamesFromApps.description"))
+        .control(toggle(
+            "meetings-speaker-names-from-apps-toggle",
+            names_from_apps,
+            updating,
+            |v, _, cx| update_meetings(cx, |m| m.speaker_names_from_apps = v),
+        ))
+        .into_any_element(),
+    );
     let known = KNOWN_PROVIDERS
         .iter()
         .map(|(key, label)| (key.to_string(), label.to_string()));
@@ -1381,7 +1396,7 @@ impl MeetingSettingsView {
             group(Some(t("meetings.settings.calendarGroup")), calendar, cx).into_any_element(),
             group(
                 Some(t("meetings.settings.detectedCallsGroup")),
-                detected_call_rows(&m),
+                detected_call_rows(&m, updating),
                 cx,
             )
             .into_any_element(),

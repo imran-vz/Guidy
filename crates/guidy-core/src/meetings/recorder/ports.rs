@@ -80,6 +80,11 @@ pub trait CaptureBackend: Send + Sync {
     fn preflight(&self, _audio_dir: &std::path::Path) -> Preflight {
         Preflight::default()
     }
+    /// Who the call on the microphone says is speaking, if it says. Called
+    /// once a second if the setting is on: must be quick.
+    fn active_speaker(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Gets a copy of the recorded audio as it is captured (live transcription).
@@ -268,6 +273,7 @@ pub mod fakes {
         pub fail: Mutex<bool>,
         pub stops: Arc<Mutex<usize>>,
         pub preflight: Mutex<Preflight>,
+        pub speaker: Mutex<Option<String>>,
     }
 
     struct FakeSession(Arc<Mutex<usize>>);
@@ -307,6 +313,9 @@ pub mod fakes {
         }
         fn preflight(&self, _: &std::path::Path) -> Preflight {
             *self.preflight.lock()
+        }
+        fn active_speaker(&self) -> Option<String> {
+            self.speaker.lock().clone()
         }
     }
 

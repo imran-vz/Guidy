@@ -126,6 +126,10 @@ char *guidy_mb_audio_input_processes(void);
 // The address of the web page holding the focused element of the running app
 // with `bundle_id` (Accessibility), or NULL.
 char *guidy_mb_focused_web_url(const char *bundle_id);
+// A JSON array of accessibility labels in the app's windows that mention
+// speaking or talking (Accessibility; `[]` without it), or NULL. Bounded to
+// about 200 ms and a few hundred elements.
+char *guidy_mb_speaker_labels(const char *bundle_id);
 // A JSON array of the window titles of the running apps with `bundle_id`
 // (Accessibility; `[]` without it), or NULL.
 char *guidy_mb_window_titles(const char *bundle_id);
