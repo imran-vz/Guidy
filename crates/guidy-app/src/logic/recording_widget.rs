@@ -60,6 +60,15 @@ pub enum HealthNotice {
 }
 
 impl HealthNotice {
+    /// Audio is being lost, or is about to stop being recorded: this can't
+    /// wait behind a question. The rest can.
+    pub fn is_failure(self) -> bool {
+        matches!(
+            self,
+            Self::NoAudio | Self::MicDenied | Self::SystemDenied | Self::MicLost | Self::SystemLost
+        )
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             Self::NoAudio => "meetings.widget.health.noAudio",
@@ -1113,6 +1122,9 @@ mod tests {
             ..healthy
         };
         assert_eq!(health_notice(&health), Some(HealthNotice::Backlog));
+        assert!(!HealthNotice::Backlog.is_failure());
+        assert!(!HealthNotice::MicSilent.is_failure());
+        assert!(HealthNotice::SystemLost.is_failure());
         health.system = SourceHealth::Silent;
         assert_eq!(health_notice(&health), Some(HealthNotice::SystemSilent));
         health.mic = SourceHealth::Reconnecting;

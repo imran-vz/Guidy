@@ -1666,6 +1666,10 @@ impl RecordingWidgetView {
             return Some(self.hint_bubble(r, content, "recording-widget-health", text, controls));
         }
         let call = call?;
+        // A failure can't wait for the answer to the left-call question.
+        let failure = m
+            .health_notice()
+            .filter(|n| left.is_some() && n.is_failure());
         let text = v_flex()
             .flex_1()
             .min_w_0()
@@ -1676,18 +1680,23 @@ impl RecordingWidgetView {
                     .text_size(hud(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tone.text)
-                    .child(t_args(
-                        if left.is_some() {
-                            "meetings.widget.callEndedTitle"
-                        } else {
-                            "meetings.widget.callTitle"
-                        },
-                        &[("app", call.source.name())],
-                    )),
+                    .child(if failure.is_some() {
+                        // The stop still counts down: said here, as the failure
+                        // takes the line below.
+                        t("meetings.widget.callEndedPrompt")
+                    } else {
+                        t_args(
+                            if left.is_some() {
+                                "meetings.widget.callEndedTitle"
+                            } else {
+                                "meetings.widget.callTitle"
+                            },
+                            &[("app", call.source.name())],
+                        )
+                    }),
             )
             .child(div().truncate().text_size(hud(12.)).map(|d| {
-                // A failure can't wait for the answer to this question.
-                if let Some(failure) = m.health_notice().filter(|_| left.is_some()) {
+                if let Some(failure) = failure {
                     d.text_color(rgb(RED)).child(t(failure.key()))
                 } else if left.is_some() {
                     d.text_color(tone.text_muted)

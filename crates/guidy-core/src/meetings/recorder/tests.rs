@@ -1356,17 +1356,9 @@ fn speaker_names_are_sampled_only_with_the_setting_and_stay_local() {
     let names: Vec<&str> = hints.iter().map(|h| h.name.as_str()).collect();
     assert_eq!(names, ["Ann Lee", "Ben"]);
     // On the tracks' time: from when capture started, a real moment after
-    // `started_at`.
-    assert!(
-        (1_000 - 500..=1_000).contains(&hints[0].t),
-        "{}",
-        hints[0].t
-    );
-    assert!(
-        (5_000 - 500..=5_000).contains(&hints[1].t),
-        "{}",
-        hints[1].t
-    );
+    // `started_at`, the same for both.
+    assert!(hints[0].t <= 1_000, "{}", hints[0].t);
+    assert_eq!(hints[1].t - hints[0].t, 4_000);
 
     // Deleted with the tracks.
     let m = r.repo.get_meeting(id).unwrap().unwrap();
