@@ -241,6 +241,15 @@ fn split_transcript(
         .filter(|(_, (words, _))| !words.is_empty())
         .map(|(span, (words, text))| {
             let text = text.join(separator);
+            // A word over a cut stays inside its own piece.
+            let words = words
+                .into_iter()
+                .map(|w| Word {
+                    t0_ms: w.t0_ms.clamp(span.t0_ms, span.t1_ms),
+                    t1_ms: w.t1_ms.clamp(span.t0_ms, span.t1_ms),
+                    text: w.text,
+                })
+                .collect();
             (*span, UnitTranscript { text, words })
         })
         .collect();

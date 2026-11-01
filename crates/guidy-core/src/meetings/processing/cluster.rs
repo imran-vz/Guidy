@@ -275,7 +275,9 @@ pub const ASSIGN_MIN_LEAD: f32 = 0.1;
 pub enum Tier {
     /// In this cluster (dense, from 0).
     Cluster(usize),
-    /// Unlike the rest of its cluster (see [`reject_outliers`]).
+    /// Unlike the rest of its cluster (see [`reject_outliers`]), or an anchor
+    /// whose cluster dissolved that is like no other: long enough a voiceprint
+    /// to trust over the timing rule, so it stays an unknown speaker.
     Outlier,
     /// Not clearly anyone's: left to [`attach_by_time`].
     Unplaced,
@@ -311,7 +313,7 @@ fn weighted_centroid<'a>(members: impl IntoIterator<Item = (&'a [f32], i64)>) ->
 /// [`MIN_CLUSTER_MS`] of speech dissolve. Every other line goes to the
 /// cluster whose duration-weighted centroid is clearly nearest (see
 /// [`ASSIGN_MIN_SIMILARITY`], [`ASSIGN_MIN_LEAD`]), else stays
-/// [`Tier::Unplaced`]. With fewer than two anchors, or nothing left after
+/// [`Tier::Unplaced`], or [`Tier::Outlier`] if it was an anchor. With fewer than two anchors, or nothing left after
 /// dissolving, every line is clustered as an equal instead. Returns one
 /// [`Tier`] per line and the number of clusters.
 pub fn two_tier(
@@ -381,11 +383,13 @@ pub fn two_tier(
         let (c, s) = best?;
         (s >= ASSIGN_MIN_SIMILARITY && s - next >= ASSIGN_MIN_LEAD).then_some(c)
     };
-    for (v, tier) in vectors.iter().zip(tiers.iter_mut()) {
+    for (i, tier) in tiers.iter_mut().enumerate() {
         if *tier == Tier::Unplaced {
-            if let Some(c) = nearest(v) {
-                *tier = Tier::Cluster(c);
-            }
+            *tier = match nearest(&vectors[i]) {
+                Some(c) => Tier::Cluster(c),
+                None if durations_ms[i] >= ANCHOR_MIN_MS => Tier::Outlier,
+                None => Tier::Unplaced,
+            };
         }
     }
     (tiers, k)
@@ -781,7 +785,7 @@ pub(crate) mod tests {
         assert_eq!(k, 1);
         assert_eq!(
             tiers,
-            vec![Tier::Unplaced, Tier::Cluster(0), Tier::Cluster(0)]
+            vec![Tier::Outlier, Tier::Cluster(0), Tier::Cluster(0)]
         );
     }
 

@@ -690,6 +690,8 @@ fn a_cut_shares_out_the_words_by_midpoint() {
     assert_eq!(parts[0].1.words.len(), 2);
     assert_eq!(parts[1].1.words.len(), 2);
     assert_eq!((parts[0].0, parts[1].0), (pieces[0], pieces[1]));
+    assert_eq!(parts[0].1.words[1].t1_ms, 1_000, "clamped to its piece");
+    assert_eq!(parts[1].1.words[0].t0_ms, 1_000, "clamped to its piece");
     // Tokens that don't line up with the words: the words' own text.
     let t = transcript(
         vec![word(100, 200, "one"), word(1_100, 1_200, "two")],
@@ -812,6 +814,20 @@ fn redoing_the_speakers_splits_a_line_of_two_voices_and_keeps_its_pin() {
     let pins = f.store.segment_pins(f.id).unwrap();
     assert_eq!(pins.len(), 2, "{pins:?}");
     assert!(pins.iter().all(|p| p.by_hand && p.person_id == person));
+}
+
+#[test]
+fn a_split_line_with_no_pin_keeps_its_two_voices_apart() {
+    let f = fixture();
+    stored_line_of_two_voices(&f);
+    f.store.replace_segment_pins(f.id, &[]).unwrap();
+    redo_stored_line(&f, true).1.unwrap();
+    let segments = f.store.segments(f.id).unwrap();
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    // The second piece has too little speech for a speaker of its own, and
+    // sounds like nobody: unknown, not the first voice's.
+    assert!(segments[0].speaker_id.is_some());
+    assert_eq!(segments[1].speaker_id, None);
 }
 
 #[test]
