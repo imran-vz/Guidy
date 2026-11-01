@@ -166,8 +166,8 @@ enum Effect {
         binding_id: String,
         hotkey_string: String,
     },
-    /// Discard the recording. The state stays as it is until the executor's
-    /// `notify_cancel` comes back as [`Command::Cancel`].
+    /// Discard the recording. The state moves when the executor has finished,
+    /// through [`CoordinatorState::on_cancel_effect_done`].
     Cancel,
 }
 
@@ -233,6 +233,9 @@ struct CoordinatorState {
     last_press: Option<Instant>,
     pending_release: Option<PendingRelease>,
     pending_press: Option<PendingPress>,
+    /// `notify_cancel` messages from our own [`Effect::Cancel`] still in the
+    /// queue. The state already moved, so they must not touch a newer session.
+    own_cancels_queued: u32,
 }
 
 impl CoordinatorState {
@@ -243,6 +246,7 @@ impl CoordinatorState {
             last_press: None,
             pending_release: None,
             pending_press: None,
+            own_cancels_queued: 0,
         }
     }
 
@@ -415,7 +419,7 @@ impl CoordinatorState {
         };
         match intent {
             GestureIntent::DoublePress => {
-                self.on_input(edge(true, ShortcutActivation::Toggle), now)
+                self.on_gesture_press(edge(true, ShortcutActivation::Toggle), now)
             }
             GestureIntent::HoldStart | GestureIntent::HoldEnd | GestureIntent::Abort
                 if self.is_locked() =>
@@ -424,13 +428,23 @@ impl CoordinatorState {
                 None
             }
             GestureIntent::HoldStart => {
-                self.on_input(edge(true, ShortcutActivation::PushToTalk), now)
+                self.on_gesture_press(edge(true, ShortcutActivation::PushToTalk), now)
             }
             GestureIntent::HoldEnd => {
                 self.on_input(edge(false, ShortcutActivation::PushToTalk), now)
             }
             GestureIntent::Abort => self.on_gesture_abort(&binding_id),
         }
+    }
+
+    /// A gesture press is a new gesture, never the auto-repeat `RELEASE_GRACE`
+    /// exists to absorb, so a release still waiting out the grace is resolved
+    /// first. If that stops the recording, the press queues behind it and the
+    /// stop is the effect to run.
+    fn on_gesture_press(&mut self, input: InputEvent, now: Instant) -> Option<Effect> {
+        let resolved = self.on_grace_expired();
+        let pressed = self.on_input(input, now);
+        resolved.or(pressed)
     }
 
     /// Discard an unlocked hold: the live recording, or a press remembered
@@ -546,6 +560,23 @@ impl CoordinatorState {
         }
     }
 
+    /// [`Effect::Cancel`] has finished, so the recording is gone. Moving now
+    /// rather than on its queued notification keeps a gesture queued meanwhile
+    /// from being read as a repeat of the hold just discarded.
+    fn on_cancel_effect_done(&mut self) {
+        self.on_cancel(true);
+        self.own_cancels_queued += 1;
+    }
+
+    /// A `notify_cancel` arrived. Our own were applied when the effect finished.
+    fn on_cancel_notified(&mut self, recording_was_active: bool) {
+        if self.own_cancels_queued > 0 {
+            self.own_cancels_queued -= 1;
+        } else {
+            self.on_cancel(recording_was_active);
+        }
+    }
+
     fn on_processing_finished(&mut self) -> Option<Effect> {
         self.stage = Stage::Idle;
         self.hold = None;
@@ -592,6 +623,9 @@ impl CoordinatorState {
     fn begin_processing(&mut self, binding_id: String, hotkey_string: String) -> Effect {
         self.stage = Stage::Processing;
         self.hold = None;
+        // A release still in its grace belongs to the session ending here. Left
+        // in place it would resolve against whatever comes next.
+        self.pending_release = None;
         Effect::Stop {
             binding_id,
             hotkey_string,
@@ -661,7 +695,7 @@ impl TranscriptionCoordinator {
                         }
                         Command::Cancel {
                             recording_was_active,
-                        } => state.on_cancel(recording_was_active),
+                        } => state.on_cancel_notified(recording_was_active),
                         Command::ProcessingFinished => {
                             if let Some(effect) = state.on_processing_finished() {
                                 run_effect(&app, &mut state, effect);
@@ -785,9 +819,13 @@ fn run_effect(app: &AppHandle, state: &mut CoordinatorState, effect: Effect) {
             binding_id,
             hotkey_string,
         } => stop(app, &binding_id, &hotkey_string),
-        // Only sends on this thread's own channel to notify the coordinator,
-        // so it neither blocks on nor re-enters the state machine.
-        Effect::Cancel => crate::utils::cancel_current_operation(app),
+        // Runs here like `stop`, and may wait the same way on recorder cleanup.
+        // Its notify_cancel only queues on this thread's own channel, so it
+        // can't deadlock or re-enter the state machine.
+        Effect::Cancel => {
+            crate::utils::cancel_current_operation(app);
+            state.on_cancel_effect_done();
+        }
     }
 }
 
@@ -1798,10 +1836,71 @@ mod tests {
             gesture(&mut state, GestureIntent::Abort, t0 + ms(100)),
             Some(Effect::Cancel)
         );
-        // The stage moves when the executor's notify_cancel comes back.
-        assert_eq!(state.stage, Stage::Recording(BINDING.to_string()));
-        state.on_cancel(true);
+        state.on_cancel_effect_done();
         assert_eq!(state.stage, Stage::Idle);
+    }
+
+    /// The effect's notify_cancel queues behind any gesture sent meanwhile.
+    #[test]
+    fn hold_queued_during_abort_survives_its_cancel_notification() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::HoldStart, t0);
+        gesture(&mut state, GestureIntent::Abort, t0 + ms(100));
+        state.on_cancel_effect_done();
+
+        assert!(matches!(
+            gesture(&mut state, GestureIntent::HoldStart, t0 + ms(400)),
+            Some(Effect::Start { .. })
+        ));
+        state.on_cancel_notified(true);
+        assert_eq!(state.stage, Stage::Recording(BINDING.to_string()));
+
+        // A cancel from anywhere else still ends the session.
+        state.on_cancel_notified(true);
+        assert_eq!(state.stage, Stage::Idle);
+    }
+
+    #[test]
+    fn stale_release_cannot_touch_a_newer_latch() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::HoldStart, t0);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::HoldEnd, t0 + ms(1000)),
+            None
+        );
+
+        // SIGUSR2 stops the session and queues a locked one, inside the grace.
+        let effect = state.on_input(toggle_input(true), t0 + ms(1010));
+        assert!(matches!(effect, Some(Effect::Stop { .. })));
+        assert_eq!(state.on_input(toggle_input(true), t0 + ms(1020)), None);
+
+        assert!(state.grace_deadline().is_none());
+        assert_eq!(state.on_grace_expired(), None);
+        assert!(state.pending_press.as_ref().is_some_and(|p| p.locked));
+    }
+
+    #[test]
+    fn gesture_press_resolves_a_deferred_release_first() {
+        for intent in [GestureIntent::DoublePress, GestureIntent::HoldStart] {
+            let mut state = CoordinatorState::new();
+            let t0 = Instant::now();
+            gesture(&mut state, GestureIntent::HoldStart, t0);
+            gesture(&mut state, GestureIntent::HoldEnd, t0 + ms(1000));
+
+            assert!(matches!(
+                gesture(&mut state, intent, t0 + ms(1020)),
+                Some(Effect::Stop { .. })
+            ));
+            assert_eq!(state.stage, Stage::Processing);
+            assert!(state.pending_press.is_some());
+            assert!(matches!(
+                state.on_processing_finished(),
+                Some(Effect::Start { .. })
+            ));
+            assert_eq!(state.is_locked(), intent == GestureIntent::DoublePress);
+        }
     }
 
     #[test]
