@@ -655,6 +655,7 @@ impl ShortcutAction for TranscribeAction {
 
         let mut recording_error: Option<anyhow::Error> = None;
         let recording_start_time = Instant::now();
+        let cancel_generation = rm.cancel_generation();
         match rm.try_start_recording(&binding_id, vad_policy) {
             Ok(readiness) => {
                 debug!(
@@ -728,7 +729,11 @@ impl ShortcutAction for TranscribeAction {
                         detail: Some(format!("{err:#}")),
                     },
                 );
-                play_feedback_sound(app, SoundType::Error);
+                // A cancel can land while the failing start holds the state lock.
+                // Cancel stays silent.
+                if !rm.was_cancelled_since(cancel_generation) {
+                    play_feedback_sound(app, SoundType::Error);
+                }
             }
         }
 
