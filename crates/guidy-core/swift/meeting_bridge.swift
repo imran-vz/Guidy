@@ -1751,6 +1751,7 @@ public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMuta
     for app in NSRunningApplication.runningApplications(
         withBundleIdentifier: String(cString: bundleID))
     {
+        guard Date() < deadline else { break }
         let element = AXUIElementCreateApplication(app.processIdentifier)
         // A busy app must not stall the poll.
         AXUIElementSetMessagingTimeout(element, 0.25)

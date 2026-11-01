@@ -172,6 +172,9 @@ impl TabReader {
             .is_some_and(|last| now.saturating_duration_since(last) > POLL_GAP)
         {
             self.memory.clear();
+            if let Some(running) = &mut self.running {
+                running.stale = true;
+            }
         }
         self.memory.retain(|(app, _, _)| held.contains(app));
         self.started.retain(|(app, _)| held.contains(app));
