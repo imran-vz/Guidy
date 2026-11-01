@@ -279,6 +279,7 @@ impl ModelUnloadTimeout {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SoundTheme {
+    Mechanical,
     Marimba,
     Pop,
     Custom,
@@ -287,6 +288,7 @@ pub enum SoundTheme {
 impl SoundTheme {
     fn as_str(&self) -> &'static str {
         match self {
+            SoundTheme::Mechanical => "mechanical",
             SoundTheme::Marimba => "marimba",
             SoundTheme::Pop => "pop",
             SoundTheme::Custom => "custom",
@@ -516,7 +518,7 @@ fn default_model() -> String {
     "".to_string()
 }
 
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 fn default_settings_schema_version() -> u32 {
     CURRENT_SETTINGS_SCHEMA_VERSION
@@ -628,7 +630,7 @@ fn default_audio_feedback_volume() -> f32 {
 }
 
 fn default_sound_theme() -> SoundTheme {
-    SoundTheme::Marimba
+    SoundTheme::Mechanical
 }
 
 fn default_theme() -> Theme {
@@ -1310,6 +1312,15 @@ fn apply_settings_migrations(
         // transcribe.cpp 0.2 replaced integer registry indices with opaque
         // process-local handles. Clear every old index once.
         settings.transcribe_gpu_device = default_transcribe_gpu_device();
+        updated = true;
+    }
+    if stored_schema_version < 3 {
+        // Mechanical replaced Marimba as the default theme. Marimba stays
+        // selectable: a store already at schema 3 keeps it. Pop and Custom were
+        // explicit choices and are left alone.
+        if settings.sound_theme == SoundTheme::Marimba {
+            settings.sound_theme = SoundTheme::Mechanical;
+        }
         settings.settings_schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
         updated = true;
     }
@@ -1993,6 +2004,63 @@ mod tests {
             TranscribeAcceleratorSetting::Auto
         );
         assert_eq!(settings.transcribe_gpu_device, None);
+    }
+
+    #[test]
+    fn sound_theme_migration_moves_schema_2_marimba_to_mechanical() {
+        let raw = serde_json::json!({
+            "settings_schema_version": 2,
+            "sound_theme": "marimba"
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(apply_settings_migrations(&mut settings, &raw));
+        assert_eq!(settings.sound_theme, SoundTheme::Mechanical);
+        assert_eq!(
+            settings.settings_schema_version,
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn sound_theme_migration_keeps_schema_2_pop_and_custom() {
+        for (stored, expected) in [("pop", SoundTheme::Pop), ("custom", SoundTheme::Custom)] {
+            let raw = serde_json::json!({
+                "settings_schema_version": 2,
+                "sound_theme": stored
+            });
+            let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+            assert!(apply_settings_migrations(&mut settings, &raw));
+            assert_eq!(settings.sound_theme, expected);
+            assert_eq!(
+                settings.settings_schema_version,
+                CURRENT_SETTINGS_SCHEMA_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn sound_theme_migration_keeps_marimba_chosen_at_schema_3() {
+        let raw = serde_json::json!({
+            "settings_schema_version": 3,
+            "sound_theme": "marimba"
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+        apply_settings_migrations(&mut settings, &raw);
+        assert_eq!(settings.sound_theme, SoundTheme::Marimba);
+    }
+
+    #[test]
+    fn fresh_settings_default_to_mechanical_with_feedback_off() {
+        let settings = get_default_settings();
+        assert_eq!(settings.sound_theme, SoundTheme::Mechanical);
+        assert!(!settings.audio_feedback);
+        assert_eq!(
+            settings.settings_schema_version,
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
     }
 
     #[test]
