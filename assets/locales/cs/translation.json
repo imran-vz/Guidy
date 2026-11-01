@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Nastavení...",
-    "recentTranscripts": "Nedávné přepisy",
-    "noTranscripts": "Zatím žádné přepisy",
     "unloadModel": "Uvolnit model",
     "model": "Model",
     "quit": "Ukončit",

@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Настройки...",
-    "recentTranscripts": "Последни транскрипти",
-    "noTranscripts": "Все още няма транскрипти",
     "unloadModel": "Разтоварване на модела",
     "model": "Модел",
     "quit": "Изход",

@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Pengaturan...",
-    "recentTranscripts": "Transkrip Terbaru",
-    "noTranscripts": "Belum ada transkrip",
     "unloadModel": "Keluarkan Model dari Memori",
     "model": "Model",
     "quit": "Keluar",

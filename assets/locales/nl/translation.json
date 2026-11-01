@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Instellingen...",
-    "recentTranscripts": "Recente transcripten",
-    "noTranscripts": "Nog geen transcripten",
     "unloadModel": "Model ontladen",
     "model": "Model",
     "quit": "Afsluiten",

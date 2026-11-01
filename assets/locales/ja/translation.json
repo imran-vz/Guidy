@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "設定…",
-    "recentTranscripts": "最近の文字起こし",
-    "noTranscripts": "まだ文字起こしがありません",
     "unloadModel": "モデルをアンロード",
     "model": "モデル",
     "quit": "終了",

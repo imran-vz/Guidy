@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Configuració...",
-    "recentTranscripts": "Transcripcions recents",
-    "noTranscripts": "Encara no hi ha transcripcions",
     "unloadModel": "Allibera el model de la memòria",
     "model": "Model",
     "quit": "Surt",

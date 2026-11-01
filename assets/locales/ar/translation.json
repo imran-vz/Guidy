@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "الإعدادات...",
-    "recentTranscripts": "النصوص المفرغة الأخيرة",
-    "noTranscripts": "لا توجد نصوص مفرغة بعد",
     "unloadModel": "تفريغ النموذج",
     "model": "النموذج",
     "quit": "إنهاء",

@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "הגדרות...",
-    "recentTranscripts": "תמלולים אחרונים",
-    "noTranscripts": "עדיין אין תמלולים",
     "unloadModel": "פרוק מודל",
     "model": "מודל",
     "quit": "יציאה",

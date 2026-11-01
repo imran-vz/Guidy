@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Cài đặt...",
-    "recentTranscripts": "Bản chép lời gần đây",
-    "noTranscripts": "Chưa có bản chép lời",
     "unloadModel": "Dỡ mô hình",
     "model": "Mô hình",
     "quit": "Thoát",

@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "設定...",
-    "recentTranscripts": "最近的逐字稿",
-    "noTranscripts": "尚無逐字稿",
     "unloadModel": "卸載模型",
     "model": "模型",
     "quit": "結束",
