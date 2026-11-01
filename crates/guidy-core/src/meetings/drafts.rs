@@ -32,6 +32,26 @@ pub struct SummaryDraft {
     pub short_summary: String,
     pub decisions: String,
     pub topics: String,
+    /// `generated_at` of the summary these edits started from: a draft of an
+    /// older generation doesn't get to overwrite a newer one.
+    pub based_on_generated_at: i64,
+}
+
+impl SummaryDraft {
+    /// The fields hold what `current` already stores, once Save's trimming
+    /// is applied: it was saved, and only the clearing didn't happen.
+    pub fn matches_saved(&self, current: &SummaryDraft) -> bool {
+        fn lines(text: &str) -> Vec<&str> {
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect()
+        }
+        self.title.trim() == current.title.trim()
+            && self.short_summary.trim() == current.short_summary.trim()
+            && lines(&self.decisions) == lines(&current.decisions)
+            && lines(&self.topics) == lines(&current.topics)
+    }
 }
 
 /// An action item's fields, as typed.
@@ -114,6 +134,9 @@ pub struct DraftStore {
     /// The newest revision applied per meeting. Holding this lock serializes
     /// the file work. Only this process writes, so it isn't persisted.
     applied: parking_lot::Mutex<HashMap<MeetingId, u64>>,
+    /// Drafts announced by [`Self::hold`] and not yet written. Never held
+    /// across file work, so the UI thread may take it.
+    held: parking_lot::Mutex<HashMap<MeetingId, (u64, MeetingDraft)>>,
 }
 
 impl DraftStore {
@@ -121,11 +144,20 @@ impl DraftStore {
         Self {
             dir: meetings_dir.join("drafts"),
             applied: Default::default(),
+            held: Default::default(),
         }
     }
 
     fn path(&self, id: MeetingId) -> PathBuf {
         self.dir.join(format!("{id}.json"))
+    }
+
+    /// Announce a write about to start, for a view closing or switching away
+    /// with text not yet written: [`Self::load`] sees it at once, so reopening
+    /// the meeting can't read the file before the write lands. No file work:
+    /// safe on the UI thread.
+    pub fn hold(&self, id: MeetingId, revision: u64, draft: MeetingDraft) {
+        self.held.lock().insert(id, (revision, draft));
     }
 
     /// Replace `id`'s draft (an empty draft removes it). Returns false if a
@@ -135,21 +167,30 @@ impl DraftStore {
         if applied.get(&id).is_some_and(|newest| *newest > revision) {
             return Ok(false);
         }
+        let tmp = self.dir.join(format!("{id}.json.tmp"));
         if draft.is_empty() {
+            // A kill before the rename can leave typed text in the temp file.
+            remove_if_present(&tmp)?;
             remove_if_present(&self.path(id))?;
         } else {
             std::fs::create_dir_all(&self.dir)?;
-            let tmp = self.dir.join(format!("{id}.json.tmp"));
             std::fs::write(&tmp, serde_json::to_vec(draft)?)?;
             std::fs::rename(&tmp, self.path(id))?;
         }
         applied.insert(id, revision);
+        let mut held = self.held.lock();
+        if held.get(&id).is_some_and(|(r, _)| *r <= revision) {
+            held.remove(&id);
+        }
         Ok(true)
     }
 
     /// `id`'s draft. One that can't be read or parsed is treated as absent
     /// and logged: the next save replaces it.
     pub fn load(&self, id: MeetingId) -> Option<MeetingDraft> {
+        if let Some((_, draft)) = self.held.lock().get(&id) {
+            return (!draft.is_empty()).then(|| draft.clone());
+        }
         let _serialized = self.applied.lock();
         let bytes = match std::fs::read(self.path(id)) {
             Ok(bytes) => bytes,
@@ -246,6 +287,7 @@ mod tests {
                 short_summary: "Line one\n\n  two ".into(),
                 decisions: "A\nB".into(),
                 topics: String::new(),
+                based_on_generated_at: 3,
             }),
             items: BTreeMap::from([(
                 7,
@@ -314,5 +356,44 @@ mod tests {
         assert_eq!(relaunched.load(1), Some(draft()));
         relaunched.save(1, 1, &MeetingDraft::default()).unwrap();
         assert_eq!(relaunched.load(1), None);
+        // Discarding also removes the typed text the temp file held.
+        assert!(!dir.path().join("drafts").join("1.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_held_draft_is_visible_before_its_write_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DraftStore::new(dir.path());
+        store.hold(1, 4, draft());
+        assert_eq!(store.load(1), Some(draft()));
+        // An older write finishing doesn't release a newer hold.
+        store.save(1, 3, &MeetingDraft::default()).unwrap();
+        assert_eq!(store.load(1), Some(draft()));
+        store.save(1, 4, &draft()).unwrap();
+        assert!(store.held.lock().is_empty());
+        assert_eq!(store.load(1), Some(draft()));
+    }
+
+    #[test]
+    fn matches_saved_applies_saves_trimming() {
+        let saved = SummaryDraft {
+            title: "T".into(),
+            short_summary: "S".into(),
+            decisions: "A\nB".into(),
+            topics: "C".into(),
+            based_on_generated_at: 3,
+        };
+        let typed = SummaryDraft {
+            title: " T ".into(),
+            short_summary: "S\n".into(),
+            decisions: "A\n\n B \n".into(),
+            ..saved.clone()
+        };
+        assert!(typed.matches_saved(&saved));
+        let changed = SummaryDraft {
+            title: "Other".into(),
+            ..saved.clone()
+        };
+        assert!(!changed.matches_saved(&saved));
     }
 }

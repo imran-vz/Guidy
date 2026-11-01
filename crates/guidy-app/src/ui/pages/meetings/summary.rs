@@ -240,9 +240,16 @@ pub struct SummaryView {
     draft_timer: Option<Task<()>>,
     /// This meeting's stored draft has been asked for.
     draft_requested: bool,
+    /// ... and has arrived. Until then a write could erase what it holds.
+    draft_loaded: bool,
+    /// A write was held back by `draft_loaded` or `pending_draft`.
+    draft_write_held: bool,
     /// A stored draft waiting for the next render (setting inputs needs a
     /// window). While it waits nothing overwrites the file.
     pending_draft: Option<MeetingDraft>,
+    /// Stored summary edits waiting for a running summary to finish (its
+    /// result would close the editor). Stays in what autosave writes.
+    pending_summary_draft: Option<SummaryDraft>,
     /// The editor holds text recovered from a draft.
     draft_restored: bool,
     /// The shown error is the autosave's, so its next success clears it.
@@ -376,7 +383,10 @@ impl SummaryView {
             draft_debouncer: DraftDebouncer::default(),
             draft_timer: None,
             draft_requested: false,
+            draft_loaded: false,
+            draft_write_held: false,
             pending_draft: None,
+            pending_summary_draft: None,
             draft_restored: false,
             draft_error: None,
             picker_open: false,
@@ -497,11 +507,17 @@ impl SummaryView {
         // What was typed in the last moment goes with the meeting it was
         // typed in, while the inputs still hold it.
         if self.draft_debouncer.is_dirty() {
-            self.write_draft(cx);
+            self.hold_and_write_draft(cx);
         }
+        self.draft_debouncer.reset();
         self.draft_timer = None;
         self.draft_requested = false;
+        self.draft_loaded = false;
+        self.draft_write_held = false;
         self.pending_draft = None;
+        self.pending_summary_draft = None;
+        // The half-typed item belongs to the meeting left behind.
+        self.clear_new_item = true;
         self.draft_restored = false;
         self.draft_error = None;
         self.summary_baseline = None;
@@ -559,13 +575,18 @@ impl SummaryView {
                     want_draft.then(|| b.meeting_draft(id)).flatten(),
                 )
             },
-            move |this, (summary, items, speakers, people, summarizing, draft), _| {
+            move |this, (summary, items, speakers, people, summarizing, draft), cx| {
                 if this.meeting_id != id {
                     return;
                 }
                 this.loaded = true;
-                if draft.is_some() {
+                if want_draft {
+                    this.draft_loaded = true;
                     this.pending_draft = draft;
+                    if this.pending_draft.is_none() && this.draft_write_held {
+                        this.draft_write_held = false;
+                        this.note_draft_changed(cx);
+                    }
                 }
                 // A summary started elsewhere (another window, the tray).
                 if summarizing && !this.generating {
@@ -760,6 +781,7 @@ impl SummaryView {
             short_summary: self.short_summary.read(cx).value().to_string(),
             decisions: self.decisions.read(cx).value().to_string(),
             topics: self.topics.read(cx).value().to_string(),
+            based_on_generated_at: self.summary.as_ref().map_or(0, |s| s.generated_at),
         });
         let items = self
             .items
@@ -775,7 +797,9 @@ impl SummaryView {
             .collect();
         let new_item = self.new_item.read(cx).value().to_string();
         MeetingDraft {
-            summary: summary.filter(|s| self.summary_baseline.as_ref() != Some(s)),
+            summary: summary
+                .filter(|s| self.summary_baseline.as_ref() != Some(s))
+                .or_else(|| self.pending_summary_draft.clone()),
             items,
             new_item: if new_item.trim().is_empty() {
                 String::new()
@@ -820,7 +844,8 @@ impl SummaryView {
     fn write_draft(&mut self, cx: &mut Context<Self>) {
         self.draft_debouncer.reset();
         self.draft_timer = None;
-        if self.pending_draft.is_some() {
+        if !self.draft_loaded || self.pending_draft.is_some() {
+            self.draft_write_held = true;
             return;
         }
         let id = self.meeting_id;
@@ -852,15 +877,27 @@ impl SummaryView {
         );
     }
 
+    /// [`Self::write_draft`] for when the inputs are about to change: a
+    /// reopen of this meeting sees the draft even before the file does.
+    fn hold_and_write_draft(&mut self, cx: &mut Context<Self>) {
+        if !self.draft_loaded || self.pending_draft.is_some() {
+            return;
+        }
+        self.backend
+            .hold_meeting_draft(self.meeting_id, next_revision(), self.draft_snapshot(cx));
+        self.write_draft(cx);
+    }
+
     /// The view is going away with text not yet written.
     fn flush_draft_on_release(&mut self, cx: &mut App) {
-        if !self.draft_debouncer.is_dirty() || self.pending_draft.is_some() {
+        if !self.draft_debouncer.is_dirty() || !self.draft_loaded || self.pending_draft.is_some() {
             return;
         }
         let backend = self.backend.clone();
         let id = self.meeting_id;
         let draft = self.draft_snapshot(cx);
         let revision = next_revision();
+        backend.hold_meeting_draft(id, revision, draft.clone());
         cx.background_executor()
             .spawn(async move {
                 if let Err(e) = backend.save_meeting_draft(id, revision, &draft) {
@@ -871,33 +908,17 @@ impl SummaryView {
     }
 
     /// Put a stored draft back into the inputs. Summary edits reopen in the
-    /// editor for an explicit Save or Cancel. An action item's edit would
-    /// have saved on blur had the app lived, so it saves now. Waits while a
-    /// summary runs: its result would close the editor.
+    /// editor for an explicit Save or Cancel, once no summary is running.
+    /// An action item's edit would have saved on blur had the app lived, so
+    /// it saves now.
     fn apply_pending_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.generating {
-            return;
-        }
+        self.apply_pending_summary_draft(window, cx);
         let Some(draft) = self.pending_draft.take() else {
             return;
         };
-        if let Some(fields) = draft.summary {
-            let current = self
-                .summary
-                .clone()
-                .unwrap_or_else(|| empty_summary(self.meeting_id));
-            self.summary_baseline = Some(summary_fields(&current));
-            self.title
-                .update(cx, |st, cx| st.set_value(fields.title, window, cx));
-            self.short_summary
-                .update(cx, |st, cx| st.set_value(fields.short_summary, window, cx));
-            self.decisions
-                .update(cx, |st, cx| st.set_value(fields.decisions, window, cx));
-            self.topics
-                .update(cx, |st, cx| st.set_value(fields.topics, window, cx));
-            self.editing = true;
-            self.draft_restored = true;
-        }
+        self.draft_write_held = false;
+        self.pending_summary_draft = draft.summary;
+        self.apply_pending_summary_draft(window, cx);
         for (id, typed) in draft.items {
             let Some(mut item) = self.items.iter().find(|i| i.id == id).cloned() else {
                 continue;
@@ -912,11 +933,44 @@ impl SummaryView {
             self.item_resync.insert(id);
             self.save_item(item, cx);
         }
-        if !draft.new_item.is_empty() {
+        if !draft.new_item.is_empty() && self.new_item.read(cx).value().trim().is_empty() {
             self.new_item
                 .update(cx, |st, cx| st.set_value(draft.new_item, window, cx));
         }
         self.note_draft_changed(cx);
+        cx.notify();
+    }
+
+    fn apply_pending_summary_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.generating || self.editing || self.pending_summary_draft.is_none() {
+            return;
+        }
+        let Some(fields) = self.pending_summary_draft.take() else {
+            return;
+        };
+        let current = self
+            .summary
+            .clone()
+            .unwrap_or_else(|| empty_summary(self.meeting_id));
+        let baseline = summary_fields(&current);
+        // Regenerated since: the new summary replaces an open edit, as it
+        // does in a running app. Or saved, with only the clearing lost.
+        let stale = self.summary.is_some() && fields.based_on_generated_at != current.generated_at;
+        if stale || fields.matches_saved(&baseline) {
+            self.note_draft_changed(cx);
+            return;
+        }
+        self.summary_baseline = Some(baseline);
+        self.title
+            .update(cx, |st, cx| st.set_value(fields.title, window, cx));
+        self.short_summary
+            .update(cx, |st, cx| st.set_value(fields.short_summary, window, cx));
+        self.decisions
+            .update(cx, |st, cx| st.set_value(fields.decisions, window, cx));
+        self.topics
+            .update(cx, |st, cx| st.set_value(fields.topics, window, cx));
+        self.editing = true;
+        self.draft_restored = true;
         cx.notify();
     }
 
@@ -953,9 +1007,22 @@ impl SummaryView {
         s.decisions = lines_to_vec(&self.decisions.read(cx).value());
         s.topics = lines_to_vec(&self.topics.read(cx).value());
         let saved = s.clone();
+        // Cleared here, not in the callback: the view may be gone by then.
+        let id = self.meeting_id;
+        let mut after_save = self.draft_snapshot(cx);
+        after_save.summary = None;
+        let revision = next_revision();
         self.run(
             cx,
-            move |b| b.update_summary(&s),
+            move |b| {
+                let saved = b.update_summary(&s);
+                if saved.is_ok() {
+                    if let Err(e) = b.save_meeting_draft(id, revision, &after_save) {
+                        log::warn!("meetings: clearing the draft of {id} failed: {e}");
+                    }
+                }
+                saved
+            },
             move |this, r, cx| match r {
                 _ if this.meeting_id != saved.meeting_id => {}
                 Ok(()) => {
@@ -974,17 +1041,30 @@ impl SummaryView {
     // -- action items ---------------------------------------------------
 
     fn save_item(&mut self, item: ActionItem, cx: &mut Context<Self>) {
+        let mut previous = None;
         if let Some(slot) = self.items.iter_mut().find(|i| i.id == item.id) {
+            previous = Some(slot.clone());
             *slot = item.clone();
         }
-        self.note_draft_changed(cx);
+        let id = item.id;
+        let attempted = (item.text.clone(), item.due.clone());
         self.run(
             cx,
             move |b| b.update_action_item(&item),
-            |this, r, _| {
+            move |this, r, cx| {
                 if let Err(e) = r {
                     this.error = Some(error_message(&e));
+                    // Not saved: back to what is stored, so the typed text
+                    // counts as unsaved and stays in the draft.
+                    if let (Some(previous), Some(slot)) =
+                        (previous, this.items.iter_mut().find(|i| i.id == id))
+                    {
+                        if (&slot.text, &slot.due) == (&attempted.0, &attempted.1) {
+                            *slot = previous;
+                        }
+                    }
                 }
+                this.note_draft_changed(cx);
             },
         );
         cx.notify();
@@ -1932,6 +2012,7 @@ fn summary_fields(s: &StoredSummary) -> SummaryDraft {
         short_summary: s.short_summary.clone(),
         decisions: s.decisions.join("\n"),
         topics: s.topics.join("\n"),
+        based_on_generated_at: s.generated_at,
     }
 }
 
@@ -1981,6 +2062,9 @@ impl Render for SummaryView {
                 .id("meeting-summary")
                 .w_full()
                 .gap_4()
+                .when_some(self.error.clone(), |d, e| {
+                    d.child(error_box("summary-error", e, cx).m_0().test_support())
+                })
                 .child(group(None, item_rows, cx))
                 .test_support();
         }
@@ -2222,6 +2306,7 @@ mod ui {
                     short_summary: "We talked.".into(),
                     decisions: "Ship Friday\nOne more".into(),
                     topics: "Release".into(),
+                    based_on_generated_at: 1,
                 }),
                 ..Default::default()
             },
@@ -2345,6 +2430,113 @@ mod ui {
         .unwrap();
         let_the_draft_write(cx);
         assert!(!exists(cx, w, "summary-error"));
+    }
+
+    #[gpui_kit::test]
+    fn a_draft_of_an_older_generation_does_not_reopen(cx: &mut TestAppContext) {
+        let mb = backend();
+        mb.data.lock().ai.drafts.insert(
+            1,
+            MeetingDraft {
+                summary: Some(SummaryDraft {
+                    title: "Old edit".into(),
+                    based_on_generated_at: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        setup(cx, mb.clone());
+        let (w, _view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "summary-editor"));
+        let_the_draft_write(cx);
+        assert!(mb.data.lock().ai.drafts.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_draft_identical_to_the_saved_summary_does_not_reopen(cx: &mut TestAppContext) {
+        let mb = backend();
+        mb.data.lock().ai.drafts.insert(
+            1,
+            MeetingDraft {
+                summary: Some(SummaryDraft {
+                    title: " Weekly sync ".into(),
+                    short_summary: "We talked.".into(),
+                    decisions: "Ship Friday\n".into(),
+                    topics: "Release".into(),
+                    based_on_generated_at: 1,
+                }),
+                ..Default::default()
+            },
+        );
+        setup(cx, mb.clone());
+        let (w, _view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "summary-editor"));
+        let_the_draft_write(cx);
+        assert!(mb.data.lock().ai.drafts.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_item_save_keeps_the_typed_text_in_the_draft(cx: &mut TestAppContext) {
+        let mb = backend();
+        mb.data.lock().ai.drafts.insert(
+            1,
+            MeetingDraft {
+                items: std::collections::BTreeMap::from([(
+                    7,
+                    ItemDraft {
+                        text: "typed".into(),
+                        due: String::new(),
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        mb.data.lock().ai.fail_item_update = Some("database locked".into());
+        setup(cx, mb.clone());
+        let (w, _view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "meeting-summary"));
+        let_the_draft_write(cx);
+        assert!(exists(cx, w, "meeting-summary"));
+        let_the_draft_write(cx);
+        let draft = mb.data.lock().ai.drafts.get(&1).cloned().unwrap();
+        assert_eq!(draft.items[&7].text, "typed");
+    }
+
+    #[gpui_kit::test]
+    fn typing_while_a_restored_summary_waits_keeps_both(cx: &mut TestAppContext) {
+        let mb = backend();
+        mb.data.lock().ai.summarizing = vec![1];
+        mb.data.lock().ai.drafts.insert(
+            1,
+            MeetingDraft {
+                summary: Some(SummaryDraft {
+                    title: "Recovered".into(),
+                    based_on_generated_at: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        setup(cx, mb.clone());
+        let (w, view) = open(cx, |window, cx| SummaryView::new(1, window, cx));
+        cx.run_until_parked();
+        assert!(!exists(cx, w, "summary-editor"));
+        cx.update_window(w, |_, window, cx| {
+            view.update(cx, |v, cx| {
+                v.new_item
+                    .update(cx, |s, cx| s.set_value("typed meanwhile", window, cx));
+                v.note_draft_changed(cx);
+            });
+        })
+        .unwrap();
+        let_the_draft_write(cx);
+        let draft = mb.data.lock().ai.drafts.get(&1).cloned().unwrap();
+        assert_eq!(draft.new_item, "typed meanwhile");
+        assert_eq!(draft.summary.unwrap().title, "Recovered");
     }
 
     #[gpui_kit::test]

@@ -1162,6 +1162,17 @@ impl MeetingsManager {
         self.drafts.load(id)
     }
 
+    /// A write of `draft` is about to start: [`Self::meeting_draft`] returns
+    /// it from now on. No file work: safe on the UI thread.
+    pub fn hold_meeting_draft(
+        &self,
+        id: MeetingId,
+        revision: u64,
+        draft: crate::meetings::drafts::MeetingDraft,
+    ) {
+        self.drafts.hold(id, revision, draft);
+    }
+
     /// Autosave `id`'s typed notes (an empty draft removes the file). Writes
     /// a file: call off the UI thread. `revision` is from
     /// [`crate::meetings::drafts::next_revision`], taken when the text was read.

@@ -405,6 +405,7 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn meeting_draft(&self, _id: MeetingId) -> Option<MeetingDraft> {
         None
     }
+    fn hold_meeting_draft(&self, _id: MeetingId, _revision: u64, _draft: MeetingDraft) {}
     fn save_meeting_draft(
         &self,
         _id: MeetingId,
@@ -822,6 +823,11 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn meeting_draft(&self, id: MeetingId) -> Option<MeetingDraft> {
         self.manager()?.meeting_draft(id)
+    }
+    fn hold_meeting_draft(&self, id: MeetingId, revision: u64, draft: MeetingDraft) {
+        if let Some(m) = self.manager() {
+            m.hold_meeting_draft(id, revision, draft);
+        }
     }
     fn save_meeting_draft(
         &self,
@@ -1832,6 +1838,9 @@ pub mod fake {
                 item.text
             ));
             let mut d = self.data.lock();
+            if let Some(e) = d.ai.fail_item_update.clone() {
+                return Err(e);
+            }
             if let Some(i) = d.ai.items.iter_mut().find(|i| i.id == item.id) {
                 *i = item.clone();
             }
@@ -1995,6 +2004,8 @@ pub mod fake {
         pub drafts: HashMap<MeetingId, MeetingDraft>,
         /// `save_meeting_draft` fails with this.
         pub fail_draft_save: Option<String>,
+        /// `update_action_item` fails with this.
+        pub fail_item_update: Option<String>,
         pub items: Vec<ActionItem>,
         pub linear_key: Option<String>,
         pub fail_summarize: Option<String>,
