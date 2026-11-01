@@ -10,9 +10,14 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::thread;
 
+/// Every theme, Custom included, plays this for `SoundType::Error`.
+const ERROR_SOUND_PATH: &str = "resources/mechanical_error.wav";
+
+#[derive(Clone, Copy)]
 pub enum SoundType {
     Start,
     Stop,
+    Error,
 }
 
 fn resolve_sound_path(
@@ -21,7 +26,7 @@ fn resolve_sound_path(
     sound_type: SoundType,
 ) -> Option<PathBuf> {
     let sound_file = get_sound_path(settings, sound_type);
-    let base_dir = get_sound_base_dir(settings);
+    let base_dir = get_sound_base_dir(settings, sound_type);
     match base_dir {
         crate::host::path::BaseDirectory::AppData => {
             crate::portable::resolve_app_data(app, &sound_file).ok()
@@ -32,6 +37,7 @@ fn resolve_sound_path(
 
 fn get_sound_path(settings: &AppSettings, sound_type: SoundType) -> String {
     match (settings.sound_theme, sound_type) {
+        (_, SoundType::Error) => ERROR_SOUND_PATH.to_string(),
         (SoundTheme::Custom, SoundType::Start) => "custom_start.wav".to_string(),
         (SoundTheme::Custom, SoundType::Stop) => "custom_stop.wav".to_string(),
         (_, SoundType::Start) => settings.sound_theme.to_start_path(),
@@ -39,9 +45,13 @@ fn get_sound_path(settings: &AppSettings, sound_type: SoundType) -> String {
     }
 }
 
-fn get_sound_base_dir(settings: &AppSettings) -> crate::host::path::BaseDirectory {
-    match settings.sound_theme {
-        SoundTheme::Custom => crate::host::path::BaseDirectory::AppData,
+fn get_sound_base_dir(
+    settings: &AppSettings,
+    sound_type: SoundType,
+) -> crate::host::path::BaseDirectory {
+    match (settings.sound_theme, sound_type) {
+        (_, SoundType::Error) => crate::host::path::BaseDirectory::Resource,
+        (SoundTheme::Custom, _) => crate::host::path::BaseDirectory::AppData,
         _ => crate::host::path::BaseDirectory::Resource,
     }
 }
@@ -134,4 +144,69 @@ fn play_audio_file(
     player.sleep_until_end();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::path::BaseDirectory;
+    use crate::host::testing::TestApp;
+
+    fn settings_with_theme(theme: SoundTheme) -> AppSettings {
+        let mut settings = settings::get_default_settings();
+        settings.sound_theme = theme;
+        settings
+    }
+
+    #[test]
+    fn mechanical_paths_exist_under_assets() {
+        let settings = settings_with_theme(SoundTheme::Mechanical);
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        for sound_type in [SoundType::Start, SoundType::Stop, SoundType::Error] {
+            let path = assets.join(get_sound_path(&settings, sound_type));
+            assert!(path.exists(), "{}", path.display());
+            assert_eq!(
+                get_sound_base_dir(&settings, sound_type),
+                BaseDirectory::Resource
+            );
+        }
+    }
+
+    #[test]
+    fn error_sound_resolves_to_resource_under_every_theme() {
+        let t = TestApp::new();
+        for theme in [
+            SoundTheme::Mechanical,
+            SoundTheme::Marimba,
+            SoundTheme::Pop,
+            SoundTheme::Custom,
+        ] {
+            let settings = settings_with_theme(theme);
+            assert_eq!(
+                get_sound_path(&settings, SoundType::Error),
+                ERROR_SOUND_PATH
+            );
+            assert_eq!(
+                get_sound_base_dir(&settings, SoundType::Error),
+                BaseDirectory::Resource
+            );
+            let path = resolve_sound_path(&t.app, &settings, SoundType::Error).unwrap();
+            assert!(path.exists(), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn custom_start_and_stop_stay_in_app_data() {
+        let settings = settings_with_theme(SoundTheme::Custom);
+        for (sound_type, expected) in [
+            (SoundType::Start, "custom_start.wav"),
+            (SoundType::Stop, "custom_stop.wav"),
+        ] {
+            assert_eq!(get_sound_path(&settings, sound_type), expected);
+            assert_eq!(
+                get_sound_base_dir(&settings, sound_type),
+                BaseDirectory::AppData
+            );
+        }
+    }
 }
