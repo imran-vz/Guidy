@@ -189,8 +189,10 @@ private let outputSampleRate: Double = 16_000
 
 /// A stream with no callbacks for this long is stalled, and rebuilt.
 private let watchdogNanos: UInt64 = 3_000_000_000
-/// Waits between attempts to rebuild a stream, until it works or Stop.
-private let rebuildDelays: [Double] = [0.5, 1, 2, 4, 5]
+/// Waits between attempts to rebuild a stream, until it works or Stop. Short
+/// at first: a Bluetooth device settles within a few seconds of a switch, and
+/// the scorecard allows a 3 s gap.
+private let rebuildDelays: [Double] = [0.25, 0.5, 0.75, 1, 2, 4, 5]
 /// With no callbacks and nothing playing, a tap may just be idle: rebuilt at
 /// most this often, and quietly (it may be dead, but nothing says so).
 private let idleRebuildNanos: UInt64 = 30_000_000_000
@@ -1145,6 +1147,13 @@ private final class SystemTapCapture {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private var listener: AudioObjectPropertyListenerBlock?
+    /// On controlQueue: the output device being watched (`watchOutputDevice`).
+    private var outputDeviceListener: AudioObjectPropertyListenerBlock?
+    private var watchedOutput = AudioObjectID(kAudioObjectUnknown)
+    private var watchedOutputRate: Float64 = 0
+    private let outputDeviceSelectors: [AudioObjectPropertySelector] = [
+        kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive,
+    ]
     private var stopped = false
     /// On `controlQueue`: bursts of changes drop out of a rebuild chain.
     private var rebuildGeneration = 0
@@ -1204,6 +1213,7 @@ private final class SystemTapCapture {
     private func startWatching() {
         lastIdleRebuildNanos = nowNanos()
         installDefaultOutputListener()
+        controlQueue.async { self.watchOutputDevice() }
         startSilenceTimer()
     }
 
@@ -1379,6 +1389,58 @@ private final class SystemTapCapture {
         }
     }
 
+    /// AirPods turning on their mic change their rate without the default
+    /// output changing, and a device can die the same way. The IOProc may stop
+    /// calling back: rebuild now rather than at the 3 s watchdog. On controlQueue.
+    private func watchOutputDevice() {
+        unwatchOutputDevice()
+        guard let device = defaultDevice(input: false) else { return }
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.outputDeviceChanged()
+        }
+        for selector in outputDeviceSelectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(device, &address, controlQueue, block)
+        }
+        watchedOutput = device
+        watchedOutputRate = outputRate(device)
+        outputDeviceListener = block
+    }
+
+    /// On controlQueue.
+    private func unwatchOutputDevice() {
+        guard let block = outputDeviceListener else { return }
+        for selector in outputDeviceSelectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListenerBlock(watchedOutput, &address, controlQueue, block)
+        }
+        outputDeviceListener = nil
+    }
+
+    private func outputRate(_ device: AudioObjectID) -> Float64 {
+        audioProperty(
+            device, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal,
+            Float64(0)) ?? 0
+    }
+
+    /// On controlQueue. Only a real change: building the aggregate can itself
+    /// notify, and rebuilding for that would never end.
+    private func outputDeviceChanged() {
+        if stopped { return }
+        let rate = outputRate(watchedOutput)
+        let alive = audioProperty(
+            watchedOutput, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal,
+            UInt32(1)) ?? 0
+        if alive != 0 && rate == watchedOutputRate { return }
+        watchedOutputRate = rate
+        rebuildGeneration += 1
+        rebuild(generation: rebuildGeneration, attempt: 0, quiet: false)
+    }
+
     /// Watchdog, on controlQueue. Whether an idle tap keeps calling back is
     /// unverified (`docs/plans/meetings.md`, Risks), so silence alone proves
     /// nothing: with something playing on the output and no callbacks the
@@ -1446,6 +1508,7 @@ private final class SystemTapCapture {
             }
             try buildDevice()
             recovering = false
+            watchOutputDevice()
             if reportedFailure {
                 reportedFailure = false
                 sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRestarted)
@@ -1556,6 +1619,7 @@ private final class SystemTapCapture {
         silenceTimer?.cancel()
         silenceTimer = nil
         controlQueue.sync {
+            unwatchOutputDevice()
             teardownDevice()
             destroyTap()
         }

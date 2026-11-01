@@ -98,3 +98,23 @@ Each app's bundle IDs, especially Teams, Webex (`Cisco-Systems.Spark`?), Discord
 - Repeat Automation dialogs annoy users: query only after opt-in.
 - Mic can hear feedback clicks during recording; meetings play none.
 - Always-record legal exposure stays with the user, so it must always show visibly.
+
+## Timing by reading: R10, R12, R13
+
+Read from the code, not measured. Only hardware runs count as passes.
+
+- **R10, call ends:** the question shows at the first 1 s poll past the 8 s grace,
+  so about 9 s after release, inside 30 s. A slow browser tab read can add up to
+  2 s. A recording with no tracked call (started by hand, no call ever detected)
+  has nothing to ask about, by design.
+- **R12, AirPods on the mic:** a new default input restarts after a 0.3 s settle.
+  A failed restart retried at 0.5, 1, 2 s, past the 3 s bar by the third try, so
+  retries now start at 0.25, 0.5, 0.75, 1 s. A restart shorter than a health tick
+  showed no notice, so "Reconnecting" now holds for one tick.
+- **R12 and R13, system audio:** a new default output rebuilt at once, but a rate
+  change on the same device (AirPods turning on their mic) or a device dying waited
+  for the 3 s watchdog, which alone misses the bar. A listener on the output device
+  now rebuilds at once, only on a real change.
+- **Still open:** whether the IOProc really stops on a rate change, how long
+  AirPods take to settle, and a watchdog-only recovery (3-3.5 s) are hardware
+  questions.

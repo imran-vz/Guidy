@@ -87,6 +87,11 @@ struct TrackState {
     stalled: bool,
     /// When `stalled` was reported, to the tick.
     stalled_at: i64,
+    /// Stalled was reported since the last tick ...
+    stalled_since_tick: bool,
+    /// ... so as of this tick it is shown, even if it has recovered: a restart
+    /// shorter than a tick still gets its notice (R12).
+    showing_stall: bool,
     /// Stalled or failed was reported since the last tick: sound counted in
     /// this tick may be from before that, so it says nothing about recovery.
     reported_since_tick: bool,
@@ -125,7 +130,7 @@ impl TrackState {
         {
             return SourceHealth::Lost;
         }
-        if self.stalled || quiet >= NO_SAMPLES_RECONNECTING_MS {
+        if self.stalled || self.showing_stall || quiet >= NO_SAMPLES_RECONNECTING_MS {
             return SourceHealth::Reconnecting;
         }
         if silent_after.is_some_and(|after| now - self.last_sound >= after) {
@@ -179,6 +184,7 @@ impl HealthTracker {
                     state.stalled = true;
                     state.stalled_at = last_tick;
                 }
+                state.stalled_since_tick = true;
                 state.reported_since_tick = true;
             }
             CaptureMessage::Recovered => {
@@ -255,6 +261,8 @@ impl HealthTracker {
             state.last_sound = now;
             state.stalled_at = now;
             state.reported_since_tick = false;
+            state.stalled_since_tick = false;
+            state.showing_stall = false;
         }
         self.no_audio_since = now;
     }
@@ -282,6 +290,7 @@ impl HealthTracker {
                 }
             }
             state.reported_since_tick = false;
+            state.showing_stall = std::mem::take(&mut state.stalled_since_tick);
         }
         if mic.sound || system.sound {
             self.no_audio_since = now;
@@ -405,6 +414,18 @@ mod tests {
         h.on_message(Track::System, CaptureMessage::Failed);
         run(&mut h, 4_000, 4_000, LIVE, LIVE);
         assert_eq!(h.health(4_000).system, SourceHealth::Lost);
+    }
+
+    #[test]
+    fn a_restart_shorter_than_a_tick_still_shows_for_one() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, LIVE);
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        h.on_message(Track::Mic, CaptureMessage::Recovered);
+        run(&mut h, 2_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Reconnecting);
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
     }
 
     #[test]
