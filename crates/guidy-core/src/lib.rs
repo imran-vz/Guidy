@@ -307,6 +307,8 @@ fn init_meetings(app_handle: &AppHandle) {
     });
 
     start_meetings_if_wanted(app_handle);
+    // Seeds the tray if the manager was already running.
+    tray::refresh_last_meeting(app_handle);
 }
 
 /// Whether a `settings-changed` payload (`{"setting": name, ...}`) may

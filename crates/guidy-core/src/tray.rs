@@ -505,6 +505,21 @@ pub fn refresh_tray_icon(app: &AppHandle) {
     sync_tray(app);
 }
 
+/// Lets a later [`refresh_last_meeting`] start a new thread if this one panics.
+/// A normal exit clears the flag under the lock instead, so an event arriving
+/// just as the thread leaves isn't lost.
+struct LookupReset<'a>(&'a AppHandle);
+
+impl Drop for LookupReset<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Some(state) = self.0.try_state::<TrayState>() {
+                state.lock().meeting_lookup_running = false;
+            }
+        }
+    }
+}
+
 /// Re-checks off-thread whether a meeting has a transcript to copy, then
 /// refreshes the menu if that changed. Safe to call from any thread, with any
 /// lock held: it never touches the store itself, and bursts share one lookup.
@@ -522,22 +537,25 @@ pub fn refresh_last_meeting(app: &AppHandle) {
     let lookup_app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("tray-last-meeting".into())
-        .spawn(move || loop {
+        .spawn(move || {
             let app = &lookup_app;
-            let Some(state) = app.try_state::<TrayState>() else {
-                return;
-            };
-            {
-                let mut inner = state.lock();
-                if !std::mem::replace(&mut inner.meeting_lookup_again, false) {
-                    inner.meeting_lookup_running = false;
+            let _reset = LookupReset(app);
+            loop {
+                let Some(state) = app.try_state::<TrayState>() else {
                     return;
+                };
+                {
+                    let mut inner = state.lock();
+                    if !std::mem::replace(&mut inner.meeting_lookup_again, false) {
+                        inner.meeting_lookup_running = false;
+                        return;
+                    }
                 }
-            }
-            let available = last_meeting(app).is_some();
-            let previous = std::mem::replace(&mut state.lock().has_last_meeting, available);
-            if previous != available {
-                update_tray_menu(app);
+                let available = last_meeting(app).is_some();
+                let previous = std::mem::replace(&mut state.lock().has_last_meeting, available);
+                if previous != available {
+                    update_tray_menu(app);
+                }
             }
         });
     if let Err(err) = spawned {
