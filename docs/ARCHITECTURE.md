@@ -73,7 +73,7 @@ The design language is technical drawing: graphite surfaces, hairline grids, upp
 - **Drawings.** `design::blueprint` is a grid stage with crosshair marks; `design::illustration` stacks three single-colour SVG layers (lines, soft fill, accent) from `assets/illustrations/`, and `design::callout` hangs a label off a dashed leader. Drawings are used where they explain something: onboarding (what each permission is for), About and empty History. They are generated from 3D geometry by `scripts/illustrations.py` so every object shares one camera.
 - **Controls.** gpui-kit controls. Actions are pill buttons (`design::Pill`): primary in the accent, secondary filled. Shortcuts render as key caps. Tabs are `design::segmented`.
 - **Overlay.** A floating glass panel: near-opaque surface, hairline edge, rim light, signal dot, Geist for live text, Geist Mono for the timer (PARITY §O).
-- **Brand assets.** App icon, tray glyphs (idle, recording, transcribing, warning, each with a dark variant), and feedback sounds. The sound themes are named `marimba` and `pop` in settings.
+- **Brand assets.** App icon, tray glyphs (idle, recording, transcribing, warning, each with a dark variant), and feedback sounds. The sound themes are named `mechanical` (the default), `marimba` and `pop` in settings. `scripts/gen_key_sounds.py` generates the mechanical sounds, including the error sound that every theme plays.
 
 ---
 

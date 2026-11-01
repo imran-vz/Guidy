@@ -88,7 +88,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | R-03 | VAD on/off, silero/earshot backends, extra recording buffer, long-form chunking | test: cuts_prefer_long_pauses_near_30s, test: silence_is_not_voice, test: scores_the_same_in_pieces_and_frame_by_frame |
 | R-04 | Live/streaming transcription with lazy_stream_close | test: live_chunks_arrive_before_the_end_at_the_same_cuts, test: live_overlay_uses_streaming_states_only_for_streaming_models |
 | R-05 | Always-on microphone, mute while recording, clamshell mic [mac laptop], channel selection/averaging | test: microphone_config_maps_the_selected_channel, test: test_clamshell_check, manual: HW-02 |
-| R-06 | Audio feedback sounds (theme, volume, output device, custom_start/stop.wav) | test: debug_rows, manual: HW-02 |
+| R-06 | Audio feedback sounds (theme, volume, output device, custom_start/stop.wav, error sound for every theme) | test: debug_rows, test: mechanical_paths_exist_under_assets, test: error_sound_resolves_to_resource_under_every_theme, manual: HW-02 |
 | R-07 | Post-processing: providers incl. Apple Intelligence [mac], `${output}` prompt, transcribe_with_post_process binding | test: anthropic_request_carries_required_max_tokens, test: openrouter_uses_nested_reasoning_object, test: leading_think_block_is_stripped, manual: HW-14 |
 | R-08 | Text pipeline: custom words + correction threshold, filler removal, Chinese script, translate to English, language selection/effective language, trailing space | test: fuzzy_correction_is_skipped_exactly_when_vocabulary_was_sent, test: auto_detected_chinese_text_is_converted, test: transcribe_cpp_run_plan_translates_supported_non_english, test: unknown_evidence_with_confident_text_detection_removes_gated_fillers |
 | R-09 | Output: paste methods ctrl_v/direct/none/ctrl_shift_v/shift_insert/external_script, typing tool [lin], reliable paste [mac win], paste delays, clipboard handling, auto-submit keys | test: auto_submit_runs_for_active_paste_methods, test: clipboard_is_restored_before_key_injection_error_is_returned, test: finishes_after_quiet_period_once_read, manual: HW-02 |
@@ -204,7 +204,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | D-01 | log_level select | test: debug_rows |
 | D-02 | What's New preview (toast if there are no notes); onboarding preview (permissions/models) with exit button | test: onboarding_preview_is_inert_and_exits, test: release_note_selection |
 | D-03 | update_checks_enabled disabled and shown off when locked | test: debug_rows |
-| D-04 | Sound theme select (+custom when both files exist), play test start → stop | test: debug_rows |
+| D-04 | Sound theme select (+custom when both files exist), play test start → stop → error | test: debug_rows |
 | D-05 | Sliders with reset: word_correction_threshold, paste delays, hold_threshold_ms, extra_recording_buffer_ms (ranges per inventory) | test: debug_rows, test: slider_values_snap_to_step |
 | D-06 | reliable_paste [mac win], always_on_microphone, clamshell microphone (laptops only) | test: debug_rows |
 | D-07 | Keyboard diagnostic [mac] with verdicts | test: keyboard_diagnostic_runs_on_mac, test: keyboard_verdicts |

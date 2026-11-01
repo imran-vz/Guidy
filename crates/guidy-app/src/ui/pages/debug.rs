@@ -722,6 +722,10 @@ impl DebugPage {
                 .into_any_element(),
         );
         let mut sound_options = vec![
+            DropdownOption::new(
+                "mechanical",
+                t("settings.debug.soundTheme.options.mechanical"),
+            ),
             DropdownOption::new("marimba", t("settings.debug.soundTheme.options.marimba")),
             DropdownOption::new("pop", t("settings.debug.soundTheme.options.pop")),
         ];
@@ -751,6 +755,7 @@ impl DebugPage {
                                     cx.background_spawn(async move {
                                         backend.play_test_sound("start");
                                         backend.play_test_sound("stop");
+                                        backend.play_test_sound("error");
                                     })
                                     .detach();
                                 }),

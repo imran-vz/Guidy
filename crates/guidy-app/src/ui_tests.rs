@@ -840,6 +840,7 @@ mod debug_and_about {
         with_window(cx, w, |window, cx| window.click("sound-theme-play", cx));
         assert!(backend.called("play_test_sound start"));
         assert!(backend.called("play_test_sound stop"));
+        assert!(backend.called("play_test_sound error"));
     }
 
     /// PARITY D-08, E-15

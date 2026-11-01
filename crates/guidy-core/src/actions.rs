@@ -568,6 +568,9 @@ impl ShortcutAction for TranscribeAction {
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
+        // Captured before any startup work, so a cancel at any point in this
+        // attempt keeps a failed start silent.
+        let cancel_generation = rm.cancel_generation();
 
         // Load ASR model and VAD model in parallel
         let kickoff_started = Instant::now();
@@ -728,6 +731,9 @@ impl ShortcutAction for TranscribeAction {
                         detail: Some(format!("{err:#}")),
                     },
                 );
+                if !rm.was_cancelled_since(cancel_generation) {
+                    play_feedback_sound(app, SoundType::Error);
+                }
             }
         }
 
@@ -927,6 +933,12 @@ impl ShortcutAction for TranscribeAction {
                                         Err(e) => {
                                             error!("Failed to paste transcription: {}", e);
                                             let _ = ah_clone.emit("paste-error", ());
+                                            // Paste can block on a script, so a cancel
+                                            // may have landed during it.
+                                            if !rm_for_paste.was_cancelled_since(cancel_generation)
+                                            {
+                                                play_feedback_sound(&ah_clone, SoundType::Error);
+                                            }
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);
@@ -953,6 +965,7 @@ impl ShortcutAction for TranscribeAction {
                             // Surface the failure to the UI (toast). The full
                             // message is also in guidy.log via the line above.
                             let _ = ah.emit("transcription-error", err.to_string());
+                            play_feedback_sound(&ah, SoundType::Error);
                             // Save entry with empty text so user can retry
                             if wav_saved {
                                 if let Err(save_err) = hm.save_entry(
