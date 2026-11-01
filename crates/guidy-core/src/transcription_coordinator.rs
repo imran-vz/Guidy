@@ -179,9 +179,7 @@ enum Command {
         hotkey_string: String,
         intent: GestureIntent,
     },
-    Cancel {
-        recording_was_active: bool,
-    },
+    Cancel,
     ProcessingFinished,
 }
 
@@ -243,6 +241,19 @@ impl CoordinatorState {
             last_press: None,
             pending_release: None,
             pending_press: None,
+        }
+    }
+
+    fn on_command(&mut self, command: Command, now: Instant) -> Option<Effect> {
+        match command {
+            Command::Input(input) => self.on_input(input, now),
+            Command::Gesture {
+                binding_id,
+                hotkey_string,
+                intent,
+            } => self.on_gesture(binding_id, hotkey_string, intent, now),
+            Command::Cancel => Some(Effect::Cancel),
+            Command::ProcessingFinished => self.on_processing_finished(),
         }
     }
 
@@ -655,31 +666,8 @@ impl TranscriptionCoordinator {
                         }
                         return;
                     };
-                    match cmd {
-                        Command::Input(input) => {
-                            if let Some(effect) = state.on_input(input, Instant::now()) {
-                                run_effect(&app, &mut state, effect);
-                            }
-                        }
-                        Command::Gesture {
-                            binding_id,
-                            hotkey_string,
-                            intent,
-                        } => {
-                            if let Some(effect) =
-                                state.on_gesture(binding_id, hotkey_string, intent, Instant::now())
-                            {
-                                run_effect(&app, &mut state, effect);
-                            }
-                        }
-                        Command::Cancel {
-                            recording_was_active,
-                        } => state.on_cancel(recording_was_active),
-                        Command::ProcessingFinished => {
-                            if let Some(effect) = state.on_processing_finished() {
-                                run_effect(&app, &mut state, effect);
-                            }
-                        }
+                    if let Some(effect) = state.on_command(cmd, Instant::now()) {
+                        run_effect(&app, &mut state, effect);
                     }
                 }));
                 if let Err(e) = result {
@@ -766,14 +754,10 @@ impl TranscriptionCoordinator {
         }
     }
 
-    pub fn notify_cancel(&self, recording_was_active: bool) {
-        if self
-            .tx
-            .send(Command::Cancel {
-                recording_was_active,
-            })
-            .is_err()
-        {
+    /// Queue cancellation with starts and stops so it cannot discard an old
+    /// recording and later reset the state of a newer one.
+    pub fn cancel(&self) {
+        if self.tx.send(Command::Cancel).is_err() {
             warn!("Transcription coordinator channel closed");
         }
     }
@@ -799,8 +783,8 @@ fn run_effect(app: &AppHandle, state: &mut CoordinatorState, effect: Effect) {
             hotkey_string,
         } => stop(app, &binding_id, &hotkey_string),
         // Runs here like `stop`, and may wait the same way on recorder cleanup.
-        // This is the cancel without its `notify_cancel`: a notification would
-        // queue behind gestures sent meanwhile and reset the session they start.
+        // Audio discard and state reset must complete in the same command:
+        // a later notification could reset a recording started meanwhile.
         Effect::Cancel => {
             let recording_was_active = crate::utils::discard_current_operation(app);
             state.on_cancel(recording_was_active);
@@ -1912,6 +1896,56 @@ mod tests {
         assert!(state.pending_press.is_none());
         assert_eq!(state.stage, Stage::Processing);
         assert_eq!(state.on_processing_finished(), None);
+    }
+
+    /// Escape queued during an abort must cancel a newer hold that started
+    /// before it was handled, rather than only resetting coordinator state.
+    #[test]
+    fn escape_queued_during_abort_discards_a_new_hold() {
+        let app = crate::host::testing::TestApp::new();
+        let (tx, rx) = mpsc::channel();
+        app.app.manage(TranscriptionCoordinator { tx: tx.clone() });
+        let mut state = CoordinatorState::new();
+        let now = Instant::now();
+        let mut mic_active = true;
+        gesture(&mut state, GestureIntent::HoldStart, now);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::Abort, now),
+            Some(Effect::Cancel)
+        );
+
+        // Commands arrive while the abort's recorder cleanup is still busy.
+        tx.send(Command::Gesture {
+            binding_id: BINDING.into(),
+            hotkey_string: "option_right".into(),
+            intent: GestureIntent::HoldStart,
+        })
+        .unwrap();
+        crate::utils::cancel_current_operation(&app.app);
+        assert!(mic_active, "Escape must queue cleanup with its state reset");
+
+        // Finish the old abort, then execute the real command decisions with
+        // a fake recorder. No audio hardware is needed to assert mic ownership.
+        mic_active = false;
+        state.on_cancel(true);
+        assert!(matches!(
+            state.on_command(rx.try_recv().unwrap(), now),
+            Some(Effect::Start { .. })
+        ));
+        assert!(!mic_active);
+        mic_active = true;
+        assert_eq!(
+            state.on_command(rx.try_recv().unwrap(), now),
+            Some(Effect::Cancel)
+        );
+        let recording_was_active = mic_active;
+        mic_active = false;
+        state.on_cancel(recording_was_active);
+        gesture(&mut state, GestureIntent::HoldEnd, now + ms(350));
+        assert_eq!(state.on_grace_expired(), None);
+        assert_eq!(state.stage, Stage::Idle);
+        assert!(!mic_active);
+        assert!(rx.try_recv().is_err(), "no stale reset may remain queued");
     }
 
     #[test]

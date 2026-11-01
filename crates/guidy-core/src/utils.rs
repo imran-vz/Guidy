@@ -82,21 +82,18 @@ fn native_windows_machine() -> Option<u16> {
 }
 
 /// Centralized cancellation function that can be called from anywhere in the app.
-/// Handles cancelling both recording and transcription operations and updates UI state.
+/// Queues recorder cleanup and its state reset together on the coordinator.
 pub fn cancel_current_operation(app: &AppHandle) {
-    let recording_was_active = discard_current_operation(app);
-
-    // Notify coordinator so it can keep lifecycle state coherent.
     if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
-        coordinator.notify_cancel(recording_was_active);
+        coordinator.cancel();
+    } else {
+        discard_current_operation(app);
     }
-
-    info!("Operation cancellation completed - returned to idle state");
 }
 
-/// The cancellation itself, without telling the coordinator. Returns whether a
-/// recording was active. Only the coordinator thread calls this directly, since
-/// it can update its own state.
+/// Discard the operation without queuing another coordinator command. Returns
+/// whether a recording was active. Runs on the coordinator thread, or directly
+/// before a coordinator has been installed.
 pub fn discard_current_operation(app: &AppHandle) -> bool {
     info!("Initiating operation cancellation...");
 
