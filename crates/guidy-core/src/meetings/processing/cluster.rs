@@ -69,6 +69,9 @@ pub struct ClusterParams {
     /// above `default_threshold` and starting at most at `max_threshold`, is
     /// taken as the boundary between "same speaker" and "different speakers".
     pub min_gap: f32,
+    /// The rules before the two tiers: any jump within the window cuts, and
+    /// every line clusters as an equal. For comparing them in evaluation.
+    pub legacy: bool,
 }
 
 impl Default for ClusterParams {
@@ -81,6 +84,7 @@ impl Default for ClusterParams {
             max_threshold: 0.65,
             default_threshold: 0.5,
             min_gap: 0.1,
+            legacy: false,
         }
     }
 }
@@ -212,7 +216,12 @@ fn choose_cut(heights: &[f32], p: &ClusterParams) -> f32 {
     let mut best: Option<(f32, f32)> = None; // (gap, cut)
     for w in heights.windows(2) {
         let (lo, hi) = (w[0], w[1]);
-        if hi <= p.default_threshold || lo > p.max_threshold {
+        let too_low = if p.legacy {
+            hi < p.min_threshold
+        } else {
+            hi <= p.default_threshold
+        };
+        if too_low || lo > p.max_threshold {
             continue;
         }
         let gap = hi - lo;
@@ -322,6 +331,9 @@ pub fn two_tier(
     params: &ClusterParams,
 ) -> (Vec<Tier>, usize) {
     debug_assert_eq!(vectors.len(), durations_ms.len());
+    if params.legacy {
+        return cluster_all(vectors, params);
+    }
     let anchors: Vec<usize> = (0..vectors.len())
         .filter(|&i| durations_ms[i] >= ANCHOR_MIN_MS)
         .collect();
@@ -688,6 +700,20 @@ pub(crate) mod tests {
         assert!((cut - 0.625).abs() < 1e-6, "{cut}");
         // The last merge doesn't happen: two clusters.
         assert_eq!(heights.iter().filter(|h| **h <= cut).count(), 2);
+    }
+
+    #[test]
+    fn the_legacy_rules_cut_where_they_did() {
+        let p = ClusterParams {
+            legacy: true,
+            ..ClusterParams::default()
+        };
+        assert_eq!(choose_cut(&[0.20, 0.25, 0.38, 0.49], &p), p.min_threshold);
+        // Every line an equal, however short.
+        let vectors = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let (tiers, k) = two_tier(&vectors, &[1_600, 1_600], &p);
+        assert_eq!(k, 2);
+        assert_eq!(tiers, vec![Tier::Cluster(0), Tier::Cluster(1)]);
     }
 
     #[test]

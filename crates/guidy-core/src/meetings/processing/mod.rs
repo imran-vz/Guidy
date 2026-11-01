@@ -12,6 +12,7 @@
 //! - [`sidecar`]: checkpoint / per-segment voiceprints (in `meetings.db`).
 //! - [`naming`]: speaker suggestions and naming (stores voiceprints).
 //! - [`user_voice`]: voiceprints of the user's recorded voice sample.
+//! - `eval` (tests only): scoring diarization on labelled meetings.
 //!
 //! Where it runs: a background thread in the app process orchestrates the
 //! work. Transcription goes out of process through a dedicated
@@ -35,6 +36,8 @@ pub mod vad;
 
 #[cfg(test)]
 mod e2e;
+#[cfg(test)]
+mod eval;
 
 use anyhow::Result;
 
