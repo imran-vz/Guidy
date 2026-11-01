@@ -692,12 +692,19 @@ impl MeetingSettingsView {
         }
     }
 
-    /// Delete a downloaded speaker model; meetings set to it go back to the
-    /// standard one.
+    /// Delete a downloaded speaker model; meetings set to it go back to
+    /// automatic. Deleting TitaNet also withdraws the agreement to download
+    /// the speaker-turn models, or the next run would fetch it again.
     fn delete_separation_model(&mut self, id: SpeakerModelId, cx: &mut Context<Self>) {
-        if SpeakerModelId::parse(&meeting_settings(cx).speaker_separation_model) == id {
-            update_meetings(cx, |m| m.speaker_separation_model = String::new());
-        }
+        update_meetings(cx, |m| {
+            if SpeakerModelId::parse(&m.speaker_separation_model) == id {
+                m.speaker_separation_model = String::new();
+            }
+            if id == SpeakerModelId::TitanetLarge {
+                m.speaker_turn_models_consent = false;
+                m.speaker_turn_prompt_dismissed = true;
+            }
+        });
         run(
             cx,
             move |b| b.delete_separation_model(id),

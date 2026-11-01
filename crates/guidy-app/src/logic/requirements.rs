@@ -599,7 +599,8 @@ pub fn required_by(inputs: &Inputs, id: &str) -> Vec<Feature> {
             .iter()
             .filter(|r| r.role != Role::PostProcessing || s.post_process_enabled)
             .any(|r| r.in_use().is_some_and(|c| c.id == id));
-        let extra = feature == Feature::MeetingNotes && meetings_extra_uses(s, id);
+        let extra = feature == Feature::MeetingNotes
+            && (meetings_extra_uses(s, id) || automatic_separation_uses(inputs, id));
         if uses || extra {
             out.push(feature);
         }
@@ -624,6 +625,24 @@ fn meetings_extra_uses(s: &AppSettings, id: &str) -> bool {
         && (id == segmentation_download_id()
             || id == separation_download_id(SpeakerModelId::TitanetLarge));
     live || turns
+}
+
+/// Whether `id` is what an empty separation setting picks now: TitaNet, once
+/// it is on disk (see `speaker_model::pick_separation_model`).
+fn automatic_separation_uses(inputs: &Inputs, id: &str) -> bool {
+    use guidy_core::meetings::processing::speaker_model::separation_download_id;
+    use guidy_core::meetings::types::SpeakerModelId;
+    inputs
+        .settings
+        .meetings
+        .speaker_separation_model
+        .trim()
+        .is_empty()
+        && id == separation_download_id(SpeakerModelId::TitanetLarge)
+        && inputs
+            .other_models
+            .iter()
+            .any(|o| o.id == id && o.installed)
 }
 
 /// A ready-made set of downloads.
@@ -1035,6 +1054,18 @@ mod tests {
             required_by(&w.inputs(), "segmentation:pyannote"),
             [Feature::MeetingNotes]
         );
+    }
+
+    #[test]
+    fn an_automatic_separation_model_counts_once_it_is_installed() {
+        let mut w = World::new();
+        w.settings.meetings.enabled = true;
+        let titanet = "separation:titanet_large";
+        assert!(required_by(&w.inputs(), titanet).is_empty());
+        w.install(titanet);
+        assert_eq!(required_by(&w.inputs(), titanet), [Feature::MeetingNotes]);
+        w.settings.meetings.speaker_separation_model = "resnet34".into();
+        assert!(required_by(&w.inputs(), titanet).is_empty());
     }
 
     #[test]
