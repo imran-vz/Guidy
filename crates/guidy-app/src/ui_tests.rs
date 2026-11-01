@@ -2041,7 +2041,7 @@ mod meetings_page {
         (backend, m)
     }
 
-    /// PARITY T-01
+    /// PARITY E-17
     #[gpui_kit::test]
     fn tray_copy_event_puts_the_meeting_transcript_on_the_clipboard(cx: &mut TestAppContext) {
         let (backend, m) = fixture();
@@ -2063,7 +2063,7 @@ mod meetings_page {
         assert!(text.contains("Ada: Sounds good"), "{text}");
     }
 
-    /// PARITY T-01
+    /// PARITY E-16
     #[test]
     fn tray_section_event_names_a_section() {
         use crate::ui::main_window::Section;

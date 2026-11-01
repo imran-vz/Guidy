@@ -89,7 +89,7 @@ The tasks ship in order. Each one ends in a working, tested feature.
   - **Mic**, plain input, echo-cancelled against the system track (D9). This track is always the user. **(default)** It is labelled with the user's name from settings.
   - **System audio**, through a Core Audio process tap that excludes Guidy's own process (`NSAudioCaptureUsageDescription`).
 - Store audio as Opus, encrypted (D17). Delete it on the retention schedule (D13).
-- Tray: "Start meeting notes" / "Stop meeting notes", the linked event's title, and a recording-state icon.
+- Tray: "Record Meeting" / "Stop Recording", the linked event's title, and a recording-state icon.
 - A manual start links to whichever calendar event is happening at that moment, if there is one.
 - Reminders (D16):
   - **Calendar meeting:** the first reminder comes 5 minutes after the scheduled end, then every 10 minutes: "Guidy is still recording · Stop / Keep going".
