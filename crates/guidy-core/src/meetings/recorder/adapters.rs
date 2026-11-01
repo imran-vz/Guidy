@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 
 use super::ports::*;
-use super::{MeetingRecorder, NotificationStrings, RecorderDeps};
+use super::{MeetingRecorder, NotificationStrings, RecorderDeps, Shared};
 use crate::host::AppHandle;
 use crate::meetings::store::MeetingsStore;
 use crate::meetings::types::*;
@@ -65,7 +65,10 @@ impl MeetingRepo for StoreRepo {
 use crate::meetings::native;
 
 /// Mic (echo-cancelled) + system audio (process tap) through [`native::start_capture`].
-pub struct NativeCapture;
+pub struct NativeCapture {
+    /// The microphone chosen in the settings, by name.
+    pub selected_microphone: Shared<dyn Fn() -> Option<String> + Send + Sync>,
+}
 
 /// EventKit through [`native::events_between`].
 pub struct NativeCalendar;
@@ -98,6 +101,7 @@ impl CaptureBackend for NativeCapture {
         sink: CaptureSink,
         on_error: CaptureErrorSink,
     ) -> Result<Box<dyn CaptureSession>> {
+        native::set_preferred_microphone((self.selected_microphone)().as_deref());
         let mic_sink = sink.clone();
         let (mut mic_warned, mut sys_warned) = (false, false);
         let callbacks = native::CaptureCallbacks::new(
@@ -202,6 +206,7 @@ pub fn app_recorder(
     audio_dir: std::path::PathBuf,
     live: Arc<dyn LiveSink>,
 ) -> MeetingRecorder {
+    let microphone_app = app.clone();
     let settings_app = app.clone();
     let strings_app = app.clone();
     let state_app = app.clone();
@@ -209,7 +214,13 @@ pub fn app_recorder(
     let finished_app = app.clone();
     MeetingRecorder::new(RecorderDeps {
         repo: Arc::new(StoreRepo(store)),
-        capture: Arc::new(NativeCapture),
+        capture: Arc::new(NativeCapture {
+            selected_microphone: Arc::new(move || {
+                crate::settings::get_settings(&microphone_app)
+                    .selected_microphone
+                    .filter(|name| !name.is_empty() && name != "Default" && name != "default")
+            }),
+        }),
         calendar: Arc::new(NativeCalendar),
         notifier: Arc::new(NativeNotifier),
         audio_dir,

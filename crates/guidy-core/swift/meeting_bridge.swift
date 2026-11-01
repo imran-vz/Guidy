@@ -16,6 +16,7 @@ import CoreAudio
 import Darwin
 import EventKit
 import Foundation
+import IOKit.pwr_mgt
 import UserNotifications
 
 // MARK: - Helpers
@@ -186,6 +187,21 @@ public func guidyMbEventsBetween(
 
 private let outputSampleRate: Double = 16_000
 
+/// A stream with no callbacks for this long is stalled, and rebuilt.
+private let watchdogNanos: UInt64 = 3_000_000_000
+/// Waits between attempts to rebuild a stream, until it works or Stop.
+private let rebuildDelays: [Double] = [0.5, 1, 2, 4, 5]
+/// With no callbacks and nothing playing, a tap may just be idle: rebuilt at
+/// most this often, and quietly (it may be dead, but nothing says so).
+private let idleRebuildNanos: UInt64 = 30_000_000_000
+
+// Stream state, as `CaptureSink.event` messages parsed in Rust
+// (`recorder/health.rs`): the stream stopped delivering; it is delivering
+// again; and how long it was gone. Keep these strings in step.
+private let eventStalled = "state:stalled"
+private let eventRecovered = "state:recovered"
+private func eventGap(_ nanos: UInt64) -> String { "state:gap:\(nanos / 1_000_000)" }
+
 /// Forwards converted audio to the Rust callbacks. `close()` guarantees that,
 /// once it returns, no callback is running and none will start.
 private final class CaptureSink {
@@ -353,23 +369,60 @@ private func inputChannelCount(_ id: AudioObjectID) -> Int {
     return list.reduce(0) { $0 + Int($1.mNumberChannels) }
 }
 
-/// The Mac's own microphone, if it has one (a closed laptop's isn't listed).
-private func builtInMicrophone() -> AudioObjectID? {
+private func audioDevices() -> [AudioObjectID] {
     var address = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
     var size: UInt32 = 0
     let system = AudioObjectID(kAudioObjectSystemObject)
     guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else {
-        return nil
+        return []
     }
     var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
     guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else {
-        return nil
+        return []
     }
-    return ids.first {
+    return ids
+}
+
+/// The Mac's own microphone, if it has one (a closed laptop's isn't listed).
+private func builtInMicrophone() -> AudioObjectID? {
+    return audioDevices().first {
         transportType($0) == kAudioDeviceTransportTypeBuiltIn && inputChannelCount($0) > 0
     }
+}
+
+private func deviceName(_ id: AudioObjectID) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let status = withUnsafeMutablePointer(to: &value) {
+        AudioObjectGetPropertyData(id, &address, 0, nil, &size, $0)
+    }
+    guard status == noErr, let cf = value?.takeRetainedValue() else { return nil }
+    return cf as String
+}
+
+/// Something is playing on the default output (so a tap should be hearing it).
+private func outputIsRunning() -> Bool {
+    guard let output = defaultDevice(input: false) else { return false }
+    let running = audioProperty(
+        output, kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioObjectPropertyScopeGlobal,
+        UInt32(0))
+    return (running ?? 0) != 0
+}
+
+/// The microphone chosen in Guidy's settings, by name (`nil`: the default).
+private let preferredMicrophoneLock = NSLock()
+private var preferredMicrophone: String?
+
+@_cdecl("guidy_mb_set_preferred_microphone")
+public func guidyMbSetPreferredMicrophone(_ name: UnsafePointer<CChar>?) {
+    preferredMicrophoneLock.lock()
+    preferredMicrophone = name.map { String(cString: $0) }
+    preferredMicrophoneLock.unlock()
 }
 
 /// Which microphone to record right now.
@@ -378,13 +431,27 @@ private struct MicPlan {
     let note: String?
 
     static func current() -> MicPlan {
+        preferredMicrophoneLock.lock()
+        let preferred = preferredMicrophone
+        preferredMicrophoneLock.unlock()
+        var note: String?
+        if let preferred = preferred {
+            // The user's choice stands, a Bluetooth headset included.
+            if let chosen = audioDevices().first(where: {
+                inputChannelCount($0) > 0 && deviceName($0) == preferred
+            }) {
+                return MicPlan(device: chosen, note: nil)
+            }
+            note = "The selected microphone isn't connected: recording another input"
+        }
         let input = defaultDevice(input: true)
         if let input = input, isBluetooth(input), let builtIn = builtInMicrophone() {
             return MicPlan(
                 device: builtIn,
-                note: "Bluetooth input: recording the built-in microphone, so the headset keeps its high-quality audio")
+                note: note
+                    ?? "Bluetooth input: recording the built-in microphone, so the headset keeps its high-quality audio")
         }
-        return MicPlan(device: input, note: nil)
+        return MicPlan(device: input, note: note)
     }
 }
 
@@ -417,10 +484,24 @@ private final class MicCapture {
     private let aligner: TimelineAligner
     private let alignLock = NSLock()
     private var silenceTimer: DispatchSourceTimer?
+    /// Follows the default input, since the device is pinned to the unit.
+    private var inputListener: AudioObjectPropertyListenerBlock?
+    /// When a buffer last came in, whether it was reported stalled, and since
+    /// when. Guarded by `stateLock`.
+    private var lastAudioNanos: UInt64
+    private var stalled = false
+    private var stalledSinceNanos: UInt64 = 0
+    /// On `controlQueue`: a restart chain is under way, and its failure was
+    /// already reported.
+    private var recovering = false
+    private var reportedFailure = false
+    /// On `tickQueue`: ticks since the last health check.
+    private var ticksSinceCheck = 0
 
     init(sink: CaptureSink, originNanos: UInt64) {
         self.sink = sink
         self.aligner = TimelineAligner(startNanos: originNanos)
+        self.lastAudioNanos = originNanos
     }
 
     func start() throws {
@@ -431,8 +512,98 @@ private final class MicCapture {
             sink.event(GUIDY_MB_STREAM_MIC, note)
         }
         try startWithRetries()
+        startWatching()
+    }
+
+    /// The start failed, but the other stream records: keep this track on the
+    /// clock with silence and keep trying until Stop.
+    func startRecovering(after error: Error) {
+        sink.event(GUIDY_MB_STREAM_MIC, "error: \(error) (retrying while the recording runs)")
+        startWatching()
+        controlQueue.async {
+            self.reportedFailure = true
+            self.recovering = true
+            self.restartGeneration += 1
+            self.restart(generation: self.restartGeneration, attempt: 1)
+        }
+    }
+
+    private func startWatching() {
+        // Starting may have taken seconds: the watchdog counts from here.
+        stateLock.lock()
+        lastAudioNanos = nowNanos()
+        stateLock.unlock()
         observeConfigurationChanges()
+        installDefaultInputListener()
         startSilenceTimer()
+    }
+
+    /// The Mac woke: the device may not have survived. Rebuild.
+    func wake(sleptNanos: UInt64) {
+        sink.event(GUIDY_MB_STREAM_MIC, eventGap(sleptNanos))
+        controlQueue.async {
+            if self.stopped { return }
+            self.recovering = true
+            self.restartGeneration += 1
+            self.restart(generation: self.restartGeneration, attempt: 1)
+        }
+    }
+
+    private func defaultInputAddress() -> AudioObjectPropertyAddress {
+        return AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+    }
+
+    /// The device is pinned to the unit, so the engine doesn't notice a new
+    /// default input by itself.
+    private func installDefaultInputListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.scheduleRestart()
+        }
+        var address = defaultInputAddress()
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, block)
+        if status == noErr {
+            inputListener = block
+        }
+    }
+
+    /// On `controlQueue`. Changes come in bursts: wait for them to settle.
+    private func scheduleRestart() {
+        restartGeneration += 1
+        let generation = restartGeneration
+        controlQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.restart(generation: generation, attempt: 0)
+        }
+    }
+
+    private func markStalled() {
+        stateLock.lock()
+        let isNew = !stalled
+        if isNew {
+            stalled = true
+            stalledSinceNanos = nowNanos()
+        }
+        stateLock.unlock()
+        if isNew {
+            sink.event(GUIDY_MB_STREAM_MIC, eventStalled)
+        }
+    }
+
+    /// Watchdog, on `controlQueue`: no buffers, or the engine stopped.
+    private func checkHealth() {
+        if stopped || recovering { return }
+        stateLock.lock()
+        let last = lastAudioNanos
+        stateLock.unlock()
+        let now = nowNanos()
+        let silent = now > last ? now - last : 0
+        if engine.isRunning && silent < watchdogNanos { return }
+        recovering = true
+        restartGeneration += 1
+        restart(generation: restartGeneration, attempt: 1)
     }
 
     /// Start the microphone, retrying briefly on a fresh engine: while a call
@@ -466,11 +637,7 @@ private final class MicCapture {
         ) { [weak self] _ in
             guard let self = self else { return }
             self.controlQueue.async {
-                self.restartGeneration += 1
-                let generation = self.restartGeneration
-                self.controlQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    self?.restart(generation: generation, attempt: 0)
-                }
+                self.scheduleRestart()
             }
         }
     }
@@ -498,6 +665,11 @@ private final class MicCapture {
                 sink.audio(GUIDY_MB_STREAM_MIC, samples, count)
             }
             self.alignLock.unlock()
+            self.ticksSinceCheck += 1
+            if self.ticksSinceCheck >= 5 {
+                self.ticksSinceCheck = 0
+                self.controlQueue.async { self.checkHealth() }
+            }
         }
         timer.resume()
         silenceTimer = timer
@@ -609,6 +781,7 @@ private final class MicCapture {
             stateLock.unlock()
             resampler = rebuilt
         }
+        noteAudio()
         let frames = Int(buffer.frameLength)
         guard frames > 0, let source = buffer.floatChannelData,
               let mono = resampler.makeInputBuffer(frames: frames),
@@ -638,6 +811,21 @@ private final class MicCapture {
         }
     }
 
+    /// A buffer came in: the stream is alive, and says so if it was stalled.
+    private func noteAudio() {
+        let now = nowNanos()
+        stateLock.lock()
+        lastAudioNanos = now
+        let wasStalled = stalled
+        let since = stalledSinceNanos
+        stalled = false
+        stateLock.unlock()
+        if wasStalled {
+            sink.event(GUIDY_MB_STREAM_MIC, eventRecovered)
+            sink.event(GUIDY_MB_STREAM_MIC, eventGap(now > since ? now - since : 0))
+        }
+    }
+
     /// The input device or its format changed: rebuild the tap. The time the
     /// restart takes becomes silence on the track (the aligner pads up to the
     /// first new buffer's timestamp). Devices often settle a moment after the
@@ -650,8 +838,11 @@ private final class MicCapture {
         if stopped || generation != restartGeneration { return }
         let plan = MicPlan.current()
         if attempt == 0 && engine.isRunning && plan.device == device {
+            recovering = false
             return
         }
+        // Reported until the first new buffer says it's back.
+        markStalled()
         stopEngine()
         device = plan.device
         if plan.note != note {
@@ -665,16 +856,23 @@ private final class MicCapture {
                 replaceEngine()
             }
             try installTapAndStart()
+            recovering = false
+            reportedFailure = false
+            // Its grace before the watchdog looks again.
+            stateLock.lock()
+            lastAudioNanos = nowNanos()
+            stateLock.unlock()
             sink.event(GUIDY_MB_STREAM_MIC, "microphone restarted after an audio device change")
         } catch {
-            if attempt == 0 {
+            recovering = true
+            if !reportedFailure {
+                reportedFailure = true
                 // Kept as the meeting's error even if a retry succeeds later.
                 sink.event(
                     GUIDY_MB_STREAM_MIC,
                     "error: \(error) (retrying while the recording runs)")
             }
-            let delays = [0.25, 0.5, 1.0, 2.0]
-            let delay = delays[min(attempt, delays.count - 1)]
+            let delay = rebuildDelays[min(attempt, rebuildDelays.count - 1)]
             controlQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.restart(generation: generation, attempt: attempt + 1)
             }
@@ -684,6 +882,12 @@ private final class MicCapture {
     func stop() {
         silenceTimer?.cancel()
         silenceTimer = nil
+        if let block = inputListener {
+            var address = defaultInputAddress()
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, controlQueue, block)
+            inputListener = nil
+        }
         controlQueue.sync {
             stopped = true
             // On `controlQueue`: a restart may be replacing the engine (and
@@ -900,12 +1104,22 @@ private final class SystemTapCapture {
     private var ioProcID: AudioDeviceIOProcID?
     private var listener: AudioObjectPropertyListenerBlock?
     private var stopped = false
+    /// On `controlQueue`: bursts of changes drop out of a rebuild chain.
+    private var rebuildGeneration = 0
+    private var recovering = false
+    private var reportedFailure = false
+    /// When the last quiet rebuild of an idle tap was.
+    private var lastIdleRebuildNanos: UInt64 = 0
 
     // Touched only on ioQueue (and while the IOProc is stopped).
     private var resampler: MonoResampler?
     private var scratch: AVAudioPCMBuffer?
     private var aligner: TimelineAligner?
     private var silenceTimer: DispatchSourceTimer?
+    private var lastAudioNanos: UInt64 = 0
+    private var stalled = false
+    private var stalledSinceNanos: UInt64 = 0
+    private var ticksSinceCheck = 0
 
     private(set) var framesReceived = 0
     private(set) var peak: Float = 0
@@ -918,6 +1132,46 @@ private final class SystemTapCapture {
     }
 
     func start() throws {
+        try createTap()
+        do {
+            try buildDevice()
+        } catch {
+            teardownDevice()
+            destroyTap()
+            throw error
+        }
+        startWatching()
+    }
+
+    /// The start failed, but the microphone records: keep this track on the
+    /// clock with silence and keep trying until Stop.
+    func startRecovering(after error: Error) {
+        sink?.event(GUIDY_MB_STREAM_SYSTEM, "error: \(error) (retrying while the recording runs)")
+        startWatching()
+        controlQueue.async {
+            self.reportedFailure = true
+            self.recovering = true
+            self.rebuildGeneration += 1
+            self.rebuild(generation: self.rebuildGeneration, attempt: 1, quiet: false)
+        }
+    }
+
+    private func startWatching() {
+        lastIdleRebuildNanos = nowNanos()
+        installDefaultOutputListener()
+        startSilenceTimer()
+    }
+
+    /// The Mac woke: the tap may not have survived. Rebuild.
+    func wake(sleptNanos: UInt64) {
+        sink?.event(GUIDY_MB_STREAM_SYSTEM, eventGap(sleptNanos))
+        controlQueue.async {
+            self.rebuildGeneration += 1
+            self.rebuild(generation: self.rebuildGeneration, attempt: 1, quiet: false)
+        }
+    }
+
+    private func createTap() throws {
         // Exclude Guidy's own sounds. The process only has an audio object once
         // it has touched Core Audio, which is why the mic starts first.
         let own = ownProcessAudioObject()
@@ -935,17 +1189,13 @@ private final class SystemTapCapture {
         }
         tapID = tap
         tapUID = description.uuid.uuidString
+    }
 
-        do {
-            try buildDevice()
-        } catch {
-            teardownDevice()
+    private func destroyTap() {
+        if tapID != kAudioObjectUnknown {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
-            throw error
         }
-        installDefaultOutputListener()
-        startSilenceTimer()
     }
 
     private func startSilenceTimer() {
@@ -953,12 +1203,23 @@ private final class SystemTapCapture {
         // The aligner lives on ioQueue: the IOProc block and this timer both
         // run there, so its calls are serialized without a lock.
         let aligner = TimelineAligner(startNanos: originNanos)
-        ioQueue.sync { self.aligner = aligner }
+        ioQueue.sync {
+            self.aligner = aligner
+            self.lastAudioNanos = nowNanos()
+        }
         let timer = DispatchSource.makeTimerSource(queue: ioQueue)
         timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
-        timer.setEventHandler {
+        timer.setEventHandler { [weak self] in
             aligner.tick(nowNanos: nowNanos()) { samples, count in
                 sink.audio(GUIDY_MB_STREAM_SYSTEM, samples, count)
+            }
+            guard let self = self else { return }
+            self.ticksSinceCheck += 1
+            if self.ticksSinceCheck >= 5 {
+                self.ticksSinceCheck = 0
+                let now = nowNanos()
+                let silent = now > self.lastAudioNanos ? now - self.lastAudioNanos : 0
+                self.controlQueue.async { self.checkHealth(silentNanos: silent) }
             }
         }
         timer.resume()
@@ -1063,7 +1324,9 @@ private final class SystemTapCapture {
     /// may change too, so the aggregate and its IOProc are rebuilt.
     private func installDefaultOutputListener() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.rebuild()
+            guard let self = self else { return }
+            self.rebuildGeneration += 1
+            self.rebuild(generation: self.rebuildGeneration, attempt: 0, quiet: false)
         }
         var address = defaultOutputAddress()
         let status = AudioObjectAddPropertyListenerBlock(
@@ -1073,16 +1336,83 @@ private final class SystemTapCapture {
         }
     }
 
-    /// Runs on controlQueue.
-    private func rebuild() {
-        if stopped { return }
+    /// Watchdog, on controlQueue. Whether an idle tap keeps calling back is
+    /// unverified (`docs/plans/meetings.md`, Risks), so silence alone proves
+    /// nothing: with something playing on the output and no callbacks the
+    /// stream is stalled; with nothing playing it is rebuilt only now and then,
+    /// and nothing is reported.
+    private func checkHealth(silentNanos: UInt64) {
+        if stopped || recovering { return }
+        if silentNanos < watchdogNanos {
+            return
+        }
+        if outputIsRunning() {
+            recovering = true
+            rebuildGeneration += 1
+            rebuild(generation: rebuildGeneration, attempt: 1, quiet: false)
+            return
+        }
+        // Nothing to hear: a report of it stalling, if there was one, no longer
+        // holds.
+        ioQueue.sync {
+            if self.stalled {
+                self.stalled = false
+                self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRecovered)
+            }
+        }
+        let now = nowNanos()
+        if now > lastIdleRebuildNanos && now - lastIdleRebuildNanos >= idleRebuildNanos {
+            lastIdleRebuildNanos = now
+            recovering = true
+            rebuildGeneration += 1
+            rebuild(generation: rebuildGeneration, attempt: 1, quiet: true)
+        }
+    }
+
+    private func markStalled() {
+        ioQueue.sync {
+            if !self.stalled {
+                self.stalled = true
+                self.stalledSinceNanos = nowNanos()
+                self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventStalled)
+            }
+        }
+    }
+
+    /// Runs on controlQueue. The aggregate and IOProc are always rebuilt; past
+    /// the first attempt, the tap too. Retried with backoff until Stop.
+    private func rebuild(generation: Int, attempt: Int, quiet: Bool) {
+        if stopped || generation != rebuildGeneration { return }
+        if !quiet && outputIsRunning() {
+            markStalled()
+        }
         teardownDevice()
         do {
+            if attempt > 0 || tapID == kAudioObjectUnknown {
+                destroyTap()
+                try createTap()
+            }
             try buildDevice()
-            sink?.event(GUIDY_MB_STREAM_SYSTEM, "system audio restarted after an output device change")
+            recovering = false
+            reportedFailure = false
+            ioQueue.sync { self.lastAudioNanos = nowNanos() }
+            if !quiet {
+                sink?.event(GUIDY_MB_STREAM_SYSTEM, "system audio restarted")
+            }
         } catch {
             teardownDevice()
-            sink?.event(GUIDY_MB_STREAM_SYSTEM, "error: \(error)")
+            recovering = true
+            markStalled()
+            if !reportedFailure {
+                reportedFailure = true
+                sink?.event(
+                    GUIDY_MB_STREAM_SYSTEM,
+                    "error: \(error) (retrying while the recording runs)")
+            }
+            let delay = rebuildDelays[min(attempt, rebuildDelays.count - 1)]
+            controlQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.rebuild(generation: generation, attempt: attempt + 1, quiet: false)
+            }
         }
     }
 
@@ -1092,6 +1422,15 @@ private final class SystemTapCapture {
     ) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         guard let resampler = resampler else { return }
+        let arrived = nowNanos()
+        lastAudioNanos = arrived
+        if stalled {
+            stalled = false
+            sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRecovered)
+            sink?.event(
+                GUIDY_MB_STREAM_SYSTEM,
+                eventGap(arrived > stalledSinceNanos ? arrived - stalledSinceNanos : 0))
+        }
 
         var frames = 0
         for buffer in buffers where buffer.mNumberChannels > 0 && buffer.mData != nil {
@@ -1160,10 +1499,7 @@ private final class SystemTapCapture {
         silenceTimer = nil
         controlQueue.sync {
             teardownDevice()
-            if tapID != kAudioObjectUnknown {
-                AudioHardwareDestroyProcessTap(tapID)
-                tapID = AudioObjectID(kAudioObjectUnknown)
-            }
+            destroyTap()
         }
     }
 }
@@ -1172,14 +1508,64 @@ private final class CaptureSession {
     let sink: CaptureSink
     var mic: MicCapture?
     var system: AnyObject?
+    private var observers: [NSObjectProtocol] = []
+    private var sleepAssertion: IOPMAssertionID?
+    /// When the Mac last went to sleep, on the main thread's notifications.
+    private var sleptAt: Date?
 
     init(sink: CaptureSink) {
         self.sink = sink
     }
 
+    /// While recording: no idle sleep (a closed lid still sleeps), and a wake
+    /// rebuilds both streams.
+    func startWatchingPower() {
+        var assertion = IOPMAssertionID(0)
+        let status = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "Guidy is recording a meeting" as CFString,
+            &assertion)
+        if status == kIOReturnSuccess {
+            sleepAssertion = assertion
+        } else {
+            NSLog("[guidy meetings] could not prevent idle sleep: %d", status)
+        }
+        let center = NSWorkspace.shared.notificationCenter
+        observers.append(
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) {
+                [weak self] _ in
+                self?.sleptAt = Date()
+            })
+        observers.append(
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) {
+                [weak self] _ in
+                self?.wake()
+            })
+    }
+
+    private func wake() {
+        let slept = sleptAt.map { Date().timeIntervalSince($0) } ?? 0
+        sleptAt = nil
+        let nanos = UInt64(max(slept, 0) * 1e9)
+        mic?.wake(sleptNanos: nanos)
+        if #available(macOS 14.2, *) {
+            (system as? SystemTapCapture)?.wake(sleptNanos: nanos)
+        }
+    }
+
     func stop() {
         // First cut the callbacks so Rust can free its context right after.
         sink.close()
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in observers {
+            center.removeObserver(observer)
+        }
+        observers = []
+        if let assertion = sleepAssertion {
+            IOPMAssertionRelease(assertion)
+            sleepAssertion = nil
+        }
         if #available(macOS 14.2, *) {
             (system as? SystemTapCapture)?.stop()
         }
@@ -1215,35 +1601,56 @@ public func guidyMbCaptureStart(
     // its clock late.
     let originNanos = nowNanos()
 
+    // Each stream on its own: losing one still records the other, and the one
+    // that failed keeps trying. Only both failing fails the recording.
+    var micFailure: Error?
+    var systemFailure: Error?
+
     if wantMic != 0 {
         let mic = MicCapture(sink: session.sink, originNanos: originNanos)
         do {
             try mic.start()
         } catch {
-            session.stop()
-            mic.stop()
-            setError(errorOut, "microphone: \(error)")
-            return nil
+            micFailure = error
         }
         session.mic = mic
     }
 
     if wantSystem != 0 {
-        guard #available(macOS 14.2, *) else {
-            session.stop()
-            setError(errorOut, "system audio capture needs macOS 14.2 or newer")
-            return nil
+        if #available(macOS 14.2, *) {
+            let system = SystemTapCapture(sink: session.sink, originNanos: originNanos)
+            do {
+                try system.start()
+            } catch {
+                systemFailure = error
+            }
+            session.system = system
+        } else {
+            systemFailure = BridgeError("system audio capture needs macOS 14.2 or newer")
         }
-        let system = SystemTapCapture(sink: session.sink, originNanos: originNanos)
-        do {
-            try system.start()
-        } catch {
-            session.stop()
-            setError(errorOut, "system audio: \(error)")
-            return nil
-        }
-        session.system = system
     }
+
+    let micFailed = wantMic == 0 || micFailure != nil
+    let systemFailed = wantSystem == 0 || systemFailure != nil
+    if micFailed && systemFailed {
+        session.stop()
+        var problems: [String] = []
+        if let failure = micFailure { problems.append("microphone: \(failure)") }
+        if let failure = systemFailure { problems.append("system audio: \(failure)") }
+        setError(errorOut, problems.joined(separator: "; "))
+        return nil
+    }
+    if let failure = micFailure {
+        session.mic?.startRecovering(after: failure)
+    }
+    if let failure = systemFailure {
+        if #available(macOS 14.2, *), let system = session.system as? SystemTapCapture {
+            system.startRecovering(after: failure)
+        } else {
+            session.sink.event(GUIDY_MB_STREAM_SYSTEM, "error: \(failure)")
+        }
+    }
+    session.startWatchingPower()
 
     return Unmanaged.passRetained(session).toOpaque()
 }

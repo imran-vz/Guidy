@@ -53,7 +53,13 @@ typedef void (*guidy_mb_audio_cb)(void *ctx, int32_t stream, const float *sample
 typedef void (*guidy_mb_event_cb)(void *ctx, int32_t stream, const char *message);
 
 // Starts the requested streams. Returns an opaque handle, or NULL with
-// `*error_out` set (nothing is left running in that case).
+// `*error_out` set (nothing is left running in that case) when none of them
+// could start. One that couldn't while another did reports `error: ...` and
+// keeps trying until stopped, its track kept on the clock with silence.
+//
+// A running stream reports through `event_cb`: `state:stalled` (it stopped
+// delivering, or is being rebuilt), `state:recovered` (delivering again),
+// `state:gap:<ms>` (how long it was gone, or the Mac slept).
 //
 // Timeline: both streams share one time origin, the moment this function is
 // called. Sample n of either stream (counted from its first callback) was
@@ -68,6 +74,10 @@ void *guidy_mb_capture_start(int32_t want_mic, int32_t want_system, guidy_mb_aud
 // Stops and frees the handle. After it returns no callback is running or will
 // run for this handle.
 void guidy_mb_capture_stop(void *handle);
+// The input device to record by name (NULL: the default, a Bluetooth input
+// replaced by the built-in microphone). Takes effect at the next start or
+// device change.
+void guidy_mb_set_preferred_microphone(const char *name);
 
 // System-audio (process tap) permission. Best effort: uses the private TCC
 // preflight when available (run off the main thread, at most ~2 s), else

@@ -38,6 +38,7 @@ extern "C" {
         error_out: *mut *mut c_char,
     ) -> *mut c_void;
     fn guidy_mb_capture_stop(handle: *mut c_void);
+    fn guidy_mb_set_preferred_microphone(name: *const c_char);
     fn guidy_mb_system_audio_status() -> i32;
     fn guidy_mb_request_system_audio_access() -> i32;
 
@@ -197,6 +198,12 @@ impl Drop for Capture {
             drop(Box::from_raw(self.ctx));
         }
     }
+}
+
+pub(super) fn set_preferred_microphone(name: Option<&str>) {
+    let name = name.map(c_string);
+    let ptr = name.as_ref().map_or(ptr::null(), |n| n.as_ptr());
+    unsafe { guidy_mb_set_preferred_microphone(ptr) }
 }
 
 pub(super) fn system_audio_status() -> AuthStatus {

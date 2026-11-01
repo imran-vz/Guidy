@@ -450,11 +450,24 @@ impl Drop for CaptureHandle {
     }
 }
 
+/// The input device meeting capture records, by name; `None`: the default.
+/// Takes effect at the next start or device change.
+pub fn set_preferred_microphone(name: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    macos::set_preferred_microphone(name);
+    #[cfg(not(target_os = "macos"))]
+    let _ = name;
+}
+
 /// Start the mic (echo-cancelled) and system-audio streams. Fails, with
-/// nothing left running, if either cannot start or mic access is not granted.
+/// nothing left running, if neither can start or mic access is not granted.
+/// A stream that can't start while the other did is reported through
+/// `on_event` and keeps trying; its track stays on the clock with silence.
+/// Stalls and gaps come the same way, as `state:*` messages.
 ///
-/// - Mic: AVAudioEngine, the plain input (the built-in mic instead of a
-///   Bluetooth headset's). It never touches the output device or other apps'
+/// - Mic: AVAudioEngine, the plain input: the device chosen in the settings,
+///   else the default (the built-in mic instead of a Bluetooth headset's). It
+///   never touches the output device or other apps'
 ///   audio. Restarts itself on audio device changes. With the system stream
 ///   too, the echo of the meeting playing through the speakers is removed
 ///   from it ([`aec`], AEC3 with the system track as reference).
