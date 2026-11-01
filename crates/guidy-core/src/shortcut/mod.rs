@@ -9,6 +9,7 @@
 //! The active implementation is determined by the `keyboard_implementation`
 //! setting and can be changed at runtime.
 
+pub mod gesture;
 pub mod global_hotkey_impl;
 mod handler;
 pub mod native_keys;
@@ -193,6 +194,24 @@ pub fn change_binding(
         }
     };
 
+    // Registrations may be suspended for the recorder, and cancel is registered
+    // only while recording, so check saved settings. A disabled post-processing
+    // binding isn't registered and holds no key.
+    if settings.keyboard_implementation == KeyboardImplementation::NativeKeys {
+        let saved = settings
+            .bindings
+            .iter()
+            .filter(|(id, _)| {
+                settings.post_process_enabled || id.as_str() != "transcribe_with_post_process"
+            })
+            .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
+        if let Some(other) = gesture::conflicting_binding(saved, &id, &binding) {
+            let error_msg = format!("'{binding}' overlaps another shortcut, '{other}'");
+            warn!("change_binding validation error: {}", error_msg);
+            return Err(error_msg);
+        }
+    }
+
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
@@ -261,8 +280,13 @@ fn restore_registration(app: &AppHandle, binding: &ShortcutBinding) {
     }
 }
 pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, String> {
-    let binding = settings::get_stored_binding(&settings::get_settings(&app), &id)?;
-    change_binding(app, id, binding.default_binding)
+    let current = settings::get_settings(&app);
+    let binding = settings::get_stored_binding(&current, &id)?;
+    let target = settings::default_binding_for_implementation(
+        &binding.default_binding,
+        current.keyboard_implementation,
+    );
+    change_binding(app, id, target)
 }
 
 /// Unregister every binding while the user is recording a new shortcut in
@@ -495,13 +519,17 @@ fn register_all_shortcuts_for_implementation(
                 id, binding.current_binding, implementation, e
             );
 
-            // Reset to default
+            // Reset to default, as long as it can register here
+            let replacement = settings::default_binding_for_implementation(
+                &default_binding.current_binding,
+                implementation,
+            );
             reset_values.push(BindingReset {
                 id: id.clone(),
                 invalid: binding.current_binding.clone(),
-                replacement: default_binding.current_binding.clone(),
+                replacement: replacement.clone(),
             });
-            binding.current_binding = default_binding.current_binding.clone();
+            binding.current_binding = replacement;
             reset_bindings.push(id.clone());
         }
 
@@ -902,6 +930,28 @@ pub fn change_auto_submit_key_setting(app: AppHandle, key: String) -> Result<(),
     Ok(())
 }
 pub fn change_post_process_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    // While disabled its binding held no key, so another gesture may have taken
+    // it since. Enabling would then leave a shortcut that silently does nothing.
+    let current = settings::get_settings(&app);
+    if enabled && current.keyboard_implementation == KeyboardImplementation::NativeKeys {
+        if let Some(own) = current.bindings.get("transcribe_with_post_process") {
+            let saved = current
+                .bindings
+                .iter()
+                .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
+            if let Some(other) = gesture::conflicting_binding(
+                saved,
+                "transcribe_with_post_process",
+                &own.current_binding,
+            ) {
+                return Err(format!(
+                    "'{}' overlaps another shortcut, '{other}'",
+                    own.current_binding
+                ));
+            }
+        }
+    }
+
     let binding = settings::update_settings(&app, |s| {
         s.post_process_enabled = enabled;
         s.bindings.get("transcribe_with_post_process").cloned()

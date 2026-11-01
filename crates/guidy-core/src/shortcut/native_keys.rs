@@ -21,6 +21,14 @@
 //! from a single thread. Commands (register/unregister) are sent via an mpsc
 //! channel and responses are synchronously awaited.
 //!
+//! ## Single-Key Gestures
+//!
+//! A transcribe binding that is exactly one modifier skips `HotkeyManager`,
+//! which reports only pressed/released and swallows the modifier's own event.
+//! The manager thread polls a non-blocking `KeyboardListener` instead, created
+//! with the first such binding and dropped with the last, and feeds it through
+//! one [`ModifierGesture`] per binding. The coordinator receives the intents.
+//!
 //! ## Recording Mode
 //!
 //! For UI key capture, a separate `KeyboardListener` is created on-demand and
@@ -29,17 +37,249 @@
 
 use crate::host::AppHandle;
 use key_listener::{Hotkey, HotkeyId, HotkeyManager, HotkeyState, KeyboardListener};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::settings::{self, get_settings, ShortcutBinding};
+use crate::transcription_coordinator::is_transcribe_binding;
+use crate::TranscriptionCoordinator;
 
+use super::gesture::{single_modifier_binding, GestureIntent, ModifierGesture};
 use super::handler::handle_shortcut_event;
+
+/// How often a hold checks that the OS still reports its modifier down.
+const STUCK_HOLD_POLL: Duration = Duration::from_millis(500);
+
+/// One single-modifier binding handled by the gesture listener.
+struct GestureEntry {
+    hotkey_string: String,
+    modifiers: key_listener::Modifiers,
+    gesture: ModifierGesture,
+}
+
+/// The gesture side of the manager thread.
+struct GestureListener {
+    entries: HashMap<String, GestureEntry>,
+    /// Present exactly while `entries` is non-empty.
+    listener: Option<KeyboardListener>,
+    last_stuck_hold_poll: Instant,
+}
+
+impl GestureListener {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            listener: None,
+            last_stuck_hold_poll: Instant::now(),
+        }
+    }
+
+    fn register(
+        &mut self,
+        binding_id: &str,
+        hotkey_string: &str,
+        modifiers: key_listener::Modifiers,
+    ) -> Result<(), String> {
+        if self.entries.contains_key(binding_id) {
+            return Err(format!("'{binding_id}' is already registered"));
+        }
+        self.reject_overlap(hotkey_string, modifiers)?;
+        if self.listener.is_none() {
+            let listener = KeyboardListener::new()
+                .map_err(|e| format!("Failed to create keyboard listener: {}", e))?;
+            self.listener = Some(listener);
+        }
+        self.entries.insert(
+            binding_id.to_string(),
+            GestureEntry {
+                hotkey_string: hotkey_string.to_string(),
+                modifiers,
+                gesture: ModifierGesture::new(modifiers),
+            },
+        );
+        Ok(())
+    }
+
+    /// Two gestures can't share a physical key. Option overlaps Right Option.
+    fn reject_overlap(
+        &self,
+        hotkey_string: &str,
+        modifiers: key_listener::Modifiers,
+    ) -> Result<(), String> {
+        match self
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.modifiers.intersects(modifiers))
+        {
+            Some((id, entry)) => Err(format!(
+                "'{hotkey_string}' overlaps '{}' used by '{id}'",
+                entry.hotkey_string
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns whether the binding was a gesture. A hold in progress is
+    /// aborted, since its key can no longer end the recording.
+    fn unregister(&mut self, app: &AppHandle, binding_id: &str) -> bool {
+        let Some(mut entry) = self.entries.remove(binding_id) else {
+            return false;
+        };
+        if let Some(intent) = entry.gesture.reset() {
+            send_gesture(app, binding_id, &entry.hotkey_string, intent);
+        }
+        if self.entries.is_empty() {
+            self.listener = None;
+        }
+        true
+    }
+
+    /// Drain listener events and advance timers. Called from the manager
+    /// thread's loop, at most about 10 ms apart.
+    fn poll(&mut self, app: &AppHandle) {
+        let Some(listener) = &self.listener else {
+            return;
+        };
+        let now = Instant::now();
+        while let Some(event) = listener.try_recv() {
+            for (binding_id, entry) in &mut self.entries {
+                if let Some(intent) = entry.gesture.tick(now) {
+                    send_gesture(app, binding_id, &entry.hotkey_string, intent);
+                }
+                // A modifier event may be the second press, so settle first
+                // whether a click separated it from the first tap.
+                if event.key.is_none() {
+                    if let Some(released_at) = entry.gesture.awaiting_second_since() {
+                        if click_within(now.saturating_duration_since(released_at)) {
+                            entry.gesture.on_click_between_taps();
+                        }
+                    }
+                }
+                if let Some(intent) = entry.gesture.on_event(&event, now) {
+                    send_gesture(app, binding_id, &entry.hotkey_string, intent);
+                }
+            }
+        }
+        for (binding_id, entry) in &mut self.entries {
+            if let Some(intent) = entry.gesture.tick(now) {
+                send_gesture(app, binding_id, &entry.hotkey_string, intent);
+            }
+        }
+        self.end_stuck_holds(app, now);
+    }
+
+    /// handy-keys reconciles modifiers silently after its tap is disabled, so
+    /// a release can be lost and a hold would record forever. Runs only while
+    /// a hold is live.
+    fn end_stuck_holds(&mut self, app: &AppHandle, now: Instant) {
+        if !self.entries.values().any(|e| e.gesture.is_holding())
+            || now.saturating_duration_since(self.last_stuck_hold_poll) < STUCK_HOLD_POLL
+        {
+            return;
+        }
+        self.last_stuck_hold_poll = now;
+        for (binding_id, entry) in &mut self.entries {
+            if entry.gesture.is_holding() && !modifier_down_per_os(entry.modifiers) {
+                if let Some(intent) = entry.gesture.on_missed_release(now) {
+                    send_gesture(app, binding_id, &entry.hotkey_string, intent);
+                }
+            }
+        }
+    }
+}
+
+fn send_gesture(app: &AppHandle, binding_id: &str, hotkey_string: &str, intent: GestureIntent) {
+    debug!("gesture: binding={binding_id}, hotkey={hotkey_string}, intent={intent:?}");
+    if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
+        coordinator.send_gesture(binding_id, hotkey_string, intent);
+    } else {
+        warn!("TranscriptionCoordinator is not initialized");
+    }
+}
+
+/// Which modifier group the OS must report for `modifiers` to count as down,
+/// as `CGEventFlags` bits. Reads group flags only, so a stuck Right Option hold
+/// also waits for Left Option, which still ends at the next listener event.
+#[cfg(target_os = "macos")]
+fn cg_flag_mask(modifiers: key_listener::Modifiers) -> u64 {
+    use key_listener::Modifiers;
+    const MASK_SHIFT: u64 = 0x0002_0000;
+    const MASK_CONTROL: u64 = 0x0004_0000;
+    const MASK_ALTERNATE: u64 = 0x0008_0000;
+    const MASK_COMMAND: u64 = 0x0010_0000;
+    const MASK_SECONDARY_FN: u64 = 0x0080_0000;
+
+    let mut mask = 0;
+    if modifiers.intersects(Modifiers::SHIFT) {
+        mask |= MASK_SHIFT;
+    }
+    if modifiers.intersects(Modifiers::CTRL) {
+        mask |= MASK_CONTROL;
+    }
+    if modifiers.intersects(Modifiers::OPT) {
+        mask |= MASK_ALTERNATE;
+    }
+    if modifiers.intersects(Modifiers::CMD) {
+        mask |= MASK_COMMAND;
+    }
+    if modifiers.intersects(Modifiers::FN) {
+        mask |= MASK_SECONDARY_FN;
+    }
+    mask
+}
+
+#[cfg(target_os = "macos")]
+const COMBINED_SESSION_STATE: i32 = 0;
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn CGEventSourceFlagsState(state_id: i32) -> u64;
+    fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: u32) -> f64;
+}
+
+#[cfg(target_os = "macos")]
+fn modifier_down_per_os(modifiers: key_listener::Modifiers) -> bool {
+    // SAFETY: reads session state; takes no pointers and has no preconditions.
+    let flags = unsafe { CGEventSourceFlagsState(COMBINED_SESSION_STATE) };
+    flags & cg_flag_mask(modifiers) != 0
+}
+
+/// Only macOS can lose a release this way; elsewhere trust the listener.
+#[cfg(not(target_os = "macos"))]
+fn modifier_down_per_os(_modifiers: key_listener::Modifiers) -> bool {
+    true
+}
+
+/// Whether a left or right click happened within `window`. The listeners never
+/// report a click with no modifier held, so the OS is asked directly. Called
+/// only between the taps of a possible double-press.
+#[cfg(target_os = "macos")]
+fn click_within(window: Duration) -> bool {
+    const LEFT_MOUSE_DOWN: u32 = 1;
+    const RIGHT_MOUSE_DOWN: u32 = 3;
+    [LEFT_MOUSE_DOWN, RIGHT_MOUSE_DOWN]
+        .into_iter()
+        .any(|event_type| {
+            // SAFETY: reads session state; takes no pointers and has no preconditions.
+            let seconds = unsafe {
+                CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, event_type)
+            };
+            seconds < window.as_secs_f64()
+        })
+}
+
+/// No equivalent query here, so a click between taps can't cancel a double.
+#[cfg(not(target_os = "macos"))]
+fn click_within(_window: Duration) -> bool {
+    false
+}
 
 /// Commands that can be sent to the hotkey manager thread
 enum ManagerCommand {
@@ -121,8 +361,11 @@ impl NativeKeysState {
         // Maps binding IDs to HotkeyIds and hotkey strings
         let mut binding_to_hotkey: HashMap<String, HotkeyId> = HashMap::new();
         let mut hotkey_to_binding: HashMap<HotkeyId, (String, String)> = HashMap::new(); // (binding_id, hotkey_string)
+        let mut gestures = GestureListener::new();
 
         loop {
+            gestures.poll(&app);
+
             // Check for hotkey events (non-blocking)
             while let Some(event) = manager.try_recv() {
                 if let Some((binding_id, hotkey_string)) = hotkey_to_binding.get(&event.id) {
@@ -147,6 +390,7 @@ impl NativeKeysState {
                             &manager,
                             &mut binding_to_hotkey,
                             &mut hotkey_to_binding,
+                            &mut gestures,
                             &binding_id,
                             &hotkey_string,
                         );
@@ -157,9 +401,11 @@ impl NativeKeysState {
                         response,
                     } => {
                         let result = Self::do_unregister(
+                            &app,
                             &manager,
                             &mut binding_to_hotkey,
                             &mut hotkey_to_binding,
+                            &mut gestures,
                             &binding_id,
                         );
                         let _ = response.send(result);
@@ -187,12 +433,45 @@ impl NativeKeysState {
         manager: &HotkeyManager,
         binding_to_hotkey: &mut HashMap<String, HotkeyId>,
         hotkey_to_binding: &mut HashMap<HotkeyId, (String, String)>,
+        gestures: &mut GestureListener,
         binding_id: &str,
         hotkey_string: &str,
     ) -> Result<(), String> {
         let hotkey: Hotkey = hotkey_string
             .parse()
             .map_err(|e| format!("Failed to parse hotkey '{}': {}", hotkey_string, e))?;
+
+        let single_modifier = single_modifier_binding(hotkey_string);
+        if is_transcribe_binding(binding_id) {
+            if let Some(modifiers) = single_modifier {
+                // Same "already registered" failure the manager gives below,
+                // which resume_all_shortcuts relies on being harmless.
+                if binding_to_hotkey.contains_key(binding_id) {
+                    return Err(format!("'{binding_id}' is already registered"));
+                }
+                // Settings saved elsewhere can hold what validation rejects.
+                validate_shortcut(hotkey_string)?;
+                // The blocking manager would swallow the gesture's modifier.
+                let held_by_manager = hotkey_to_binding.values().find(|(_, other)| {
+                    single_modifier_binding(other).is_some_and(|m| m.intersects(modifiers))
+                });
+                if let Some((other_id, other)) = held_by_manager {
+                    return Err(format!(
+                        "'{hotkey_string}' overlaps '{other}' used by '{other_id}'"
+                    ));
+                }
+                gestures.register(binding_id, hotkey_string, modifiers)?;
+                debug!("Registered gesture shortcut: {binding_id} -> {hotkey_string}");
+                return Ok(());
+            }
+            // Also registered as a gesture: same id, different binding kind.
+            if gestures.entries.contains_key(binding_id) {
+                return Err(format!("'{binding_id}' is already registered"));
+            }
+        } else if let Some(modifiers) = single_modifier {
+            // The blocking manager would swallow the gesture's modifier.
+            gestures.reject_overlap(hotkey_string, modifiers)?;
+        }
 
         let id = manager
             .register(hotkey)
@@ -210,11 +489,17 @@ impl NativeKeysState {
 
     /// Unregister a hotkey
     fn do_unregister(
+        app: &AppHandle,
         manager: &HotkeyManager,
         binding_to_hotkey: &mut HashMap<String, HotkeyId>,
         hotkey_to_binding: &mut HashMap<HotkeyId, (String, String)>,
+        gestures: &mut GestureListener,
         binding_id: &str,
     ) -> Result<(), String> {
+        if gestures.unregister(app, binding_id) {
+            debug!("Unregistered gesture shortcut: {}", binding_id);
+            return Ok(());
+        }
         if let Some(id) = binding_to_hotkey.remove(binding_id) {
             manager
                 .unregister(id)
@@ -415,9 +700,17 @@ pub fn validate_shortcut(raw: &str) -> Result<(), String> {
     }
     // NativeKeys accepts modifier-only, key-only, and modifier+key combos
     // Just verify the string is parseable
-    raw.parse::<Hotkey>()
-        .map(|_| ())
-        .map_err(|e| format!("Invalid shortcut for NativeKeys: {}", e))
+    let hotkey = raw
+        .parse::<Hotkey>()
+        .map_err(|e| format!("Invalid shortcut for NativeKeys: {}", e))?;
+    // handy-keys only reports Fn on macOS, so off it this would never fire.
+    if !cfg!(target_os = "macos")
+        && hotkey.key.is_none()
+        && hotkey.modifiers == key_listener::Modifiers::FN
+    {
+        return Err("The Fn key can only be used on macOS".into());
+    }
+    Ok(())
 }
 
 /// Initialize native-keys shortcuts
@@ -521,4 +814,67 @@ pub fn stop_native_keys_recording(app: AppHandle) -> Result<(), String> {
     let result = state.stop_recording();
     super::resume_all_shortcuts(&app);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use key_listener::Modifiers;
+
+    fn entry(hotkey_string: &str, modifiers: Modifiers) -> GestureEntry {
+        GestureEntry {
+            hotkey_string: hotkey_string.to_string(),
+            modifiers,
+            gesture: ModifierGesture::new(modifiers),
+        }
+    }
+
+    #[test]
+    fn gesture_overlap_is_rejected_by_physical_key() {
+        let mut gestures = GestureListener::new();
+        gestures.entries.insert(
+            "transcribe".to_string(),
+            entry("option_right", Modifiers::OPT_RIGHT),
+        );
+        assert!(gestures
+            .reject_overlap("option_right", Modifiers::OPT_RIGHT)
+            .is_err());
+        assert!(gestures.reject_overlap("option", Modifiers::OPT).is_err());
+        assert!(gestures
+            .reject_overlap("option_left", Modifiers::OPT_LEFT)
+            .is_ok());
+        assert!(gestures.reject_overlap("fn", Modifiers::FN).is_ok());
+    }
+
+    #[test]
+    fn registering_a_gesture_id_twice_fails_cleanly() {
+        let mut gestures = GestureListener::new();
+        gestures.entries.insert(
+            "transcribe".to_string(),
+            entry("option_right", Modifiers::OPT_RIGHT),
+        );
+        assert!(gestures
+            .register("transcribe", "option_left", Modifiers::OPT_LEFT)
+            .is_err());
+        assert!(gestures.listener.is_none());
+    }
+
+    #[test]
+    fn lone_fn_validates_only_on_macos() {
+        assert_eq!(validate_shortcut("fn").is_ok(), cfg!(target_os = "macos"));
+        assert!(validate_shortcut("option_right").is_ok());
+        assert!(validate_shortcut("ctrl+space").is_ok());
+        assert!(validate_shortcut("").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stuck_hold_mask_covers_each_modifier_group() {
+        assert_eq!(cg_flag_mask(Modifiers::FN), 0x0080_0000);
+        assert_eq!(cg_flag_mask(Modifiers::OPT_RIGHT), 0x0008_0000);
+        assert_eq!(cg_flag_mask(Modifiers::OPT), 0x0008_0000);
+        assert_eq!(cg_flag_mask(Modifiers::CTRL_LEFT), 0x0004_0000);
+        assert_eq!(cg_flag_mask(Modifiers::SHIFT_RIGHT), 0x0002_0000);
+        assert_eq!(cg_flag_mask(Modifiers::CMD), 0x0010_0000);
+    }
 }

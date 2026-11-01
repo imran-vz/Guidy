@@ -2,6 +2,7 @@ use crate::actions::ACTION_MAP;
 use crate::host::AppHandle;
 use crate::managers::audio::AudioRecordingManager;
 use crate::settings::ShortcutActivation;
+use crate::shortcut::gesture::GestureIntent;
 use log::{debug, error, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
@@ -165,12 +166,22 @@ enum Effect {
         binding_id: String,
         hotkey_string: String,
     },
+    /// Discard the recording. The executor applies [`CoordinatorState::on_cancel`]
+    /// itself when it has finished, so no later command can see the old session.
+    Cancel,
 }
 
 /// Commands processed sequentially by the coordinator thread.
 enum Command {
     Input(InputEvent),
-    Cancel { recording_was_active: bool },
+    Gesture {
+        binding_id: String,
+        hotkey_string: String,
+        intent: GestureIntent,
+    },
+    Cancel {
+        recording_was_active: bool,
+    },
     ProcessingFinished,
 }
 
@@ -381,6 +392,79 @@ impl CoordinatorState {
         None
     }
 
+    /// A single-key gesture. Gestures map onto the same transitions as key
+    /// edges: a hold is push-to-talk, a double-press is a toggle press, so
+    /// latching on is the ordinary locked session. A latched session outlives
+    /// the key, so holds and aborts leave it alone.
+    fn on_gesture(
+        &mut self,
+        binding_id: String,
+        hotkey_string: String,
+        intent: GestureIntent,
+        now: Instant,
+    ) -> Option<Effect> {
+        let edge = |is_pressed, mode| InputEvent {
+            binding_id: binding_id.clone(),
+            hotkey_string: hotkey_string.clone(),
+            is_pressed,
+            mode,
+            hold_threshold: Duration::ZERO,
+            // The gesture reducer already resolved these from raw key events,
+            // so a debounce drop here could only lose a deliberate gesture.
+            external: true,
+        };
+        match intent {
+            GestureIntent::DoublePress => {
+                self.on_gesture_press(edge(true, ShortcutActivation::Toggle), now)
+            }
+            GestureIntent::HoldStart | GestureIntent::HoldEnd | GestureIntent::Abort
+                if self.is_locked() =>
+            {
+                debug!("Ignoring {intent:?} for '{binding_id}': session is latched");
+                None
+            }
+            GestureIntent::HoldStart => {
+                self.on_gesture_press(edge(true, ShortcutActivation::PushToTalk), now)
+            }
+            GestureIntent::HoldEnd => {
+                self.on_input(edge(false, ShortcutActivation::PushToTalk), now)
+            }
+            GestureIntent::Abort => self.on_gesture_abort(&binding_id),
+        }
+    }
+
+    /// A gesture press is a new gesture, never the auto-repeat `RELEASE_GRACE`
+    /// exists to absorb, so a release still waiting out the grace is resolved
+    /// first. If that stops the recording, the press queues behind it and the
+    /// stop is the effect to run.
+    fn on_gesture_press(&mut self, input: InputEvent, now: Instant) -> Option<Effect> {
+        let resolved = self.on_grace_expired();
+        let pressed = self.on_input(input, now);
+        resolved.or(pressed)
+    }
+
+    /// Discard an unlocked hold: the live recording, or a press remembered
+    /// while the pipeline is busy. Pipeline work already running is unrelated
+    /// to this key and keeps going.
+    fn on_gesture_abort(&mut self, binding_id: &str) -> Option<Effect> {
+        match &self.stage {
+            Stage::Recording(id) if id == binding_id => Some(Effect::Cancel),
+            Stage::Processing => {
+                if self
+                    .pending_press
+                    .as_ref()
+                    .is_some_and(|p| p.binding_id == binding_id)
+                {
+                    debug!("Abort forgets the remembered press for '{binding_id}'");
+                    self.pending_press = None;
+                    self.pending_release = None;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// The `RELEASE_GRACE` window elapsed with no cancelling press arriving:
     /// resolve the deferred release against whatever that binding's key was
     /// holding — the live recording, or a press remembered while busy.
@@ -518,6 +602,9 @@ impl CoordinatorState {
     fn begin_processing(&mut self, binding_id: String, hotkey_string: String) -> Effect {
         self.stage = Stage::Processing;
         self.hold = None;
+        // A release still in its grace belongs to the session ending here. Left
+        // in place it would resolve against whatever comes next.
+        self.pending_release = None;
         Effect::Stop {
             binding_id,
             hotkey_string,
@@ -574,6 +661,17 @@ impl TranscriptionCoordinator {
                                 run_effect(&app, &mut state, effect);
                             }
                         }
+                        Command::Gesture {
+                            binding_id,
+                            hotkey_string,
+                            intent,
+                        } => {
+                            if let Some(effect) =
+                                state.on_gesture(binding_id, hotkey_string, intent, Instant::now())
+                            {
+                                run_effect(&app, &mut state, effect);
+                            }
+                        }
                         Command::Cancel {
                             recording_was_active,
                         } => state.on_cancel(recording_was_active),
@@ -613,6 +711,21 @@ impl TranscriptionCoordinator {
             hold_threshold,
             false,
         );
+    }
+
+    /// Send a single-key gesture for a transcribe binding.
+    pub fn send_gesture(&self, binding_id: &str, hotkey_string: &str, intent: GestureIntent) {
+        if self
+            .tx
+            .send(Command::Gesture {
+                binding_id: binding_id.to_string(),
+                hotkey_string: hotkey_string.to_string(),
+                intent,
+            })
+            .is_err()
+        {
+            warn!("Transcription coordinator channel closed");
+        }
     }
 
     /// Send an external trigger (SIGUSR2, CLI flag). Always a toggle press,
@@ -685,6 +798,13 @@ fn run_effect(app: &AppHandle, state: &mut CoordinatorState, effect: Effect) {
             binding_id,
             hotkey_string,
         } => stop(app, &binding_id, &hotkey_string),
+        // Runs here like `stop`, and may wait the same way on recorder cleanup.
+        // This is the cancel without its `notify_cancel`: a notification would
+        // queue behind gestures sent meanwhile and reset the session they start.
+        Effect::Cancel => {
+            let recording_was_active = crate::utils::discard_current_operation(app);
+            state.on_cancel(recording_was_active);
+        }
     }
 }
 
@@ -924,7 +1044,7 @@ mod tests {
             match effect {
                 Some(Effect::Start { .. }) => starts += 1,
                 Some(Effect::Stop { .. }) => stops += 1,
-                None => {}
+                Some(Effect::Cancel) | None => {}
             }
         }
 
@@ -1617,5 +1737,202 @@ mod tests {
             "held 400ms since the real key-down: must stop, not lock"
         );
         assert_eq!(state.stage, Stage::Processing);
+    }
+
+    // ---------------------------------------------------------------------
+    // Single-key gestures.
+    // ---------------------------------------------------------------------
+
+    fn gesture(
+        state: &mut CoordinatorState,
+        intent: GestureIntent,
+        now: Instant,
+    ) -> Option<Effect> {
+        state.on_gesture(BINDING.to_string(), BINDING.to_string(), intent, now)
+    }
+
+    #[test]
+    fn double_press_latches_and_second_stops() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        assert!(matches!(
+            gesture(&mut state, GestureIntent::DoublePress, t0),
+            Some(Effect::Start { .. })
+        ));
+        assert!(state.is_locked());
+        assert!(matches!(
+            gesture(&mut state, GestureIntent::DoublePress, t0 + ms(5000)),
+            Some(Effect::Stop { .. })
+        ));
+        assert_eq!(state.stage, Stage::Processing);
+        assert!(!state.is_locked());
+    }
+
+    #[test]
+    fn hold_and_abort_ignored_while_latched() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::DoublePress, t0);
+        for (offset, intent) in [
+            (500, GestureIntent::HoldStart),
+            (900, GestureIntent::HoldEnd),
+            (1200, GestureIntent::HoldStart),
+            (1300, GestureIntent::Abort),
+        ] {
+            assert_eq!(gesture(&mut state, intent, t0 + ms(offset)), None);
+            assert!(state.grace_deadline().is_none());
+            assert_eq!(state.stage, Stage::Recording(BINDING.to_string()));
+            assert!(state.is_locked());
+        }
+    }
+
+    #[test]
+    fn hold_start_and_end_run_as_push_to_talk() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        assert!(matches!(
+            gesture(&mut state, GestureIntent::HoldStart, t0),
+            Some(Effect::Start { .. })
+        ));
+        assert!(!state.is_locked());
+        assert_eq!(
+            gesture(&mut state, GestureIntent::HoldEnd, t0 + ms(100)),
+            None
+        );
+        assert!(matches!(
+            state.on_grace_expired(),
+            Some(Effect::Stop { .. })
+        ));
+        assert_eq!(state.stage, Stage::Processing);
+    }
+
+    #[test]
+    fn abort_cancels_unlocked_recording() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::HoldStart, t0);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::Abort, t0 + ms(100)),
+            Some(Effect::Cancel)
+        );
+        state.on_cancel(true);
+        assert_eq!(state.stage, Stage::Idle);
+    }
+
+    /// The cancel is applied before the next command, so a hold queued while
+    /// it ran starts fresh instead of reading as a repeat of the discarded one.
+    #[test]
+    fn hold_queued_during_abort_starts_fresh() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::HoldStart, t0);
+        gesture(&mut state, GestureIntent::Abort, t0 + ms(100));
+        state.on_cancel(true);
+
+        assert!(matches!(
+            gesture(&mut state, GestureIntent::HoldStart, t0 + ms(400)),
+            Some(Effect::Start { .. })
+        ));
+        assert_eq!(state.stage, Stage::Recording(BINDING.to_string()));
+    }
+
+    #[test]
+    fn stale_release_cannot_touch_a_newer_latch() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        gesture(&mut state, GestureIntent::HoldStart, t0);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::HoldEnd, t0 + ms(1000)),
+            None
+        );
+
+        // SIGUSR2 stops the session and queues a locked one, inside the grace.
+        let effect = state.on_input(toggle_input(true), t0 + ms(1010));
+        assert!(matches!(effect, Some(Effect::Stop { .. })));
+        assert_eq!(state.on_input(toggle_input(true), t0 + ms(1020)), None);
+
+        assert!(state.grace_deadline().is_none());
+        assert_eq!(state.on_grace_expired(), None);
+        assert!(state.pending_press.as_ref().is_some_and(|p| p.locked));
+    }
+
+    #[test]
+    fn gesture_press_resolves_a_deferred_release_first() {
+        for intent in [GestureIntent::DoublePress, GestureIntent::HoldStart] {
+            let mut state = CoordinatorState::new();
+            let t0 = Instant::now();
+            gesture(&mut state, GestureIntent::HoldStart, t0);
+            gesture(&mut state, GestureIntent::HoldEnd, t0 + ms(1000));
+
+            assert!(matches!(
+                gesture(&mut state, intent, t0 + ms(1020)),
+                Some(Effect::Stop { .. })
+            ));
+            assert_eq!(state.stage, Stage::Processing);
+            assert!(state.pending_press.is_some());
+            assert!(matches!(
+                state.on_processing_finished(),
+                Some(Effect::Start { .. })
+            ));
+            assert_eq!(state.is_locked(), intent == GestureIntent::DoublePress);
+        }
+    }
+
+    #[test]
+    fn abort_ignores_another_bindings_recording_and_idle() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        assert_eq!(gesture(&mut state, GestureIntent::Abort, t0), None);
+        state.on_gesture(
+            "transcribe_with_post_process".to_string(),
+            "fn".to_string(),
+            GestureIntent::HoldStart,
+            t0,
+        );
+        assert_eq!(
+            gesture(&mut state, GestureIntent::Abort, t0 + ms(100)),
+            None
+        );
+    }
+
+    #[test]
+    fn abort_drops_unlocked_pending_press_and_keeps_processing() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        drive_into_processing(&mut state, t0);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::HoldStart, t0 + ms(1000)),
+            None
+        );
+        assert!(state.pending_press.is_some());
+        assert_eq!(
+            gesture(&mut state, GestureIntent::Abort, t0 + ms(1100)),
+            None
+        );
+        assert!(state.pending_press.is_none());
+        assert_eq!(state.stage, Stage::Processing);
+        assert_eq!(state.on_processing_finished(), None);
+    }
+
+    #[test]
+    fn double_press_during_processing_starts_locked_after_drain() {
+        let mut state = CoordinatorState::new();
+        let t0 = Instant::now();
+        drive_into_processing(&mut state, t0);
+        assert_eq!(
+            gesture(&mut state, GestureIntent::DoublePress, t0 + ms(1000)),
+            None
+        );
+        // Held and aborted gestures can't disturb the queued latch.
+        assert_eq!(
+            gesture(&mut state, GestureIntent::Abort, t0 + ms(1100)),
+            None
+        );
+        assert!(state.pending_press.as_ref().is_some_and(|p| p.locked));
+        assert!(matches!(
+            state.on_processing_finished(),
+            Some(Effect::Start { .. })
+        ));
+        assert!(state.is_locked());
     }
 }

@@ -22,6 +22,59 @@ impl OsType {
     }
 }
 
+/// A one-key dictation choice in the Dictation Key dropdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DictationKeyPreset {
+    /// The exact binding string saved, as the native-keys recorder writes it.
+    pub binding: &'static str,
+    pub label_key: &'static str,
+}
+
+/// The dropdown value for a binding that isn't one of the presets.
+pub const DICTATION_KEY_CUSTOM: &str = "custom";
+
+const MAC_DICTATION_KEYS: [DictationKeyPreset; 3] = [
+    DictationKeyPreset {
+        binding: "fn",
+        label_key: "settings.general.dictationKey.options.fn",
+    },
+    DictationKeyPreset {
+        binding: "option_right",
+        label_key: "settings.general.dictationKey.options.rightOption",
+    },
+    DictationKeyPreset {
+        binding: "option_left",
+        label_key: "settings.general.dictationKey.options.leftOption",
+    },
+];
+
+const PC_DICTATION_KEYS: [DictationKeyPreset; 2] = [
+    DictationKeyPreset {
+        binding: "ctrl_right",
+        label_key: "settings.general.dictationKey.options.rightCtrl",
+    },
+    DictationKeyPreset {
+        binding: "alt_right",
+        label_key: "settings.general.dictationKey.options.rightAlt",
+    },
+];
+
+pub fn dictation_key_presets(os: OsType) -> &'static [DictationKeyPreset] {
+    match os {
+        OsType::MacOs => &MAC_DICTATION_KEYS,
+        OsType::Windows | OsType::Linux => &PC_DICTATION_KEYS,
+        OsType::Unknown => &[],
+    }
+}
+
+/// The dropdown value showing for the binding currently saved.
+pub fn dictation_key_selection(current: &str, os: OsType) -> &'static str {
+    dictation_key_presets(os)
+        .iter()
+        .find(|preset| preset.binding == current)
+        .map_or(DICTATION_KEY_CUSTOM, |preset| preset.binding)
+}
+
 /// A key event as the browser described it: `code` (physical key, e.g.
 /// `KeyA`) and `key` (produced value, e.g. `a`).
 #[derive(Clone, Copy, Debug, Default)]
@@ -402,6 +455,35 @@ mod tests {
             code: Some(c),
             key: None,
         }
+    }
+
+    #[test]
+    fn dictation_presets_are_single_modifier_bindings() {
+        for os in [OsType::MacOs, OsType::Windows, OsType::Linux] {
+            assert!(!dictation_key_presets(os).is_empty());
+            for preset in dictation_key_presets(os) {
+                assert!(
+                    guidy_core::shortcut::gesture::is_single_modifier_binding(preset.binding),
+                    "{}",
+                    preset.binding
+                );
+            }
+        }
+        assert!(dictation_key_presets(OsType::Unknown).is_empty());
+    }
+
+    #[test]
+    fn dictation_selection_falls_back_to_custom() {
+        assert_eq!(dictation_key_selection("fn", OsType::MacOs), "fn");
+        assert_eq!(dictation_key_selection("fn", OsType::Windows), "custom");
+        assert_eq!(
+            dictation_key_selection("ctrl_right", OsType::Windows),
+            "ctrl_right"
+        );
+        assert_eq!(
+            dictation_key_selection("option+space", OsType::MacOs),
+            "custom"
+        );
     }
 
     // Ported from keyboard.test.ts
