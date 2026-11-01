@@ -1154,6 +1154,7 @@ private final class SystemTapCapture {
     private var outputDeviceListener: AudioObjectPropertyListenerBlock?
     private var watchedOutput = AudioObjectID(kAudioObjectUnknown)
     private var watchedOutputRate: Float64 = 0
+    private var watchedOutputDead = false
     private let outputDeviceSelectors: [AudioObjectPropertySelector] = [
         kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive,
     ]
@@ -1397,6 +1398,7 @@ private final class SystemTapCapture {
     /// output changing, and a device can die the same way. The IOProc may stop
     /// calling back: rebuild now rather than at the 3 s watchdog. On controlQueue.
     private func watchOutputDevice() {
+        let previous = watchedOutput
         unwatchOutputDevice()
         guard let device = defaultDevice(input: false) else { return }
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
@@ -1410,6 +1412,9 @@ private final class SystemTapCapture {
         }
         watchedOutput = device
         watchedOutputRate = outputRate(device)
+        if device != previous {
+            watchedOutputDead = false
+        }
         outputDeviceListener = block
     }
 
@@ -1423,6 +1428,7 @@ private final class SystemTapCapture {
             AudioObjectRemovePropertyListenerBlock(watchedOutput, &address, controlQueue, block)
         }
         outputDeviceListener = nil
+        watchedOutput = AudioObjectID(kAudioObjectUnknown)
     }
 
     private func outputRate(_ device: AudioObjectID) -> Float64 {
@@ -1432,14 +1438,19 @@ private final class SystemTapCapture {
     }
 
     /// On controlQueue. Only a real change: building the aggregate can itself
-    /// notify, and rebuilding for that would never end.
+    /// notify, and rebuilding for that would never end. A dead device counts
+    /// once: every build on it succeeds and compares again.
     private func outputDeviceChanged() {
-        if stopped { return }
+        if stopped || watchedOutput == kAudioObjectUnknown { return }
         let rate = outputRate(watchedOutput)
         let alive = audioProperty(
             watchedOutput, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal,
             UInt32(1)) ?? 0
-        if alive != 0 && rate == watchedOutputRate { return }
+        let isDead = alive == 0
+        let died = isDead && !watchedOutputDead
+        let rateChanged = !isDead && rate != watchedOutputRate
+        watchedOutputDead = isDead
+        if !died && !rateChanged { return }
         watchedOutputRate = rate
         sink?.event(GUIDY_MB_STREAM_SYSTEM, eventSwitched)
         rebuildGeneration += 1
