@@ -550,6 +550,17 @@ impl CallDetector {
 
         if let Some(current) = &mut self.current {
             match found.iter().find(|(id, _)| *id == current.app_id) {
+                // The microphone was released and taken again for another
+                // known service: a new call, though in the same browser.
+                Some((_, source))
+                    if self.gone_since.is_some()
+                        && rank(source) >= 2
+                        && rank(&current.source) >= 2
+                        && *source != current.source =>
+                {
+                    self.current = None;
+                    self.gone_since = None;
+                }
                 Some((_, source)) => {
                     self.gone_since = None;
                     // Still on the microphone, on whatever page: the same
@@ -560,7 +571,6 @@ impl CallDetector {
                         match source.policy(choices) {
                             CallPolicy::Never => self.snooze_current(now),
                             CallPolicy::Always => {
-                                self.pending.clear();
                                 return self.current.clone().map(Detection::Record);
                             }
                             CallPolicy::Ask => {}
@@ -1065,6 +1075,8 @@ mod tests {
     const FIXTURES: &[&str] = &[
         include_str!("../../../../fixtures/calls/voice_note_bursts.json"),
         include_str!("../../../../fixtures/calls/voice_note_app_limit.json"),
+        include_str!("../../../../fixtures/calls/always_page_keeps_other_run.json"),
+        include_str!("../../../../fixtures/calls/back_to_back_same_browser.json"),
         include_str!("../../../../fixtures/calls/call_app_after_browser_service.json"),
         include_str!("../../../../fixtures/calls/displaced_browser_not_reoffered.json"),
         include_str!("../../../../fixtures/calls/never_page_keeps_other_run.json"),
