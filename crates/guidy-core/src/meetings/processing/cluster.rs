@@ -20,23 +20,25 @@ pub fn norm(a: &[f32]) -> f32 {
     dot(a, a).sqrt()
 }
 
-/// Cosine similarity in [-1, 1]; 0 for a zero or mismatched vector.
+/// Cosine similarity in [-1, 1]; 0 for a zero, non-finite or mismatched vector.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
     let d = norm(a) * norm(b);
-    if d <= f32::EPSILON {
+    if !d.is_finite() || d <= f32::EPSILON {
         0.0
     } else {
         (dot(a, b) / d).clamp(-1.0, 1.0)
     }
 }
 
-/// `v` scaled to unit length (unchanged when zero).
+/// `v` scaled to unit length (unchanged when zero; zeroed when non-finite).
 pub fn normalized(v: &[f32]) -> Vec<f32> {
     let n = norm(v);
-    if n <= f32::EPSILON {
+    if !n.is_finite() {
+        vec![0.0; v.len()]
+    } else if n <= f32::EPSILON {
         v.to_vec()
     } else {
         v.iter().map(|x| x / n).collect()

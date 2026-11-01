@@ -1431,10 +1431,10 @@ fn offset_words(words: Vec<Word>, span: vad::Span) -> Vec<Word> {
         .collect()
 }
 
+type IndexedSegments = Vec<(usize, RawSegment)>;
+
 /// The transcribed units of each track, `(mic, system)`, with their indices.
-fn segments_by_track(
-    cache: &ProcessingCache,
-) -> (Vec<(usize, RawSegment)>, Vec<(usize, RawSegment)>) {
+fn segments_by_track(cache: &ProcessingCache) -> (IndexedSegments, IndexedSegments) {
     let (mut mic, mut system) = (Vec::new(), Vec::new());
     for i in 0..cache.units.len() {
         if let Some(seg) = cache.raw_segment(i) {
