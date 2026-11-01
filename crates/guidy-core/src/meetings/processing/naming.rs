@@ -401,14 +401,12 @@ fn remove_prints_from_others(
     keep: PersonId,
 ) -> Result<()> {
     // What this speaker could have given before filtering: a print the filter
-    // rejects today may still be enrolled. Not the centroid while lines have
-    // prints: it can equal a line tagged as someone else.
+    // rejects today may still be enrolled. (The centroid only without line
+    // prints: it can equal a line tagged as someone else.)
+    // Plus what it gives now: filtering first lets later lines under the cap.
     let lines = speaker_lines(store, speaker)?;
-    let prints = if lines.is_empty() {
-        speaker_prints(store, speaker)?
-    } else {
-        pick_prints(lines, None)
-    };
+    let mut prints = speaker_prints(store, speaker)?;
+    prints.extend(pick_prints(lines, None));
     for v in store.voiceprints()? {
         if v.person_id != keep
             && v.source_meeting_id == Some(speaker.meeting_id)
