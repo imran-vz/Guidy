@@ -1545,3 +1545,18 @@ fn the_writer_stops_silence_at_a_failed_write() {
     assert!(mic.is_err());
     assert!(flow.write_failed[0].load(Ordering::Relaxed));
 }
+
+#[test]
+fn an_unreadable_system_permission_is_shown_while_recording() {
+    let r = rig();
+    r.capture.preflight.lock().system_unknown = true;
+    r.rec.start(None, T0).unwrap();
+    // Not until the quiet time has passed, then within the scorecard's 10 s.
+    for s in 1..=6 {
+        r.rec.health_tick(T0 + s * 1_000);
+    }
+    let health = health_of(&r);
+    assert!(health.system_permission_unknown);
+    assert!(!health.system_denied);
+    assert!(matches!(r.rec.state(), RecorderState::Recording { .. }));
+}

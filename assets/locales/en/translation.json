@@ -1005,6 +1005,7 @@
         "systemLost": "System audio lost. Trying to get it back.",
         "audioDropping": "Can't save audio fast enough. Some is being lost until this catches up.",
         "lowDisk": "Less than 500 MB free. Audio so far is safe.",
+        "systemPermissionUnknown": "Can't confirm system audio access. Others may not be recorded.",
         "micReconnecting": "Microphone reconnecting…",
         "systemReconnecting": "System audio reconnecting…",
         "micSilent": "Your microphone isn't picking up anything.",

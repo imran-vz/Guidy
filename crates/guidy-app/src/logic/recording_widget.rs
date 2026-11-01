@@ -59,6 +59,8 @@ pub enum HealthNotice {
     MicSilent,
     SystemSilent,
     Backlog,
+    /// The system audio permission can't be read and nothing proves access.
+    SystemPermissionUnknown,
 }
 
 impl HealthNotice {
@@ -90,6 +92,7 @@ impl HealthNotice {
             Self::MicSilent => "meetings.widget.health.micSilent",
             Self::SystemSilent => "meetings.widget.health.systemSilent",
             Self::Backlog => "meetings.widget.health.backlog",
+            Self::SystemPermissionUnknown => "meetings.widget.health.systemPermissionUnknown",
         }
     }
 }
@@ -112,6 +115,8 @@ pub fn health_notice(health: &RecordingHealth) -> Option<HealthNotice> {
         SystemLost
     } else if health.low_disk {
         LowDisk
+    } else if health.system_permission_unknown {
+        SystemPermissionUnknown
     } else if health.mic == S::Reconnecting {
         MicReconnecting
     } else if health.system == S::Reconnecting {
@@ -1134,6 +1139,14 @@ mod tests {
         };
         assert_eq!(health_notice(&dropping), Some(HealthNotice::AudioDropping));
         assert!(HealthNotice::AudioDropping.is_failure());
+        let unknown = RecordingHealth {
+            system_permission_unknown: true,
+            ..RecordingHealth::default()
+        };
+        assert_eq!(
+            health_notice(&unknown),
+            Some(HealthNotice::SystemPermissionUnknown)
+        );
         let mut health = RecordingHealth {
             backlog: true,
             ..healthy

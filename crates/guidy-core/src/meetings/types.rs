@@ -623,6 +623,10 @@ pub struct RecordingHealth {
     /// timeline stays aligned, with silence in place of what was dropped.
     #[serde(default)]
     pub audio_dropping: bool,
+    /// The system audio permission can't be read and no sound has reached
+    /// the track: it may not be recording.
+    #[serde(default)]
+    pub system_permission_unknown: bool,
     /// No audio on either source for 15 minutes: stops then (unix ms) unless
     /// told to keep going.
     pub silence_stop_at: Option<i64>,
