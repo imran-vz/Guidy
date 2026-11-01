@@ -1423,6 +1423,94 @@ mod onboarding_flows {
         assert!(backend.called("request_download stt:other"));
     }
 
+    /// PARITY F-03 (Cancel goes back to the setup and changes nothing)
+    #[gpui_kit::test]
+    fn picker_cancel_keeps_the_recommended_model(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        backend.data.lock().models = vec![rec, model("other")];
+        let w = at_setup(cx, &backend);
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-cancel", cx));
+        assert!(exists(cx, w, "onboarding-setup"));
+        assert!(!exists(cx, w, "model-picker"));
+        let state = cx.update(|cx| AppState::global(cx));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.startup.choices.speech_model.clone()),
+            None
+        );
+        with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("request_download stt:rec"));
+        assert!(!backend.called("request_download stt:other"));
+    }
+
+    /// PARITY F-03 (the list follows the dictation language and the search)
+    #[gpui_kit::test]
+    fn picker_filters_by_language_and_search(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        let mut japanese = model("japanese");
+        japanese.supported_languages = vec!["ja".into()];
+        backend.data.lock().models = vec![rec, model("other"), japanese];
+        let w = at_setup(cx, &backend);
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        assert!(exists(cx, w, "picker-model-rec"));
+        assert!(exists(cx, w, "picker-model-other"));
+        assert!(!exists(cx, w, "picker-model-japanese"));
+        with_window(cx, w, |window, cx| {
+            window.click("picker-search", cx);
+            window.input("other", cx);
+        });
+        assert!(!exists(cx, w, "picker-model-rec"));
+        assert!(exists(cx, w, "picker-model-other"));
+    }
+
+    /// PARITY F-03, F-04 (from the migration, Cancel returns to it, and a
+    /// pick selects the model and removes the retired one)
+    #[gpui_kit::test]
+    fn migration_picker_cancels_back_or_migrates(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut other = model("other");
+        other.is_downloaded = true;
+        backend.data.lock().models = vec![model("new"), other];
+        backend.data.lock().retired = vec![RetiredModel {
+            id: "old".into(),
+            name: "Old".into(),
+            size_mb: 300,
+            replacement_repo: "org/new".into(),
+        }];
+        backend.with_settings(|s| s.selected_model = "old".into());
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| {
+            window.click("migration-choose-another", cx)
+        });
+        assert!(exists(cx, w, "model-picker"));
+        with_window(cx, w, |window, cx| window.click("picker-cancel", cx));
+        assert!(exists(cx, w, "model-migration"));
+        assert!(!exists(cx, w, "model-picker"));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Migration)
+        );
+        assert!(!backend.called("delete_retired_model"));
+        with_window(cx, w, |window, cx| {
+            window.click("migration-choose-another", cx)
+        });
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-use", cx));
+        assert!(backend.called("set_active_model other"));
+        assert!(backend.called("delete_retired_model old"));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Done)
+        );
+    }
+
     /// PARITY F-01: a returning user who lost a permission sees that step
     /// first (with no Back), then the migration.
     #[gpui_kit::test]
