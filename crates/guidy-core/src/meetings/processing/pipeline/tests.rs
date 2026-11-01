@@ -305,10 +305,11 @@ fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
         (USER, 9000, 12000),
         (5, 13000, 16000),
         (6, 17000, 20000),
+        (6, 21000, 24000),
     ];
     let r = run_tracks(&f, None, &mic, &[]);
     r.result.unwrap();
-    assert_eq!(r.embed_calls, 5);
+    assert_eq!(r.embed_calls, 6);
 
     let speakers = f.store.speakers(f.id).unwrap();
     let labels: Vec<&str> = speakers.iter().map(|s| s.cluster_label.as_str()).collect();
@@ -334,6 +335,7 @@ fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
             ("Speaker 1", "5"),
             ("Imran", "8"),
             ("Speaker 1", "5"),
+            ("Speaker 2", "6"),
             ("Speaker 2", "6"),
         ]
     );

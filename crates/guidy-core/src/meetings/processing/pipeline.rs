@@ -1360,30 +1360,36 @@ pub fn cluster_units_with(
             .filter(|&i| vector_of(i).is_some())
             .collect(),
     };
-    let mut is_embedded = vec![false; n];
-    for &i in &embedded {
-        is_embedded[i] = true;
-    }
     let vectors: Vec<Vec<f32>> = embedded
         .iter()
         .map(|&i| vector_of(i).expect("embedded"))
         .collect();
-    let (labels_embedded, k_embedded) = cluster::agglomerate(&vectors, &config.cluster);
+    let durations: Vec<i64> = embedded
+        .iter()
+        .map(|&i| cache.units[i].span.len_ms())
+        .collect();
+    let (tiers, k_embedded) = cluster::two_tier(&vectors, &durations, &config.cluster);
 
     // A segment unlike the rest of its cluster is someone else (or two
     // voices at once): unknown, for the user to name, not a guess.
     let mut labels: Vec<Option<usize>> = vec![None; n];
     let mut rejected = vec![false; n];
-    for (&i, l) in embedded
-        .iter()
-        .zip(cluster::reject_outliers(&vectors, &labels_embedded))
-    {
-        match l {
-            Some(l) => labels[i] = Some(l),
-            None => rejected[i] = true,
+    // Whose voiceprint placed it (or ruled it out); the rest go by timing.
+    let mut placed = vec![false; n];
+    for (&i, tier) in embedded.iter().zip(tiers) {
+        match tier {
+            cluster::Tier::Cluster(l) => {
+                labels[i] = Some(l);
+                placed[i] = true;
+            }
+            cluster::Tier::Outlier => {
+                rejected[i] = true;
+                placed[i] = true;
+            }
+            cluster::Tier::Unplaced => {}
         }
     }
-    // Short or un-embeddable system speech joins a cluster only inside that
+    // Short, unplaced or un-embeddable system speech joins a cluster only inside that
     // speaker's turn (see `attach_by_time`), else stays unknown; with no
     // system voiceprints at all (no speaker model), it is one speaker.
     // (Other people's mic speech is all embedded.)
@@ -1474,14 +1480,14 @@ pub fn cluster_units_with(
         // voice placed stays there: it may be all its new cluster holds.
         let system_labels: Vec<Option<usize>> = system
             .iter()
-            .map(|&i| labels[i].filter(|_| is_embedded[i]))
+            .map(|&i| labels[i].filter(|_| placed[i]))
             .collect();
         if system_labels.iter().any(Option::is_some) {
             for (&i, l) in system
                 .iter()
                 .zip(cluster::attach_by_time(&spans, &system_labels))
             {
-                if !is_embedded[i] && voices[i].is_none() {
+                if !placed[i] && voices[i].is_none() {
                     labels[i] = l;
                 }
             }
