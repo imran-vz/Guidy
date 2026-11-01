@@ -234,7 +234,11 @@ fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
     let mut next = 0;
     // Punctuation comes from the text; an entry of it adds none of its own.
     let attach_marks = |next: &mut usize, out: &mut Vec<(String, bool)>| {
-        while let Some(w) = m.words.get(*next).filter(|w| atoms(&w.text).is_empty()) {
+        while m
+            .words
+            .get(*next)
+            .is_some_and(|w| atoms(&w.text).is_empty())
+        {
             out.push((String::new(), false));
             *next += 1;
         }
@@ -250,7 +254,6 @@ fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
             continue;
         }
         attach_marks(&mut next, &mut out);
-        let spelled = wanted.concat();
         let word = m.words.get(next)?;
         if atoms(&word.text) == wanted {
             out.push((token.to_string(), true));
@@ -259,17 +262,29 @@ fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
             .chars()
             .all(|c| !c.is_alphanumeric() || written_by_character(c))
         {
-            let mut have = String::new();
+            // Share out the token's characters, punctuation following its word.
+            let mut chars = token.chars().peekable();
+            let mut left = wanted.len();
             let mut first = true;
-            while have.len() < spelled.len() {
-                let word = m.words.get(next)?;
-                have.push_str(&atoms(&word.text).concat());
-                out.push((word.text.clone(), first));
+            while left > 0 {
+                attach_marks(&mut next, &mut out);
+                let entry = atoms(&m.words.get(next)?.text);
+                if entry.len() > left {
+                    return None;
+                }
+                let mut part = String::new();
+                let mut taken = 0;
+                while let Some(c) = chars.next_if(|c| taken < entry.len() || !c.is_alphanumeric()) {
+                    taken += usize::from(c.is_alphanumeric());
+                    part.push(c);
+                }
+                if atoms(&part) != entry {
+                    return None;
+                }
+                out.push((part, first));
                 first = false;
+                left -= entry.len();
                 next += 1;
-            }
-            if have != spelled {
-                return None;
             }
         } else {
             return None;
@@ -281,7 +296,12 @@ fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
 
 /// Per word of `m`, whether it goes: it is in a contiguous run of matching
 /// words holding at least [`ECHO_MIN_TOKENS`].
-fn echo_words(m: &RawSegment, heard: &[Timed], slack_ms: i64) -> Vec<bool> {
+fn echo_words(
+    m: &RawSegment,
+    texts: &[(String, bool)],
+    heard: &[Timed],
+    slack_ms: i64,
+) -> Vec<bool> {
     let mut said = Vec::new();
     let mut owner = Vec::new();
     for (k, w) in m.words.iter().enumerate() {
@@ -311,7 +331,8 @@ fn echo_words(m: &RawSegment, heard: &[Timed], slack_ms: i64) -> Vec<bool> {
         let end = (k..matched.len())
             .find(|&e| matched[e] != matched[k])
             .unwrap_or(matched.len());
-        let count: usize = m.words[k..end].iter().map(|w| word_count(&w.text)).sum();
+        // By the text, which a word list may cut more finely.
+        let count: usize = texts[k..end].iter().map(|(t, _)| word_count(t)).sum();
         if matched[k] && count >= ECHO_MIN_TOKENS {
             out[k..end].fill(true);
         }
@@ -377,7 +398,7 @@ fn echo_cut(m: &RawSegment, system: &[RawSegment], p: &EchoParams) -> EchoCut {
             EchoCut::Whole
         };
     };
-    let gone = echo_words(m, &heard, p.slack_ms);
+    let gone = echo_words(m, &texts, &heard, p.slack_ms);
     if !gone.contains(&true) {
         return EchoCut::Whole;
     }
@@ -1065,6 +1086,49 @@ mod tests {
         );
         mic.text = "abc my connection dropped".into();
         assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn the_minimum_counts_what_the_text_says() {
+        let system = [over(Track::System, 0, 1_000, &["u", "s", "a"])];
+        let p = EchoParams::default();
+        let mut mic = over(
+            Track::Mic,
+            0,
+            4_000,
+            &["U-S-A", "my", "connection", "dropped"],
+        );
+        mic.text = "U.S.A. my connection dropped".into();
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn cjk_punctuation_comes_from_the_text_too() {
+        let system = [over(
+            Track::System,
+            0,
+            2_000,
+            &["明日", "リリース", "します"],
+        )];
+        let spoken = |entries: &[&str], text: &str| {
+            let mut mic = over(Track::Mic, 0, 6_000, entries);
+            mic.words[2].t0_ms = 3_500;
+            mic.words[2].t1_ms = 4_500;
+            mic.words[3].t0_ms = 4_500;
+            mic.text = text.into();
+            mic
+        };
+        let kept = |mic| left_of(mic, &system);
+        let plain = ["明日", "リリース", "はい", "了解"];
+        assert_eq!(
+            kept(spoken(&plain, "明日リリースはい了解！")),
+            vec![(3_500, 6_000, "はい了解！".to_string())]
+        );
+        let marked = ["明日", "リリース", "はい!", "了解?"];
+        assert_eq!(
+            kept(spoken(&marked, "明日リリースはい了解")),
+            vec![(3_500, 6_000, "はい了解".to_string())]
+        );
     }
 
     #[test]
