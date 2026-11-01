@@ -648,5 +648,6 @@ impl Render for StatusBar {
                         d.child(self.render_update_checker(cx))
                     }),
             )
+            .test_support()
     }
 }
