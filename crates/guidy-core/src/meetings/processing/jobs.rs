@@ -831,6 +831,7 @@ impl Processor {
                 segmentation,
                 voices,
                 segmenter: None,
+                load_failed: false,
             });
         let turns = titanet_ready.then(|| TurnDetection {
             segmenter: segmenter.as_mut().map(|s| s as &mut dyn TurnSegmenter),
@@ -1063,12 +1064,23 @@ struct LazySegmenter {
     /// The speaker model it links its windows' speakers with.
     voices: std::path::PathBuf,
     segmenter: Option<PyannoteSegmenter>,
+    /// Loading failed once: don't load a broken model again for every span.
+    load_failed: bool,
 }
 
 impl TurnSegmenter for LazySegmenter {
     fn turns(&mut self, pcm: &[f32]) -> Result<Vec<Turn>> {
         if self.segmenter.is_none() {
-            self.segmenter = Some(PyannoteSegmenter::new(&self.segmentation, &self.voices)?);
+            if self.load_failed {
+                bail!("the speaker segmentation model didn't load");
+            }
+            match PyannoteSegmenter::new(&self.segmentation, &self.voices) {
+                Ok(segmenter) => self.segmenter = Some(segmenter),
+                Err(e) => {
+                    self.load_failed = true;
+                    return Err(e);
+                }
+            }
         }
         self.segmenter.as_mut().expect("loaded").turns(pcm)
     }

@@ -1644,6 +1644,118 @@ fn a_better_models_voiceprints_decide_the_clusters() {
     assert_eq!(c.labels[1], Some(0));
 }
 
+/// A line only the standard model could embed, named by its voice as someone
+/// no cluster matches, is all its new cluster holds. The timing rule, run
+/// again after the move, must not take it back out.
+#[test]
+fn a_moved_line_without_a_better_voiceprint_keeps_its_new_cluster() {
+    let mut cache = two_close_voices_cache();
+    let (a, b) = (vec![1.0, 0.0, 0.0], vec![0.8, 0.6, 0.0]);
+    cache.embeddings = [&a, &b, &a, &a]
+        .iter()
+        .map(|v| Some(Some((*v).clone())))
+        .collect();
+    let source = ClusterSource::Vectors(vec![Some(a.clone()), None, Some(a.clone()), Some(a)]);
+    let known = [
+        KnownVoice {
+            person_id: 7,
+            prints: vec![vec![1.0, 0.1, 0.0], vec![1.0, -0.1, 0.05]],
+        },
+        KnownVoice {
+            person_id: 9,
+            prints: vec![vec![0.8, 0.6, 0.1], vec![0.75, 0.65, -0.05]],
+        },
+    ];
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &known, &[], &source);
+    assert_eq!(c.voices, vec![Some(7), Some(9), Some(7), Some(7)]);
+    let line_1 = c.labels[1].unwrap();
+    assert_ne!(c.labels[0], Some(line_1));
+    assert_eq!(c.matches[line_1].person_id, Some(9));
+}
+
+/// A meeting of [`system_turns`] with this separation model.
+fn run_with_separation_model(f: &Fixture, model: &mut dyn Embedder) -> Result<()> {
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config: PipelineConfig::default(),
+        mic: None,
+        system: Some(Box::new(PcmSource::new(render(30_000, &system_turns())))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Diarizer::Model(model),
+        turns: None,
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    }
+    .run()
+}
+
+/// Fails on its `fail_on`th call (from 1), with what `error` makes.
+struct FailingModel {
+    calls: usize,
+    fail_on: usize,
+    error: fn() -> anyhow::Error,
+}
+
+impl Embedder for FailingModel {
+    fn embed(&mut self, _: &[f32]) -> Result<Option<Vec<f32>>> {
+        self.calls += 1;
+        if self.calls == self.fail_on {
+            return Err((self.error)());
+        }
+        // Would put every line in one cluster, if it were ever used.
+        Ok(Some(vec![1.0; 16]))
+    }
+}
+
+#[test]
+fn a_failed_separation_model_falls_back_to_the_standard_voiceprints() {
+    // Failing part-way drops its earlier vectors too.
+    for fail_on in [1, 3] {
+        let f = fixture();
+        let mut model = FailingModel {
+            calls: 0,
+            fail_on,
+            error: || anyhow::anyhow!("corrupt model"),
+        };
+        run_with_separation_model(&f, &mut model).unwrap();
+        assert_eq!(model.calls, fail_on, "stops at the first failure");
+        let segments = f.store.segments(f.id).unwrap();
+        let speaker = |ms: i64| segments.iter().find(|s| s.t0_ms == ms).unwrap().speaker_id;
+        assert_eq!(speaker(1000), speaker(13000));
+        assert_eq!(speaker(5000), speaker(17000));
+        assert_eq!(speaker(9000), speaker(21000));
+        assert_ne!(speaker(1000), speaker(5000));
+        assert_ne!(speaker(5000), speaker(9000));
+    }
+}
+
+#[test]
+fn a_cancelled_separation_model_cancels_the_run() {
+    let f = fixture();
+    let mut model = FailingModel {
+        calls: 0,
+        fail_on: 1,
+        error: || Cancelled.into(),
+    };
+    let e = run_with_separation_model(&f, &mut model).unwrap_err();
+    assert!(crate::meetings::processing::is_cancelled(&e), "{e:#}");
+    assert!(f.store.segments(f.id).unwrap().is_empty());
+}
+
 /// What the user said (a speaker named, a line tagged) survives running
 /// the meeting again: the model only decides the lines nobody pinned.
 #[test]

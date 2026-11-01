@@ -915,7 +915,10 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
-    /// What the chosen [`Diarizer`] says about who spoke each unit.
+    /// What the chosen [`Diarizer`] says about who spoke each unit. A
+    /// separation model that fails (other than by a cancel) gives way to the
+    /// standard voiceprints, for the whole meeting: voiceprints of two models
+    /// can't be clustered together.
     fn cluster_source(&mut self, cache: &ProcessingCache) -> Result<ClusterSource> {
         let n = cache.units.len();
         match self.diarizer {
@@ -928,14 +931,25 @@ impl<'a> Pipeline<'a> {
                     .filter(|&i| matches!(cache.embeddings.get(i), Some(Some(Some(_)))))
                     .collect();
                 for (k, &i) in todo.iter().enumerate() {
-                    let slot = &mut vectors[i];
                     self.check_cancel()?;
                     let unit = cache.units[i];
                     let pcm = self
                         .source(unit.track)?
                         .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
-                    if let Diarizer::Model(e) = &mut self.diarizer {
-                        *slot = e.embed(&pcm)?.map(|v| cluster::normalized(&v));
+                    let Diarizer::Model(model) = &mut self.diarizer else {
+                        unreachable!("matched above");
+                    };
+                    match model.embed(&pcm) {
+                        Ok(v) => vectors[i] = v.map(|v| cluster::normalized(&v)),
+                        Err(e) if super::is_cancelled(&e) => return Err(e),
+                        Err(e) => {
+                            log::warn!(
+                                "meeting {}: the speaker separation model failed; telling the \
+                                 voices apart with the standard one: {e:#}",
+                                self.meeting_id
+                            );
+                            return Ok(ClusterSource::Voiceprints);
+                        }
                     }
                     let done = (k + 1, todo.len());
                     self.progress(
@@ -1456,7 +1470,8 @@ pub fn cluster_units_with(
     }
     let moved = move_to_voices(cache, config, known, &mut labels, &voices);
     if !moved.is_empty() && !matches!(source, ClusterSource::SystemLabels(_)) {
-        // Short lines follow the voices around them again.
+        // Short lines follow the voices around them again. A line its own
+        // voice placed stays there: it may be all its new cluster holds.
         let system_labels: Vec<Option<usize>> = system
             .iter()
             .map(|&i| labels[i].filter(|_| is_embedded[i]))
@@ -1466,7 +1481,7 @@ pub fn cluster_units_with(
                 .iter()
                 .zip(cluster::attach_by_time(&spans, &system_labels))
             {
-                if !is_embedded[i] {
+                if !is_embedded[i] && voices[i].is_none() {
                     labels[i] = l;
                 }
             }

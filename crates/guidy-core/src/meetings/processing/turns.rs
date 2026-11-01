@@ -214,7 +214,9 @@ pub fn confirm(
 }
 
 /// Where the voice changes in `pcm` (ms from its start): the segmenter's
-/// and the scan's proposals, confirmed by `embedder`'s voiceprints.
+/// and the scan's proposals, confirmed by `embedder`'s voiceprints. A
+/// segmenter that fails (other than by a cancel) proposes nothing: the scan
+/// still does.
 pub fn find_changes(
     pcm: &[f32],
     segmenter: Option<&mut (dyn TurnSegmenter + '_)>,
@@ -229,7 +231,14 @@ pub fn find_changes(
     let mut embed =
         |t0: i64, t1: i64| -> Result<Option<Vec<f32>>> { embedder.embed(&pcm[at(t0)..at(t1)]) };
     let from_model = match segmenter {
-        Some(s) => model_candidates(&s.turns(pcm)?, p),
+        Some(s) => match s.turns(pcm) {
+            Ok(turns) => model_candidates(&turns, p),
+            Err(e) if super::is_cancelled(&e) => return Err(e),
+            Err(e) => {
+                log::warn!("the speaker segmentation model failed; scanning only: {e:#}");
+                Vec::new()
+            }
+        },
         None => Vec::new(),
     };
     let from_scan = scan_candidates(len_ms, &mut embed, p)?;
@@ -403,6 +412,43 @@ mod tests {
         let mut model = Says(vec![turn(0, 5_000, 0), turn(5_000, 12_000, 1)]);
         let changes = find_changes(&pcm, Some(&mut model), &mut One, &p()).unwrap();
         assert!(changes.is_empty());
+    }
+
+    /// Speaker A is positive samples, B negative.
+    struct SignOfSamples;
+    impl Embedder for SignOfSamples {
+        fn embed(&mut self, pcm: &[f32]) -> Result<Option<Vec<f32>>> {
+            let a = pcm.iter().filter(|&&x| x > 0.0).count() as f32;
+            let b = pcm.iter().filter(|&&x| x < 0.0).count() as f32;
+            Ok(Some(vec![a, b]))
+        }
+    }
+
+    #[test]
+    fn a_failing_segmenter_still_returns_the_scans_changes() {
+        struct Broken;
+        impl TurnSegmenter for Broken {
+            fn turns(&mut self, _: &[f32]) -> Result<Vec<Turn>> {
+                anyhow::bail!("corrupt model")
+            }
+        }
+        let mut pcm = vec![0.5f32; 7 * SAMPLE_RATE];
+        pcm.extend(vec![-0.5f32; 6 * SAMPLE_RATE]);
+        let changes = find_changes(&pcm, Some(&mut Broken), &mut SignOfSamples, &p()).unwrap();
+        assert_eq!(changes, vec![7_000]);
+    }
+
+    #[test]
+    fn a_cancelled_segmenter_stops_the_search() {
+        struct Stopped;
+        impl TurnSegmenter for Stopped {
+            fn turns(&mut self, _: &[f32]) -> Result<Vec<Turn>> {
+                Err(crate::meetings::processing::Cancelled.into())
+            }
+        }
+        let pcm = vec![0.5f32; 12 * SAMPLE_RATE];
+        let e = find_changes(&pcm, Some(&mut Stopped), &mut SignOfSamples, &p()).unwrap_err();
+        assert!(crate::meetings::processing::is_cancelled(&e), "{e:#}");
     }
 
     #[test]
