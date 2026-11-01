@@ -2246,6 +2246,19 @@ fn a_cancelled_separation_model_cancels_the_run() {
     assert!(f.store.segments(f.id).unwrap().is_empty());
 }
 
+#[test]
+fn a_cancelled_model_download_stops_the_run_rather_than_falling_back() {
+    let f = fixture();
+    let mut model = FailingModel {
+        calls: 0,
+        fail_on: 1,
+        error: || crate::downloads::DownloadCancelled.into(),
+    };
+    let e = run_with_separation_model(&f, &mut model).unwrap_err();
+    assert!(e.is::<crate::downloads::DownloadCancelled>(), "{e:#}");
+    assert!(f.store.segments(f.id).unwrap().is_empty());
+}
+
 /// What the user said (a speaker named, a line tagged) survives running
 /// the meeting again: the model only decides the lines nobody pinned.
 #[test]

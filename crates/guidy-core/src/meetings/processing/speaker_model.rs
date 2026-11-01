@@ -251,6 +251,18 @@ fn ensure_file(
     file: &ModelFile,
     on_progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<PathBuf> {
+    ensure_file_reporting(app, file, &|| {}, on_progress, &|_| {})
+}
+
+/// [`ensure_file`], telling when a download starts and how it ended, both
+/// under the file's lock, so a deletion waiting on it reports after them.
+fn ensure_file_reporting(
+    app: &AppHandle,
+    file: &ModelFile,
+    on_start: &dyn Fn(),
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    on_end: &dyn Fn(&Result<()>),
+) -> Result<PathBuf> {
     let path = file.path(app)?;
     if file.installed(&path) {
         return Ok(path);
@@ -260,8 +272,10 @@ fn ensure_file(
     if file.installed(&path) {
         return Ok(path);
     }
-    download_tracked(app, file, &path, on_progress)?;
-    Ok(path)
+    on_start();
+    let result = download_tracked(app, file, &path, on_progress);
+    on_end(&result);
+    result.map(|()| path)
 }
 
 /// Download `file` to `dest` through the download tracker: resumable from
@@ -487,45 +501,41 @@ pub fn delete_segmentation_model(app: &AppHandle) -> Result<()> {
 /// worker thread, never from inside the async runtime.
 pub fn ensure_speaker_model(app: &AppHandle) -> Result<PathBuf> {
     let file = download_file_for(speaker_download_id()).expect("the standard model");
-    let path = file.path(app)?;
-    if file.installed(&path) {
-        return Ok(path);
-    }
-    set_status(
-        app,
-        SpeakerModelStatus::Downloading {
-            downloaded: 0,
-            total: SPEAKER_MODEL_SIZE,
-        },
-    );
+    let failure = |e: &anyhow::Error| format!("Could not download the speaker voice model: {e:#}");
+    let cancelled = |e: &anyhow::Error| e.is::<crate::downloads::DownloadCancelled>();
     let last_emit = Mutex::new(std::time::Instant::now());
-    let result = ensure_file(app, &file, &|downloaded, total| {
-        let mut last = last_emit.lock();
-        if last.elapsed() >= std::time::Duration::from_millis(250) {
-            *last = std::time::Instant::now();
-            set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
-        }
-    });
-    match result {
-        Ok(path) => {
-            set_status(app, SpeakerModelStatus::Ready);
-            Ok(path)
-        }
-        Err(e) if e.is::<crate::downloads::DownloadCancelled>() => {
-            set_status(app, SpeakerModelStatus::Missing);
-            Err(e)
-        }
-        Err(e) => {
-            let error = format!("Could not download the speaker voice model: {e:#}");
+    ensure_file_reporting(
+        app,
+        &file,
+        &|| {
             set_status(
                 app,
-                SpeakerModelStatus::Failed {
-                    error: error.clone(),
+                SpeakerModelStatus::Downloading {
+                    downloaded: 0,
+                    total: SPEAKER_MODEL_SIZE,
                 },
-            );
-            bail!(error)
+            )
+        },
+        &|downloaded, total| {
+            let mut last = last_emit.lock();
+            if last.elapsed() >= std::time::Duration::from_millis(250) {
+                *last = std::time::Instant::now();
+                set_status(app, SpeakerModelStatus::Downloading { downloaded, total });
+            }
+        },
+        &|result| match result {
+            Ok(()) => set_status(app, SpeakerModelStatus::Ready),
+            Err(e) if cancelled(e) => set_status(app, SpeakerModelStatus::Missing),
+            Err(e) => set_status(app, SpeakerModelStatus::Failed { error: failure(e) }),
+        },
+    )
+    .map_err(|e| {
+        if cancelled(&e) {
+            e
+        } else {
+            anyhow::anyhow!(failure(&e))
         }
-    }
+    })
 }
 
 /// Queue the model's download (no-op when installed or already queued).

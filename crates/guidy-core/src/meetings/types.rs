@@ -529,6 +529,8 @@ impl SpeakerModelId {
     }
 
     /// The id in settings; anything unknown (or empty) is the standard one.
+    /// (An empty setting means automatic: see
+    /// `speaker_model::pick_separation_model`, which settings go through.)
     pub fn parse(s: &str) -> Self {
         Self::ALL
             .into_iter()

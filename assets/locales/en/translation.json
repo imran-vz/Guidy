@@ -1217,7 +1217,7 @@
       },
       "separation": {
         "title": "Telling voices apart",
-        "description": "The speaker model that decides who spoke each line. Larger models tell similar voices apart better, but take more space and make processing slower. People you've named are always recognized with the standard model, so switching keeps their voiceprints.",
+        "description": "The speaker model that decides who spoke each line. Larger models tell similar voices apart better, but take more space and make processing slower. TitaNet is used once it's downloaded, unless you choose another. People you've named are always recognized with the standard model, so switching keeps their voiceprints.",
         "downloaded": "Downloaded.",
         "notDownloaded": "Downloads when chosen.",
         "downloading": "Downloading...",
@@ -1674,7 +1674,7 @@
     },
     "speakers": {
       "standard": "Tells who spoke and recognizes people you've named. Meetings need it.",
-      "separation": "Optional. Tells similar voices apart; choose it in Meetings settings.",
+      "separation": "Optional. Tells similar voices apart. TitaNet is used once it's downloaded; choose another in Meetings settings.",
       "segmentation": "Optional. Finds where the speaker changes mid-sentence."
     },
     "state": {

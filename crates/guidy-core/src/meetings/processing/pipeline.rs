@@ -1094,7 +1094,14 @@ impl<'a> Pipeline<'a> {
                     };
                     match model.embed(&pcm) {
                         Ok(v) => vectors[i] = v.map(|v| cluster::normalized(&v)),
-                        Err(e) if super::is_cancelled(&e) => return Err(e),
+                        // A model you stopped downloading isn't a failed one.
+                        Err(e)
+                            if super::is_cancelled(&e)
+                                || e.chain()
+                                    .any(|c| c.is::<crate::downloads::DownloadCancelled>()) =>
+                        {
+                            return Err(e)
+                        }
                         Err(e) => {
                             log::warn!(
                                 "meeting {}: the speaker separation model failed; telling the \
