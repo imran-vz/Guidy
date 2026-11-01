@@ -167,6 +167,7 @@ impl crate::ui::pages::Page for StoragePage {
                 .small()
                 .icon(icon("refresh-cw"))
                 .tooltip(t("storage.refresh"))
+                .accessibility_label(t("storage.refresh"))
                 .loading(self.loading)
                 .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
                 .into_any_element(),
@@ -270,7 +271,10 @@ impl StoragePage {
                         .ghost()
                         .small()
                         .label(t("storage.manageModels"))
-                        .on_click(|_, _, cx| crate::windows::show_section(Section::Models, cx)),
+                        .on_click(|_, _, cx| {
+                            // This window is being updated: reach it once that ends.
+                            cx.defer(|cx| crate::windows::show_section(Section::Models, cx));
+                        }),
                 )
             })
             .child(
@@ -279,6 +283,10 @@ impl StoragePage {
                     .small()
                     .icon(icon("folder-open"))
                     .tooltip(t("storage.openFolder"))
+                    .accessibility_label(t_args(
+                        "storage.openFolderFor",
+                        &[("category", &t(label_key(category)))],
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_folder(category, cx);
                     })),
