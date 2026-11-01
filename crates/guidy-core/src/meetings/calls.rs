@@ -31,6 +31,9 @@ pub const CONFIRM_MS: i64 = 2_000;
 /// only input. Short enough, with a 1 s poll, to offer within the 5 s the
 /// scorecard allows.
 pub const VOICE_NOTE_APP_CONFIRM_MS: i64 = 4_000;
+/// Output must have run this long to count: one poll that catches a chime
+/// during a voice note isn't a call.
+pub const VOICE_NOTE_APP_OUTPUT_MS: i64 = 1_000;
 /// The same app with no audio output. A call app may close its output during
 /// silence, so a long enough hold still counts and no call is lost. A voice
 /// note past this still gets an offer
@@ -524,6 +527,8 @@ pub fn holds_microphone(apps: &[InputApp], app_id: &str) -> bool {
 struct Pending {
     app_id: String,
     since: i64,
+    /// Since when it has been playing audio without a break.
+    output_since: Option<i64>,
 }
 
 /// An answered app, not offered again until it has left the microphone.
@@ -667,13 +672,17 @@ impl CallDetector {
             .collect();
         let pending: Vec<Pending> = eligible
             .iter()
-            .map(|(app_id, _)| Pending {
-                app_id: app_id.clone(),
-                since: self
-                    .pending
+            .map(|(app_id, _)| {
+                let before = self.pending.iter().find(|p| p.app_id == *app_id && !gap);
+                let playing = apps
                     .iter()
-                    .find(|p| p.app_id == *app_id && !gap)
-                    .map_or(now, |p| p.since),
+                    .any(|a| a.output_running && a.app_id() == *app_id);
+                Pending {
+                    app_id: app_id.clone(),
+                    since: before.map_or(now, |p| p.since),
+                    output_since: playing
+                        .then(|| before.and_then(|p| p.output_since).unwrap_or(now)),
+                }
             })
             .collect();
         self.pending = pending;
@@ -684,9 +693,9 @@ impl CallDetector {
         // Of those held long enough: the surest, then the longest held.
         let mut confirmed: Option<(String, CallSource, i64)> = None;
         for ((app_id, source), run) in eligible.into_iter().zip(&self.pending) {
-            let output_running = apps
-                .iter()
-                .any(|a| a.output_running && a.app_id() == app_id);
+            let output_running = run
+                .output_since
+                .is_some_and(|since| now - since >= VOICE_NOTE_APP_OUTPUT_MS);
             if now - run.since < source.confirm_ms(output_running) {
                 continue;
             }
@@ -999,15 +1008,31 @@ mod tests {
     }
 
     #[test]
+    fn a_chime_caught_by_one_poll_is_not_a_call() {
+        let mut d = CallDetector::default();
+        let wa = [app("net.whatsapp.WhatsApp")];
+        let chime = [app_playing("net.whatsapp.WhatsApp")];
+        for t in (0..4_000).step_by(1_000) {
+            assert_eq!(d.observe(&wa, t), None);
+        }
+        assert_eq!(d.observe(&chime, 4_000), None);
+        assert_eq!(d.observe(&wa, 5_000), None);
+        assert_eq!(d.observe(&wa, 6_000), None);
+    }
+
+    #[test]
     fn only_voice_note_apps_wait_for_output() {
         for id in ["net.whatsapp.WhatsApp", "com.tinyspeck.slackmacgap"] {
+            // Observations further apart than the gap limit restart the run.
             let mut d = CallDetector::default();
-            assert_eq!(d.observe(&[app(id)], 0), None);
-            assert_eq!(d.observe(&[app(id)], 19_999), None);
+            for t in (0..20_000).step_by(1_000) {
+                assert_eq!(d.observe(&[app(id)], t), None, "{id} at {t}");
+            }
             assert!(d.observe(&[app(id)], 20_000).is_some(), "{id}");
             let mut d = CallDetector::default();
-            assert_eq!(d.observe(&[app_playing(id)], 0), None);
-            assert_eq!(d.observe(&[app_playing(id)], 3_999), None);
+            for t in (0..4_000).step_by(1_000) {
+                assert_eq!(d.observe(&[app_playing(id)], t), None, "{id} at {t}");
+            }
             assert!(d.observe(&[app_playing(id)], 4_000).is_some(), "{id}");
         }
         // Other sources don't look at it.

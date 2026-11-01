@@ -1,6 +1,6 @@
 {
   "name": "voice_note_app_output_late",
-  "description": "The call's output starts at 7 s: offered on the first poll with both, not at 20 s.",
+  "description": "The call's output starts at 7 s: offered once it has run for a second, not at 20 s.",
   "steps": [
     {
       "from": 0,
@@ -24,7 +24,7 @@
   ],
   "offers": [
     {
-      "t": 7000,
+      "t": 8000,
       "source": "whats_app"
     }
   ]
