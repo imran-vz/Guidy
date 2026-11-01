@@ -167,41 +167,76 @@ impl StorageReport {
 /// Identifies a file or directory across the whole scan.
 #[cfg(unix)]
 type FileKey = (u64, u64);
-/// Roots are canonicalized and symlinks never followed, so a path is unique
-/// (hard links aren't detected: std has no stable file id here).
-#[cfg(not(unix))]
-type FileKey = PathBuf;
-
-#[cfg(unix)]
-fn file_key(_path: &Path, meta: &Metadata) -> FileKey {
-    use std::os::unix::fs::MetadataExt;
-    (meta.dev(), meta.ino())
-}
-
-#[cfg(not(unix))]
-fn file_key(path: &Path, _meta: &Metadata) -> FileKey {
-    path.to_path_buf()
-}
-
 /// Identifies the volume a file is on.
 #[cfg(unix)]
 type VolumeKey = u64;
-#[cfg(not(unix))]
-type VolumeKey = std::ffi::OsString;
 
 #[cfg(unix)]
-fn volume_key(_path: &Path, meta: &Metadata) -> VolumeKey {
+fn identify(_path: &Path, meta: &Metadata) -> (FileKey, VolumeKey) {
     use std::os::unix::fs::MetadataExt;
-    meta.dev()
+    ((meta.dev(), meta.ino()), meta.dev())
 }
 
-/// The drive prefix of a canonical path.
+/// Volume serial and file index when the file can be opened, else its path:
+/// roots are canonical and symlinks never followed, so a path is unique
+/// short of a hard link.
 #[cfg(not(unix))]
-fn volume_key(path: &Path, _meta: &Metadata) -> VolumeKey {
-    path.components()
-        .next()
-        .map(|c| c.as_os_str().to_os_string())
-        .unwrap_or_default()
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FileKey {
+    Id(u64, u64),
+    Path(PathBuf),
+}
+/// Volume serial, else the drive prefix of the canonical path.
+#[cfg(not(unix))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VolumeKey {
+    Serial(u64),
+    Prefix(std::ffi::OsString),
+}
+
+#[cfg(not(unix))]
+fn identify(path: &Path, _meta: &Metadata) -> (FileKey, VolumeKey) {
+    match file_id(path) {
+        Some((volume, file)) => (FileKey::Id(volume, file), VolumeKey::Serial(volume)),
+        None => (
+            FileKey::Path(path.to_path_buf()),
+            VolumeKey::Prefix(
+                path.components()
+                    .next()
+                    .map(|c| c.as_os_str().to_os_string())
+                    .unwrap_or_default(),
+            ),
+        ),
+    }
+}
+
+/// `(volume serial, file index)`. Std has no stable accessor for these.
+#[cfg(windows)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    // No access rights (metadata only), and directories need the flag.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is open for this call and `info` a valid out-pointer.
+    let result = unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) };
+    result.ok()?;
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Some((u64::from(info.dwVolumeSerialNumber), index))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_id(_path: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// What a file occupies on disk.
@@ -282,7 +317,8 @@ impl Walk {
                 // Symlinks, sockets, fifos.
                 continue;
             }
-            if !self.seen.insert(file_key(&path, &meta)) {
+            let (key, volume) = identify(&path, &meta);
+            if !self.seen.insert(key) {
                 continue;
             }
             if kind.is_file() {
@@ -292,7 +328,7 @@ impl Walk {
                         path.strip_prefix(&root).map_or(Category::Other, classify)
                     }
                 };
-                self.add(category, file_size(&meta), volume_key(&path, &meta));
+                self.add(category, file_size(&meta), volume);
                 continue;
             }
             let entries = match std::fs::read_dir(&path) {
@@ -317,7 +353,7 @@ fn disk_volume(path: &Path) -> Option<VolumeKey> {
     let existing = nearest_existing(path)?;
     let canonical = std::fs::canonicalize(existing).ok()?;
     let meta = std::fs::symlink_metadata(&canonical).ok()?;
-    Some(volume_key(&canonical, &meta))
+    Some(identify(&canonical, &meta).1)
 }
 
 fn nearest_existing(path: &Path) -> Option<&Path> {
@@ -458,7 +494,7 @@ fn roots(app: &AppHandle) -> Result<StorageRoots, String> {
     Ok(StorageRoots {
         data_dir,
         log_dir,
-        shared_cache_dir: crate::managers::model::hf_cache_dir(),
+        shared_cache_dir: crate::managers::model::hf_cache_dir(&model_paths),
         model_paths,
         resource_dir: release.then(|| app.path().resource_dir().ok()).flatten(),
         executable: release.then(|| std::env::current_exe().ok()).flatten(),
@@ -612,7 +648,6 @@ mod tests {
         assert_eq!(report.total_bytes, 0);
     }
 
-    #[cfg(unix)]
     #[test]
     fn hardlink_counts_once() {
         let dir = tempfile::tempdir().unwrap();
