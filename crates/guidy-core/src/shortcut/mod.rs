@@ -280,8 +280,13 @@ fn restore_registration(app: &AppHandle, binding: &ShortcutBinding) {
     }
 }
 pub fn reset_binding(app: AppHandle, id: String) -> Result<BindingResponse, String> {
-    let binding = settings::get_stored_binding(&settings::get_settings(&app), &id)?;
-    change_binding(app, id, binding.default_binding)
+    let current = settings::get_settings(&app);
+    let binding = settings::get_stored_binding(&current, &id)?;
+    let target = settings::default_binding_for_implementation(
+        &binding.default_binding,
+        current.keyboard_implementation,
+    );
+    change_binding(app, id, target)
 }
 
 /// Unregister every binding while the user is recording a new shortcut in
@@ -514,13 +519,17 @@ fn register_all_shortcuts_for_implementation(
                 id, binding.current_binding, implementation, e
             );
 
-            // Reset to default
+            // Reset to default, as long as it can register here
+            let replacement = settings::default_binding_for_implementation(
+                &default_binding.current_binding,
+                implementation,
+            );
             reset_values.push(BindingReset {
                 id: id.clone(),
                 invalid: binding.current_binding.clone(),
-                replacement: default_binding.current_binding.clone(),
+                replacement: replacement.clone(),
             });
-            binding.current_binding = default_binding.current_binding.clone();
+            binding.current_binding = replacement;
             reset_bindings.push(id.clone());
         }
 

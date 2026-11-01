@@ -1,4 +1,5 @@
 use crate::host::AppHandle;
+use crate::shortcut::gesture::is_single_modifier_binding;
 use crate::utils;
 use log::{debug, warn};
 use serde::de::{self, Visitor};
@@ -946,10 +947,12 @@ pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
 /// The built-in shortcut bindings, keyed by binding id.
 fn default_bindings() -> HashMap<String, ShortcutBinding> {
+    // One key to hold or double-press. Linux defaults to the system shortcut
+    // implementation, which can't do modifier-only bindings.
     #[cfg(target_os = "windows")]
-    let default_shortcut = "ctrl+space";
+    let default_shortcut = "ctrl_right";
     #[cfg(target_os = "macos")]
-    let default_shortcut = "option+space";
+    let default_shortcut = "option_right";
     #[cfg(target_os = "linux")]
     let default_shortcut = "ctrl+space";
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -997,6 +1000,47 @@ fn default_bindings() -> HashMap<String, ShortcutBinding> {
         },
     );
     bindings
+}
+
+/// The transcribe chord for where a single-modifier default can't work.
+fn transcribe_chord_default() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "option+space"
+    } else if cfg!(any(target_os = "windows", target_os = "linux")) {
+        "ctrl+space"
+    } else {
+        "alt+space"
+    }
+}
+
+/// The value to reset a binding to under `implementation`. The system shortcut
+/// implementation can't register a lone modifier, so it keeps a chord.
+pub fn default_binding_for_implementation(
+    default: &str,
+    implementation: KeyboardImplementation,
+) -> String {
+    if implementation == KeyboardImplementation::Tauri && is_single_modifier_binding(default) {
+        transcribe_chord_default().to_string()
+    } else {
+        default.to_string()
+    }
+}
+
+/// A store on the system shortcut implementation can pick up the single-modifier
+/// default when its binding is missing or was salvaged. Saved chords are untouched.
+fn keep_transcribe_chord_under_system_shortcuts(settings: &mut AppSettings) -> bool {
+    if settings.keyboard_implementation != KeyboardImplementation::Tauri {
+        return false;
+    }
+    let Some(binding) = settings.bindings.get_mut("transcribe") else {
+        return false;
+    };
+    if !is_single_modifier_binding(&binding.current_binding) {
+        return false;
+    }
+    binding.current_binding = transcribe_chord_default().to_string();
+    binding.default_binding = transcribe_chord_default().to_string();
+    true
 }
 
 pub fn get_default_settings() -> AppSettings {
@@ -1153,6 +1197,10 @@ fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
             entry.insert(value);
             updated = true;
         }
+    }
+
+    if keep_transcribe_chord_under_system_shortcuts(&mut settings) {
+        updated = true;
     }
 
     if ensure_post_process_defaults(&mut settings) {
@@ -1480,6 +1528,89 @@ mod tests {
             settings.post_process_provider("custom").unwrap().base_url,
             "http://10.0.0.2:8080/v1"
         );
+    }
+
+    #[test]
+    fn fresh_default_is_a_single_key_where_the_implementation_allows_it() {
+        let settings = get_default_settings();
+        let binding = &settings.bindings["transcribe"];
+        let expected = if cfg!(target_os = "macos") {
+            "option_right"
+        } else if cfg!(target_os = "windows") {
+            "ctrl_right"
+        } else if cfg!(target_os = "linux") {
+            "ctrl+space"
+        } else {
+            "alt+space"
+        };
+        assert_eq!(binding.current_binding, expected);
+        assert_eq!(binding.default_binding, expected);
+        // Whatever the OS, the default must register under the default backend.
+        assert!(
+            settings.keyboard_implementation == KeyboardImplementation::NativeKeys
+                || !is_single_modifier_binding(&binding.current_binding)
+        );
+    }
+
+    #[test]
+    fn saved_chord_survives_load() {
+        let t = TestApp::new();
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/settings/legacy_store.json"
+        );
+        let dest = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(fixture, &dest).unwrap();
+
+        let s = get_settings(&t.app);
+        assert_eq!(s.bindings["transcribe"].current_binding, "ctrl+shift+space");
+    }
+
+    #[test]
+    fn system_shortcuts_reset_to_a_chord_not_a_single_modifier() {
+        use KeyboardImplementation::{NativeKeys, Tauri};
+        let chord = transcribe_chord_default();
+        assert_eq!(
+            default_binding_for_implementation("option_right", Tauri),
+            chord
+        );
+        assert_eq!(
+            default_binding_for_implementation("ctrl_right", Tauri),
+            chord
+        );
+        assert_eq!(
+            default_binding_for_implementation("option_right", NativeKeys),
+            "option_right"
+        );
+        assert_eq!(default_binding_for_implementation("f13", Tauri), "f13");
+    }
+
+    #[test]
+    fn system_shortcuts_replace_only_a_single_modifier_on_load() {
+        let mut settings = get_default_settings();
+        settings.keyboard_implementation = KeyboardImplementation::Tauri;
+        let set = |s: &mut AppSettings, value: &str| {
+            s.bindings.get_mut("transcribe").unwrap().current_binding = value.to_string();
+        };
+
+        set(&mut settings, "option_right");
+        assert!(keep_transcribe_chord_under_system_shortcuts(&mut settings));
+        assert_eq!(
+            settings.bindings["transcribe"].current_binding,
+            transcribe_chord_default()
+        );
+
+        set(&mut settings, "ctrl+shift+k");
+        assert!(!keep_transcribe_chord_under_system_shortcuts(&mut settings));
+        assert_eq!(
+            settings.bindings["transcribe"].current_binding,
+            "ctrl+shift+k"
+        );
+
+        settings.keyboard_implementation = KeyboardImplementation::NativeKeys;
+        set(&mut settings, "option_right");
+        assert!(!keep_transcribe_chord_under_system_shortcuts(&mut settings));
     }
 
     #[test]

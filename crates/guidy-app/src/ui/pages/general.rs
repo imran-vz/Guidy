@@ -2,7 +2,9 @@
 //! appearance (theme and app language). Rows save as soon as they change
 //! (optimistically, rolled back with an inline error if the write fails).
 
-use crate::logic::keyboard::OsType;
+use crate::logic::keyboard::{
+    dictation_key_presets, dictation_key_selection, OsType, DICTATION_KEY_CUSTOM,
+};
 use crate::state::AppState;
 use crate::ui::design::dp;
 use crate::ui::kit::{
@@ -15,6 +17,8 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::h_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use guidy_core::settings::KeyboardImplementation;
+use guidy_core::shortcut::gesture::is_single_modifier_binding;
 use serde_json::json;
 
 pub struct GeneralPage {
@@ -149,23 +153,69 @@ impl GeneralPage {
             )
             .description(t("settings.general.shortcutActivation.descriptions.toggle")),
         ];
+        let transcribe_binding = s
+            .bindings
+            .get("transcribe")
+            .map(|b| b.current_binding.clone())
+            .unwrap_or_default();
+        // The system implementation can't register a lone modifier.
+        let system_shortcuts = s.keyboard_implementation == KeyboardImplementation::Tauri;
+        let mut dictation_options: Vec<DropdownOption> = dictation_key_presets(OsType::current())
+            .iter()
+            .map(|preset| {
+                DropdownOption::new(preset.binding, t(preset.label_key)).disabled(system_shortcuts)
+            })
+            .collect();
+        dictation_options.push(DropdownOption::new(
+            DICTATION_KEY_CUSTOM,
+            t("settings.general.dictationKey.options.custom"),
+        ));
+        let dictation_description = if system_shortcuts {
+            t("settings.general.dictationKey.systemHint")
+        } else if transcribe_binding == "fn" {
+            t("settings.general.dictationKey.fnHint")
+        } else {
+            t("settings.general.dictationKey.description")
+        };
+        let transcribe_shortcut = self.transcribe_shortcut.clone();
         let mut shortcut_rows = vec![
+            SettingRow::new("dictation-key", t("settings.general.dictationKey.title"))
+                .description(dictation_description)
+                .control(
+                    Dropdown::new("dictation-key-dropdown")
+                        .options(dictation_options)
+                        .selected(Some(dictation_key_selection(
+                            &transcribe_binding,
+                            OsType::current(),
+                        )))
+                        .menu_width(dp(260.))
+                        .on_select(move |v, window, cx| {
+                            transcribe_shortcut
+                                .update(cx, |input, cx| input.select_dictation_key(v, window, cx))
+                        }),
+                )
+                .into_any_element(),
             self.transcribe_shortcut.clone().into_any_element(),
-            SettingRow::new(
-                "shortcut-activation",
-                t("settings.general.shortcutActivation.title"),
-            )
-            .description(t("settings.general.shortcutActivation.description"))
-            .error(save_error(st, "shortcut_activation"))
-            .control(
-                Dropdown::new("shortcut-activation-dropdown")
-                    .options(activation_options)
-                    .selected(activation)
-                    .menu_width(dp(320.))
-                    .on_select(|v, _, cx| Self::set("shortcut_activation", json!(v), cx)),
-            )
-            .into_any_element(),
         ];
+        // A single modifier always uses hold and double-press.
+        if !is_single_modifier_binding(&transcribe_binding) {
+            shortcut_rows.push(
+                SettingRow::new(
+                    "shortcut-activation",
+                    t("settings.general.shortcutActivation.title"),
+                )
+                .description(t("settings.general.shortcutActivation.description"))
+                .error(save_error(st, "shortcut_activation"))
+                .control(
+                    Dropdown::new("shortcut-activation-dropdown")
+                        .options(activation_options)
+                        .selected(activation)
+                        .menu_width(dp(320.))
+                        .on_select(|v, _, cx| Self::set("shortcut_activation", json!(v), cx)),
+                )
+                .into_any_element(),
+            );
+        }
         if let Some(cancel) = &self.cancel_shortcut {
             shortcut_rows.push(cancel.clone().into_any_element());
         }

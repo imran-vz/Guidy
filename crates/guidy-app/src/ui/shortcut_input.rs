@@ -9,7 +9,7 @@
 use crate::logic::flows::SECURE_INPUT_HELP_URL;
 use crate::logic::keyboard::{
     format_key_combination, gpui_key_name, modifier_names, NativeKeysInput, NativeKeysRecorder,
-    OsType, SystemRecorder,
+    OsType, SystemRecorder, DICTATION_KEY_CUSTOM,
 };
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp};
@@ -255,6 +255,37 @@ impl ShortcutInput {
             window,
             cx,
         );
+    }
+
+    /// A choice from the Dictation Key dropdown: Custom records a new shortcut,
+    /// anything else is the binding to save. Recording is deferred so the
+    /// closing menu can't take focus back, since losing focus cancels it.
+    pub fn select_dictation_key(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_recording() {
+            return;
+        }
+        if value == DICTATION_KEY_CUSTOM {
+            cx.defer_in(window, |this, window, cx| this.start(window, cx));
+            return;
+        }
+        let id = self.binding_id.to_string();
+        let current = self
+            .state
+            .read(cx)
+            .app_settings()
+            .and_then(|s| s.bindings.get(&id).map(|b| b.current_binding.clone()))
+            .unwrap_or_default();
+        if current == value {
+            return;
+        }
+        self.error = None;
+        self.original = current;
+        self.commit(value.to_string(), window, cx);
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -169,14 +169,34 @@ mod general_page {
     /// PARITY G-01, G-02, G-03
     #[gpui_kit::test]
     fn shortcut_rows(cx: &mut TestAppContext) {
-        setup(cx, FakeBackend::new());
+        let backend = FakeBackend::new();
+        // The activation row only exists for a chord; some fresh defaults aren't.
+        backend.with_settings(|s| {
+            s.bindings.get_mut("transcribe").unwrap().current_binding = "ctrl+space".into()
+        });
+        setup(cx, backend);
         let (w, _) = open(cx, GeneralPage::new);
+        assert!(exists(cx, w, "dictation-key"));
         assert!(exists(cx, w, "shortcut-transcribe"));
         assert!(exists(cx, w, "shortcut-activation"));
         assert_eq!(
             exists(cx, w, "shortcut-cancel"),
             OsType::current() != OsType::Linux
         );
+    }
+
+    /// PARITY G-11
+    #[gpui_kit::test]
+    fn single_modifier_binding_hides_the_activation_row(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| {
+            s.bindings.get_mut("transcribe").unwrap().current_binding = "option_right".into()
+        });
+        setup(cx, backend);
+        let (w, _) = open(cx, GeneralPage::new);
+        assert!(exists(cx, w, "dictation-key"));
+        assert!(exists(cx, w, "shortcut-transcribe"));
+        assert!(!exists(cx, w, "shortcut-activation"));
     }
 
     /// PARITY G-08
@@ -1042,6 +1062,24 @@ mod overlay_view {
 mod shortcut_recorder {
     use super::*;
     use crate::ui::shortcut_input::ShortcutInput;
+
+    /// PARITY G-11
+    #[gpui_kit::test]
+    fn dictation_key_preset_saves_through_change_binding(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        setup(cx, backend.clone());
+        let (w, input) = open(cx, |window, cx| {
+            ShortcutInput::new("transcribe", window, cx)
+        });
+        with_window(cx, w, |window, cx| {
+            input.update(cx, |input, cx| {
+                input.select_dictation_key("alt_right", window, cx)
+            })
+        });
+        cx.run_until_parked();
+        assert!(backend.called("change_binding transcribe alt_right"));
+        assert!(!backend.called("start_native_keys_recording transcribe"));
+    }
 
     /// PARITY K-04, C-03
     #[gpui_kit::test]
