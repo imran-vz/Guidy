@@ -228,6 +228,9 @@ pub struct WidgetModel {
     /// For that stop: how long ago the call let go of the microphone. The
     /// note ends there.
     stop_released_ago: Option<i64>,
+    /// When the tracked call's app last let go of the microphone, for a stop
+    /// after it has already returned.
+    last_release: Option<i64>,
     /// Apps the call watcher should forget a snooze of
     /// ([`guidy_core::meetings::calls::CallDetector::unsnooze_app`]).
     pending_unsnoozes: Vec<String>,
@@ -262,6 +265,7 @@ impl Default for WidgetModel {
             stopping: false,
             stop_released_ago: None,
             split_on_return: false,
+            last_release: None,
             pending_unsnoozes: Vec::new(),
             record_next: None,
             wave: VecDeque::from(vec![0.0; BARS]),
@@ -445,6 +449,9 @@ impl WidgetModel {
         }
         let tracked = self.recording_call.clone()?;
         let released_at = self.presence.released_at();
+        if released_at.is_some() {
+            self.last_release = released_at;
+        }
         match self
             .presence
             .observe(holds_microphone(apps, &tracked.app_id), now)
@@ -475,9 +482,9 @@ impl WidgetModel {
                     || (c.app_id == tracked.app_id && c.source != tracked.source))
         });
         if new_call {
-            if self.presence.has_left() {
-                self.stop_released_ago = self.presence.released_at().map(|at| (now - at).max(0));
-            }
+            // Off the microphone now, or back already for another service.
+            let released = self.presence.released_at().or(self.last_release);
+            self.stop_released_ago = released.map(|at| (now - at).max(0));
             return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
         }
         self.stop_if_unanswered(now)
@@ -568,17 +575,26 @@ impl WidgetModel {
     /// first needs no such thing, and a new call behind it is still offered.
     fn recording_stopped(&mut self) {
         let tracked = self.recording_call.take();
-        let left = self.presence.has_left() || std::mem::take(&mut self.split_on_return);
+        let split = std::mem::take(&mut self.split_on_return);
+        let left = self.presence.has_left() || split;
         self.presence = CallPresence::default();
         self.left_at = None;
         self.stopping = false;
         self.stop_released_ago = None;
+        self.last_release = None;
         // Whatever comes next offers beside the floater.
         self.expanded = false;
         let Some(tracked) = tracked else {
             self.dismiss_call();
             return;
         };
+        // It ended, so whatever snoozed it was about that call: if it comes
+        // back that's a new one (a displaced browser's snooze lasts while it
+        // holds the microphone, which it may do again by then). Coming back
+        // already queued this.
+        if left && !split {
+            self.pending_unsnoozes.push(tracked.app_id.clone());
+        }
         let new_call = self.call.as_ref().filter(|c| c.since != tracked.since);
         if new_call.is_none() && self.call.is_some() {
             self.dismiss_call();
@@ -995,6 +1011,32 @@ mod tests {
             Some(CallCommand::Stop)
         );
         assert_eq!(m.take_stop_released_ago(), Some((1, END_GRACE_MS)));
+        m.set_recorder(RecorderState::Idle);
+        // Whichever way Zoom's call ended, its snooze goes with it.
+        assert_eq!(m.take_unsnoozes(), ["us.zoom.xos"]);
+    }
+
+    #[test]
+    fn a_quick_service_switch_in_a_browser_ends_the_note_at_the_release() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        // Let go at 11 s, back at 12 s for another service, under the grace.
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 11_000));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 12_000));
+        assert!(m.recorder.is_recording());
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 14_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(teams), 14_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), Some((1, 3_000)));
     }
 
     #[test]
