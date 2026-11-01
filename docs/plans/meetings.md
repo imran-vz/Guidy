@@ -63,9 +63,9 @@ Tests: 3-6 s voice-note bursts give no offer; 20 s unknown page offers; finding 
 
 ## Phase 3: capture resilience (`swift/meeting_bridge.swift`)
 - Start each stream independently; fail only when both fail; a failed stream keeps retrying.
-- Watchdog on existing timers: 3 s without callbacks or `!engine.isRunning` triggers rebuild, retry with 0.5-5 s backoff until Stop.
+- Watchdog on existing timers: 3 s without callbacks or `!engine.isRunning` triggers rebuild, retry with 0.25-5 s backoff until Stop.
 - Default-input listener. `NSWorkspace` wake rebuilds both streams. `IOPMAssertion` while recording.
-- Events: `state:stalled`, `state:recovered`, `state:gap:<ms>`.
+- Events: `state:stalled`, `state:recovered`, `state:restarted`, `state:gap:<ms>`, `state:switched`, `state:dropping`, `state:dropped:<samples>`.
 - `MicPlan` honours a selected mic; otherwise keep Bluetooth-to-built-in.
 
 ## Phase 4: health and recovery
@@ -98,3 +98,24 @@ Each app's bundle IDs, especially Teams, Webex (`Cisco-Systems.Spark`?), Discord
 - Repeat Automation dialogs annoy users: query only after opt-in.
 - Mic can hear feedback clicks during recording; meetings play none.
 - Always-record legal exposure stays with the user, so it must always show visibly.
+
+## Timing by reading: R10, R12, R13
+
+Read from the code, not measured. Only hardware runs count as passes.
+
+- **R10, call ends:** the question shows at the first 1 s poll past the 8 s grace,
+  about 8-9 s after release, inside 30 s. Slow window title reads can delay a poll.
+  A recording with no tracked call (started by hand, no call ever detected) has
+  nothing to ask about, by design.
+- **R12, AirPods on the mic:** a new default input restarts after a 0.3 s settle.
+  Failed rebuilds used to retry at 0.5, 1, 2 s, which could run past the 3 s bar, so
+  they now retry every 0.25 s for 2.5 s, then back off to 5 s. A restart shorter than
+  a health tick showed no notice, so "Reconnecting" now holds for one tick, and a
+  device change says `state:switched` even with nothing playing.
+- **R12 and R13, system audio:** a new default output rebuilt at once, but a rate
+  change on the same device (AirPods turning on their mic) or a device dying waited
+  for the 3 s watchdog. A listener on the output device now rebuilds at once, only
+  on a real change.
+- **Still open:** whether the IOProc really stops on a rate change, and how long
+  AirPods take to settle. A failure no event reports still waits for the watchdog:
+  3-3.5 s to detect, then the rebuild and first buffer, which misses the 3 s bar.

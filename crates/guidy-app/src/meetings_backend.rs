@@ -16,6 +16,7 @@
 use crate::logic::meetings::MeetingsInit;
 pub use guidy_core::llm::ModelCatalog;
 use guidy_core::meetings::calls::InputApp;
+use guidy_core::meetings::drafts::MeetingDraft;
 use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult, UserVoice,
 };
@@ -209,6 +210,15 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn recorder_state(&self) -> RecorderState;
     fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId>;
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>>;
+    /// [`Self::stop_recording`] of recording `id`, whose note ended
+    /// `released_ago_ms` ago.
+    fn stop_recording_released(
+        &self,
+        _id: MeetingId,
+        _released_ago_ms: i64,
+    ) -> MeetingsResult<Option<MeetingId>> {
+        self.stop_recording()
+    }
     /// Whether a call is going on behind the recording.
     fn set_recording_in_call(&self, in_call: bool);
     /// "Keep" on the no-audio warning.
@@ -399,6 +409,18 @@ pub trait MeetingsBackend: Send + Sync + 'static {
         Err(unavailable())
     }
     fn update_summary(&self, _summary: &StoredSummary) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn meeting_draft(&self, _id: MeetingId) -> Option<MeetingDraft> {
+        None
+    }
+    fn hold_meeting_draft(&self, _id: MeetingId, _revision: u64, _draft: MeetingDraft) {}
+    fn save_meeting_draft(
+        &self,
+        _id: MeetingId,
+        _revision: u64,
+        _draft: &MeetingDraft,
+    ) -> MeetingsResult<()> {
         Err(unavailable())
     }
     fn action_items(&self, _id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
@@ -592,6 +614,15 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         self.m()?.stop_recording().map_err(err)
+    }
+    fn stop_recording_released(
+        &self,
+        id: MeetingId,
+        released_ago_ms: i64,
+    ) -> MeetingsResult<Option<MeetingId>> {
+        self.m()?
+            .stop_recording_released(id, released_ago_ms)
+            .map_err(err)
     }
     fn set_recording_in_call(&self, in_call: bool) {
         if let Some(m) = self.manager() {
@@ -807,6 +838,24 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
         self.m()?.update_summary(summary).map_err(err)
+    }
+    fn meeting_draft(&self, id: MeetingId) -> Option<MeetingDraft> {
+        self.manager()?.meeting_draft(id)
+    }
+    fn hold_meeting_draft(&self, id: MeetingId, revision: u64, draft: MeetingDraft) {
+        if let Some(m) = self.manager() {
+            m.hold_meeting_draft(id, revision, draft);
+        }
+    }
+    fn save_meeting_draft(
+        &self,
+        id: MeetingId,
+        revision: u64,
+        draft: &MeetingDraft,
+    ) -> MeetingsResult<()> {
+        self.m()?
+            .save_meeting_draft(id, revision, draft)
+            .map_err(err)
     }
     fn generate_title(&self, id: MeetingId, bulk: bool) -> MeetingsResult<TitleOutcome> {
         self.m()?.generate_title(id, bulk).map_err(err)
@@ -1353,6 +1402,14 @@ pub mod fake {
             d.recorder = RecorderState::Idle;
             Ok(id)
         }
+        fn stop_recording_released(
+            &self,
+            id: MeetingId,
+            released_ago_ms: i64,
+        ) -> MeetingsResult<Option<MeetingId>> {
+            self.rec(format!("released {id} {released_ago_ms}"));
+            self.stop_recording()
+        }
         fn segment_audio(
             &self,
             meeting_id: MeetingId,
@@ -1768,6 +1825,26 @@ pub mod fake {
                 .insert(summary.meeting_id, summary.clone());
             Ok(())
         }
+        fn meeting_draft(&self, id: MeetingId) -> Option<MeetingDraft> {
+            self.data.lock().ai.drafts.get(&id).cloned()
+        }
+        fn save_meeting_draft(
+            &self,
+            id: MeetingId,
+            _revision: u64,
+            draft: &MeetingDraft,
+        ) -> MeetingsResult<()> {
+            let mut data = self.data.lock();
+            if let Some(e) = data.ai.fail_draft_save.clone() {
+                return Err(e);
+            }
+            if draft.is_empty() {
+                data.ai.drafts.remove(&id);
+            } else {
+                data.ai.drafts.insert(id, draft.clone());
+            }
+            Ok(())
+        }
         fn action_items(&self, id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
             Ok(self
                 .data
@@ -1787,6 +1864,9 @@ pub mod fake {
                 item.text
             ));
             let mut d = self.data.lock();
+            if let Some(e) = d.ai.fail_item_update.clone() {
+                return Err(e);
+            }
             if let Some(i) = d.ai.items.iter_mut().find(|i| i.id == item.id) {
                 *i = item.clone();
             }
@@ -1947,6 +2027,11 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeAiData {
         pub summaries: HashMap<MeetingId, StoredSummary>,
+        pub drafts: HashMap<MeetingId, MeetingDraft>,
+        /// `save_meeting_draft` fails with this.
+        pub fail_draft_save: Option<String>,
+        /// `update_action_item` fails with this.
+        pub fail_item_update: Option<String>,
         pub items: Vec<ActionItem>,
         pub linear_key: Option<String>,
         pub fail_summarize: Option<String>,

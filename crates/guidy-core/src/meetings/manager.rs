@@ -113,6 +113,8 @@ pub struct MeetingsManager {
     /// The cancel flags of the bulk title generations running now
     /// ([`Self::cancel_title_generation`] sets them all).
     title_cancels: parking_lot::Mutex<Vec<crate::llm::CancelFlag>>,
+    /// Autosaved drafts of typed notes (R18).
+    drafts: crate::meetings::drafts::DraftStore,
     // Owners add their state here (store, recorder, processing jobs, ...).
 }
 
@@ -134,6 +136,7 @@ impl MeetingsManager {
         let meetings_dir = data_dir.join("meetings");
         let processing =
             crate::meetings::processing::Processor::new(app, store.clone(), meetings_dir.clone());
+        let drafts = crate::meetings::drafts::DraftStore::new(&meetings_dir);
         Ok(Arc::new(Self {
             app: app.clone(),
             store,
@@ -146,6 +149,7 @@ impl MeetingsManager {
             deletions: Default::default(),
             live: Arc::new(crate::meetings::live::LiveTranscriber::new(app)),
             title_cancels: Default::default(),
+            drafts,
         }))
     }
 
@@ -257,7 +261,27 @@ impl MeetingsManager {
         let Some(recorder) = self.capture.recorder.get() else {
             return Ok(None);
         };
-        let result = recorder.stop(crate::meetings::recorder::now_ms());
+        self.after_stop(recorder.stop(crate::meetings::recorder::now_ms()))
+    }
+
+    /// [`Self::stop_recording`] of recording `id`, whose note ended
+    /// `released_ago_ms` ago, when its call let go of the microphone.
+    pub fn stop_recording_released(
+        &self,
+        id: MeetingId,
+        released_ago_ms: i64,
+    ) -> Result<Option<MeetingId>> {
+        let Some(recorder) = self.capture.recorder.get() else {
+            return Ok(None);
+        };
+        self.after_stop(recorder.stop_released(
+            id,
+            crate::meetings::recorder::now_ms(),
+            released_ago_ms,
+        ))
+    }
+
+    fn after_stop(&self, result: Result<Option<MeetingId>>) -> Result<Option<MeetingId>> {
         // Even on error: a failed finish is retried by the scheduler.
         self.sync_scheduler();
         let stopped = result?;
@@ -558,6 +582,9 @@ impl MeetingsManager {
         // named (D11).
         if let Err(e) = self.forget_processing(id) {
             log::warn!("meetings: clearing processing files for {id} failed: {e:#}");
+        }
+        if let Err(e) = self.drafts.forget(id) {
+            log::warn!("meetings: deleting the draft of {id} failed: {e:#}");
         }
         if let Err(e) =
             crate::meetings::audio_store::delete_track_files(&self.audio_dir(), &meeting)
@@ -1142,6 +1169,38 @@ impl MeetingsManager {
     pub fn update_summary(&self, summary: &StoredSummary) -> Result<()> {
         self.store.put_summary(summary)?;
         self.emit_meeting_changed(summary.meeting_id);
+        Ok(())
+    }
+
+    /// The typed notes `id` had unsaved when last autosaved. Reads a file:
+    /// call off the UI thread.
+    pub fn meeting_draft(&self, id: MeetingId) -> Option<crate::meetings::drafts::MeetingDraft> {
+        self.drafts.load(id)
+    }
+
+    /// A write of `draft` is about to start: [`Self::meeting_draft`] returns
+    /// it from now on. No file work: safe on the UI thread.
+    pub fn hold_meeting_draft(
+        &self,
+        id: MeetingId,
+        revision: u64,
+        draft: crate::meetings::drafts::MeetingDraft,
+    ) {
+        self.drafts.hold(id, revision, draft);
+    }
+
+    /// Autosave `id`'s typed notes (an empty draft removes the file). Writes
+    /// a file: call off the UI thread. `revision` is from
+    /// [`crate::meetings::drafts::next_revision`], taken when the text was read.
+    pub fn save_meeting_draft(
+        &self,
+        id: MeetingId,
+        revision: u64,
+        draft: &crate::meetings::drafts::MeetingDraft,
+    ) -> Result<()> {
+        // No database call here: an action item save holding the connection
+        // must not delay the very file that protects its text.
+        self.drafts.save(id, revision, draft)?;
         Ok(())
     }
 

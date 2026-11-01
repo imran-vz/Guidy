@@ -7,10 +7,12 @@
 //! - [`call_sites`]: which web pages are calls.
 //! - [`settings`]: the nested `meetings` settings object.
 //! - [`store`]: plain SQLite `meetings.db`.
+//! - [`drafts`]: autosaved drafts of typed notes (JSON files beside it).
 //! - [`audio_store`]: Opus track files + retention.
 //! - [`legacy`]: one-time conversion of data earlier versions encrypted.
 //! - [`native`]: macOS bridges (EventKit, mic, process tap, echo cancellation, notifications).
 //! - [`recorder`]: recording sessions, tray state, reminders, calendar prompts.
+//! - [`sample_budget`]: the bound on its audio queues.
 //! - [`live`]: live transcription of the recording in progress.
 //! - [`processing`]: VAD -> transcription -> voiceprints -> clustering -> timeline.
 //! - [`summarize`]: chunked LLM summaries and action items.
@@ -21,12 +23,14 @@
 pub mod audio_store;
 pub mod call_sites;
 pub mod calls;
+pub mod drafts;
 pub mod legacy;
 pub mod live;
 pub mod manager;
 pub mod native;
 pub mod processing;
 pub mod recorder;
+pub mod sample_budget;
 pub mod search;
 pub mod settings;
 pub mod store;

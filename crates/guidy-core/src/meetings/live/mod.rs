@@ -327,6 +327,10 @@ struct Worker {
 #[derive(Default)]
 struct Pending {
     finals: std::collections::VecDeque<(Track, Cut)>,
+    /// Samples held in `finals`. Past [`MAX_BACKLOG_SAMPLES`] the oldest go: a
+    /// decoder slower than speech must not grow memory for three hours, and
+    /// the full transcript comes from the saved audio anyway.
+    final_samples: usize,
     /// The latest partial per track (an older one is moot).
     partials: [Option<Cut>; 2],
 }
@@ -348,13 +352,21 @@ impl Pending {
             if slot.as_ref().is_some_and(|p| p.id == cut.id) {
                 *slot = None;
             }
+            self.final_samples += cut.pcm.len();
             self.finals.push_back((track, cut));
+            while self.final_samples > MAX_BACKLOG_SAMPLES && self.finals.len() > 1 {
+                if let Some((_, oldest)) = self.finals.pop_front() {
+                    self.final_samples -= oldest.pcm.len();
+                    log::warn!("meetings: live transcription is behind, skipping a line");
+                }
+            }
         }
     }
 
     /// Finals first, in order; a partial only when no final waits.
     fn next(&mut self) -> Option<(Track, Cut)> {
         if let Some(f) = self.finals.pop_front() {
+            self.final_samples -= f.1.pcm.len();
             return Some(f);
         }
         let (i, _) = self
@@ -596,6 +608,36 @@ mod tests {
         assert_eq!((track, c.partial), (Track::System, true));
         assert!(p.next().is_none());
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn finals_waiting_for_a_slow_decoder_are_bounded() {
+        let mut p = Pending::default();
+        let line = |id| Cut {
+            id,
+            t0_ms: 0,
+            t1_ms: 0,
+            pcm: vec![0.0; MAX_BACKLOG_SAMPLES / 4],
+            partial: false,
+        };
+        for id in 0..10 {
+            p.add(Track::Mic, line(id));
+        }
+        assert!(p.final_samples <= MAX_BACKLOG_SAMPLES);
+        // The newest are kept, in order.
+        let (_, first) = p.next().unwrap();
+        assert_eq!(first.id, 6);
+        while p.next().is_some() {}
+        assert_eq!(p.final_samples, 0);
+        // A line bigger than the limit still gets decoded.
+        p.add(
+            Track::Mic,
+            Cut {
+                pcm: vec![0.0; MAX_BACKLOG_SAMPLES + 1],
+                ..line(11)
+            },
+        );
+        assert!(p.next().is_some());
     }
 
     /// The fixture through the live cutter and a real model, as a recording

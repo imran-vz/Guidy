@@ -619,6 +619,14 @@ pub struct RecordingHealth {
     pub low_disk: bool,
     /// The writer is more than a minute behind capture.
     pub backlog: bool,
+    /// A queue is full, so audio is being dropped until it drains. The
+    /// timeline stays aligned, with silence in place of what was dropped.
+    #[serde(default)]
+    pub audio_dropping: bool,
+    /// The system audio permission can't be read and no sound has reached
+    /// the track: it may not be recording.
+    #[serde(default)]
+    pub system_permission_unknown: bool,
     /// No audio on either source for 15 minutes: stops then (unix ms) unless
     /// told to keep going.
     pub silence_stop_at: Option<i64>,

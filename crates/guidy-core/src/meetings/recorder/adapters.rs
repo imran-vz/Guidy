@@ -95,6 +95,17 @@ fn forward(sink: &CaptureSink, track: Track, samples: Vec<f32>, rate: u32, warne
     sink(track, samples);
 }
 
+/// (not refused, can't tell). The status can be unreadable (the private API
+/// missing or slow), which isn't a refusal or a grant.
+fn system_permission(status: native::AuthStatus) -> (bool, bool) {
+    use native::AuthStatus::*;
+    match status {
+        Granted => (true, false),
+        Denied | Restricted => (false, false),
+        NotDetermined | WriteOnly | Unknown | Unavailable => (true, true),
+    }
+}
+
 impl CaptureBackend for NativeCapture {
     fn start(
         &self,
@@ -120,10 +131,11 @@ impl CaptureBackend for NativeCapture {
         Ok(Box::new(NativeSession(native::start_capture(callbacks)?)))
     }
     fn preflight(&self, audio_dir: &std::path::Path) -> Preflight {
+        let (system_granted, system_unknown) = system_permission(native::system_audio_status());
         Preflight {
             mic_granted: crate::permissions::check_microphone_permission(),
-            // Only a refusal: the status can be unknown (no private API).
-            system_granted: native::system_audio_status() != native::AuthStatus::Denied,
+            system_granted,
+            system_unknown,
             free_bytes: crate::downloads::free_space(audio_dir),
         }
     }
@@ -268,4 +280,20 @@ pub fn app_recorder(
         }),
         live: Some(live),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_permission;
+    use crate::meetings::native::AuthStatus::*;
+
+    #[test]
+    fn only_a_clear_answer_about_system_audio_is_taken_as_one() {
+        assert_eq!(system_permission(Granted), (true, false));
+        assert_eq!(system_permission(Denied), (false, false));
+        assert_eq!(system_permission(Restricted), (false, false));
+        for status in [NotDetermined, WriteOnly, Unknown, Unavailable] {
+            assert_eq!(system_permission(status), (true, true), "{status:?}");
+        }
+    }
 }

@@ -49,11 +49,13 @@ pub type CaptureSink = Arc<dyn Fn(Track, Vec<f32>) + Send + Sync>;
 pub type CaptureErrorSink = Arc<dyn Fn(Track, String) + Send + Sync>;
 
 /// What a recording could get right now. Only a clear refusal counts as not
-/// granted: a status that can't be read isn't one.
+/// granted. A status that can't be read isn't one, and it isn't a grant
+/// either: `system_unknown` says so, and the user sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Preflight {
     pub mic_granted: bool,
     pub system_granted: bool,
+    pub system_unknown: bool,
     /// Free bytes where the audio goes, if that can be read.
     pub free_bytes: Option<u64>,
 }
@@ -63,6 +65,7 @@ impl Default for Preflight {
         Self {
             mic_granted: true,
             system_granted: true,
+            system_unknown: false,
             free_bytes: None,
         }
     }

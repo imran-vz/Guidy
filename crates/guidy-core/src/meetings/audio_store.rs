@@ -536,6 +536,42 @@ impl TrackWriter {
     }
 }
 
+/// Cut a finished track down to its first `keep_samples` (the note ended
+/// earlier than the recording did). Whole chunks past that go and a new end
+/// marker follows; a kill in between reads as an interrupted track, up to the
+/// cut. Returns whether anything was cut.
+pub fn truncate_track(path: &Path, keep_samples: u64) -> Result<bool> {
+    let mut reader = TrackReader::open(path)?;
+    let total = reader.total_samples()?;
+    if keep_samples >= total {
+        return Ok(false);
+    }
+    let header = reader.header;
+    let encoded = keep_samples + header.pre_skip as u64;
+    let chunks = encoded.div_ceil(CHUNK_SAMPLES) as usize;
+    let end = match (reader.chunks.get(chunks), reader.chunks.last()) {
+        // A record's offset is past its 4-byte length.
+        (Some(&(off, _)), _) => off - 4,
+        (None, Some(&(off, len))) => off + len as u64,
+        (None, None) => HEADER_LEN as u64,
+    };
+    drop(reader);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    file.set_len(end)?;
+    file.seek(SeekFrom::End(0))?;
+    let mut out = RecordWriter {
+        path: path.to_path_buf(),
+        file,
+        header,
+    };
+    out.write_end(keep_samples)?;
+    out.sync_all()?;
+    Ok(true)
+}
+
 // ---------------------------------------------------------------------------
 // Reader
 // ---------------------------------------------------------------------------
@@ -1214,6 +1250,41 @@ mod tests {
         assert!(r.read_range(5000, 6000).unwrap().is_empty());
         assert!(r.read_range(300, 300).unwrap().is_empty());
         assert!(r.read_range(-500, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_track_is_cut_to_its_first_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.gopus");
+        let mut w = TrackWriter::create(&path).unwrap();
+        w.push(&vec![0.25f32; 10 * 16_000]).unwrap();
+        w.finish().unwrap();
+        let keep = 4 * 16_000 + 123;
+
+        assert!(truncate_track(&path, keep).unwrap());
+
+        let mut r = TrackReader::open(&path).unwrap();
+        assert!(r.is_complete());
+        assert_eq!(r.total_samples().unwrap(), keep);
+        assert_eq!(r.read_all().unwrap().len() as u64, keep);
+        // Asking for all of what's left, or more, changes nothing.
+        assert!(!truncate_track(&path, keep).unwrap());
+        assert!(!truncate_track(&path, keep + 1).unwrap());
+    }
+
+    #[test]
+    fn a_track_can_be_cut_at_a_chunk_edge_or_to_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        for keep in [0u64, 16_000, 32_000] {
+            let path = dir.path().join(format!("{keep}.gopus"));
+            let mut w = TrackWriter::create(&path).unwrap();
+            w.push(&vec![0.25f32; 5 * 16_000]).unwrap();
+            w.finish().unwrap();
+            assert!(truncate_track(&path, keep).unwrap());
+            let mut r = TrackReader::open(&path).unwrap();
+            assert_eq!(r.total_samples().unwrap(), keep);
+            assert_eq!(r.read_all().unwrap().len() as u64, keep);
+        }
     }
 
     #[test]

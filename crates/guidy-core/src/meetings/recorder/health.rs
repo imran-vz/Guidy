@@ -15,6 +15,15 @@ pub const SYSTEM_SILENT_MS: i64 = 120_000;
 pub const NO_SAMPLES_RECONNECTING_MS: i64 = 5_000;
 /// ... and this long: lost, within the 10 s the scorecard allows.
 pub const NO_SAMPLES_LOST_MS: i64 = 9_000;
+/// Reported stalled this long: lost. The native watchdog says so up to 3.5 s
+/// after the last callback, and the stream's padding keeps samples flowing, so
+/// [`NO_SAMPLES_LOST_MS`] alone would never see it. Counted from the tick
+/// before the report, and shown on a 1 s tick, this makes it 9 s from the last
+/// callback too.
+pub const STALLED_LOST_MS: i64 = 4_500;
+/// A permission status that can't be read is shown unless sound has reached
+/// the track this recently, which proves access.
+pub const UNREADABLE_PERMISSION_QUIET_MS: i64 = 5_000;
 /// Both sources without sound this long: warn.
 pub const NO_AUDIO_WARN_MS: i64 = 15 * 60_000;
 /// ... then stop this long after, unless told to keep going.
@@ -33,6 +42,13 @@ pub enum CaptureMessage {
     Failed,
     /// It came back up after failing (with nothing to say about its audio).
     Restarted,
+    /// The device under it changed: said for a moment, whatever else happens.
+    Switched,
+    /// Its queue is full: audio is being dropped.
+    Dropping,
+    /// The queue drained: this many samples were dropped and made up for
+    /// with silence.
+    Dropped(i64),
 }
 
 impl CaptureMessage {
@@ -45,10 +61,18 @@ impl CaptureMessage {
             "stalled" => Some(Self::Stalled),
             "recovered" => Some(Self::Recovered),
             "restarted" => Some(Self::Restarted),
-            other => other
-                .strip_prefix("gap:")
-                .and_then(|ms| ms.parse().ok())
-                .map(Self::Gap),
+            "switched" => Some(Self::Switched),
+            "dropping" => Some(Self::Dropping),
+            other => {
+                if let Some(ms) = other.strip_prefix("gap:") {
+                    ms.parse::<i64>().ok().map(Self::Gap)
+                } else {
+                    other
+                        .strip_prefix("dropped:")
+                        .and_then(|samples| samples.parse::<i64>().ok())
+                        .map(Self::Dropped)
+                }
+            }
         }
     }
 }
@@ -64,9 +88,23 @@ pub struct Flow {
 #[derive(Clone, Debug, Default)]
 struct TrackState {
     stalled: bool,
+    /// When `stalled` was reported, to the tick.
+    stalled_at: i64,
+    /// Stalled was reported since the last tick ...
+    stalled_since_tick: bool,
+    /// ... so as of this tick it is shown, even if it has recovered: a restart
+    /// shorter than a tick still gets its notice (R12).
+    showing_stall: bool,
+    /// Stalled or failed was reported since the last tick: sound counted in
+    /// this tick may be from before that, so it says nothing about recovery.
+    reported_since_tick: bool,
     failed: bool,
     write_failed: bool,
     denied: bool,
+    /// Audio is being dropped by the native delivery queue ...
+    delivery_dropping: bool,
+    /// ... or by the writer's.
+    writer_dropping: bool,
     last_samples: i64,
     last_sound: i64,
 }
@@ -80,12 +118,22 @@ impl TrackState {
         }
     }
 
+    fn is_dropping(&self) -> bool {
+        self.delivery_dropping || self.writer_dropping
+    }
+
     fn health(&self, now: i64, silent_after: Option<i64>) -> SourceHealth {
         let quiet = now - self.last_samples;
-        if self.write_failed || self.denied || self.failed || quiet >= NO_SAMPLES_LOST_MS {
+        if self.write_failed
+            || self.denied
+            || self.failed
+            || self.is_dropping()
+            || quiet >= NO_SAMPLES_LOST_MS
+            || (self.stalled && now - self.stalled_at >= STALLED_LOST_MS)
+        {
             return SourceHealth::Lost;
         }
-        if self.stalled || quiet >= NO_SAMPLES_RECONNECTING_MS {
+        if self.stalled || self.showing_stall || quiet >= NO_SAMPLES_RECONNECTING_MS {
             return SourceHealth::Reconnecting;
         }
         if silent_after.is_some_and(|after| now - self.last_sound >= after) {
@@ -103,6 +151,7 @@ pub struct HealthTracker {
     in_call: bool,
     low_disk: bool,
     backlog: bool,
+    system_permission_unreadable: bool,
     /// Since when neither source had sound (or the user last said keep going).
     no_audio_since: i64,
     last_tick: i64,
@@ -116,6 +165,7 @@ impl HealthTracker {
             in_call: false,
             low_disk: false,
             backlog: false,
+            system_permission_unreadable: false,
             no_audio_since: now,
             last_tick: now,
         }
@@ -129,16 +179,30 @@ impl HealthTracker {
     }
 
     pub fn on_message(&mut self, track: Track, message: CaptureMessage) {
+        let last_tick = self.last_tick;
         let state = self.track(track);
         match message {
-            CaptureMessage::Stalled => state.stalled = true,
+            CaptureMessage::Stalled => {
+                if !state.stalled {
+                    state.stalled = true;
+                    state.stalled_at = last_tick;
+                }
+                state.stalled_since_tick = true;
+                state.reported_since_tick = true;
+            }
             CaptureMessage::Recovered => {
                 state.stalled = false;
                 state.failed = false;
             }
-            CaptureMessage::Failed => state.failed = true,
+            CaptureMessage::Failed => {
+                state.failed = true;
+                state.reported_since_tick = true;
+            }
             CaptureMessage::Restarted => state.failed = false,
             CaptureMessage::Gap(_) => {}
+            CaptureMessage::Switched => state.stalled_since_tick = true,
+            CaptureMessage::Dropping => state.delivery_dropping = true,
+            CaptureMessage::Dropped(_) => state.delivery_dropping = false,
         }
     }
 
@@ -153,6 +217,21 @@ impl HealthTracker {
         self.system.denied = !system_granted;
     }
 
+    /// [`Self::set_permissions`] from a preflight, where the system status may
+    /// be unreadable: that says nothing new, so a refusal already seen stands.
+    pub fn set_preflight_permissions(
+        &mut self,
+        mic_granted: bool,
+        system_granted: bool,
+        system_unreadable: bool,
+    ) {
+        self.mic.denied = !mic_granted;
+        if !system_unreadable {
+            self.system.denied = !system_granted;
+        }
+        self.system_permission_unreadable = system_unreadable;
+    }
+
     pub fn set_in_call(&mut self, in_call: bool, now: i64) {
         if in_call && !self.in_call {
             // Silence counts from the call, not from before it.
@@ -163,6 +242,11 @@ impl HealthTracker {
 
     pub fn set_low_disk(&mut self, low: bool) {
         self.low_disk = low;
+    }
+
+    /// The writer's queue for `track` is full and audio is being dropped.
+    pub fn set_writer_dropping(&mut self, track: Track, dropping: bool) {
+        self.track(track).writer_dropping = dropping;
     }
 
     pub fn set_backlog(&mut self, behind: bool) {
@@ -179,6 +263,10 @@ impl HealthTracker {
         for state in [&mut self.mic, &mut self.system] {
             state.last_samples = now;
             state.last_sound = now;
+            state.stalled_at = now;
+            state.reported_since_tick = false;
+            state.stalled_since_tick = false;
+            state.showing_stall = false;
         }
         self.no_audio_since = now;
     }
@@ -199,10 +287,14 @@ impl HealthTracker {
             }
             if flow.sound {
                 state.last_sound = now;
-                // Sound reaching the track says more than any report.
-                state.failed = false;
-                state.stalled = false;
+                // Sound reaching the track says more than any older report.
+                if !state.reported_since_tick {
+                    state.failed = false;
+                    state.stalled = false;
+                }
             }
+            state.reported_since_tick = false;
+            state.showing_stall = std::mem::take(&mut state.stalled_since_tick);
         }
         if mic.sound || system.sound {
             self.no_audio_since = now;
@@ -220,6 +312,9 @@ impl HealthTracker {
             system_denied: self.system.denied,
             low_disk: self.low_disk,
             backlog: self.backlog,
+            audio_dropping: self.mic.is_dropping() || self.system.is_dropping(),
+            system_permission_unknown: self.system_permission_unreadable
+                && now - self.system.last_sound >= UNREADABLE_PERMISSION_QUIET_MS,
             silence_stop_at: (now >= warn_at).then_some(warn_at + NO_AUDIO_STOP_GRACE_MS),
         }
     }
@@ -264,6 +359,10 @@ mod tests {
         assert_eq!(CaptureMessage::parse("state:gap:1234"), Some(Gap(1234)));
         assert_eq!(CaptureMessage::parse("error: tap gone"), Some(Failed));
         assert_eq!(CaptureMessage::parse("state:gap:x"), None);
+        assert_eq!(CaptureMessage::parse("state:switched"), Some(Switched));
+        assert_eq!(CaptureMessage::parse("state:dropping"), Some(Dropping));
+        assert_eq!(CaptureMessage::parse("state:dropped:9"), Some(Dropped(9)));
+        assert_eq!(CaptureMessage::parse("state:dropped:x"), None);
         assert_eq!(CaptureMessage::parse("state:other"), None);
         assert_eq!(CaptureMessage::parse("microphone restarted"), None);
     }
@@ -278,6 +377,124 @@ mod tests {
         assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
         h.on_message(Track::System, CaptureMessage::Recovered);
         assert_eq!(h.health(3_000).system, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn a_dead_stream_behind_its_padding_is_lost_by_nine_seconds() {
+        let mut h = HealthTracker::new(0);
+        // Padding: zeros keep coming after the last callback at 0.
+        run(&mut h, 1_000, 3_000, ZEROS, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
+        // The watchdog's report, at its latest.
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        run(&mut h, 4_000, 7_000, ZEROS, LIVE);
+        assert_eq!(h.health(7_000).mic, SourceHealth::Reconnecting);
+        run(&mut h, 8_000, 9_000, ZEROS, LIVE);
+        assert_eq!(h.health(8_000).mic, SourceHealth::Lost);
+        assert_eq!(h.health(9_000).mic, SourceHealth::Lost);
+        // A repeated report doesn't restart the count.
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        assert_eq!(h.health(9_000).mic, SourceHealth::Lost);
+        // Back: and a later stall counts from then.
+        h.on_message(Track::Mic, CaptureMessage::Recovered);
+        assert_eq!(h.health(9_000).mic, SourceHealth::Healthy);
+        run(&mut h, 10_000, 12_000, LIVE, LIVE);
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        run(&mut h, 13_000, 13_000, ZEROS, LIVE);
+        assert_eq!(h.health(13_000).mic, SourceHealth::Reconnecting);
+    }
+
+    #[test]
+    fn sound_from_before_a_report_does_not_clear_it() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, LIVE);
+        // Sound at 1.1 s, reported stalled at 1.4 s, ticked at 2 s.
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        run(&mut h, 2_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Reconnecting);
+        // Sound after it does.
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
+        // The same for a failure.
+        h.on_message(Track::System, CaptureMessage::Failed);
+        run(&mut h, 4_000, 4_000, LIVE, LIVE);
+        assert_eq!(h.health(4_000).system, SourceHealth::Lost);
+    }
+
+    #[test]
+    fn a_restart_shorter_than_a_tick_still_shows_for_one() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, LIVE);
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        h.on_message(Track::Mic, CaptureMessage::Recovered);
+        run(&mut h, 2_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Reconnecting);
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn a_device_switch_shows_for_a_tick_without_a_stall() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, ZEROS);
+        h.on_message(Track::System, CaptureMessage::Switched);
+        run(&mut h, 2_000, 2_000, LIVE, ZEROS);
+        assert_eq!(h.health(2_000).system, SourceHealth::Reconnecting);
+        // Nothing to report recovery from: it just ends.
+        run(&mut h, 3_000, 3_000, LIVE, ZEROS);
+        assert_eq!(h.health(3_000).system, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn plain_quiet_is_not_a_warning_at_ten_seconds() {
+        let mut h = HealthTracker::new(0);
+        h.set_in_call(true, 0);
+        run(&mut h, 1_000, 10_000, ZEROS, ZEROS);
+        let health = h.health(10_000);
+        assert_eq!(health.mic, SourceHealth::Healthy);
+        assert_eq!(health.system, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn a_stall_across_a_sleep_counts_from_the_wake() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 3_000, ZEROS, LIVE);
+        h.on_message(Track::System, CaptureMessage::Stalled);
+        let woke = 3_000 + 20 * 60_000;
+        h.tick(woke, ZEROS, ZEROS, false);
+        assert_eq!(h.health(woke).system, SourceHealth::Reconnecting);
+    }
+
+    #[test]
+    fn an_unreadable_permission_is_shown_unless_sound_proves_access() {
+        let mut h = HealthTracker::new(0);
+        h.set_preflight_permissions(true, true, true);
+        // Not counted as refused.
+        run(&mut h, 1_000, 6_000, LIVE, ZEROS);
+        let health = h.health(6_000);
+        assert!(health.system_permission_unknown);
+        assert!(!health.system_denied);
+        assert_eq!(health.system, SourceHealth::Healthy);
+        // Sound on the track: access is there, whatever the status says.
+        run(&mut h, 7_000, 7_000, LIVE, LIVE);
+        assert!(!h.health(7_000).system_permission_unknown);
+        run(&mut h, 8_000, 12_000, LIVE, ZEROS);
+        assert!(h.health(12_000).system_permission_unknown);
+        h.set_preflight_permissions(true, true, false);
+        assert!(!h.health(12_000).system_permission_unknown);
+    }
+
+    #[test]
+    fn an_unreadable_status_does_not_undo_a_refusal() {
+        let mut h = HealthTracker::new(0);
+        h.set_preflight_permissions(true, false, false);
+        assert_eq!(h.health(0).system, SourceHealth::Lost);
+        h.set_preflight_permissions(true, true, true);
+        let health = h.health(0);
+        assert_eq!(health.system, SourceHealth::Lost);
+        assert!(health.system_denied);
+        h.set_preflight_permissions(true, true, false);
+        assert_eq!(h.health(0).system, SourceHealth::Healthy);
     }
 
     #[test]
@@ -298,8 +515,8 @@ mod tests {
         // No report at all, but sound.
         h.on_message(Track::Mic, CaptureMessage::Failed);
         h.on_message(Track::Mic, CaptureMessage::Stalled);
-        run(&mut h, 1_000, 1_000, LIVE, LIVE);
-        assert_eq!(h.health(1_000).mic, SourceHealth::Healthy);
+        run(&mut h, 1_000, 2_000, LIVE, LIVE);
+        assert_eq!(h.health(2_000).mic, SourceHealth::Healthy);
     }
 
     #[test]
@@ -334,6 +551,29 @@ mod tests {
         assert_eq!(h.health(319_000).system, SourceHealth::Healthy);
         run(&mut h, 320_000, 320_000, LIVE, ZEROS);
         assert_eq!(h.health(320_000).system, SourceHealth::Silent);
+    }
+
+    #[test]
+    fn dropping_audio_is_lost_and_says_so_until_it_ends() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 2_000, LIVE, LIVE);
+        h.set_writer_dropping(Track::Mic, true);
+        let health = h.health(2_000);
+        assert_eq!(health.mic, SourceHealth::Lost);
+        assert_eq!(health.system, SourceHealth::Healthy);
+        assert!(health.audio_dropping);
+        // Sound still reaching the capture side doesn't hide it.
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Lost);
+        h.set_writer_dropping(Track::Mic, false);
+        let health = h.health(3_000);
+        assert_eq!(health.mic, SourceHealth::Healthy);
+        assert!(!health.audio_dropping);
+        // The same from the delivery queue.
+        h.on_message(Track::System, CaptureMessage::Dropping);
+        assert_eq!(h.health(3_000).system, SourceHealth::Lost);
+        h.on_message(Track::System, CaptureMessage::Dropped(160));
+        assert_eq!(h.health(3_000).system, SourceHealth::Healthy);
     }
 
     #[test]

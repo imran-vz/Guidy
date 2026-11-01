@@ -189,8 +189,11 @@ private let outputSampleRate: Double = 16_000
 
 /// A stream with no callbacks for this long is stalled, and rebuilt.
 private let watchdogNanos: UInt64 = 3_000_000_000
-/// Waits between attempts to rebuild a stream, until it works or Stop.
-private let rebuildDelays: [Double] = [0.5, 1, 2, 4, 5]
+/// Waits between attempts to rebuild a stream, until it works or Stop. Tried
+/// often for the first 2.5 s: a Bluetooth device settles within a few seconds
+/// of a switch, and the scorecard allows a 3 s gap.
+private let rebuildDelays: [Double] =
+    [Double](repeating: 0.25, count: 10) + [0.5, 1, 2, 4, 5]
 /// With no callbacks and nothing playing, a tap may just be idle: rebuilt at
 /// most this often, and quietly (it may be dead, but nothing says so).
 private let idleRebuildNanos: UInt64 = 30_000_000_000
@@ -202,6 +205,8 @@ private let eventStalled = "state:stalled"
 private let eventRecovered = "state:recovered"
 /// It came back up after an `error:`; `state:recovered` follows audio, if any.
 private let eventRestarted = "state:restarted"
+/// The device under it changed, whether or not anything is playing to tell.
+private let eventSwitched = "state:switched"
 private func eventGap(_ nanos: UInt64) -> String { "state:gap:\(nanos / 1_000_000)" }
 
 /// Forwards converted audio to the Rust callbacks. `close()` guarantees that,
@@ -417,13 +422,15 @@ private func otherProcessIsPlaying() -> Bool {
         mSelector: kAudioHardwarePropertyProcessObjectList,
         mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var size: UInt32 = 0
+    // A list that can't be read proves nothing: assume something plays, so a
+    // dead tap still gets reported rather than called idle.
     guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0
-    else { return false }
+    else { return true }
     var objects = [AudioObjectID](
         repeating: AudioObjectID(kAudioObjectUnknown),
         count: Int(size) / MemoryLayout<AudioObjectID>.size)
     guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else {
-        return false
+        return true
     }
     let own = getpid()
     return objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).contains { object in
@@ -432,7 +439,9 @@ private func otherProcessIsPlaying() -> Bool {
             UInt32(0))
         let pid = audioProperty(
             object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0))
-        return (running ?? 0) != 0 && pid != own
+        // No readable pid: it may be our own output.
+        guard let pid = pid, (running ?? 0) != 0 else { return false }
+        return pid != own
     }
 }
 
@@ -1141,6 +1150,14 @@ private final class SystemTapCapture {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private var listener: AudioObjectPropertyListenerBlock?
+    /// On controlQueue: the output device being watched (`watchOutputDevice`).
+    private var outputDeviceListener: AudioObjectPropertyListenerBlock?
+    private var watchedOutput = AudioObjectID(kAudioObjectUnknown)
+    private var watchedOutputRate: Float64 = 0
+    private var watchedOutputDead = false
+    private let outputDeviceSelectors: [AudioObjectPropertySelector] = [
+        kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive,
+    ]
     private var stopped = false
     /// On `controlQueue`: bursts of changes drop out of a rebuild chain.
     private var rebuildGeneration = 0
@@ -1200,6 +1217,7 @@ private final class SystemTapCapture {
     private func startWatching() {
         lastIdleRebuildNanos = nowNanos()
         installDefaultOutputListener()
+        controlQueue.async { self.watchOutputDevice() }
         startSilenceTimer()
     }
 
@@ -1364,6 +1382,7 @@ private final class SystemTapCapture {
     private func installDefaultOutputListener() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self = self else { return }
+            self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventSwitched)
             self.rebuildGeneration += 1
             self.rebuild(generation: self.rebuildGeneration, attempt: 0, quiet: false)
         }
@@ -1373,6 +1392,69 @@ private final class SystemTapCapture {
         if status == noErr {
             listener = block
         }
+    }
+
+    /// AirPods turning on their mic change their rate without the default
+    /// output changing, and a device can die the same way. The IOProc may stop
+    /// calling back: rebuild now rather than at the 3 s watchdog. On controlQueue.
+    private func watchOutputDevice() {
+        let previous = watchedOutput
+        unwatchOutputDevice()
+        guard let device = defaultDevice(input: false) else { return }
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.outputDeviceChanged()
+        }
+        for selector in outputDeviceSelectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(device, &address, controlQueue, block)
+        }
+        watchedOutput = device
+        watchedOutputRate = outputRate(device)
+        if device != previous {
+            watchedOutputDead = false
+        }
+        outputDeviceListener = block
+    }
+
+    /// On controlQueue.
+    private func unwatchOutputDevice() {
+        guard let block = outputDeviceListener else { return }
+        for selector in outputDeviceSelectors {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListenerBlock(watchedOutput, &address, controlQueue, block)
+        }
+        outputDeviceListener = nil
+        watchedOutput = AudioObjectID(kAudioObjectUnknown)
+    }
+
+    private func outputRate(_ device: AudioObjectID) -> Float64 {
+        audioProperty(
+            device, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal,
+            Float64(0)) ?? 0
+    }
+
+    /// On controlQueue. Only a real change: building the aggregate can itself
+    /// notify, and rebuilding for that would never end. A dead device counts
+    /// once: every build on it succeeds and compares again.
+    private func outputDeviceChanged() {
+        if stopped || watchedOutput == kAudioObjectUnknown { return }
+        let rate = outputRate(watchedOutput)
+        let alive = audioProperty(
+            watchedOutput, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal,
+            UInt32(1)) ?? 0
+        let isDead = alive == 0
+        let died = isDead && !watchedOutputDead
+        let rateChanged = !isDead && rate != watchedOutputRate
+        watchedOutputDead = isDead
+        if !died && !rateChanged { return }
+        watchedOutputRate = rate
+        sink?.event(GUIDY_MB_STREAM_SYSTEM, eventSwitched)
+        rebuildGeneration += 1
+        rebuild(generation: rebuildGeneration, attempt: 0, quiet: false)
     }
 
     /// Watchdog, on controlQueue. Whether an idle tap keeps calling back is
@@ -1430,6 +1512,8 @@ private final class SystemTapCapture {
     /// the first attempt, the tap too. Retried with backoff until Stop.
     private func rebuild(generation: Int, attempt: Int, quiet: Bool) {
         if stopped || generation != rebuildGeneration { return }
+        // What this build is for: a change from here on needs another.
+        let builtForRate = defaultDevice(input: false).map { outputRate($0) } ?? 0
         teardownDevice()
         // After the old IOProc is gone, so a last buffer can't say it recovered.
         if !quiet && otherProcessIsPlaying() {
@@ -1442,6 +1526,11 @@ private final class SystemTapCapture {
             }
             try buildDevice()
             recovering = false
+            watchOutputDevice()
+            watchedOutputRate = builtForRate
+            // A change between the listeners coming off and going back on
+            // notified nobody: compare now.
+            controlQueue.async { [weak self] in self?.outputDeviceChanged() }
             if reportedFailure {
                 reportedFailure = false
                 sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRestarted)
@@ -1552,6 +1641,7 @@ private final class SystemTapCapture {
         silenceTimer?.cancel()
         silenceTimer = nil
         controlQueue.sync {
+            unwatchOutputDevice()
             teardownDevice()
             destroyTap()
         }
@@ -2091,7 +2181,7 @@ private func parentPID(_ pid: pid_t) -> pid_t? {
     return parent > 1 && parent != pid ? parent : nil
 }
 
-/// A process capturing audio, as `{pid, bundle, name, parents}`. `parents` are
+/// A process using audio, as `{pid, bundle, name, parents}`. `parents` are
 /// the bundle ids up its parent chain, nearest first (empty for a parent with
 /// none): Chromium and Electron capture in helpers some of which have no
 /// bundle id. FaceTime captures in `avconferenced`, which isn't its child, so
@@ -2139,16 +2229,39 @@ public func guidyMbAudioInputProcesses() -> UnsafeMutablePointer<CChar>? {
     // Polled from a plain thread: AppKit's lookups would pile up without a pool.
     return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
         var out: [[String: Any]] = []
+        var playing: [(pid: pid_t, object: AudioObjectID)] = []
         for object in objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
-            let running = audioProperty(
+            let input = audioProperty(
                 object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal,
                 UInt32(0))
-            guard (running ?? 0) != 0,
+            let output = audioProperty(
+                object, kAudioProcessPropertyIsRunningOutput, kAudioObjectPropertyScopeGlobal,
+                UInt32(0))
+            let capturing = (input ?? 0) != 0
+            let isPlaying = (output ?? 0) != 0
+            guard capturing || isPlaying,
                 let pid = audioProperty(
                     object, kAudioProcessPropertyPID, kAudioObjectPropertyScopeGlobal, pid_t(0)),
                 pid != own
             else { continue }
-            out.append(describeProcess(pid: pid, audioBundle: processBundleID(object)))
+            guard capturing else {
+                playing.append((pid: pid, object: object))
+                continue
+            }
+            var process = describeProcess(pid: pid, audioBundle: processBundleID(object))
+            process["output"] = isPlaying
+            out.append(process)
+        }
+        // A helper may play while another captures. Only worth the lookups
+        // when something is capturing, which is rare.
+        if !out.isEmpty {
+            for entry in playing {
+                var process = describeProcess(
+                    pid: entry.pid, audioBundle: processBundleID(entry.object))
+                process["output"] = true
+                process["output_only"] = true
+                out.append(process)
+            }
         }
         guard let data = try? JSONSerialization.data(withJSONObject: out, options: []),
             let json = String(data: data, encoding: .utf8)

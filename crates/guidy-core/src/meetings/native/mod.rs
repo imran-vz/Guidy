@@ -23,9 +23,10 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use crate::meetings::manager::PermissionReport;
+use crate::meetings::sample_budget::{Admission, SampleBudget};
 use crate::meetings::types::{Attendee, CalendarEvent, Track};
 
 mod aec;
@@ -375,7 +376,96 @@ impl CaptureCallbacks {
 /// What the audio threads hand to the delivery thread.
 pub(crate) enum CaptureMsg {
     Audio(Track, Vec<f32>, u32),
+    /// This many samples of silence, for audio dropped while the queue was
+    /// full. No memory until the delivery thread gets to it.
+    Silence(Track, i64),
     Event(CaptureEvent),
+}
+
+/// The mic's and the system track's share of the delivery queue.
+#[derive(Debug, Default)]
+pub(crate) struct DeliveryBudgets([SampleBudget; 2]);
+
+impl DeliveryBudgets {
+    fn of(&self, track: Track) -> &SampleBudget {
+        match track {
+            Track::Mic => &self.0[0],
+            Track::System => &self.0[1],
+        }
+    }
+}
+
+/// Reported past the cap, and on recovery with the samples made up for
+/// (`recorder/health.rs` reads them, the capture log keeps them).
+pub(crate) const EVENT_DROPPING: &str = "state:dropping";
+pub(crate) fn event_dropped(samples: i64) -> String {
+    format!("state:dropped:{samples}")
+}
+
+/// One buffer from an audio thread: copied and queued, or counted if the
+/// delivery thread is two minutes behind. A send only fails once delivery has
+/// ended, when nothing wants it.
+pub(crate) fn offer_audio(
+    tx: &mpsc::Sender<CaptureMsg>,
+    budgets: &DeliveryBudgets,
+    track: Track,
+    samples: &[f32],
+    rate: u32,
+) {
+    match budgets.of(track).offer(samples.len()) {
+        // `deliver` says so: a message would wait behind the whole backlog.
+        Admission::Drop { .. } => {}
+        Admission::Queue { silence_first } => {
+            if silence_first > 0 {
+                let _ = tx.send(CaptureMsg::Silence(track, silence_first));
+            }
+            let _ = tx.send(CaptureMsg::Audio(track, samples.to_vec(), rate));
+        }
+    }
+}
+
+/// Silence is delivered in buffers of at most a second.
+const SILENCE_BUFFER_SAMPLES: i64 = CAPTURE_SAMPLE_RATE as i64;
+
+fn deliver_audio(
+    callbacks: &mut CaptureCallbacks,
+    echo: &mut Option<EchoCanceller>,
+    track: Track,
+    samples: Vec<f32>,
+    rate: u32,
+) {
+    match (track, echo.as_mut()) {
+        (Track::Mic, Some(aec)) => {
+            let cleaned = aec.push_mic(&samples);
+            cleaned_mic(callbacks, cleaned)
+        }
+        (Track::System, Some(aec)) => {
+            let cleaned = aec.push_system(&samples);
+            (callbacks.on_system)(samples, rate);
+            cleaned_mic(callbacks, cleaned);
+        }
+        (Track::Mic, None) => (callbacks.on_mic)(samples, rate),
+        (Track::System, None) => (callbacks.on_system)(samples, rate),
+    }
+}
+
+fn deliver_silence(
+    callbacks: &mut CaptureCallbacks,
+    echo: &mut Option<EchoCanceller>,
+    track: Track,
+    mut samples: i64,
+) {
+    while samples > 0 {
+        let now = samples.min(SILENCE_BUFFER_SAMPLES);
+        samples -= now;
+        deliver_audio(
+            callbacks,
+            echo,
+            track,
+            vec![0.0; now as usize],
+            CAPTURE_SAMPLE_RATE,
+        );
+    }
 }
 
 /// Runs the callbacks until every sender is gone. With `echo`, the mic
@@ -385,24 +475,49 @@ pub(crate) fn deliver(
     rx: mpsc::Receiver<CaptureMsg>,
     mut callbacks: CaptureCallbacks,
     mut echo: Option<EchoCanceller>,
+    budgets: Arc<DeliveryBudgets>,
 ) {
+    // What `on_event` has been told, per track.
+    let mut said_dropping = [false; 2];
     while let Ok(msg) = rx.recv() {
-        match (msg, echo.as_mut()) {
-            (CaptureMsg::Audio(Track::Mic, samples, _), Some(aec)) => {
-                cleaned_mic(&mut callbacks, aec.push_mic(&samples))
+        // Before the message: however far behind, new audio is being lost now.
+        for (said, track) in said_dropping.iter_mut().zip([Track::Mic, Track::System]) {
+            if budgets.of(track).is_dropping() && !*said {
+                *said = true;
+                (callbacks.on_event)(CaptureEvent {
+                    track,
+                    message: EVENT_DROPPING.into(),
+                });
             }
-            (CaptureMsg::Audio(Track::System, samples, rate), Some(aec)) => {
-                let cleaned = aec.push_system(&samples);
-                (callbacks.on_system)(samples, rate);
-                cleaned_mic(&mut callbacks, cleaned);
+        }
+        match msg {
+            CaptureMsg::Audio(track, samples, rate) => {
+                budgets.of(track).done(samples.len());
+                deliver_audio(&mut callbacks, &mut echo, track, samples, rate);
             }
-            (CaptureMsg::Audio(Track::Mic, samples, rate), None) => {
-                (callbacks.on_mic)(samples, rate)
+            CaptureMsg::Silence(track, samples) => {
+                deliver_silence(&mut callbacks, &mut echo, track, samples);
+                said_dropping[match track {
+                    Track::Mic => 0,
+                    Track::System => 1,
+                }] = false;
+                (callbacks.on_event)(CaptureEvent {
+                    track,
+                    message: event_dropped(samples),
+                });
             }
-            (CaptureMsg::Audio(Track::System, samples, rate), None) => {
-                (callbacks.on_system)(samples, rate)
-            }
-            (CaptureMsg::Event(event), _) => (callbacks.on_event)(event),
+            CaptureMsg::Event(event) => (callbacks.on_event)(event),
+        }
+    }
+    // Capture has stopped: nothing offers samples any more.
+    for track in [Track::Mic, Track::System] {
+        let owed = budgets.of(track).finish();
+        if owed > 0 {
+            deliver_silence(&mut callbacks, &mut echo, track, owed);
+            (callbacks.on_event)(CaptureEvent {
+                track,
+                message: event_dropped(owed),
+            });
         }
     }
     if let Some(aec) = echo.as_mut() {
@@ -503,11 +618,12 @@ pub fn start_capture_streams(
             anyhow::bail!("microphone access not granted");
         }
         let (tx, rx) = mpsc::channel();
-        let inner = macos::Capture::start(streams, tx)?;
+        let budgets = Arc::new(DeliveryBudgets::default());
+        let inner = macos::Capture::start(streams, tx, budgets.clone())?;
         let echo = (streams.mic && streams.system).then(EchoCanceller::new);
         let delivery = std::thread::Builder::new()
             .name("meeting-capture".into())
-            .spawn(move || deliver(rx, callbacks, echo))?;
+            .spawn(move || deliver(rx, callbacks, echo, budgets))?;
         Ok(CaptureHandle {
             inner: Some(inner),
             delivery: Some(delivery),
@@ -635,7 +751,7 @@ pub fn set_notification_handler(handler: impl Fn(&str, &str) + Send + Sync + 'st
 
 // ===== Calls in other apps =================================================
 
-/// A process capturing audio, as the bridge reports it.
+/// A process capturing or playing audio, as the bridge reports it.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct InputProcess {
@@ -643,17 +759,29 @@ pub struct InputProcess {
     pub bundle: String,
     pub name: String,
     pub parents: Vec<String>,
+    /// It is playing audio.
+    pub output: bool,
+    /// It is only playing audio, not capturing: listed so that an app whose
+    /// helpers split the two directions still counts as having both.
+    pub output_only: bool,
 }
 
 /// One entry per app: a browser's or a call app's helpers hold the microphone
-/// as one. Processes nothing is known about are dropped.
+/// as one. Processes nothing is known about are dropped. An app is
+/// `output_running` when any process of it plays audio.
 pub fn input_apps_from(processes: &[InputProcess]) -> Vec<crate::meetings::calls::InputApp> {
     use crate::meetings::calls::InputApp;
     let mut apps: Vec<InputApp> = Vec::new();
-    for p in processes {
+    for p in processes.iter().filter(|p| !p.output_only) {
         let app = InputApp::resolved(p.pid, &p.bundle, &p.name, &p.parents);
         if !app.canonical.is_empty() && !apps.iter().any(|a| a.canonical == app.canonical) {
             apps.push(app);
+        }
+    }
+    for p in processes.iter().filter(|p| p.output || p.output_only) {
+        let canonical = crate::meetings::calls::canonical_app(&p.bundle, &p.name, &p.parents);
+        if let Some(app) = apps.iter_mut().find(|a| a.canonical == canonical) {
+            app.output_running = true;
         }
     }
     apps

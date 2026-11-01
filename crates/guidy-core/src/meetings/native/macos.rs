@@ -6,7 +6,9 @@ use std::sync::{mpsc, Arc, RwLock};
 
 use anyhow::{anyhow, Result};
 
-use super::{AuthStatus, CaptureEvent, CaptureMsg, CaptureStreams, RawEvent};
+use super::{
+    offer_audio, AuthStatus, CaptureEvent, CaptureMsg, CaptureStreams, DeliveryBudgets, RawEvent,
+};
 use crate::meetings::types::Track;
 
 type AudioCallback =
@@ -110,7 +112,10 @@ pub(super) fn raw_events_between(start_ms: i64, end_ms: i64) -> Result<Vec<RawEv
 
 // ===== Capture =============================================================
 
-type Ctx = mpsc::Sender<CaptureMsg>;
+struct Ctx {
+    tx: mpsc::Sender<CaptureMsg>,
+    budgets: Arc<DeliveryBudgets>,
+}
 
 unsafe extern "C" fn audio_trampoline(
     ctx: *mut c_void,
@@ -124,18 +129,24 @@ unsafe extern "C" fn audio_trampoline(
     }
     // Runs on an audio thread: copy and hand off, nothing else. This is the
     // only copy; the Vec is moved from here on (delivery thread, sink, writer).
-    let tx = &*(ctx as *const Ctx);
-    let data = std::slice::from_raw_parts(samples, count as usize).to_vec();
-    let _ = tx.send(CaptureMsg::Audio(track(stream), data, rate.max(0) as u32));
+    let ctx = &*(ctx as *const Ctx);
+    let data = std::slice::from_raw_parts(samples, count as usize);
+    offer_audio(
+        &ctx.tx,
+        &ctx.budgets,
+        track(stream),
+        data,
+        rate.max(0) as u32,
+    );
 }
 
 unsafe extern "C" fn event_trampoline(ctx: *mut c_void, stream: i32, message: *const c_char) {
     if ctx.is_null() || message.is_null() {
         return;
     }
-    let tx = &*(ctx as *const Ctx);
+    let ctx = &*(ctx as *const Ctx);
     let message = CStr::from_ptr(message).to_string_lossy().into_owned();
-    let _ = tx.send(CaptureMsg::Event(CaptureEvent {
+    let _ = ctx.tx.send(CaptureMsg::Event(CaptureEvent {
         track: track(stream),
         message,
     }));
@@ -156,12 +167,16 @@ pub(super) struct Capture {
 }
 
 // The handle is an opaque, internally synchronized Swift object; the context
-// is a `Sender`, which is `Send + Sync`.
+// is a `Sender` and atomics, which are `Send + Sync`.
 unsafe impl Send for Capture {}
 
 impl Capture {
-    pub(super) fn start(streams: CaptureStreams, tx: Ctx) -> Result<Self> {
-        let ctx = Box::into_raw(Box::new(tx));
+    pub(super) fn start(
+        streams: CaptureStreams,
+        tx: mpsc::Sender<CaptureMsg>,
+        budgets: Arc<DeliveryBudgets>,
+    ) -> Result<Self> {
+        let ctx = Box::into_raw(Box::new(Ctx { tx, budgets }));
         let mut error: *mut c_char = ptr::null_mut();
         let handle = unsafe {
             guidy_mb_capture_start(

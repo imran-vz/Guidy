@@ -1,0 +1,21 @@
+{
+  "name": "voice_note_app_silent_call",
+  "description": "A call app that holds no output during silence is still offered once input stays on past 20 s: no call is lost.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.tinyspeck.slackmacgap"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 20000,
+      "source": "slack"
+    }
+  ]
+}

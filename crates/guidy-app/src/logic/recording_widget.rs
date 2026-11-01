@@ -12,7 +12,7 @@
 //! notes, until the call ends or the hint is dismissed.
 
 use guidy_core::meetings::calls::{
-    holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange,
+    holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange, END_GRACE_MS,
 };
 use guidy_core::meetings::types::{
     format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState,
@@ -49,6 +49,8 @@ pub enum HealthNotice {
     NoAudio,
     MicDenied,
     SystemDenied,
+    /// A queue is full and audio is being dropped.
+    AudioDropping,
     MicLost,
     SystemLost,
     LowDisk,
@@ -57,6 +59,8 @@ pub enum HealthNotice {
     MicSilent,
     SystemSilent,
     Backlog,
+    /// The system audio permission can't be read and nothing proves access.
+    SystemPermissionUnknown,
 }
 
 impl HealthNotice {
@@ -65,7 +69,13 @@ impl HealthNotice {
     pub fn is_failure(self) -> bool {
         matches!(
             self,
-            Self::NoAudio | Self::MicDenied | Self::SystemDenied | Self::MicLost | Self::SystemLost
+            Self::NoAudio
+                | Self::MicDenied
+                | Self::SystemDenied
+                | Self::AudioDropping
+                | Self::MicLost
+                | Self::SystemLost
+                | Self::SystemPermissionUnknown
         )
     }
 
@@ -74,6 +84,7 @@ impl HealthNotice {
             Self::NoAudio => "meetings.widget.health.noAudio",
             Self::MicDenied => "meetings.widget.health.micDenied",
             Self::SystemDenied => "meetings.widget.health.systemDenied",
+            Self::AudioDropping => "meetings.widget.health.audioDropping",
             Self::MicLost => "meetings.widget.health.micLost",
             Self::SystemLost => "meetings.widget.health.systemLost",
             Self::LowDisk => "meetings.widget.health.lowDisk",
@@ -82,6 +93,7 @@ impl HealthNotice {
             Self::MicSilent => "meetings.widget.health.micSilent",
             Self::SystemSilent => "meetings.widget.health.systemSilent",
             Self::Backlog => "meetings.widget.health.backlog",
+            Self::SystemPermissionUnknown => "meetings.widget.health.systemPermissionUnknown",
         }
     }
 }
@@ -96,10 +108,14 @@ pub fn health_notice(health: &RecordingHealth) -> Option<HealthNotice> {
         MicDenied
     } else if health.system_denied {
         SystemDenied
+    } else if health.audio_dropping {
+        AudioDropping
     } else if health.mic == S::Lost {
         MicLost
     } else if health.system == S::Lost {
         SystemLost
+    } else if health.system_permission_unknown {
+        SystemPermissionUnknown
     } else if health.low_disk {
         LowDisk
     } else if health.mic == S::Reconnecting {
@@ -209,6 +225,18 @@ pub struct WidgetModel {
     left_at: Option<i64>,
     /// A stop was asked for by the watcher and hasn't reported in.
     stopping: bool,
+    /// For that stop: how long ago the call let go of the microphone. The
+    /// note ends there.
+    stop_released_ago: Option<i64>,
+    /// When the tracked call's app last let go of the microphone, until it is
+    /// seen back on the same service: for a stop after it returned for another.
+    last_release: Option<i64>,
+    /// Apps the call watcher should forget a snooze of
+    /// ([`guidy_core::meetings::calls::CallDetector::unsnooze_app`]).
+    pending_unsnoozes: Vec<String>,
+    /// That stop is because the call's app came back, unanswered: a new call,
+    /// so it stands as having left.
+    split_on_return: bool,
     /// The call to record once this recording is stopped: its provider is
     /// Always, and it came on while this one's call was ending.
     record_next: Option<Call>,
@@ -235,6 +263,10 @@ impl Default for WidgetModel {
             presence: CallPresence::default(),
             left_at: None,
             stopping: false,
+            stop_released_ago: None,
+            split_on_return: false,
+            last_release: None,
+            pending_unsnoozes: Vec::new(),
             record_next: None,
             wave: VecDeque::from(vec![0.0; BARS]),
             sources: [
@@ -317,6 +349,11 @@ impl WidgetModel {
         std::mem::take(&mut self.pending_snoozes)
     }
 
+    /// The apps to forget a snooze of since the last poll.
+    pub fn take_unsnoozes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_unsnoozes)
+    }
+
     /// The call behind the recording has ended and the user is being asked:
     /// Keep or Stop. Stops by itself at [`LEFT_CALL_TIMEOUT_MS`].
     pub fn left_call(&self) -> Option<&Call> {
@@ -328,6 +365,7 @@ impl WidgetModel {
         self.left_at = None;
         self.recording_call = None;
         self.presence = CallPresence::default();
+        self.last_release = None;
     }
 
     /// A poll with the feature off: nothing is followed from here on. A
@@ -404,6 +442,7 @@ impl WidgetModel {
             self.recording_call = self.call.clone();
             self.presence = CallPresence::default();
             self.left_at = None;
+            self.last_release = None;
         }
         // Decided now, while its own call is still ending: it stands for this
         // call and no other.
@@ -411,13 +450,34 @@ impl WidgetModel {
             self.record_next = self.call.clone();
         }
         let tracked = self.recording_call.clone()?;
-        match self
-            .presence
-            .observe(holds_microphone(apps, &tracked.app_id), now)
-        {
+        let released_at = self.presence.released_at();
+        if released_at.is_some() {
+            self.last_release = released_at;
+        }
+        let holding = holds_microphone(apps, &tracked.app_id);
+        match self.presence.observe(holding, now) {
             Some(PresenceChange::Left) => self.left_at = Some(now),
-            Some(PresenceChange::Back) => self.left_at = None,
+            // Off the microphone past the grace, then back with the question
+            // unanswered ("Keep" unties the call): the next call. Right away,
+            // so its audio goes to its own note.
+            Some(PresenceChange::Back) => {
+                self.left_at = None;
+                self.split_on_return = true;
+                self.pending_unsnoozes.push(tracked.app_id.clone());
+                self.stop_released_ago = released_at.map(|at| (now - at).max(0));
+                return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
+            }
             None => {}
+        }
+        // Back on the same service: that release was a mute, not this note's
+        // end.
+        if holding
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|c| c.source == tracked.source)
+        {
+            self.last_release = None;
         }
         // The question shows beside the floater, not over the open panel.
         if self.left_at.is_some() {
@@ -432,9 +492,24 @@ impl WidgetModel {
                     || (c.app_id == tracked.app_id && c.source != tracked.source))
         });
         if new_call {
+            // Off the microphone now, or back for another service straight
+            // after letting go. A longer way back says nothing about when the
+            // audio stopped being this call's, so it all stays.
+            let new_since = self.call.as_ref().map_or(i64::MIN, |c| c.since);
+            let released = self.presence.released_at().or(self
+                .last_release
+                .filter(|at| (0..=END_GRACE_MS).contains(&(new_since.saturating_sub(*at)))));
+            self.stop_released_ago = released.map(|at| (now - at).max(0));
             return (!std::mem::replace(&mut self.stopping, true)).then_some(CallCommand::Stop);
         }
         self.stop_if_unanswered(now)
+    }
+
+    /// The recording the stop just asked for is of, and how long before it
+    /// the note's call let go of the microphone, if that is where it ends.
+    pub fn take_stop_released_ago(&mut self) -> Option<(i64, i64)> {
+        let ago = self.stop_released_ago.take()?;
+        Some((self.meeting_id()?, ago))
     }
 
     /// Starting a recording from the hint, until it reports in.
@@ -500,6 +575,7 @@ impl WidgetModel {
                 call: self.call.clone(),
                 dismissed: self.dismissed,
                 pending_snoozes: std::mem::take(&mut self.pending_snoozes),
+                pending_unsnoozes: std::mem::take(&mut self.pending_unsnoozes),
                 ..Self::default()
             };
         }
@@ -514,16 +590,26 @@ impl WidgetModel {
     /// first needs no such thing, and a new call behind it is still offered.
     fn recording_stopped(&mut self) {
         let tracked = self.recording_call.take();
-        let left = self.presence.has_left();
+        let split = std::mem::take(&mut self.split_on_return);
+        let left = self.presence.has_left() || split;
         self.presence = CallPresence::default();
         self.left_at = None;
         self.stopping = false;
+        self.stop_released_ago = None;
+        self.last_release = None;
         // Whatever comes next offers beside the floater.
         self.expanded = false;
         let Some(tracked) = tracked else {
             self.dismiss_call();
             return;
         };
+        // It ended, so whatever snoozed it was about that call: if it comes
+        // back that's a new one (a displaced browser's snooze lasts while it
+        // holds the microphone, which it may do again by then). Coming back
+        // already queued this.
+        if left && !split {
+            self.pending_unsnoozes.push(tracked.app_id.clone());
+        }
         let new_call = self.call.as_ref().filter(|c| c.since != tracked.since);
         if new_call.is_none() && self.call.is_some() {
             self.dismiss_call();
@@ -826,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_keeps_recording_and_coming_back_cancels_the_question() {
+    fn keep_keeps_one_note_even_when_the_service_comes_back() {
         let mut m = WidgetModel::default();
         let zoom = holding("us.zoom.xos");
         m.set_call(Some(call(1)));
@@ -835,19 +921,182 @@ mod tests {
         m.apply_call_poll(poll(&[], None, 1_000));
         m.apply_call_poll(poll(&[], None, 1_000 + END_GRACE_MS));
         assert!(m.left_call().is_some());
-        // Back in the call before answering.
-        m.apply_call_poll(poll(&zoom, None, 20_000));
-        assert!(m.left_call().is_none());
-        // Left again; this time "Keep".
-        m.apply_call_poll(poll(&[], None, 21_000));
-        m.apply_call_poll(poll(&[], None, 21_000 + END_GRACE_MS));
-        assert!(m.left_call().is_some());
         m.keep_recording();
         for t in 0..10 {
             let now = 30_000 + t * LEFT_CALL_TIMEOUT_MS;
             assert_eq!(m.apply_call_poll(poll(&[], None, now)), None);
         }
+        // Back: the same note, now following the new detection.
+        let at = 30_000 + 10 * LEFT_CALL_TIMEOUT_MS;
+        assert_eq!(m.apply_call_poll(poll(&zoom, Some(call(at)), at)), None);
         assert!(m.recorder.is_recording());
+        assert_eq!(m.take_stop_released_ago(), None);
+    }
+
+    #[test]
+    fn a_short_release_is_the_same_note() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        m.apply_call_poll(poll(&[], Some(call(1)), 1_000));
+        // Under the grace: a mute or a device switch, nothing was asked.
+        assert_eq!(
+            m.apply_call_poll(poll(&zoom, Some(call(1)), END_GRACE_MS)),
+            None
+        );
+        assert!(m.recorder.is_recording());
+    }
+
+    #[test]
+    fn the_service_returning_to_an_unanswered_question_is_a_new_note() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        m.apply_call_poll(poll(&[], Some(call(1)), 1_000));
+        m.apply_call_poll(poll(&[], None, 1_000 + END_GRACE_MS));
+        assert!(m.left_call().is_some());
+        // Back before answering, not yet detected as a call: stopped at once,
+        // with the note ending at the release 19 s ago.
+        assert_eq!(
+            m.apply_call_poll(poll(&zoom, None, 20_000)),
+            Some(CallCommand::Stop)
+        );
+        assert!(m.left_call().is_none());
+        assert_eq!(m.take_stop_released_ago(), Some((1, 19_000)));
+        // Whatever snooze it had was the old call's.
+        assert_eq!(m.take_unsnoozes(), ["us.zoom.xos"]);
+        assert_eq!(m.apply_call_poll(poll(&zoom, None, 21_000)), None);
+        m.set_recorder(RecorderState::Idle);
+        // Not snoozed: the new call gets its offer.
+        assert!(m.take_snoozes().is_empty());
+        let next = call(20_000);
+        m.apply_call_poll(poll(&zoom, Some(next.clone()), 22_000));
+        assert!(m.hinting());
+        assert_eq!(m.hint_call(), Some(&next));
+    }
+
+    #[test]
+    fn the_service_returning_under_always_starts_its_own_note() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        m.apply_call_poll(poll(&[], None, 1_000));
+        m.apply_call_poll(poll(&[], None, 1_000 + END_GRACE_MS));
+        assert_eq!(
+            m.apply_call_poll(poll(&zoom, None, 20_000)),
+            Some(CallCommand::Stop)
+        );
+        // Detected while the stop is still finishing.
+        let next = call(20_000);
+        let detected = CallPoll {
+            apps: &zoom,
+            current: Some(next.clone()),
+            detection: Some(Detection::Record(next.clone())),
+            now: 22_000,
+        };
+        assert_eq!(m.apply_call_poll(detected), None);
+        m.set_recorder(RecorderState::Idle);
+        assert_eq!(
+            m.apply_call_poll(poll(&zoom, Some(next), 23_000)),
+            Some(CallCommand::Start)
+        );
+    }
+
+    #[test]
+    fn another_app_taking_over_also_ends_the_note_at_the_release() {
+        let mut m = WidgetModel::default();
+        let teams_apps = holding("com.microsoft.teams2");
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 5_000,
+            app_id: "com.microsoft.teams2".into(),
+        };
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&holding("us.zoom.xos"), Some(call(1)), 0));
+        m.apply_call_poll(poll(&teams_apps, None, 1_000));
+        assert_eq!(
+            m.apply_call_poll(poll(&teams_apps, Some(teams), 1_000 + END_GRACE_MS)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), Some((1, END_GRACE_MS)));
+        m.set_recorder(RecorderState::Idle);
+        // Whichever way Zoom's call ended, its snooze goes with it.
+        assert_eq!(m.take_unsnoozes(), ["us.zoom.xos"]);
+    }
+
+    #[test]
+    fn a_quick_service_switch_in_a_browser_ends_the_note_at_the_release() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        // Let go at 11 s, back at 12 s for another service, under the grace:
+        // the detector drops the old call and is confirming the new one.
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 11_000));
+        m.apply_call_poll(poll(&browser, None, 12_000));
+        assert!(m.recorder.is_recording());
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 14_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(teams), 14_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), Some((1, 3_000)));
+    }
+
+    #[test]
+    fn a_release_long_before_the_next_call_does_not_cut_audio() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 4_000));
+        // Polling resumes a minute later (a sleep), with the page not known.
+        let unknown = Call {
+            source: CallSource::BrowserUnknown,
+            since: 65_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        m.apply_call_poll(poll(&browser, None, 65_000));
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(unknown), 84_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), None);
+    }
+
+    #[test]
+    fn a_release_followed_by_the_same_service_does_not_cut_a_later_switch() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        m.apply_call_poll(poll(&[], Some(chrome(1)), 4_000));
+        // Rejoined: a mute. Audio after this belongs to the note.
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 5_000));
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 100_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(teams), 102_000)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.take_stop_released_ago(), None);
     }
 
     #[test]
@@ -1117,6 +1366,30 @@ mod tests {
     fn the_worst_health_is_what_is_said() {
         let healthy = RecordingHealth::default();
         assert_eq!(health_notice(&healthy), None);
+        let dropping = RecordingHealth {
+            mic: SourceHealth::Lost,
+            audio_dropping: true,
+            ..RecordingHealth::default()
+        };
+        assert_eq!(health_notice(&dropping), Some(HealthNotice::AudioDropping));
+        assert!(HealthNotice::AudioDropping.is_failure());
+        let unknown = RecordingHealth {
+            system_permission_unknown: true,
+            ..RecordingHealth::default()
+        };
+        assert_eq!(
+            health_notice(&unknown),
+            Some(HealthNotice::SystemPermissionUnknown)
+        );
+        // A low disk can't hide it: the notice beside a question shows failures.
+        let both = RecordingHealth {
+            low_disk: true,
+            ..unknown.clone()
+        };
+        assert_eq!(
+            health_notice(&both),
+            Some(HealthNotice::SystemPermissionUnknown)
+        );
         let mut health = RecordingHealth {
             backlog: true,
             ..healthy

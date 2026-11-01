@@ -309,7 +309,7 @@ fn deliver_routes_messages_in_order_and_ends_when_senders_drop() {
     });
 
     let (tx, rx) = mpsc::channel();
-    let thread = std::thread::spawn(move || deliver(rx, callbacks, None));
+    let thread = std::thread::spawn(move || deliver(rx, callbacks, None, Default::default()));
     tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 160], 16_000))
         .unwrap();
     tx.send(CaptureMsg::Audio(Track::System, vec![0.0; 320], 16_000))
@@ -338,8 +338,14 @@ fn deliver_with_echo_cancellation_holds_the_mic_for_its_system_frames() {
     );
 
     let (tx, rx) = mpsc::channel();
-    let thread =
-        std::thread::spawn(move || deliver(rx, callbacks, Some(aec::EchoCanceller::new())));
+    let thread = std::thread::spawn(move || {
+        deliver(
+            rx,
+            callbacks,
+            Some(aec::EchoCanceller::new()),
+            Default::default(),
+        )
+    });
     tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 330], 16_000))
         .unwrap();
     tx.send(CaptureMsg::Audio(Track::System, vec![0.0; 320], 16_000))
@@ -592,4 +598,144 @@ fn a_failed_post_is_not_tracked() {
     if !post_notification("native-test.failed", "t", "b", &[]) {
         assert!(posted_notifications("native-test.failed").is_empty());
     }
+}
+
+#[test]
+fn an_apps_output_counts_across_its_helpers() {
+    let processes: Vec<InputProcess> = serde_json::from_str(
+        r#"[
+            {"pid": 2, "bundle": "", "name": "Slack Helper",
+             "parents": ["com.tinyspeck.slackmacgap"], "output": false},
+            {"pid": 3, "bundle": "com.tinyspeck.slackmacgap.helper", "name": "Slack Helper (Renderer)",
+             "parents": [], "output": true, "output_only": true},
+            {"pid": 4, "bundle": "net.whatsapp.WhatsApp", "name": "WhatsApp",
+             "parents": [], "output": false},
+            {"pid": 5, "bundle": "com.apple.Music", "name": "Music",
+             "parents": [], "output": true, "output_only": true}
+        ]"#,
+    )
+    .unwrap();
+    let apps = input_apps_from(&processes);
+    // Playing alone never puts an app on the microphone.
+    assert_eq!(apps.len(), 2);
+    assert_eq!(apps[0].canonical, "com.tinyspeck.slackmacgap");
+    assert!(apps[0].output_running);
+    // Another app's music isn't this app's output.
+    assert_eq!(apps[1].canonical, "net.whatsapp.WhatsApp");
+    assert!(!apps[1].output_running);
+}
+
+#[test]
+fn a_process_from_an_older_bridge_reads_as_capturing_without_output() {
+    let processes: Vec<InputProcess> =
+        serde_json::from_str(r#"[{"pid": 2, "bundle": "us.zoom.xos", "name": "", "parents": []}]"#)
+            .unwrap();
+    let apps = input_apps_from(&processes);
+    assert_eq!(apps.len(), 1);
+    assert!(!apps[0].output_running);
+}
+
+/// Delivers until the senders are gone. Returns the samples each callback
+/// got and the events, in order.
+fn run_delivery(
+    rx: mpsc::Receiver<CaptureMsg>,
+    budgets: Arc<DeliveryBudgets>,
+) -> (usize, usize, Vec<String>) {
+    let (mic, sys) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(0)));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (m, s, e) = (mic.clone(), sys.clone(), events.clone());
+    let callbacks = CaptureCallbacks::new(
+        move |samples, _| *m.lock().unwrap() += samples.len(),
+        move |samples, _| *s.lock().unwrap() += samples.len(),
+    )
+    .with_events(move |event| e.lock().unwrap().push(event.message));
+    deliver(rx, callbacks, None, budgets);
+    let (mic, sys) = (*mic.lock().unwrap(), *sys.lock().unwrap());
+    let events = events.lock().unwrap().clone();
+    (mic, sys, events)
+}
+
+#[test]
+fn a_stuck_delivery_queue_is_bounded_and_keeps_the_tracks_aligned() {
+    use crate::meetings::sample_budget::{QUEUE_CAP_SAMPLES, RESUME_BELOW_SAMPLES};
+    let (tx, rx) = mpsc::channel();
+    let budgets = Arc::new(DeliveryBudgets::default());
+    let second = vec![0.25f32; 16_000];
+    // Nothing drains: 200 s on the mic, while the system track sends nothing.
+    for _ in 0..200 {
+        offer_audio(&tx, &budgets, Track::Mic, &second, 16_000);
+    }
+    assert_eq!(budgets.of(Track::Mic).queued(), QUEUE_CAP_SAMPLES);
+    assert!(budgets.of(Track::Mic).is_dropping());
+    assert!(!budgets.of(Track::System).is_dropping());
+    // Exactly what fits.
+    let queued: Vec<CaptureMsg> = rx.try_iter().collect();
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|m| matches!(m, CaptureMsg::Audio(..)))
+            .count(),
+        120
+    );
+    // Delivery catches up: the next buffer brings the gap with it.
+    budgets
+        .of(Track::Mic)
+        .done((QUEUE_CAP_SAMPLES - RESUME_BELOW_SAMPLES) as usize);
+    offer_audio(&tx, &budgets, Track::Mic, &second, 16_000);
+    match rx.try_recv().unwrap() {
+        CaptureMsg::Silence(Track::Mic, samples) => assert_eq!(samples, 80 * 16_000),
+        _ => panic!("expected the gap first"),
+    }
+}
+
+#[test]
+fn silence_for_dropped_audio_reaches_the_callbacks_and_the_log() {
+    let (tx, rx) = mpsc::channel();
+    tx.send(CaptureMsg::Silence(Track::System, 40_000)).unwrap();
+    tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 40_000], 16_000))
+        .unwrap();
+    drop(tx);
+    let (mic, sys, events) = run_delivery(rx, Default::default());
+    assert_eq!((mic, sys), (40_000, 40_000));
+    assert_eq!(events, [event_dropped(40_000)]);
+}
+
+#[test]
+fn dropping_is_said_ahead_of_the_backlog() {
+    let (tx, rx) = mpsc::channel();
+    let budgets = Arc::new(DeliveryBudgets::default());
+    let second = vec![0.25f32; 16_000];
+    for _ in 0..121 {
+        offer_audio(&tx, &budgets, Track::System, &second, 16_000);
+    }
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (a, b, c) = (order.clone(), order.clone(), order.clone());
+    let callbacks = CaptureCallbacks::new(
+        move |_, _| a.lock().unwrap().push("mic".into()),
+        move |_, _| b.lock().unwrap().push("system".into()),
+    )
+    .with_events(move |e| c.lock().unwrap().push(e.message));
+    drop(tx);
+    deliver(rx, callbacks, None, budgets);
+    let order = order.lock().unwrap();
+    // Before the first of 120 queued buffers.
+    assert_eq!(order[0], EVENT_DROPPING);
+}
+
+#[test]
+fn what_is_still_owed_at_the_end_is_delivered_as_silence() {
+    let (tx, rx) = mpsc::channel();
+    let budgets = Arc::new(DeliveryBudgets::default());
+    let second = vec![0.25f32; 16_000];
+    for _ in 0..125 {
+        offer_audio(&tx, &budgets, Track::Mic, &second, 16_000);
+    }
+    drop(tx);
+    let (mic, sys, events) = run_delivery(rx, budgets);
+    assert_eq!(mic, 125 * 16_000);
+    assert_eq!(sys, 0);
+    assert_eq!(
+        events,
+        [EVENT_DROPPING.to_string(), event_dropped(5 * 16_000)]
+    );
 }
