@@ -202,7 +202,49 @@ pub fn cache_from_segments(
         })
         .collect();
     cache.embeddings = vec![None; sorted.len()];
+    cache.resplit_pending = true;
     cache
+}
+
+/// `transcript` shared out among `pieces`, the contiguous parts of its unit:
+/// each word goes to the one piece holding its midpoint. Pieces left without
+/// words are dropped. `None` when that leaves fewer than two, or nothing to
+/// go by: the unit stays whole.
+fn split_transcript(
+    transcript: &UnitTranscript,
+    pieces: &[vad::Span],
+) -> Option<Vec<(vad::Span, UnitTranscript)>> {
+    if pieces.len() < 2 || transcript.words.is_empty() {
+        return None;
+    }
+    // The text's own tokens keep their punctuation, when they line up.
+    let tokens: Vec<&str> = transcript.text.split_whitespace().collect();
+    let aligned = tokens.len() == transcript.words.len();
+    let mut shares: Vec<(Vec<Word>, Vec<&str>)> = vec![(Vec::new(), Vec::new()); pieces.len()];
+    for (k, word) in transcript.words.iter().enumerate() {
+        let midpoint = (word.t0_ms + word.t1_ms) / 2;
+        let piece = pieces
+            .partition_point(|p| p.t1_ms <= midpoint)
+            .min(pieces.len() - 1);
+        shares[piece].0.push(word.clone());
+        shares[piece].1.push(if aligned {
+            tokens[k]
+        } else {
+            word.text.as_str()
+        });
+    }
+    // Scripts written without spaces stay that way.
+    let separator = if tokens.len() > 1 { " " } else { "" };
+    let out: Vec<(vad::Span, UnitTranscript)> = pieces
+        .iter()
+        .zip(shares)
+        .filter(|(_, (words, _))| !words.is_empty())
+        .map(|(span, (words, text))| {
+            let text = text.join(separator);
+            (*span, UnitTranscript { text, words })
+        })
+        .collect();
+    (out.len() >= 2).then_some(out)
 }
 
 /// The stage after `s` (`Done` stays `Done`).
@@ -855,7 +897,102 @@ impl<'a> Pipeline<'a> {
         Ok(())
     }
 
+    /// Cut the units of a stored transcript where the voice changes, as a
+    /// first run does before transcribing (see [`Self::split_turns`]), sharing
+    /// out their words instead. Without turn detection they stay whole.
+    fn resplit(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        let Some(mut detection) = self.turns.take() else {
+            return Ok(());
+        };
+        let result = self.resplit_with(&mut detection, cache);
+        self.turns = Some(detection);
+        result
+    }
+
+    fn resplit_with(
+        &mut self,
+        detection: &mut TurnDetection<'a>,
+        cache: &mut ProcessingCache,
+    ) -> Result<()> {
+        let params = self.config.turns;
+        let n = cache.units.len();
+        let mut units = Vec::with_capacity(n);
+        let mut transcripts = Vec::with_capacity(n);
+        let mut failed = false;
+        let mut last_report = Instant::now();
+        for i in 0..n {
+            let (unit, transcript) = (cache.units[i], cache.transcripts[i].take());
+            let splittable = !failed
+                && unit.track == Track::System
+                && unit.span.len_ms() >= params.min_span_ms
+                && transcript.as_ref().is_some_and(|t| !t.words.is_empty());
+            let mut changes = Vec::new();
+            if splittable {
+                self.check_cancel()?;
+                let pcm = self
+                    .source(unit.track)?
+                    .read_range(unit.span.t0_ms, unit.span.t1_ms)?;
+                let found = turns::find_changes(
+                    &pcm,
+                    detection.segmenter.as_deref_mut(),
+                    &mut *detection.embedder,
+                    &params,
+                );
+                match found {
+                    Ok(found) => changes = found,
+                    Err(e) if super::is_cancelled(&e) => return Err(e),
+                    Err(e) => {
+                        log::warn!(
+                            "meeting {}: lines not split where the voice changes: {e:#}",
+                            self.meeting_id
+                        );
+                        failed = true;
+                    }
+                }
+            }
+            // No quiet frames to snap to: the cuts stay where they were found.
+            let pieces = turns::split_span(unit.span, &changes, &[], 0.0, &params);
+            let parts = transcript
+                .as_ref()
+                .and_then(|t| split_transcript(t, &pieces));
+            match parts {
+                Some(parts) => {
+                    for (span, t) in parts {
+                        units.push(Unit {
+                            track: unit.track,
+                            span,
+                        });
+                        transcripts.push(Some(t));
+                    }
+                }
+                None => {
+                    units.push(unit);
+                    transcripts.push(transcript);
+                }
+            }
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                self.progress(ProcessingStage::Voiceprints, 0.0, Some((i + 1, n)));
+            }
+        }
+        log::info!(
+            "meeting {}: {n} stored line(s) became {} at changes of voice",
+            self.meeting_id,
+            units.len()
+        );
+        cache.embeddings = vec![None; units.len()];
+        cache.transcripts = transcripts;
+        cache.units = units;
+        cache.clustering = None;
+        Ok(())
+    }
+
     fn voiceprints(&mut self, cache: &mut ProcessingCache) -> Result<()> {
+        if cache.resplit_pending {
+            self.resplit(cache)?;
+            cache.resplit_pending = false;
+            self.save(cache)?;
+        }
         let n = cache.units.len();
         // With the user's voice recorded, the mic track is diarized too.
         let embed_mic = !self.store.user_voiceprints()?.is_empty();

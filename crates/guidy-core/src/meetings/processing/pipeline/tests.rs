@@ -649,6 +649,188 @@ fn a_stored_transcript_resumes_at_the_voiceprints() {
     assert_eq!(cache.mic_ms, None);
 }
 
+/// Twelve words, one a second from `t0_ms`, each lasting 900 ms.
+fn twelve_words(t0_ms: i64) -> Vec<Word> {
+    (0..12)
+        .map(|i| Word {
+            t0_ms: t0_ms + i * 1_000,
+            t1_ms: t0_ms + i * 1_000 + 900,
+            text: format!("w{i}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_cut_shares_out_the_words_by_midpoint() {
+    let span = vad::Span::new;
+    let transcript = |words: Vec<Word>, text: &str| UnitTranscript {
+        text: text.into(),
+        words,
+    };
+    let word = |t0_ms, t1_ms, text: &str| Word {
+        t0_ms,
+        t1_ms,
+        text: text.into(),
+    };
+    let pieces = [span(0, 1_000), span(1_000, 2_000)];
+    // Over the cut: its midpoint decides. On the cut: the later piece, once.
+    let t = transcript(
+        vec![
+            word(100, 300, "one"),
+            word(800, 1_100, "two"),
+            word(900, 1_100, "three"),
+            word(1_500, 1_500, "four"),
+        ],
+        "One, two three four.",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].1.text, "One, two");
+    assert_eq!(parts[1].1.text, "three four.");
+    assert_eq!(parts[0].1.words.len(), 2);
+    assert_eq!(parts[1].1.words.len(), 2);
+    assert_eq!((parts[0].0, parts[1].0), (pieces[0], pieces[1]));
+    // Tokens that don't line up with the words: the words' own text.
+    let t = transcript(
+        vec![word(100, 200, "one"), word(1_100, 1_200, "two")],
+        "one two three",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "one");
+    assert_eq!(parts[1].1.text, "two");
+    // No spaces in the text: none added.
+    let t = transcript(vec![word(100, 200, "明"), word(1_100, 1_200, "日")], "明日");
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "明");
+    // All the words in one piece, none at all, or nothing cut: stays whole.
+    let t = transcript(vec![word(100, 200, "one")], "one");
+    assert!(split_transcript(&t, &pieces).is_none());
+    assert!(split_transcript(&transcript(Vec::new(), "text"), &pieces).is_none());
+    assert!(split_transcript(&t, &pieces[..1]).is_none());
+}
+
+/// One stored line holding two voices, its checkpoint ready for a redo, with
+/// a hand-made pin on it. Returns the person pinned.
+fn stored_line_of_two_voices(f: &Fixture) -> PersonId {
+    let words = twelve_words(1_000);
+    let text = words
+        .iter()
+        .map(|w| w.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = Segment {
+        id: 1,
+        meeting_id: f.id,
+        track: Track::System,
+        t0_ms: 1_000,
+        t1_ms: 13_000,
+        text,
+        words,
+        speaker_id: None,
+    };
+    let cache = cache_from_segments(&[line], false, true, 30_000);
+    assert!(cache.resplit_pending);
+    sidecar::write_cache(&f.store, f.id, &cache).unwrap();
+    f.store
+        .set_processing_stage_if_processing(f.id, Some(ProcessingStage::Transcribe))
+        .unwrap();
+    let person = f.store.insert_person("Alice", None).unwrap().id;
+    f.store
+        .replace_segment_pins(
+            f.id,
+            &[SegmentPin {
+                track: Track::System,
+                t0_ms: 1_000,
+                t1_ms: 13_000,
+                person_id: person,
+                by_hand: true,
+            }],
+        )
+        .unwrap();
+    person
+}
+
+/// Redo the speakers of [`stored_line_of_two_voices`]. Returns how many
+/// system lines the transcriber was asked for, and the run's result.
+fn redo_stored_line(f: &Fixture, detect: bool) -> (usize, Result<()>) {
+    let cancel = AtomicBool::new(false);
+    let calls = Rc::new(Cell::new(0));
+    let mut transcriber = FakeTranscriber {
+        calls: calls.clone(),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let (mut segmenter, mut voices) = (FakeSegmenter, ShareOfVoices);
+    let system = [(0, 1_000, 7_008), (1, 7_008, 13_000)];
+    let result = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config: PipelineConfig::default(),
+        mic: None,
+        system: Some(Box::new(PcmSource::new(render(30_000, &system)))),
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Default::default(),
+        turns: detect.then_some(TurnDetection {
+            segmenter: Some(&mut segmenter),
+            embedder: &mut voices,
+        }),
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    }
+    .run();
+    (calls.get(), result)
+}
+
+#[test]
+fn redoing_the_speakers_splits_a_line_of_two_voices_and_keeps_its_pin() {
+    let f = fixture();
+    let person = stored_line_of_two_voices(&f);
+    let (transcribed, result) = redo_stored_line(&f, true);
+    result.unwrap();
+    assert_eq!(
+        transcribed, 0,
+        "words are shared out, not transcribed again"
+    );
+    let segments = f.store.segments(f.id).unwrap();
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    assert_eq!((segments[0].t0_ms, segments[0].t1_ms), (1_000, 7_008));
+    assert_eq!((segments[1].t0_ms, segments[1].t1_ms), (7_008, 13_000));
+    assert_eq!(segments[0].text, "w0 w1 w2 w3 w4 w5");
+    assert_eq!(segments[1].text, "w6 w7 w8 w9 w10 w11");
+    // The pin holds on both pieces, and moves onto them.
+    for s in &segments {
+        let speaker = f.store.get_speaker(s.speaker_id.unwrap()).unwrap().unwrap();
+        assert_eq!(speaker.person_id, Some(person));
+    }
+    let pins = f.store.segment_pins(f.id).unwrap();
+    assert_eq!(pins.len(), 2, "{pins:?}");
+    assert!(pins.iter().all(|p| p.by_hand && p.person_id == person));
+}
+
+#[test]
+fn without_turn_detection_a_redo_keeps_the_line_whole() {
+    let f = fixture();
+    stored_line_of_two_voices(&f);
+    redo_stored_line(&f, false).1.unwrap();
+    assert_eq!(f.store.segments(f.id).unwrap().len(), 1);
+}
+
+#[test]
+fn a_checkpoint_from_before_the_flag_needs_no_split() {
+    let cache = ProcessingCache::new();
+    let mut json: serde_json::Value = serde_json::to_value(&cache).unwrap();
+    json.as_object_mut().unwrap().remove("resplit_pending");
+    let old: ProcessingCache = serde_json::from_value(json).unwrap();
+    assert!(!old.resplit_pending);
+}
+
 #[test]
 fn resume_point_logic() {
     use ProcessingStage::*;

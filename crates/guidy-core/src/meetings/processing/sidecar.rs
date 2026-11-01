@@ -301,6 +301,11 @@ pub struct ProcessingCache {
     #[serde(with = "unit_embeddings")]
     pub embeddings: Vec<Option<Option<Vec<f32>>>>,
     pub clustering: Option<Clustering>,
+    /// The units came from a stored transcript and may hold two voices: the
+    /// voiceprint stage cuts them where the voice changes first. Cleared in
+    /// the checkpoint that holds the cut units, so a resume can't cut twice.
+    #[serde(default)]
+    pub resplit_pending: bool,
 }
 
 impl ProcessingCache {
