@@ -35,6 +35,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
+/// Asks the app to show the main window on a section (payload: the section
+/// id). The section type lives in the UI crate.
+pub const OPEN_SECTION_EVENT: &str = "tray-open-section";
+/// Asks the app to copy a meeting's transcript (payload: the meeting id). The
+/// export format lives in the UI crate.
+pub const COPY_MEETING_TRANSCRIPT_EVENT: &str = "tray-copy-meeting-transcript";
+
 /// Managed marker: present once the native tray has been built. The native
 /// `tray_icon::TrayIcon` itself is main-thread-only and lives in [`NATIVE`].
 pub struct TrayIcon;

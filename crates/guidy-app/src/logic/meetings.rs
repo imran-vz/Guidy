@@ -1510,6 +1510,31 @@ pub fn transcript_text(
     out
 }
 
+/// The text the tray copies for meeting `id`: what the meeting page's "Copy
+/// transcript" writes. `None` if the meeting is gone or has no transcript text.
+pub fn meeting_transcript_export(
+    backend: &dyn crate::meetings_backend::MeetingsBackend,
+    id: MeetingId,
+    user_display_name: &str,
+    locale: &str,
+) -> Result<Option<String>, String> {
+    let Some(meeting) = backend.get_meeting(id)? else {
+        return Ok(None);
+    };
+    let segments = backend.segments(id)?;
+    if segments.iter().all(|s| s.text.trim().is_empty()) {
+        return Ok(None);
+    }
+    Ok(Some(transcript_text(
+        &meeting.title,
+        &format_meeting_date(meeting.started_at, locale),
+        &segments,
+        &backend.speakers(id)?,
+        &backend.list_people()?,
+        user_display_name,
+    )))
+}
+
 /// Retention dropdown value: `"3"`, `"7"`, `"30"` or `"forever"`.
 pub fn retention_value(days: Option<u32>) -> String {
     days.map(|d| d.to_string())

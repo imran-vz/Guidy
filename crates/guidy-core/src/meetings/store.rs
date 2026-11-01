@@ -816,6 +816,28 @@ impl MeetingsStore {
         )
     }
 
+    /// The newest meeting whose transcript has text (the tray's "Copy Last
+    /// Meeting Transcript"). A meeting still recording doesn't count.
+    pub fn latest_transcribed_meeting(&self) -> Result<Option<MeetingId>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT m.id FROM meetings m
+                 WHERE m.status <> ?1
+                   AND EXISTS (
+                       SELECT 1 FROM meeting_segments s
+                       WHERE s.meeting_id = m.id
+                         AND TRIM(s.text, ' ' || char(9, 10, 13)) <> ''
+                   )
+                 ORDER BY m.started_at DESC, m.id DESC
+                 LIMIT 1",
+                [MeetingStatus::Recording.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// Meetings in any of `statuses`, oldest first (e.g. to resume processing
     /// or to recover `Recording` rows left by a crash).
     pub fn meetings_with_status(&self, statuses: &[MeetingStatus]) -> Result<Vec<Meeting>> {
@@ -2472,6 +2494,45 @@ pub(crate) mod tests {
                 "rec-sys.opus.enc"
             ]
         );
+    }
+
+    #[test]
+    fn latest_transcribed_meeting_skips_recording_and_blank_meetings() {
+        let s = store();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), None);
+
+        let done = s.insert_meeting(&meeting("done", 100)).unwrap();
+        s.set_meeting_status(done, MeetingStatus::Processed, None)
+            .unwrap();
+        // No segments yet: nothing to copy.
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), None);
+        s.replace_transcript(done, &[], &[segment(0, None, Track::Mic)])
+            .unwrap();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(done));
+
+        // Newer, but its only segment is whitespace.
+        let blank = s.insert_meeting(&meeting("blank", 200)).unwrap();
+        s.set_meeting_status(blank, MeetingStatus::Processed, None)
+            .unwrap();
+        let mut empty = segment(0, None, Track::Mic);
+        empty.text = " \n\t ".into();
+        s.replace_transcript(blank, &[], &[empty]).unwrap();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(done));
+
+        // Newer, with text, but still recording.
+        let live = s.insert_meeting(&meeting("live", 300)).unwrap();
+        s.set_meeting_status(live, MeetingStatus::Recording, None)
+            .unwrap();
+        s.replace_transcript(live, &[], &[segment(0, None, Track::Mic)])
+            .unwrap();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(done));
+
+        s.set_meeting_status(live, MeetingStatus::Processed, None)
+            .unwrap();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(live));
+
+        s.delete_meeting(live).unwrap();
+        assert_eq!(s.latest_transcribed_meeting().unwrap(), Some(done));
     }
 
     #[test]
