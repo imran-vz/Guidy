@@ -270,9 +270,6 @@ fn finish_start(
     }
 }
 
-/// Debug builds: replay a streaming session through the real overlay path
-/// (window placement + events) without a microphone.
-#[cfg(debug_assertions)]
 /// Quit finishes a recording, bounded: its tracks are crash-safe, so one that
 /// takes too long loses only what wasn't synced yet. On a thread, as the UI
 /// thread is what quit waits on.
@@ -301,6 +298,9 @@ fn stop_recording_on_quit(cx: &mut App) {
     .detach();
 }
 
+/// Debug builds: replay a streaming session through the real overlay path
+/// (window placement + events) without a microphone.
+#[cfg(debug_assertions)]
 fn overlay_demo(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {

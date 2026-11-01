@@ -59,7 +59,8 @@ typedef void (*guidy_mb_event_cb)(void *ctx, int32_t stream, const char *message
 //
 // A running stream reports through `event_cb`: `state:stalled` (it stopped
 // delivering, or is being rebuilt), `state:recovered` (delivering again),
-// `state:gap:<ms>` (how long it was gone, or the Mac slept).
+// `state:gap:<ms>` (how long it was gone, or the Mac slept), `state:restarted`
+// (it came back up after an `error:`).
 //
 // Timeline: both streams share one time origin, the moment this function is
 // called. Sample n of either stream (counted from its first callback) was

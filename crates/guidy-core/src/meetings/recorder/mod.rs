@@ -640,7 +640,7 @@ impl MeetingRecorder {
         };
         // Outside the lock: reading permissions can take a moment.
         let preflight = preflight_due.then(|| self.deps.capture.preflight(&self.deps.audio_dir));
-        let (health, stop) = {
+        let (id, health, stop) = {
             let mut session = self.session.lock();
             let Some(s) = session.as_mut() else {
                 return;
@@ -685,24 +685,37 @@ impl MeetingRecorder {
                     errors.push(STOPPED_NO_AUDIO.to_string());
                 }
             }
-            (changed.then_some(health), stop)
+            (s.meeting_id, changed.then_some(health), stop)
         };
         // Under `op`, so a stop can't report Idle in between and be overwritten.
-        // A start or stop under way: the next tick says it.
+        // A start or stop under way: the next tick says it. All of this is for
+        // recording `id`: it may have just stopped and another started.
         if let Some(health) = health {
             if let Some(_op) = self.op.try_lock() {
-                let state = self.session.lock().as_mut().map(|s| {
-                    s.health = health;
-                    s.state()
-                });
+                let state = self
+                    .session
+                    .lock()
+                    .as_mut()
+                    .filter(|s| s.meeting_id == id)
+                    .map(|s| {
+                        s.health = health;
+                        s.state()
+                    });
                 if let Some(state) = state {
                     self.set_state(state);
                 }
             }
         }
         if stop {
-            log::warn!("meetings: no audio for 15 minutes: stopping the recording");
-            match self.stop(now) {
+            let stopped = {
+                let _op = self.op.lock();
+                if self.current_meeting_id() != Some(id) {
+                    return;
+                }
+                log::warn!("meetings: no audio for 15 minutes: stopping the recording");
+                self.stop_holding_op(now)
+            };
+            match stopped {
                 Ok(Some(id)) => (self.deps.on_recording_finished)(id),
                 Ok(None) => {}
                 Err(e) => log::warn!("meetings: stopping a silent recording: {e:#}"),
@@ -780,6 +793,11 @@ impl MeetingRecorder {
     /// [`RecorderDeps::on_recording_finished`], not returned.
     pub fn stop(&self, now: i64) -> Result<Option<MeetingId>> {
         let _op = self.op.lock();
+        self.stop_holding_op(now)
+    }
+
+    /// [`Self::stop`]. Callers hold `op`.
+    fn stop_holding_op(&self, now: i64) -> Result<Option<MeetingId>> {
         let Some(mut session) = self.session.lock().take() else {
             return self.retry_pending().map(|()| None);
         };

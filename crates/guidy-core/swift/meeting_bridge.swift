@@ -200,6 +200,8 @@ private let idleRebuildNanos: UInt64 = 30_000_000_000
 // again; and how long it was gone. Keep these strings in step.
 private let eventStalled = "state:stalled"
 private let eventRecovered = "state:recovered"
+/// It came back up after an `error:`; `state:recovered` follows audio, if any.
+private let eventRestarted = "state:restarted"
 private func eventGap(_ nanos: UInt64) -> String { "state:gap:\(nanos / 1_000_000)" }
 
 /// Forwards converted audio to the Rust callbacks. `close()` guarantees that,
@@ -890,7 +892,10 @@ private final class MicCapture {
             }
             try installTapAndStart()
             recovering = false
-            reportedFailure = false
+            if reportedFailure {
+                reportedFailure = false
+                sink.event(GUIDY_MB_STREAM_MIC, eventRestarted)
+            }
             // Its grace before the watchdog looks again.
             stateLock.lock()
             lastAudioNanos = nowNanos()
@@ -1437,7 +1442,10 @@ private final class SystemTapCapture {
             }
             try buildDevice()
             recovering = false
-            reportedFailure = false
+            if reportedFailure {
+                reportedFailure = false
+                sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRestarted)
+            }
             ioQueue.sync { self.lastAudioNanos = nowNanos() }
             if !quiet {
                 sink?.event(GUIDY_MB_STREAM_SYSTEM, "system audio restarted")

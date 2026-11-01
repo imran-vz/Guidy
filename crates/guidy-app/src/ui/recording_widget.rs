@@ -220,7 +220,7 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
         // Unix ms on the executor's clock (faked in tests).
         let (epoch, t0) = (now_ms(), cx.background_executor().now());
         let mut wait = CALL_POLL;
-        let mut told_in_call = false;
+        let mut told_in_call = (None, false);
         loop {
             cx.background_executor().timer(wait).await;
             let watching = cx.update(|cx| {
@@ -242,6 +242,7 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                 cx.update(|cx| {
                     let (changed, command) = apply_idle_poll(now, cx);
                     run_call_changes(changed, command, shown, cx);
+                    tell_in_call(&mut told_in_call, cx);
                 });
                 wait = CALL_POLL;
                 continue;
@@ -270,21 +271,28 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                     cx,
                 );
                 run_call_changes(changed, command, shown, cx);
+                tell_in_call(&mut told_in_call, cx);
             });
-            let in_call = cx.update(|cx| {
-                RecordingWidgetState::global(cx)
-                    .is_some_and(|state| state.read(cx).model.recording_in_call())
-            });
-            if in_call != told_in_call {
-                told_in_call = in_call;
-                let backend = cx.update(|cx| AppState::global(cx).read(cx).meetings.clone());
-                cx.background_executor()
-                    .spawn(async move { backend.set_recording_in_call(in_call) })
-                    .detach();
-            }
         }
     })
     .detach();
+}
+
+/// Tell the recorder whether a call is behind the recording, when that changed
+/// or the recording did (a new one starts knowing of none).
+fn tell_in_call(told: &mut (Option<i64>, bool), cx: &mut App) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return;
+    };
+    let model = &state.read(cx).model;
+    let now = (model.meeting_id(), model.recording_in_call());
+    if now == *told {
+        return;
+    }
+    *told = now;
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.background_spawn(async move { backend.set_recording_in_call(now.1) })
+        .detach();
 }
 
 fn run_call_changes(
@@ -586,9 +594,11 @@ impl RecordingWidgetView {
                     Some(floater) => {
                         let (gx, gy) = crate::windows::pointer_location()?;
                         let p = s.desk.from_cocoa(gx, gy);
+                        // A warning with nothing to click lets clicks through:
+                        // it may be up for hours.
                         let asking = s.model.hinting()
                             || s.model.left_call().is_some()
-                            || s.model.health_notice().is_some();
+                            || s.model.health_notice() == Some(HealthNotice::NoAudio);
                         let hint = asking.then(|| floater.hint(&s.desk)).flatten();
                         s.desk.screen_rect(this.screen).contains(p)
                             && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)))
@@ -1928,6 +1938,17 @@ impl RecordingWidgetView {
             .border_color(tone.hairline)
             .child(source_chip(m, Track::Mic, tone))
             .child(source_chip(m, Track::System, tone));
+        // Beside the floater this has no room while the panel is open.
+        let health_line = m.health_notice().map(|notice| {
+            div()
+                .id("recording-widget-panel-health")
+                .px(hud(14.))
+                .pb(hud(8.))
+                .text_size(hud(12.))
+                .text_color(tone.accent)
+                .child(t(notice.key()))
+                .test_support()
+        });
 
         let body: Vec<AnyElement> = if rows.is_empty() {
             vec![transcript_notice(&status, tone, cx)]
@@ -2011,6 +2032,7 @@ impl RecordingWidgetView {
             .children(header)
             .child(title)
             .child(sources)
+            .children(health_line)
             .child(transcript)
             .child(footer)
             .test_support()

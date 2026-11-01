@@ -31,6 +31,8 @@ pub enum CaptureMessage {
     Gap(i64),
     /// A stream failed, and is being retried.
     Failed,
+    /// It came back up after failing (with nothing to say about its audio).
+    Restarted,
 }
 
 impl CaptureMessage {
@@ -42,6 +44,7 @@ impl CaptureMessage {
         match message.strip_prefix("state:")? {
             "stalled" => Some(Self::Stalled),
             "recovered" => Some(Self::Recovered),
+            "restarted" => Some(Self::Restarted),
             other => other
                 .strip_prefix("gap:")
                 .and_then(|ms| ms.parse().ok())
@@ -134,6 +137,7 @@ impl HealthTracker {
                 state.failed = false;
             }
             CaptureMessage::Failed => state.failed = true,
+            CaptureMessage::Restarted => state.failed = false,
             CaptureMessage::Gap(_) => {}
         }
     }
@@ -195,6 +199,9 @@ impl HealthTracker {
             }
             if flow.sound {
                 state.last_sound = now;
+                // Sound reaching the track says more than any report.
+                state.failed = false;
+                state.stalled = false;
             }
         }
         if mic.sound || system.sound {
@@ -253,6 +260,7 @@ mod tests {
         use CaptureMessage::*;
         assert_eq!(CaptureMessage::parse("state:stalled"), Some(Stalled));
         assert_eq!(CaptureMessage::parse("state:recovered"), Some(Recovered));
+        assert_eq!(CaptureMessage::parse("state:restarted"), Some(Restarted));
         assert_eq!(CaptureMessage::parse("state:gap:1234"), Some(Gap(1234)));
         assert_eq!(CaptureMessage::parse("error: tap gone"), Some(Failed));
         assert_eq!(CaptureMessage::parse("state:gap:x"), None);
@@ -279,6 +287,19 @@ mod tests {
         assert_eq!(h.health(0).mic, SourceHealth::Lost);
         h.on_message(Track::Mic, CaptureMessage::Recovered);
         assert_eq!(h.health(0).mic, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn a_stream_that_came_back_is_not_lost_however_it_is_told() {
+        let mut h = HealthTracker::new(0);
+        h.on_message(Track::System, CaptureMessage::Failed);
+        h.on_message(Track::System, CaptureMessage::Restarted);
+        assert_eq!(h.health(0).system, SourceHealth::Healthy);
+        // No report at all, but sound.
+        h.on_message(Track::Mic, CaptureMessage::Failed);
+        h.on_message(Track::Mic, CaptureMessage::Stalled);
+        run(&mut h, 1_000, 1_000, LIVE, LIVE);
+        assert_eq!(h.health(1_000).mic, SourceHealth::Healthy);
     }
 
     #[test]
