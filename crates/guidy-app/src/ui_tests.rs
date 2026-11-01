@@ -366,6 +366,12 @@ mod main_window {
         assert_eq!(step(cx), Some(OnboardingStep::Welcome));
         assert!(exists(cx, w, "onboarding-welcome"));
         with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
+        use crate::logic::keyboard::OsType;
+        if !matches!(OsType::current(), OsType::MacOs | OsType::Windows) {
+            // Nothing to grant on other platforms: the step skips itself.
+            assert_eq!(step(cx), Some(OnboardingStep::Setup));
+            return;
+        }
         assert_eq!(step(cx), Some(OnboardingStep::Permissions));
         // Granted already on this fake: no auto-advance, Continue moves on.
         cx.executor().advance_clock(Duration::from_millis(400));
@@ -412,29 +418,47 @@ mod main_window {
         }
         with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
         assert!(exists(cx, w, "permissions-onboarding"));
+        let checks = || backend.data.lock().microphone_checks;
+        let advance = |cx: &mut TestAppContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        // No polling until the user acts.
+        let first = checks();
+        advance(cx, 3000);
+        assert_eq!(checks(), first);
         with_window(cx, w, |window, cx| {
             window.click("grant-microphone-permission", cx)
         });
         assert!(backend.called("request_microphone_permission"));
-        backend.data.lock().microphone = true;
-        // The grant isn't seen until the check due at 1 s, so Continue stays off.
-        cx.executor().advance_clock(Duration::from_millis(900));
-        cx.run_until_parked();
+        assert!(
+            !exists(cx, w, "grant-microphone-permission"),
+            "waiting replaces the button"
+        );
+        // One check every second while waiting, and Continue stays off.
+        advance(cx, 900);
+        assert_eq!(checks(), first);
+        advance(cx, 200);
+        assert_eq!(checks(), first + 1);
         with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
         assert_eq!(
             main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Permissions)
         );
-        cx.executor().advance_clock(Duration::from_millis(200));
-        cx.run_until_parked();
-        // Granting doesn't move on by itself: the user presses Continue.
-        cx.executor().advance_clock(Duration::from_millis(400));
-        cx.run_until_parked();
+        advance(cx, 900);
+        assert_eq!(checks(), first + 1);
+        advance(cx, 200);
+        assert_eq!(checks(), first + 2);
+        // Once granted, polling stops and the step waits for Continue.
+        backend.data.lock().microphone = true;
+        advance(cx, 1100);
+        assert_eq!(checks(), first + 3);
+        advance(cx, 3000);
+        assert_eq!(checks(), first + 3);
         assert_eq!(
             main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Permissions)
         );
-        assert!(exists(cx, w, "microphone-permission"));
         with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
         assert_eq!(
             main.read_with(cx, |m, cx| m.step(cx)),
@@ -1253,9 +1277,9 @@ mod onboarding_flows {
         w
     }
 
-    /// PARITY F-01 (new user, input starts only when done), F-03: Finish
-    /// queues the downloads, marks onboarding complete and opens the app at
-    /// once; the model is selected when it's done.
+    /// PARITY F-01 (reaching Done from Setup starts input and loads devices),
+    /// F-03: Finish queues the downloads, marks onboarding complete and opens
+    /// the app at once; the model is selected when it's done.
     #[gpui_kit::test]
     fn finish_queues_downloads_and_completes_without_waiting(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
@@ -1397,6 +1421,41 @@ mod onboarding_flows {
         );
         with_window(cx, w, |window, cx| window.click("setup-finish", cx));
         assert!(backend.called("request_download stt:other"));
+    }
+
+    /// PARITY F-01: a returning user who lost a permission sees that step
+    /// first (with no Back), then the migration.
+    #[gpui_kit::test]
+    fn returning_user_goes_through_missing_permissions_to_migration(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut new = model("new");
+        new.is_downloaded = true;
+        backend.data.lock().models = vec![new];
+        backend.data.lock().retired = vec![RetiredModel {
+            id: "old".into(),
+            name: "Old".into(),
+            size_mb: 300,
+            replacement_repo: "org/new".into(),
+        }];
+        backend.data.lock().accessibility = false;
+        backend.with_settings(|s| s.selected_model = "old".into());
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        if crate::logic::keyboard::OsType::current() != crate::logic::keyboard::OsType::MacOs {
+            return;
+        }
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        assert!(!exists(cx, w, "permissions-back"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Migration)
+        );
     }
 
     /// PARITY F-04

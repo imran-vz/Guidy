@@ -33,6 +33,8 @@ pub struct FakeData {
     pub pp_models: Vec<String>,
     pub fail_download: bool,
     pub fail_select: bool,
+    /// How many times the microphone permission was checked.
+    pub microphone_checks: u32,
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
     pub usage: guidy_core::llm::usage::UsageReport,
@@ -365,7 +367,9 @@ impl Backend for FakeBackend {
         self.data.lock().accessibility
     }
     fn check_microphone_permission(&self) -> bool {
-        self.data.lock().microphone
+        let mut data = self.data.lock();
+        data.microphone_checks += 1;
+        data.microphone
     }
     fn request_microphone_permission(&self) {
         self.rec("request_microphone_permission");
