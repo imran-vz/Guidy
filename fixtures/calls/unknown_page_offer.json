@@ -1,6 +1,6 @@
 {
   "name": "unknown_page_offer",
-  "description": "A browser on an unknown page: offered at 20 s, once.",
+  "description": "A browser on an unknown page: offered at 19 s, so within 20 s of the mic, once.",
   "steps": [
     {
       "from": 0,
@@ -14,7 +14,7 @@
   ],
   "offers": [
     {
-      "t": 20000,
+      "t": 19000,
       "source": "browser_unknown"
     }
   ]

@@ -627,12 +627,27 @@ pub fn audio_input_apps() -> Vec<crate::meetings::calls::InputApp> {
         use crate::meetings::calls::{title_source, InputApp};
         macos::audio_input_bundle_ids()
             .into_iter()
-            .map(|bundle_id| InputApp {
-                titles: title_source(&bundle_id)
-                    .map(macos::window_titles)
-                    .unwrap_or_default(),
-                bundle_id,
-                ..Default::default()
+            .map(|bundle_id| {
+                // Safari captures in WebKit's GPU process; other apps can too,
+                // but this bridge doesn't say which.
+                let canonical = if bundle_id.starts_with("com.apple.WebKit") {
+                    "com.apple.Safari".to_string()
+                } else {
+                    String::new()
+                };
+                let titles = title_source(if canonical.is_empty() {
+                    &bundle_id
+                } else {
+                    &canonical
+                })
+                .map(macos::window_titles)
+                .unwrap_or_default();
+                InputApp {
+                    titles,
+                    bundle_id,
+                    canonical,
+                    ..Default::default()
+                }
             })
             .collect()
     }

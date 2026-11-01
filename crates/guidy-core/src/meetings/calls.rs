@@ -26,11 +26,15 @@ use crate::meetings::call_sites;
 /// Microphone held this long (ms) by a known service: a call.
 pub const CONFIRM_MS: i64 = 2_000;
 /// The same for apps that also record voice notes (WhatsApp, Slack). Longer
-/// than [`CONFIRM_MS`] to pass over most of those; short enough, with a 1 s
-/// poll, to offer within the 5 s the scorecard allows.
+/// than [`CONFIRM_MS`] to pass over the shortest of those; short enough, with
+/// a 1 s poll, to offer within the 5 s the scorecard allows. A voice note past
+/// this still gets an offer: the first seconds of the two look the same
+/// (`fixtures/calls/voice_note_app_limit.json`).
 pub const VOICE_NOTE_APP_CONFIRM_MS: i64 = 4_000;
 /// Microphone held this long (ms) by a browser on an unknown page: a call.
-pub const UNKNOWN_PAGE_CONFIRM_MS: i64 = 20_000;
+/// The microphone may have been taken up to one 1 s poll before it was first
+/// seen, so this offers within the 20 s the plan and scorecard allow.
+pub const UNKNOWN_PAGE_CONFIRM_MS: i64 = 19_000;
 /// Observations further apart than this don't make one run.
 pub const MAX_OBSERVATION_GAP_MS: i64 = 10_000;
 /// A snoozed app must be off the microphone this long to be offered again.
@@ -38,8 +42,9 @@ pub const SNOOZE_ABSENT_MS: i64 = 60_000;
 /// Microphone released this long (ms) before the call counts as over.
 pub const END_GRACE_MS: i64 = 8_000;
 
-/// Where a call is. Serialized names match the old `CallApp`'s.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Where a call is. Serialized names match the old `CallApp`'s. `Debug` hides
+/// a site's host.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallSource {
     Zoom,
@@ -55,6 +60,12 @@ pub enum CallSource {
     BrowserSite(String),
     /// A browser, page not known.
     BrowserUnknown,
+}
+
+impl std::fmt::Debug for CallSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.log_name())
+    }
 }
 
 impl CallSource {
@@ -151,11 +162,18 @@ impl CallSource {
     }
 }
 
-/// A service or site whose calls share one choice.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A service or site whose calls share one choice. `Debug` hides it: it may
+/// be a site's host.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Provider {
     pub key: String,
     pub label: String,
+}
+
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<provider>")
+    }
 }
 
 /// What a detected call leads to.
@@ -168,13 +186,20 @@ pub enum CallPolicy {
     Never,
 }
 
-/// The user's choice for a provider (the `call_providers` setting).
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+/// The user's choice for a provider (the `call_providers` setting). `Debug`
+/// hides which: it may be a site's host.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct CallProviderChoice {
     pub key: String,
     pub label: String,
     pub policy: CallPolicy,
+}
+
+impl std::fmt::Debug for CallProviderChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<provider: {:?}>", self.policy)
+    }
 }
 
 /// The page a browser shows. In memory only; `Debug` hides it so it can't
@@ -191,8 +216,9 @@ impl std::fmt::Debug for PageInfo {
     }
 }
 
-/// An app capturing from the microphone now.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// An app capturing from the microphone now. `Debug` leaves out its titles,
+/// which can hold a page's address.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct InputApp {
     pub bundle_id: String,
     /// Its windows' titles; only read for browsers ([`title_source`]).
@@ -204,6 +230,18 @@ pub struct InputApp {
     pub is_browser: bool,
     /// The page, for a browser, when it could be read.
     pub page: Option<PageInfo>,
+}
+
+impl std::fmt::Debug for InputApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputApp")
+            .field("bundle_id", &self.bundle_id)
+            .field("pid", &self.pid)
+            .field("canonical", &self.canonical)
+            .field("is_browser", &self.is_browser)
+            .field("page", &self.page)
+            .finish_non_exhaustive()
+    }
 }
 
 impl InputApp {
@@ -352,11 +390,26 @@ pub fn title_source(bundle_id: &str) -> Option<&'static str> {
 }
 
 /// A window title of a Google Meet call (`Meet - abc-defg-hij`, `Meet –
-/// Weekly sync`), or of a page on meet.google.com.
+/// Weekly sync`, `Google Meet - Brave`), or one showing an address on
+/// meet.google.com. Only a word that is that address counts:
+/// `meet.google.com.evil.io` and `How to use Google Meet` do not.
 pub fn is_meet_title(title: &str) -> bool {
     let t = title.trim();
-    t.contains("meet.google.com")
-        || t.contains("Google Meet")
+    let on_meet = t.split_whitespace().any(|word| {
+        let host = word
+            .strip_prefix("https://")
+            .or_else(|| word.strip_prefix("http://"))
+            .unwrap_or(word);
+        let host = host.split(['/', '?', '#']).next().unwrap_or(host);
+        call_sites::site_host(host) == "meet.google.com"
+    });
+    let named = t
+        .strip_prefix("Google Meet")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(" -") || rest.starts_with(" –"))
+        || t.ends_with("- Google Meet")
+        || t.ends_with("| Google Meet");
+    on_meet
+        || named
         || ["Meet - ", "Meet – ", "Meet — "]
             .iter()
             .any(|p| t.starts_with(p))
@@ -414,7 +467,7 @@ pub fn holds_microphone(apps: &[InputApp], app_id: &str) -> bool {
     apps.iter().any(|a| a.app_id() == app_id)
 }
 
-/// An app microphone run on its way to being a call.
+/// An app's microphone run on its way to being a call.
 #[derive(Clone, Debug)]
 struct Pending {
     app_id: String,
@@ -432,8 +485,9 @@ struct Snooze {
 #[derive(Clone, Debug, Default)]
 pub struct CallDetector {
     current: Option<Call>,
-    /// The call app seen holding the microphone, and since when.
-    pending: Option<Pending>,
+    /// The apps seen holding the microphone, each with its own run, so two at
+    /// once can't keep restarting each other.
+    pending: Vec<Pending>,
     /// When the current call's app was last missing.
     gone_since: Option<i64>,
     snoozed: Vec<Snooze>,
@@ -452,6 +506,18 @@ impl CallDetector {
         self.current.clone()
     }
 
+    /// The clock went backwards, so every time held is in the future: count
+    /// from now.
+    fn rebase(&mut self, now: i64) {
+        self.pending.clear();
+        if self.gone_since.is_some() {
+            self.gone_since = Some(now);
+        }
+        for snooze in &mut self.snoozed {
+            snooze.last_present = now;
+        }
+    }
+
     /// One observation under the user's choices. Returns what a call
     /// confirmed by it leads to; each call is reported once.
     pub fn detect(
@@ -460,66 +526,105 @@ impl CallDetector {
         choices: &[CallProviderChoice],
         now: i64,
     ) -> Option<Detection> {
-        let gap = self
-            .last_observed
-            .is_some_and(|last| now - last > MAX_OBSERVATION_GAP_MS || now < last);
-        self.last_observed = Some(now);
+        let last = self.last_observed.replace(now);
+        if last.is_some_and(|last| now < last) {
+            self.rebase(now);
+        }
+        let elapsed = last.map_or(0, |last| now - last);
+        let gap = elapsed > MAX_OBSERVATION_GAP_MS;
+        // Unwatched for this long (the Mac slept): whatever held the
+        // microphone before may be over, though it holds it now.
+        if elapsed >= SNOOZE_ABSENT_MS {
+            self.current = None;
+            self.gone_since = None;
+        }
         let found = candidates(apps);
 
+        self.snoozed
+            .retain(|s| now - s.last_present < SNOOZE_ABSENT_MS);
         for snooze in &mut self.snoozed {
             if holds_microphone(apps, &snooze.app_id) {
                 snooze.last_present = now;
             }
         }
-        self.snoozed
-            .retain(|s| now - s.last_present < SNOOZE_ABSENT_MS);
 
+        // What a run must beat to take over from the call in progress.
+        let mut to_beat = None;
         if let Some(current) = &mut self.current {
-            if let Some((_, source)) = found.iter().find(|(id, _)| *id == current.app_id) {
-                // Still on the microphone, on whatever page: the same call.
-                // A browser's page found later names it.
-                if current.source == CallSource::BrowserUnknown
-                    && *source != CallSource::BrowserUnknown
-                {
-                    current.source = source.clone();
+            match found.iter().find(|(id, _)| *id == current.app_id) {
+                Some((_, source)) => {
+                    self.gone_since = None;
+                    to_beat = Some(rank(source).max(rank(&current.source)));
+                    // Still on the microphone, on whatever page: the same
+                    // call. A browser's page found later names it, and the
+                    // user's choice for that page then applies.
+                    if current.source == CallSource::BrowserUnknown
+                        && *source != CallSource::BrowserUnknown
+                    {
+                        current.source = source.clone();
+                        match source.policy(choices) {
+                            CallPolicy::Never => self.snooze_current(now),
+                            CallPolicy::Always => {
+                                self.pending.clear();
+                                return self.current.clone().map(Detection::Record);
+                            }
+                            CallPolicy::Ask => {}
+                        }
+                    }
                 }
-                self.gone_since = None;
-                self.pending = None;
-                return None;
-            }
-            let gone = *self.gone_since.get_or_insert(now);
-            if now - gone >= END_GRACE_MS {
-                self.current = None;
-                self.gone_since = None;
+                None => {
+                    let gone = *self.gone_since.get_or_insert(now);
+                    if now - gone >= END_GRACE_MS {
+                        self.current = None;
+                        self.gone_since = None;
+                    }
+                }
             }
         }
-
-        let best = found
+        // A call app taking the microphone from a browser call is a new call;
+        // a second browser tab or equal app isn't, while the first stays.
+        let current_app = self.current.as_ref().map(|c| c.app_id.clone());
+        let eligible: Vec<(String, CallSource)> = found
             .into_iter()
             .filter(|(id, source)| {
-                !self.snoozed.iter().any(|s| s.app_id == *id)
+                Some(id) != current_app.as_ref()
+                    && !self.snoozed.iter().any(|s| s.app_id == *id)
                     && source.policy(choices) != CallPolicy::Never
+                    && to_beat.is_none_or(|beat| rank(source) > beat)
             })
-            .fold(None::<(String, CallSource)>, |best, next| match best {
-                Some(b) if rank(&b.1) >= rank(&next.1) => Some(b),
-                _ => Some(next),
+            .collect();
+        let pending: Vec<Pending> = eligible
+            .iter()
+            .map(|(app_id, _)| Pending {
+                app_id: app_id.clone(),
+                since: self
+                    .pending
+                    .iter()
+                    .find(|p| p.app_id == *app_id && !gap)
+                    .map_or(now, |p| p.since),
+            })
+            .collect();
+        self.pending = pending;
+
+        // Of those held long enough: the surest, then the longest held.
+        let mut confirmed: Option<(String, CallSource, i64)> = None;
+        for ((app_id, source), run) in eligible.into_iter().zip(&self.pending) {
+            if now - run.since < source.confirm_ms() {
+                continue;
+            }
+            let better = confirmed.as_ref().is_none_or(|(best_id, best, since)| {
+                (
+                    rank(&source),
+                    std::cmp::Reverse(run.since),
+                    best_id.as_str(),
+                ) > (rank(best), std::cmp::Reverse(*since), app_id.as_str())
             });
-        let Some((app_id, source)) = best else {
-            self.pending = None;
-            return None;
-        };
-        let since = match &self.pending {
-            Some(p) if p.app_id == app_id && !gap => p.since,
-            _ => now,
-        };
-        self.pending = Some(Pending {
-            app_id: app_id.clone(),
-            since,
-        });
-        if now - since < source.confirm_ms() {
-            return None;
+            if better {
+                confirmed = Some((app_id, source, run.since));
+            }
         }
-        self.pending = None;
+        let (app_id, source, since) = confirmed?;
+        self.pending.retain(|p| p.app_id != app_id);
         self.gone_since = None;
         let policy = source.policy(choices);
         let call = Call {
@@ -539,6 +644,7 @@ impl CallDetector {
     /// it has left the microphone for [`SNOOZE_ABSENT_MS`].
     pub fn snooze_current(&mut self, now: i64) {
         if let Some(call) = self.current.take() {
+            self.pending.retain(|p| p.app_id != call.app_id);
             self.snoozed.retain(|s| s.app_id != call.app_id);
             self.snoozed.push(Snooze {
                 app_id: call.app_id,
@@ -546,7 +652,6 @@ impl CallDetector {
             });
         }
         self.gone_since = None;
-        self.pending = None;
     }
 
     /// Forget everything (the feature was turned off).
@@ -578,7 +683,9 @@ impl CallPresence {
             self.absent_since = None;
             return std::mem::take(&mut self.left).then_some(PresenceChange::Back);
         }
-        let since = *self.absent_since.get_or_insert(now);
+        // A clock that went backwards counts from now.
+        let since = self.absent_since.unwrap_or(now).min(now);
+        self.absent_since = Some(since);
         if !self.left && now - since >= END_GRACE_MS {
             self.left = true;
             return Some(PresenceChange::Left);
@@ -713,6 +820,13 @@ mod tests {
         assert!(is_meet_title("Google Meet"));
         assert!(!is_meet_title("Meeting notes - Google Docs"));
         assert!(!is_meet_title("Meetup"));
+        assert!(is_meet_title("Google Meet - Google Chrome"));
+        assert!(is_meet_title("Weekly sync - Google Meet"));
+        // Lookalikes, and pages only about Meet.
+        assert!(!is_meet_title(
+            "https://meet.google.com.evil.io/abc-defg-hij"
+        ));
+        assert!(!is_meet_title("How to use Google Meet - YouTube"));
     }
 
     #[test]
@@ -795,6 +909,27 @@ mod tests {
             path: "/room".into(),
         };
         assert!(!format!("{page:?}").contains("secret"));
+        assert!(!format!("{site:?}").contains("secret"));
+        let call = Call {
+            source: site.clone(),
+            since: 0,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert!(!format!("{:?}", Detection::Offer(call)).contains("secret"));
+        let provider = site.provider().unwrap();
+        assert!(!format!("{provider:?}").contains("secret"));
+        let choice = CallProviderChoice {
+            key: provider.key,
+            label: provider.label,
+            policy: CallPolicy::Never,
+        };
+        assert!(!format!("{choice:?}").contains("secret"));
+        let app = InputApp {
+            titles: vec!["https://secret.example.com/room".into()],
+            page: Some(page),
+            ..Default::default()
+        };
+        assert!(!format!("{app:?}").contains("secret"));
     }
 
     #[test]
@@ -833,6 +968,23 @@ mod tests {
             CallPolicy::Never
         );
         assert_eq!(CallSource::BrowserUnknown.provider(), None);
+    }
+
+    #[test]
+    fn a_clock_going_backwards_counts_from_now() {
+        let mut d = CallDetector::default();
+        let zoom = [app("us.zoom.xos")];
+        d.observe(&zoom, 100_000);
+        let call = d.observe(&zoom, 102_000).unwrap();
+        d.observe(&[], 104_000);
+        // Back to 0: gone for 8 s from here, not until 112 s.
+        assert_eq!(d.observe(&[], 0), Some(call));
+        assert_eq!(d.observe(&[], END_GRACE_MS), None);
+
+        let mut p = CallPresence::default();
+        p.observe(false, 100_000);
+        assert_eq!(p.observe(false, 0), None);
+        assert_eq!(p.observe(false, END_GRACE_MS), Some(PresenceChange::Left));
     }
 
     #[test]
@@ -901,6 +1053,11 @@ mod tests {
 
     const FIXTURES: &[&str] = &[
         include_str!("../../../../fixtures/calls/voice_note_bursts.json"),
+        include_str!("../../../../fixtures/calls/voice_note_app_limit.json"),
+        include_str!("../../../../fixtures/calls/call_app_after_browser.json"),
+        include_str!("../../../../fixtures/calls/two_apps_alternating.json"),
+        include_str!("../../../../fixtures/calls/page_policy_after_offer.json"),
+        include_str!("../../../../fixtures/calls/long_sleep_after_call.json"),
         include_str!("../../../../fixtures/calls/unknown_page_offer.json"),
         include_str!("../../../../fixtures/calls/page_found_mid_run.json"),
         include_str!("../../../../fixtures/calls/unknown_site_found_mid_run.json"),

@@ -1,6 +1,6 @@
 {
   "name": "unknown_site_found_mid_run",
-  "description": "An ordinary site is found at 6 s: still 20 s from the start of the run.",
+  "description": "An ordinary site is found at 6 s: still 19 s, so within 20 s of the mic from the start of the run.",
   "steps": [
     {
       "from": 0,
@@ -25,7 +25,7 @@
   ],
   "offers": [
     {
-      "t": 20000,
+      "t": 19000,
       "source": {
         "browser_site": "example.com"
       }

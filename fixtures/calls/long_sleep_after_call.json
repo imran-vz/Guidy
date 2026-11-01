@@ -1,0 +1,34 @@
+{
+  "name": "long_sleep_after_call",
+  "description": "Zoom confirmed, 10 minutes unobserved, Zoom on the mic again: a new call.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 600000,
+      "to": 603000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "zoom"
+    },
+    {
+      "t": 602000,
+      "source": "zoom"
+    }
+  ]
+}
