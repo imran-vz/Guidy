@@ -1299,7 +1299,7 @@
       },
       "speakerNamesFromApps": {
         "title": "Speaker names from meeting apps",
-        "description": "Experimental. While recording, read who's speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac."
+        "description": "Experimental. While recording, read who's speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac. Applies from the next recording."
       },
       "nameBrowserCalls": {
         "title": "Name browser calls",

@@ -210,6 +210,8 @@ struct Session {
     /// Where to write the names meeting apps show: the setting was on when
     /// this recording started.
     speakers_log: Option<Arc<SpeakerLog>>,
+    /// How long after `started_at` the tracks' time 0 is.
+    audio_starts_ms: i64,
 }
 
 impl Session {
@@ -403,6 +405,7 @@ impl MeetingRecorder {
     /// can't be found ([`Self::find_event`]), it links to the event happening
     /// now, if any.
     pub fn start(&self, calendar_event_id: Option<String>, now: i64) -> Result<MeetingId> {
+        let began = std::time::Instant::now();
         let _op = self.op.lock();
         if self.session.lock().is_some() {
             bail!("a meeting is already being recorded");
@@ -458,7 +461,7 @@ impl MeetingRecorder {
         };
         let id = self.deps.repo.insert_meeting(&meeting)?;
 
-        let session = match self.open_session(meeting, id, preflight) {
+        let session = match self.open_session(meeting, id, preflight, began) {
             Ok(s) => s,
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
@@ -492,9 +495,10 @@ impl MeetingRecorder {
         meeting: Meeting,
         id: MeetingId,
         preflight: Preflight,
+        began: std::time::Instant,
     ) -> Result<Session> {
         let mut created = Vec::new();
-        let result = self.open_session_inner(meeting, id, preflight, &mut created);
+        let result = self.open_session_inner(meeting, id, preflight, began, &mut created);
         if result.is_err() {
             // The writers are dropped (closed) by now.
             for path in &created {
@@ -516,6 +520,7 @@ impl MeetingRecorder {
         mut meeting: Meeting,
         id: MeetingId,
         preflight: Preflight,
+        began: std::time::Instant,
         created: &mut Vec<PathBuf>,
     ) -> Result<Session> {
         let mic_rel = audio_store::track_file_name(id, Track::Mic);
@@ -626,6 +631,9 @@ impl MeetingRecorder {
         if let Some(live) = &self.deps.live {
             live.start(id);
         }
+        // The tracks' time 0: capture takes its origin as it starts, some way
+        // into `started_at` (a calendar read, the live transcriber loading).
+        let audio_starts_ms = began.elapsed().as_millis() as i64;
         let capture = match self.deps.capture.start(sink, on_error) {
             Ok(c) => c,
             Err(e) => {
@@ -656,6 +664,7 @@ impl MeetingRecorder {
             health,
             last_preflight: meeting.started_at,
             speakers_log,
+            audio_starts_ms,
         })
     }
 
@@ -672,7 +681,7 @@ impl MeetingRecorder {
                 .speakers_log
                 .clone()
                 .filter(|_| s.paused_at.is_none())
-                .map(|log| (log, now - s.started_at));
+                .map(|log| (log, now - s.started_at - s.audio_starts_ms));
             (
                 !(0..PREFLIGHT_EVERY_MS).contains(&(now - s.last_preflight)),
                 speakers,

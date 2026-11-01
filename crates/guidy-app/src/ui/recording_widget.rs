@@ -460,7 +460,8 @@ fn stop(cx: &mut App) {
     .detach();
 }
 
-/// Keep or Stop, once the call behind the recording ended: "Keep".
+/// Keep or Stop, once the call behind the recording ended: "Keep". It stands
+/// for the no-audio stop too, which this question may be showing in front of.
 fn keep_recording(cx: &mut App) {
     if let Some(state) = RecordingWidgetState::global(cx) {
         state.update(cx, |s, cx| {
@@ -468,6 +469,7 @@ fn keep_recording(cx: &mut App) {
             cx.notify();
         });
     }
+    keep_through_silence(cx);
 }
 
 /// "Keep" on the no-audio warning.
@@ -1684,7 +1686,10 @@ impl RecordingWidgetView {
                     )),
             )
             .child(div().truncate().text_size(hud(12.)).map(|d| {
-                if left.is_some() {
+                // A failure can't wait for the answer to this question.
+                if let Some(failure) = m.health_notice().filter(|_| left.is_some()) {
+                    d.text_color(rgb(RED)).child(t(failure.key()))
+                } else if left.is_some() {
                     d.text_color(tone.text_muted)
                         .child(t("meetings.widget.callEndedPrompt"))
                 } else if m.start_failed() {

@@ -32,7 +32,11 @@ pub fn parse_speaker_label(label: &str) -> Option<String> {
     let lower = name.to_ascii_lowercase();
     let believable = !name.is_empty()
         && name.chars().count() <= MAX_NAME_CHARS
-        && !name.contains(['\n', ':'])
+        && !name.contains(':')
+        && !name.chars().any(|c| {
+            // Line breaks and the like, and characters that reorder display.
+            c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        })
         && !["you", "no one", "nobody", "someone", "everyone"].contains(&lower.as_str())
         && !lower.contains("speak");
     believable.then(|| name.to_string())
@@ -113,6 +117,13 @@ mod tests {
             "Stop talking: a guide: part 2",
         ] {
             assert_eq!(parse_speaker_label(label), None, "{label}");
+        }
+        for label in [
+            "An\nn is speaking",
+            "An\u{0}n is speaking",
+            "An\u{202E}n is speaking",
+        ] {
+            assert_eq!(parse_speaker_label(label), None, "{label:?}");
         }
         let long = format!("{} is speaking", "x".repeat(MAX_NAME_CHARS + 1));
         assert_eq!(parse_speaker_label(&long), None);

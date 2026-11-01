@@ -18,6 +18,9 @@ use crate::meetings::types::{MeetingId, SpeakerId, Track};
 const SAMPLE_MS: i64 = 1_000;
 /// Less overlap than this says nothing about who a speaker is.
 const MIN_OVERLAP_MS: i64 = 2_000;
+/// Bigger than a day of samples is not a file this wrote. Read on every picker
+/// request: it stays bounded.
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One sample: the name showing `t` ms into the recording.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -30,6 +33,9 @@ pub struct Hint {
 /// (a crash mid-write) is skipped.
 pub fn read_hints(audio_dir: &Path, meeting_id: MeetingId) -> Vec<Hint> {
     let path = audio_dir.join(audio_store::speakers_log_name(meeting_id));
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_FILE_BYTES) {
+        return Vec::new();
+    }
     std::fs::read_to_string(path)
         .map(|text| {
             text.lines()
@@ -45,10 +51,10 @@ pub fn read_hints(audio_dir: &Path, meeting_id: MeetingId) -> Vec<Hint> {
 pub fn best_name(hints: &[Hint], spans: &[(i64, i64)]) -> Option<String> {
     let mut totals: std::collections::BTreeMap<&str, i64> = Default::default();
     for hint in hints {
-        let (a0, a1) = (hint.t, hint.t + SAMPLE_MS);
+        let (a0, a1) = (hint.t, hint.t.saturating_add(SAMPLE_MS));
         let overlap: i64 = spans
             .iter()
-            .map(|(t0, t1)| (a1.min(*t1) - a0.max(*t0)).max(0))
+            .map(|(t0, t1)| a1.min(*t1).saturating_sub(a0.max(*t0)).max(0))
             .sum();
         if overlap > 0 {
             *totals.entry(hint.name.as_str()).or_default() += overlap;
@@ -142,6 +148,9 @@ mod tests {
         assert_eq!(best_name(&hints, &[(50_000, 60_000)]), None);
         assert_eq!(best_name(&hints, &[]), None);
         assert_eq!(best_name(&[], &[(0, 10_000)]), None);
+        // A file's numbers can't overflow this.
+        assert_eq!(best_name(&[hint(i64::MAX, "Ann")], &[(0, 10_000)]), None);
+        assert_eq!(best_name(&[hint(i64::MIN, "Ann")], &[(0, 10_000)]), None);
     }
 
     #[test]

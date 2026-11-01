@@ -2248,7 +2248,11 @@ public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMuta
 @_cdecl("guidy_mb_speaker_labels")
 public func guidyMbSpeakerLabels(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     guard let bundleID = bundleID, AXIsProcessTrusted() else { return jsonStrings([]) }
-    let attributes = [kAXDescriptionAttribute, kAXTitleAttribute, kAXValueAttribute] as [String]
+    // Not values, and below not text roles: a chat message saying "Ann is
+    // speaking" isn't the app saying so.
+    let attributes = [kAXDescriptionAttribute, kAXTitleAttribute] as [String]
+    let textRoles: Set<String> = ["AXStaticText", "AXTextArea", "AXTextField"]
+    let maxElements = 400
     let deadline = Date().addingTimeInterval(0.2)
     return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
         var labels: [String] = []
@@ -2263,22 +2267,25 @@ public func guidyMbSpeakerLabels(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
             if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &windows)
                 == .success, let list = windows as? [AXUIElement]
             {
-                queue.append(contentsOf: list)
+                queue.append(contentsOf: list.prefix(maxElements))
             }
         }
         var next = 0
-        while next < queue.count, visited < 400, labels.count < 16, Date() < deadline {
+        while next < queue.count, visited < maxElements, labels.count < 16, Date() < deadline {
             let element = queue[next]
             next += 1
             visited += 1
             AXUIElementSetMessagingTimeout(element, 0.05)
-            for attribute in attributes {
+            var role: CFTypeRef?
+            let isText = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+                == .success && (role as? String).map(textRoles.contains) == true
+            for attribute in attributes where !isText && Date() < deadline {
                 var value: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-                    == .success, let text = value as? String
+                    == .success, let text = value as? String, text.utf8.count <= 240
                 {
                     let lower = text.lowercased()
-                    if text.count <= 120, lower.contains("speak") || lower.contains("talk") {
+                    if lower.contains("speak") || lower.contains("talk") {
                         labels.append(text)
                     }
                 }
@@ -2287,7 +2294,7 @@ public func guidyMbSpeakerLabels(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
             if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
                 == .success, let list = children as? [AXUIElement]
             {
-                queue.append(contentsOf: list)
+                queue.append(contentsOf: list.prefix(max(maxElements - queue.count, 0)))
             }
         }
         return jsonStrings(labels)

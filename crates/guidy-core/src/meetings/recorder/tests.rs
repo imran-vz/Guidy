@@ -1353,8 +1353,20 @@ fn speaker_names_are_sampled_only_with_the_setting_and_stay_local() {
     r.rec.health_tick(T0 + 8_000);
     r.rec.stop(T0 + 9_000).unwrap();
     let hints = crate::meetings::processing::speaker_hints::read_hints(&audio, id);
-    let got: Vec<(i64, &str)> = hints.iter().map(|h| (h.t, h.name.as_str())).collect();
-    assert_eq!(got, [(1_000, "Ann Lee"), (5_000, "Ben")]);
+    let names: Vec<&str> = hints.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(names, ["Ann Lee", "Ben"]);
+    // On the tracks' time: from when capture started, a real moment after
+    // `started_at`.
+    assert!(
+        (1_000 - 500..=1_000).contains(&hints[0].t),
+        "{}",
+        hints[0].t
+    );
+    assert!(
+        (5_000 - 500..=5_000).contains(&hints[1].t),
+        "{}",
+        hints[1].t
+    );
 
     // Deleted with the tracks.
     let m = r.repo.get_meeting(id).unwrap().unwrap();
