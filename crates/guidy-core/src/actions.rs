@@ -568,6 +568,9 @@ impl ShortcutAction for TranscribeAction {
         // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
+        // Captured before any startup work, so a cancel at any point in this
+        // attempt keeps a failed start silent.
+        let cancel_generation = rm.cancel_generation();
 
         // Load ASR model and VAD model in parallel
         let kickoff_started = Instant::now();
@@ -655,7 +658,6 @@ impl ShortcutAction for TranscribeAction {
 
         let mut recording_error: Option<anyhow::Error> = None;
         let recording_start_time = Instant::now();
-        let cancel_generation = rm.cancel_generation();
         match rm.try_start_recording(&binding_id, vad_policy) {
             Ok(readiness) => {
                 debug!(
@@ -729,8 +731,6 @@ impl ShortcutAction for TranscribeAction {
                         detail: Some(format!("{err:#}")),
                     },
                 );
-                // A cancel can land while the failing start holds the state lock.
-                // Cancel stays silent.
                 if !rm.was_cancelled_since(cancel_generation) {
                     play_feedback_sound(app, SoundType::Error);
                 }
@@ -933,7 +933,12 @@ impl ShortcutAction for TranscribeAction {
                                         Err(e) => {
                                             error!("Failed to paste transcription: {}", e);
                                             let _ = ah_clone.emit("paste-error", ());
-                                            play_feedback_sound(&ah_clone, SoundType::Error);
+                                            // Paste can block on a script, so a cancel
+                                            // may have landed during it.
+                                            if !rm_for_paste.was_cancelled_since(cancel_generation)
+                                            {
+                                                play_feedback_sound(&ah_clone, SoundType::Error);
+                                            }
                                         }
                                     }
                                     utils::hide_recording_overlay(&ah_clone);
