@@ -301,11 +301,11 @@ fn an_in_person_meeting_is_diarized_with_the_users_recorded_voice() {
     // Everyone is in the room: only the mic hears them.
     let mic = [
         (USER, 1000, 4000),
-        (5, 5000, 8000),
-        (USER, 9000, 12000),
-        (5, 13000, 16000),
-        (6, 17000, 20000),
-        (6, 21000, 24000),
+        (5, 5000, 9500),
+        (USER, 10500, 12500),
+        (5, 13500, 18000),
+        (6, 19000, 23500),
+        (6, 24500, 29000),
     ];
     let r = run_tracks(&f, None, &mic, &[]);
     r.result.unwrap();
@@ -1709,7 +1709,7 @@ fn axis(k: usize) -> Vec<f32> {
 }
 
 #[test]
-fn system_voices_too_brief_to_place_stay_unknown_not_one_speaker() {
+fn the_tracks_are_clustered_apart() {
     use Track::{Mic, System};
     let cache = cache_of(&[
         (Mic, 0, 4_000, Some(axis(0))),
@@ -1718,7 +1718,91 @@ fn system_voices_too_brief_to_place_stay_unknown_not_one_speaker() {
         (System, 15_000, 19_000, Some(axis(2))),
     ]);
     let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
-    assert_eq!(c.labels, vec![Some(0), Some(0), None, None]);
+    assert_eq!(c.labels, vec![Some(0), Some(0), Some(1), Some(2)]);
+}
+
+#[test]
+fn a_user_like_mic_line_never_joins_a_system_cluster() {
+    use Track::{Mic, System};
+    // The same voice on both tracks, enough of it on the mic to be a speaker.
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (Mic, 5_000, 9_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(0))),
+        (System, 15_000, 19_000, Some(axis(0))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![Some(0), Some(0), Some(1), Some(1)]);
+    // Too little of it on the mic: the user's, with no system cluster to join.
+    let cache = cache_of(&[
+        (Mic, 0, 4_000, Some(axis(0))),
+        (System, 10_000, 14_000, Some(axis(0))),
+        (System, 15_000, 19_000, Some(axis(0))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![None, Some(0), Some(0)]);
+    // Sounding like the user: never clustered at all, however much of it.
+    let cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(3))),
+        (Mic, 10_000, 19_000, Some(axis(3))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert_eq!(c.labels, vec![None, None]);
+}
+
+#[test]
+fn without_a_recorded_voice_every_mic_line_is_the_users() {
+    use Track::Mic;
+    let cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 10_000, 19_000, Some(axis(1))),
+    ]);
+    let c = cluster_units(&cache, &PipelineConfig::default(), &[], &[]);
+    assert_eq!(c.labels, vec![None, None]);
+}
+
+#[test]
+fn only_a_known_person_joins_the_tracks() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 5_000, Some(axis(0))),
+        (Mic, 6_000, 11_000, Some(axis(0))),
+        (System, 12_000, 16_000, Some(axis(0))),
+        (System, 17_000, 21_000, Some(axis(0))),
+    ]);
+    let known = [KnownVoice {
+        person_id: 3,
+        prints: vec![vec![1.0, 0.1, 0.0, 0.0], vec![1.0, -0.1, 0.0, 0.0]],
+    }];
+    let c = cluster_units(&cache, &PipelineConfig::default(), &known, &[axis(3)]);
+    assert_eq!(c.voices, vec![Some(3); 4]);
+    assert!(c.labels[0].is_some());
+    assert!(c.labels.iter().all(|l| *l == c.labels[0]), "{:?}", c.labels);
+    assert_eq!(c.matches[c.labels[0].unwrap()].person_id, Some(3));
+}
+
+#[test]
+fn a_diarization_service_keeps_the_speakers_in_the_room() {
+    use Track::{Mic, System};
+    let cache = cache_of(&[
+        (Mic, 0, 5_000, Some(axis(0))),
+        (Mic, 6_000, 11_000, Some(axis(0))),
+        (Mic, 12_000, 14_000, Some(axis(3))),
+        (System, 15_000, 19_000, None),
+        (System, 20_000, 24_000, None),
+    ]);
+    // The service's labels have holes; the mic's must clear the highest.
+    let source = ClusterSource::SystemLabels(vec![None, None, None, Some(0), Some(7)]);
+    let c = cluster_units_with(&cache, &PipelineConfig::default(), &[], &[axis(3)], &source);
+    let labels = &c.labels;
+    assert_eq!(labels[0], labels[1]);
+    assert!(labels[0].is_some());
+    assert_eq!(labels[2], None, "the user's own voice");
+    assert!(labels[3].is_some() && labels[4].is_some());
+    assert_ne!(labels[3], labels[4]);
+    assert_ne!(labels[0], labels[3]);
+    assert_ne!(labels[0], labels[4]);
+    assert_eq!(c.centroids.len(), 3);
 }
 
 #[test]
