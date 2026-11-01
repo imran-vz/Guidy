@@ -1560,3 +1560,43 @@ fn an_unreadable_system_permission_is_shown_while_recording() {
     assert!(!health.system_denied);
     assert!(matches!(r.rec.state(), RecorderState::Recording { .. }));
 }
+
+#[test]
+fn a_note_stopped_at_its_release_ends_there_and_its_tracks_with_it() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    for _ in 0..10 {
+        r.capture.feed(Track::Mic, &[0.1; 16_000]);
+        r.capture.feed(Track::System, &[0.1; 16_000]);
+    }
+    r.rec.stop_released(T0 + 10_000, 6_000).unwrap();
+
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.ended_at, Some(T0 + 4_000));
+    let audio = r.dir.path().join("meetings/audio");
+    for track in [Track::Mic, Track::System] {
+        let path = audio.join(audio_store::track_file_name(id, track));
+        let total = TrackReader::open(&path).unwrap().total_samples().unwrap();
+        // Up to 4 s, less however long the capture took to start.
+        assert!((32_000..=64_000).contains(&total), "{track:?}: {total}");
+    }
+    let log = std::fs::read_to_string(audio.join(audio_store::capture_log_name(id))).unwrap();
+    assert!(log.contains("cut:"), "{log}");
+}
+
+#[test]
+fn a_plain_stop_keeps_the_whole_track() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    for _ in 0..5 {
+        r.capture.feed(Track::Mic, &[0.1; 16_000]);
+    }
+    r.rec.stop(T0 + 5_000).unwrap();
+    let path = r
+        .dir
+        .path()
+        .join("meetings/audio")
+        .join(audio_store::track_file_name(id, Track::Mic));
+    let total = TrackReader::open(&path).unwrap().total_samples().unwrap();
+    assert_eq!(total, 5 * 16_000);
+}

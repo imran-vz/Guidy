@@ -307,7 +307,7 @@ fn run_call_changes(
     }
     match command {
         Some(CallCommand::Start) => start_recording(cx),
-        Some(CallCommand::Stop) => stop(cx),
+        Some(CallCommand::Stop) => stop_for_call(cx),
         None => {}
     }
 }
@@ -454,6 +454,24 @@ fn stop(cx: &mut App) {
     let backend = AppState::global(cx).read(cx).meetings.clone();
     cx.background_spawn(async move {
         if let Err(e) = backend.stop_recording() {
+            log::error!("Stopping the meeting from the recording widget failed: {e}");
+        }
+    })
+    .detach();
+}
+
+/// The call watcher's stop: ending the note where its call let go of the
+/// microphone, when that is known.
+fn stop_for_call(cx: &mut App) {
+    let released_ago = RecordingWidgetState::global(cx)
+        .and_then(|state| state.update(cx, |s, _| s.model.take_stop_released_ago()));
+    let Some(released_ago) = released_ago else {
+        stop(cx);
+        return;
+    };
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.background_spawn(async move {
+        if let Err(e) = backend.stop_recording_released(released_ago) {
             log::error!("Stopping the meeting from the recording widget failed: {e}");
         }
     })

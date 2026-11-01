@@ -261,7 +261,21 @@ impl MeetingsManager {
         let Some(recorder) = self.capture.recorder.get() else {
             return Ok(None);
         };
-        let result = recorder.stop(crate::meetings::recorder::now_ms());
+        self.after_stop(recorder.stop(crate::meetings::recorder::now_ms()))
+    }
+
+    /// [`Self::stop_recording`] for a note that ended `released_ago_ms` ago,
+    /// when its call let go of the microphone.
+    pub fn stop_recording_released(&self, released_ago_ms: i64) -> Result<Option<MeetingId>> {
+        let Some(recorder) = self.capture.recorder.get() else {
+            return Ok(None);
+        };
+        self.after_stop(
+            recorder.stop_released(crate::meetings::recorder::now_ms(), released_ago_ms),
+        )
+    }
+
+    fn after_stop(&self, result: Result<Option<MeetingId>>) -> Result<Option<MeetingId>> {
         // Even on error: a failed finish is retried by the scheduler.
         self.sync_scheduler();
         let stopped = result?;

@@ -801,6 +801,11 @@ impl CallPresence {
     pub fn has_left(&self) -> bool {
         self.left
     }
+
+    /// When its app was first seen off the microphone, while it still is.
+    pub fn released_at(&self) -> Option<i64> {
+        self.absent_since
+    }
 }
 
 #[cfg(test)]

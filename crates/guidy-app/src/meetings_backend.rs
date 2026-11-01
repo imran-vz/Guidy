@@ -210,6 +210,10 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn recorder_state(&self) -> RecorderState;
     fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId>;
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>>;
+    /// [`Self::stop_recording`] for a note that ended `released_ago_ms` ago.
+    fn stop_recording_released(&self, _released_ago_ms: i64) -> MeetingsResult<Option<MeetingId>> {
+        self.stop_recording()
+    }
     /// Whether a call is going on behind the recording.
     fn set_recording_in_call(&self, in_call: bool);
     /// "Keep" on the no-audio warning.
@@ -605,6 +609,11 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         self.m()?.stop_recording().map_err(err)
+    }
+    fn stop_recording_released(&self, released_ago_ms: i64) -> MeetingsResult<Option<MeetingId>> {
+        self.m()?
+            .stop_recording_released(released_ago_ms)
+            .map_err(err)
     }
     fn set_recording_in_call(&self, in_call: bool) {
         if let Some(m) = self.manager() {
@@ -1383,6 +1392,13 @@ pub mod fake {
             };
             d.recorder = RecorderState::Idle;
             Ok(id)
+        }
+        fn stop_recording_released(
+            &self,
+            released_ago_ms: i64,
+        ) -> MeetingsResult<Option<MeetingId>> {
+            self.rec(format!("released {released_ago_ms}"));
+            self.stop_recording()
         }
         fn segment_audio(
             &self,
