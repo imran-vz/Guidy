@@ -521,7 +521,7 @@ impl Drop for LookupReset<'_> {
 }
 
 /// Re-checks off-thread whether a meeting has a transcript to copy, then
-/// refreshes the menu if that changed. Safe to call from any thread, with any
+/// syncs the menu. Safe to call from any thread, with any
 /// lock held: it never touches the store itself, and bursts share one lookup.
 pub fn refresh_last_meeting(app: &AppHandle) {
     let Some(state) = app.try_state::<TrayState>() else {
@@ -552,10 +552,9 @@ pub fn refresh_last_meeting(app: &AppHandle) {
                     }
                 }
                 let available = last_meeting(app).is_some();
-                let previous = std::mem::replace(&mut state.lock().has_last_meeting, available);
-                if previous != available {
-                    update_tray_menu(app);
-                }
+                state.lock().has_last_meeting = available;
+                // No rebuild unless the answer changed: the applier diffs.
+                update_tray_menu(app);
             }
         });
     if let Err(err) = spawned {
