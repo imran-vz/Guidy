@@ -29,6 +29,11 @@ const FRAME: usize = CAPTURE_SAMPLE_RATE as usize / 100;
 /// stream pads silence every 100 ms, so it is normally well within this.
 const MAX_WAIT: usize = CAPTURE_SAMPLE_RATE as usize / 2;
 
+/// How far the system stream may run ahead of the mic before its oldest frames
+/// are given up. Silence that makes up for a long stall can arrive for the
+/// system track well before the mic's: the reference doesn't need holding.
+const MAX_SYSTEM_AHEAD: usize = 30 * CAPTURE_SAMPLE_RATE as usize;
+
 /// Pairs the two tracks frame by frame and returns the echo-cancelled mic.
 pub(crate) struct EchoCanceller {
     apm: AudioProcessing,
@@ -38,6 +43,9 @@ pub(crate) struct EchoCanceller {
     /// `skip` samples that belong to frames already processed without them.
     system: VecDeque<f32>,
     skip: usize,
+    /// Whole frames at the head of `system` that were given up: the next mic
+    /// frames run without a reference, which keeps the rest paired.
+    given_up: usize,
     /// Frames processed so far.
     done: u64,
     /// Frames processed without a reference.
@@ -67,6 +75,7 @@ impl EchoCanceller {
             mic: VecDeque::new(),
             system: VecDeque::new(),
             skip: 0,
+            given_up: 0,
             done: 0,
             unreferenced: 0,
         }
@@ -83,6 +92,13 @@ impl EchoCanceller {
         let dropped = self.skip.min(samples.len());
         self.skip -= dropped;
         self.system.extend(&samples[dropped..]);
+        let over = self.system.len().saturating_sub(MAX_SYSTEM_AHEAD);
+        let frames = over.div_ceil(FRAME);
+        if frames > 0 {
+            let drop = (frames * FRAME).min(self.system.len());
+            self.system.drain(..drop);
+            self.given_up += drop / FRAME;
+        }
         self.run(false)
     }
 
@@ -104,12 +120,17 @@ impl EchoCanceller {
     fn run(&mut self, flushing: bool) -> Vec<f32> {
         let mut out = Vec::new();
         while self.mic.len() >= FRAME {
+            let given_up = self.given_up > 0;
             let has_reference = self.system.len() >= FRAME;
-            if !has_reference && !flushing && self.mic.len() < MAX_WAIT {
+            if !given_up && !has_reference && !flushing && self.mic.len() < MAX_WAIT {
                 break;
             }
             let mut mic: Vec<f32> = self.mic.drain(..FRAME).collect();
-            let reference: Vec<f32> = if has_reference {
+            let reference: Vec<f32> = if given_up {
+                self.given_up -= 1;
+                self.unreferenced += 1;
+                vec![0.0; FRAME]
+            } else if has_reference {
                 self.system.drain(..FRAME).collect()
             } else {
                 // The frame's system samples, when they come, are stale.
@@ -248,6 +269,25 @@ mod tests {
             reduction_db > 20.0,
             "echo only reduced by {reduction_db:.1} dB"
         );
+    }
+
+    #[test]
+    fn a_long_system_lead_is_bounded_and_the_mic_stays_whole() {
+        let mut aec = EchoCanceller::new();
+        let second = vec![0.0f32; RATE];
+        // The system track's silence for a long stall, before the mic's.
+        for _ in 0..120 {
+            assert!(aec.push_system(&second).is_empty());
+            assert!(aec.system.len() <= MAX_SYSTEM_AHEAD);
+        }
+        assert_eq!(aec.system.len() % FRAME, 0);
+        let mut out = 0;
+        for _ in 0..120 {
+            out += aec.push_mic(&second).len();
+        }
+        assert_eq!(out, 120 * RATE);
+        assert_eq!(aec.given_up, 0);
+        assert!(aec.system.is_empty());
     }
 
     #[test]

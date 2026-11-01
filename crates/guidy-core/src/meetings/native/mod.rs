@@ -413,21 +413,11 @@ pub(crate) fn offer_audio(
     rate: u32,
 ) {
     match budgets.of(track).offer(samples.len()) {
-        Admission::Drop { started } => {
-            if started {
-                let _ = tx.send(CaptureMsg::Event(CaptureEvent {
-                    track,
-                    message: EVENT_DROPPING.into(),
-                }));
-            }
-        }
+        // `deliver` says so: a message would wait behind the whole backlog.
+        Admission::Drop { .. } => {}
         Admission::Queue { silence_first } => {
             if silence_first > 0 {
                 let _ = tx.send(CaptureMsg::Silence(track, silence_first));
-                let _ = tx.send(CaptureMsg::Event(CaptureEvent {
-                    track,
-                    message: event_dropped(silence_first),
-                }));
             }
             let _ = tx.send(CaptureMsg::Audio(track, samples.to_vec(), rate));
         }
@@ -487,7 +477,19 @@ pub(crate) fn deliver(
     mut echo: Option<EchoCanceller>,
     budgets: Arc<DeliveryBudgets>,
 ) {
+    // What `on_event` has been told, per track.
+    let mut said_dropping = [false; 2];
     while let Ok(msg) = rx.recv() {
+        // Before the message: however far behind, new audio is being lost now.
+        for (said, track) in said_dropping.iter_mut().zip([Track::Mic, Track::System]) {
+            if budgets.of(track).is_dropping() && !*said {
+                *said = true;
+                (callbacks.on_event)(CaptureEvent {
+                    track,
+                    message: EVENT_DROPPING.into(),
+                });
+            }
+        }
         match msg {
             CaptureMsg::Audio(track, samples, rate) => {
                 budgets.of(track).done(samples.len());
@@ -495,6 +497,14 @@ pub(crate) fn deliver(
             }
             CaptureMsg::Silence(track, samples) => {
                 deliver_silence(&mut callbacks, &mut echo, track, samples);
+                said_dropping[match track {
+                    Track::Mic => 0,
+                    Track::System => 1,
+                }] = false;
+                (callbacks.on_event)(CaptureEvent {
+                    track,
+                    message: event_dropped(samples),
+                });
             }
             CaptureMsg::Event(event) => (callbacks.on_event)(event),
         }

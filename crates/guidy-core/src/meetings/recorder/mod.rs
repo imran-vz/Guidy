@@ -753,11 +753,7 @@ impl MeetingRecorder {
                 s.last_flow[i] = seen;
                 flow
             });
-            let backlog = s
-                .flow
-                .queued
-                .iter()
-                .any(|q| q.queued() > BACKLOG_SAMPLES);
+            let backlog = s.flow.queued.iter().any(|q| q.queued() > BACKLOG_SAMPLES);
             let mut tracker = s.tracker.lock();
             if let Some(preflight) = preflight {
                 s.last_preflight = now;

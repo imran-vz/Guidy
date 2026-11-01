@@ -1474,11 +1474,18 @@ fn a_blocked_writer_is_bounded_warned_about_and_keeps_the_tracks_aligned() {
         .lines()
         .map(|l| {
             let line: serde_json::Value = serde_json::from_str(l).unwrap();
-            format!("{} {}", line["track"].as_str().unwrap(), line["event"].as_str().unwrap())
+            format!(
+                "{} {}",
+                line["track"].as_str().unwrap(),
+                line["event"].as_str().unwrap()
+            )
         })
         .collect();
     assert_eq!(
-        events.iter().filter(|e| e.ends_with(WRITER_DROPPING)).count(),
+        events
+            .iter()
+            .filter(|e| e.ends_with(WRITER_DROPPING))
+            .count(),
         2,
         "{events:?}"
     );
@@ -1500,7 +1507,10 @@ fn a_stop_while_dropping_still_makes_up_the_timeline() {
     let dir = tempfile::tempdir().unwrap();
     let log = CaptureLog::new(dir.path().join("1.capture.jsonl"));
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let (mic, sys) = (GatedWriter::new(gate.clone()), GatedWriter::new(gate.clone()));
+    let (mic, sys) = (
+        GatedWriter::new(gate.clone()),
+        GatedWriter::new(gate.clone()),
+    );
     let (tx, rx) = channel();
     let flow = Arc::new(AudioFlow::default());
     let writer_flow = flow.clone();

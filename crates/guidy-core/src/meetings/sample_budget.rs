@@ -42,7 +42,7 @@ impl SampleBudget {
         let samples = samples as i64;
         let queued = self.queued.load(Ordering::Relaxed);
         if self.dropping.load(Ordering::Relaxed) {
-            if queued > resume_below {
+            if queued > resume_below || queued + samples > cap {
                 self.dropped.fetch_add(samples, Ordering::Relaxed);
                 return Admission::Drop { started: false };
             }
@@ -127,6 +127,17 @@ mod tests {
             b.offer_with_cap(1, 100, 50),
             Admission::Queue { silence_first: 0 }
         );
+    }
+
+    #[test]
+    fn recovery_still_respects_the_cap() {
+        let b = SampleBudget::default();
+        b.offer_with_cap(121, 100, 50);
+        assert_eq!(
+            b.offer_with_cap(121, 100, 50),
+            Admission::Drop { started: false }
+        );
+        assert!(b.queued() <= 100);
     }
 
     #[test]

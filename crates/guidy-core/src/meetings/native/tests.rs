@@ -338,15 +338,14 @@ fn deliver_with_echo_cancellation_holds_the_mic_for_its_system_frames() {
     );
 
     let (tx, rx) = mpsc::channel();
-    let thread =
-        std::thread::spawn(move || {
-            deliver(
-                rx,
-                callbacks,
-                Some(aec::EchoCanceller::new()),
-                Default::default(),
-            )
-        });
+    let thread = std::thread::spawn(move || {
+        deliver(
+            rx,
+            callbacks,
+            Some(aec::EchoCanceller::new()),
+            Default::default(),
+        )
+    });
     tx.send(CaptureMsg::Audio(Track::Mic, vec![0.0; 330], 16_000))
         .unwrap();
     tx.send(CaptureMsg::Audio(Track::System, vec![0.0; 320], 16_000))
@@ -669,7 +668,7 @@ fn a_stuck_delivery_queue_is_bounded_and_keeps_the_tracks_aligned() {
     assert_eq!(budgets.of(Track::Mic).queued(), QUEUE_CAP_SAMPLES);
     assert!(budgets.of(Track::Mic).is_dropping());
     assert!(!budgets.of(Track::System).is_dropping());
-    // Exactly what fits, then the one notice.
+    // Exactly what fits.
     let queued: Vec<CaptureMsg> = rx.try_iter().collect();
     assert_eq!(
         queued
@@ -678,10 +677,6 @@ fn a_stuck_delivery_queue_is_bounded_and_keeps_the_tracks_aligned() {
             .count(),
         120
     );
-    assert!(matches!(
-        queued.last(),
-        Some(CaptureMsg::Event(e)) if e.message == EVENT_DROPPING
-    ));
     // Delivery catches up: the next buffer brings the gap with it.
     budgets
         .of(Track::Mic)
@@ -702,7 +697,29 @@ fn silence_for_dropped_audio_reaches_the_callbacks_and_the_log() {
     drop(tx);
     let (mic, sys, events) = run_delivery(rx, Default::default());
     assert_eq!((mic, sys), (40_000, 40_000));
-    assert!(events.is_empty());
+    assert_eq!(events, [event_dropped(40_000)]);
+}
+
+#[test]
+fn dropping_is_said_ahead_of_the_backlog() {
+    let (tx, rx) = mpsc::channel();
+    let budgets = Arc::new(DeliveryBudgets::default());
+    let second = vec![0.25f32; 16_000];
+    for _ in 0..121 {
+        offer_audio(&tx, &budgets, Track::System, &second, 16_000);
+    }
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (a, b, c) = (order.clone(), order.clone(), order.clone());
+    let callbacks = CaptureCallbacks::new(
+        move |_, _| a.lock().unwrap().push("mic".into()),
+        move |_, _| b.lock().unwrap().push("system".into()),
+    )
+    .with_events(move |e| c.lock().unwrap().push(e.message));
+    drop(tx);
+    deliver(rx, callbacks, None, budgets);
+    let order = order.lock().unwrap();
+    // Before the first of 120 queued buffers.
+    assert_eq!(order[0], EVENT_DROPPING);
 }
 
 #[test]
@@ -717,5 +734,8 @@ fn what_is_still_owed_at_the_end_is_delivered_as_silence() {
     let (mic, sys, events) = run_delivery(rx, budgets);
     assert_eq!(mic, 125 * 16_000);
     assert_eq!(sys, 0);
-    assert_eq!(events, [EVENT_DROPPING.to_string(), event_dropped(5 * 16_000)]);
+    assert_eq!(
+        events,
+        [EVENT_DROPPING.to_string(), event_dropped(5 * 16_000)]
+    );
 }
