@@ -221,19 +221,63 @@ fn matched_in_order(mic: &[Timed], heard: &[Timed], slack_ms: i64) -> Vec<bool> 
     out
 }
 
-/// Whether the segment's words can decide for its text: in time order, with
-/// real times, and saying all of it. A word list that leaves text out could
-/// not rebuild what's kept.
-fn has_word_times(m: &RawSegment) -> bool {
-    let spelled = |atoms: Vec<String>| atoms.concat();
-    !m.words.is_empty()
-        && m.words.windows(2).all(|w| w[0].t0_ms <= w[1].t0_ms)
-        && m.words.iter().any(|w| w.t1_ms > w.t0_ms)
-        && m.words
-            .iter()
-            .map(|w| spelled(atoms(&w.text)))
-            .collect::<String>()
-            == spelled(atoms(&m.text))
+/// Per word of `m`, the text it stands for and whether a space comes before it,
+/// when the words can decide for the segment: inside it, in time order, with
+/// real times, and lining up with what its text says. Only a run of ideographs
+/// or kana may span several words, as those count by character anyway. Any
+/// other mismatch (fragments of a word, one entry for two words, text the words
+/// leave out) would miscount the minimum or lose text, so it's `None`.
+fn word_texts(m: &RawSegment) -> Option<Vec<(String, bool)>> {
+    let timed = m.words.windows(2).all(|w| w[0].t0_ms <= w[1].t0_ms)
+        && m.words.iter().all(|w| {
+            let real = w.t1_ms > w.t0_ms || atoms(&w.text).is_empty();
+            real && m.t0_ms <= w.t0_ms && w.t1_ms <= m.t1_ms
+        });
+    if m.words.is_empty() || !timed {
+        return None;
+    }
+    let mut out = Vec::with_capacity(m.words.len());
+    let mut next = 0;
+    // An entry with nothing to match (punctuation) stays on the word before.
+    let attach_marks = |next: &mut usize, out: &mut Vec<(String, bool)>| {
+        while let Some(w) = m.words.get(*next).filter(|w| atoms(&w.text).is_empty()) {
+            out.push((w.text.clone(), false));
+            *next += 1;
+        }
+    };
+    for token in m.text.split_whitespace() {
+        let wanted = atoms(token);
+        if wanted.is_empty() {
+            continue;
+        }
+        attach_marks(&mut next, &mut out);
+        let spelled = wanted.concat();
+        let word = m.words.get(next)?;
+        if atoms(&word.text).concat() == spelled {
+            out.push((token.to_string(), true));
+            next += 1;
+        } else if token
+            .chars()
+            .all(|c| !c.is_alphanumeric() || written_by_character(c))
+        {
+            let mut have = String::new();
+            let mut first = true;
+            while have.len() < spelled.len() {
+                let word = m.words.get(next)?;
+                have.push_str(&atoms(&word.text).concat());
+                out.push((word.text.clone(), first));
+                first = false;
+                next += 1;
+            }
+            if have != spelled {
+                return None;
+            }
+        } else {
+            return None;
+        }
+        attach_marks(&mut next, &mut out);
+    }
+    (next == m.words.len() && out.len() == m.words.len()).then_some(out)
 }
 
 /// Per word of `m`, whether it goes: it is in a contiguous run of matching
@@ -277,38 +321,21 @@ fn echo_words(m: &RawSegment, heard: &[Timed], slack_ms: i64) -> Vec<bool> {
     out
 }
 
-/// The words `m.words[range]` as a segment of their own, inside `m`.
-fn piece_of(m: &RawSegment, range: std::ops::Range<usize>) -> RawSegment {
-    // The text's own tokens keep their punctuation, when they line up.
-    let spoken: Vec<&str> = m.text.split_whitespace().collect();
-    let aligned = spoken.len() == m.words.len();
-    let separator = if spoken.len() > 1 { " " } else { "" };
-    let text: Vec<&str> = range
-        .clone()
-        .map(|k| {
-            if aligned {
-                spoken[k]
-            } else {
-                m.words[k].text.as_str()
-            }
-        })
-        .collect();
-    let words: Vec<Word> = m.words[range]
-        .iter()
-        .map(|w| {
-            let t0_ms = w.t0_ms.clamp(m.t0_ms, m.t1_ms);
-            Word {
-                t0_ms,
-                t1_ms: w.t1_ms.clamp(t0_ms, m.t1_ms),
-                text: w.text.clone(),
-            }
-        })
-        .collect();
+/// The words `m.words[range]` as a segment of their own.
+fn piece_of(m: &RawSegment, range: std::ops::Range<usize>, texts: &[(String, bool)]) -> RawSegment {
+    let mut text = String::new();
+    for (word, space) in &texts[range.clone()] {
+        if *space && !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(word);
+    }
+    let words = m.words[range].to_vec();
     RawSegment {
         track: m.track,
         t0_ms: words.first().map_or(m.t0_ms, |w| w.t0_ms),
         t1_ms: words.iter().map(|w| w.t1_ms).max().unwrap_or(m.t1_ms),
-        text: text.join(separator),
+        text,
         words,
     }
 }
@@ -339,7 +366,7 @@ fn echo_cut(m: &RawSegment, system: &[RawSegment], p: &EchoParams) -> EchoCut {
     if heard.is_empty() {
         return EchoCut::Whole;
     }
-    if !has_word_times(m) {
+    let Some(texts) = word_texts(m) else {
         let said: Vec<Timed> = timed_atoms(&m.text, m.t0_ms, m.t1_ms).collect();
         let all = !said.is_empty()
             && matched_in_order(&said, &heard, p.slack_ms)
@@ -350,7 +377,7 @@ fn echo_cut(m: &RawSegment, system: &[RawSegment], p: &EchoParams) -> EchoCut {
         } else {
             EchoCut::Whole
         };
-    }
+    };
     let gone = echo_words(m, &heard, p.slack_ms);
     if !gone.contains(&true) {
         return EchoCut::Whole;
@@ -362,7 +389,7 @@ fn echo_cut(m: &RawSegment, system: &[RawSegment], p: &EchoParams) -> EchoCut {
             .find(|&e| gone[e] != gone[k])
             .unwrap_or(gone.len());
         if !gone[k] {
-            pieces.push(piece_of(m, k..end));
+            pieces.push(piece_of(m, k..end, &texts));
         }
         k = end;
     }
@@ -386,11 +413,8 @@ pub struct TimelineEntry {
     pub speaker: Option<usize>,
 }
 
-/// Merge mic and system segments into one timeline sorted by start time.
-/// Mic segment `i` goes to `mic_speakers[i]` (someone else in the room, when
-/// the mic track was diarized), else to `user_speaker`, less its echo (see
-/// [`echo_cuts`]); system segment `i` goes to `system_speakers[i]`.
-/// Empty-text segments are dropped.
+/// [`merge_cuts`] with the echo decided here.
+#[cfg(test)]
 pub fn merge_timeline(
     mic: &[RawSegment],
     system: &[RawSegment],
@@ -400,6 +424,30 @@ pub fn merge_timeline(
     echo: &EchoParams,
 ) -> Vec<TimelineEntry> {
     let cuts = echo_cuts(mic, system, echo);
+    merge_cuts(
+        mic,
+        &cuts,
+        system,
+        mic_speakers,
+        system_speakers,
+        user_speaker,
+    )
+}
+
+/// Merge mic and system segments into one timeline sorted by start time.
+/// Mic segment `i` goes to `mic_speakers[i]` (someone else in the room, when
+/// the mic track was diarized), else to `user_speaker`, as `cuts[i]` leaves it
+/// (see [`echo_cuts`]); system segment `i` goes to `system_speakers[i]`.
+/// Empty-text segments are dropped.
+pub fn merge_cuts(
+    mic: &[RawSegment],
+    cuts: &[EchoCut],
+    system: &[RawSegment],
+    mic_speakers: &[Option<usize>],
+    system_speakers: &[Option<usize>],
+    user_speaker: usize,
+) -> Vec<TimelineEntry> {
+    debug_assert_eq!(mic.len(), cuts.len());
     let mut out: Vec<TimelineEntry> = mic
         .iter()
         .zip(cuts)
@@ -414,7 +462,7 @@ pub fn merge_timeline(
             );
             let kept = match cut {
                 EchoCut::Whole => vec![s.clone()],
-                EchoCut::Trimmed(pieces) => pieces,
+                EchoCut::Trimmed(pieces) => pieces.clone(),
             };
             kept.into_iter()
                 .map(move |segment| TimelineEntry { segment, speaker })
@@ -885,6 +933,92 @@ mod tests {
             panic!("nothing was cut");
         };
         assert_eq!(echo_cuts(&pieces, &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn fragments_of_a_word_do_not_count_as_words() {
+        let system = [over(
+            Track::System,
+            0,
+            2_000,
+            &["ab", "so", "lutely", "fine"],
+        )];
+        let p = EchoParams::default();
+        // Three entries, one word: it stays, and so does the whole unit.
+        let mut mic = over(
+            Track::Mic,
+            0,
+            2_000,
+            &["ab", "so", "lutely", "my", "connection", "dropped"],
+        );
+        mic.text = "absolutely my connection dropped".into();
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn words_that_dont_line_up_with_the_text_cut_nothing() {
+        let system = [over(Track::System, 0, 2_000, &["ship", "it", "now"])];
+        let p = EchoParams::default();
+        // Fragments of a word the user said, after real echo.
+        let mut mic = over(
+            Track::Mic,
+            0,
+            4_000,
+            &["ship", "it", "now", "con", "nec", "tion"],
+        );
+        mic.text = "ship it now connection".into();
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+        // As many entries as tokens, cut differently: the counts don't prove it.
+        let mut mic = over(Track::Mic, 0, 4_000, &["ship it", "now", "my", "li", "ne"]);
+        mic.text = "ship it now my line".into();
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn a_word_without_real_times_cuts_nothing() {
+        let system = [over(Track::System, 0, 1_000, &["ship", "it", "now"])];
+        let p = EchoParams::default();
+        let mut mic = over(Track::Mic, 0, 1_000, &["ship", "it", "now", "mine"]);
+        mic.words[3].t0_ms = 1_000;
+        mic.words[3].t1_ms = 1_000;
+        mic.words[2].t1_ms = 1_000;
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+        // Nor does one outside the segment.
+        let mut mic = over(Track::Mic, 0, 1_000, &["ship", "it", "now", "mine"]);
+        mic.words[3].t1_ms = 1_500;
+        assert_eq!(echo_cuts(&[mic], &system, &p), vec![EchoCut::Whole]);
+    }
+
+    #[test]
+    fn a_mark_entry_stays_on_its_word() {
+        let echo = over(Track::System, 0, 3_000, &["ship", "it", "now"]);
+        let mut mic = over(
+            Track::Mic,
+            0,
+            8_000,
+            &["ship", "it", "now", ".", "sounds", "good", "!"],
+        );
+        // The echo at its own times; the user's words past its slack.
+        for (k, (t0, t1)) in [
+            (0, 1_000),
+            (1_000, 2_000),
+            (2_000, 3_000),
+            (3_000, 3_100),
+            (5_000, 6_000),
+            (6_000, 7_000),
+            (7_000, 7_100),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            mic.words[k].t0_ms = t0;
+            mic.words[k].t1_ms = t1;
+        }
+        mic.text = "ship it now . sounds good !".into();
+        assert_eq!(
+            left_of(mic, &[echo]),
+            vec![(5_000, 7_100, "sounds good!".to_string())]
+        );
     }
 
     #[test]

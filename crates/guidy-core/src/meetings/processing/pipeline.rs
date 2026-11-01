@@ -203,6 +203,7 @@ pub fn cache_from_segments(
         .collect();
     cache.embeddings = vec![None; sorted.len()];
     cache.resplit_pending = true;
+    cache.echo_removed = true;
     cache
 }
 
@@ -1158,7 +1159,23 @@ impl<'a> Pipeline<'a> {
     /// matches the stored segments), and a failure after it drops the old
     /// sidecar, whose segment ids are gone.
     fn merge(&mut self, cache: &ProcessingCache) -> Result<()> {
-        let clustering = cache.clustering.clone().unwrap_or_default();
+        let mut clustering = cache.clustering.clone().unwrap_or_default();
+        if labels_echo_units(cache, &clustering, &self.config.echo) {
+            // A checkpoint from before echo units stayed out of clustering:
+            // that lets a mixed voiceprint name a speaker. Cluster again.
+            log::info!(
+                "meeting {}: clustering again without echo units",
+                self.meeting_id
+            );
+            let source = self.cluster_source(cache)?;
+            clustering = cluster_units_with(
+                cache,
+                &self.config,
+                &super::naming::known_voices(self.store)?,
+                &self.store.user_voiceprints()?,
+                &source,
+            );
+        }
         let mut built = build_transcript(cache, &clustering, &self.config);
         // The user's word on who spoke what outranks the model's, except
         // that a whole speaker's name gives way to a line's own voice.
@@ -1451,23 +1468,43 @@ fn segments_by_track(cache: &ProcessingCache) -> (IndexedSegments, IndexedSegmen
     (mic, system)
 }
 
-/// Per unit, whether [`timeline::merge_timeline`] will take echo out of it,
-/// by the same decision on the same segments. Such a unit's voiceprint covers
-/// its whole audio, bleed included, so it is no evidence of whose voice is
-/// left: it stays out of clustering (the mic line stays the user's) and out of
-/// the stored voiceprints. A redo embeds what was kept on its own.
+/// What echo removal does to the mic segments of `cache`: the one decision
+/// clustering and the merge both go by.
+fn mic_cuts(
+    cache: &ProcessingCache,
+    mic: &[RawSegment],
+    system: &[RawSegment],
+    echo: &EchoParams,
+) -> Vec<timeline::EchoCut> {
+    if cache.echo_removed {
+        vec![timeline::EchoCut::Whole; mic.len()]
+    } else {
+        timeline::echo_cuts(mic, system, echo)
+    }
+}
+
+/// Per unit, whether the merge will take echo out of it. Such a unit's
+/// voiceprint covers its whole audio, bleed included, so it is no evidence of
+/// whose voice is left: it stays out of clustering (the mic line stays the
+/// user's) and out of the stored voiceprints. A redo embeds what was kept on
+/// its own.
 fn echo_units(cache: &ProcessingCache, echo: &EchoParams) -> Vec<bool> {
     let (mic, system) = segments_by_track(cache);
     let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
     let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
     let mut out = vec![false; cache.units.len()];
-    for ((i, _), cut) in mic
-        .iter()
-        .zip(timeline::echo_cuts(&mic_segs, &sys_segs, echo))
-    {
+    for ((i, _), cut) in mic.iter().zip(mic_cuts(cache, &mic_segs, &sys_segs, echo)) {
         out[*i] = cut != timeline::EchoCut::Whole;
     }
     out
+}
+
+/// Whether `clustering` gives a speaker to a unit [`echo_units`] keeps out.
+fn labels_echo_units(cache: &ProcessingCache, clustering: &Clustering, echo: &EchoParams) -> bool {
+    echo_units(cache, echo)
+        .iter()
+        .zip(&clustering.labels)
+        .any(|(is_echo, label)| *is_echo && label.is_some())
 }
 
 /// The least speech a mic cluster needs to be someone other than the user.
@@ -2008,16 +2045,17 @@ pub fn build_transcript(
             .collect()
     };
     let (mic_speakers, sys_speakers) = (speakers_of(&mic), speakers_of(&system));
-    // `merge_timeline` takes speaker indices; map the user to a sentinel
+    // `merge_cuts` takes speaker indices; map the user to a sentinel
     // past every cluster.
     let user_index = usize::MAX;
-    let timeline = timeline::merge_timeline(
+    let cuts = mic_cuts(cache, &mic_segs, &sys_segs, &config.echo);
+    let timeline = timeline::merge_cuts(
         &mic_segs,
+        &cuts,
         &sys_segs,
         &mic_speakers,
         &sys_speakers,
         user_index,
-        &config.echo,
     );
 
     let unit_of = |seg: &RawSegment| -> usize {

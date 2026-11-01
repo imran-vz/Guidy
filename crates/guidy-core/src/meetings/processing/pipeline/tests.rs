@@ -2129,6 +2129,52 @@ fn a_unit_with_echo_taken_out_stays_the_users_and_points_at_its_unit() {
 }
 
 #[test]
+fn redoing_the_speakers_takes_no_words_from_a_stored_mic_line() {
+    use Track::{Mic, System};
+    // The user repeated the remote's phrase just after its echo came out.
+    let phrase = ["ship", "it", "now"];
+    let mut cache = cache_of(&[
+        (Mic, 0, 1_500, Some(axis(0))),
+        (System, 0, 1_500, Some(axis(1))),
+    ]);
+    cache.transcripts = vec![Some(spoken(0, &phrase)), Some(spoken(0, &phrase))];
+    let config = PipelineConfig::default();
+    let c = cluster_units(&cache, &config, &[], &[]);
+    let mic_lines = |cache: &ProcessingCache| {
+        let (_, segments, _) = build_transcript(cache, &c, &config);
+        segments.iter().filter(|s| s.track == Mic).count()
+    };
+    assert_eq!(mic_lines(&cache), 0, "a first run takes the echo out");
+    cache.echo_removed = true;
+    assert_eq!(mic_lines(&cache), 1, "a redo goes by the stored transcript");
+    assert!(!labels_echo_units(&cache, &c, &config.echo));
+}
+
+#[test]
+fn a_checkpoint_that_labelled_an_echo_unit_is_clustered_again() {
+    use Track::{Mic, System};
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(1))),
+        (System, 0, 9_000, Some(axis(1))),
+    ]);
+    let phrase = ["ship", "it", "now"];
+    cache.transcripts = vec![Some(spoken(0, &phrase)), Some(spoken(0, &phrase))];
+    let echo = EchoParams::default();
+    let mut c = cluster_units(&cache, &PipelineConfig::default(), &[], &[axis(3)]);
+    assert!(!labels_echo_units(&cache, &c, &echo), "fresh clustering");
+    c.labels[0] = Some(1);
+    assert!(labels_echo_units(&cache, &c, &echo), "an old checkpoint");
+}
+
+#[test]
+fn a_checkpoint_from_before_the_echo_flag_goes_over_its_echo() {
+    let mut json: serde_json::Value = serde_json::to_value(ProcessingCache::new()).unwrap();
+    json.as_object_mut().unwrap().remove("echo_removed");
+    let old: ProcessingCache = serde_json::from_value(json).unwrap();
+    assert!(!old.echo_removed);
+}
+
+#[test]
 fn without_a_recorded_voice_every_mic_line_is_the_users() {
     use Track::Mic;
     let cache = cache_of(&[
