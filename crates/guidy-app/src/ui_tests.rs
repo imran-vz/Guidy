@@ -453,16 +453,18 @@ mod main_window {
         cx.run_until_parked();
         assert!(exists(cx, w, "model-selector"));
         assert!(exists(cx, w, "update-status"));
-        let (selector_x, update_x) = cx
+        let (selector_x, middle, update_x) = cx
             .update_window(w, |_, window, cx| {
                 window.render_frame(cx);
                 (
                     window.find("model-selector").bounds().origin.x,
+                    window.find("status-bar").bounds().center().x,
                     window.find("update-status").bounds().origin.x,
                 )
             })
             .unwrap();
-        assert!(selector_x < update_x, "selector left, update status right");
+        assert!(selector_x < middle, "the selector is on the left");
+        assert!(update_x > middle, "the update status is on the right");
         // The version is on the About page (`version-value`), not here.
         assert!(!exists(cx, w, "app-version"));
     }
@@ -1008,6 +1010,19 @@ mod debug_and_about {
         ] {
             assert!(exists(cx, w, id), "{id}");
         }
+        let header = cx
+            .update_window(w, |_, window, _| {
+                window
+                    .find("version-value")
+                    .label()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .unwrap();
+        assert!(
+            header.contains(env!("CARGO_PKG_VERSION")),
+            "the version is shown: {header}"
+        );
         with_window(cx, w, |window, cx| window.click("open-app-data", cx));
         assert!(backend.called("open_app_data_dir"));
         with_window(cx, w, |window, cx| window.click("open-log-dir", cx));
@@ -1641,6 +1656,16 @@ mod banners_and_events {
             serde_json::to_value(vec![item]).unwrap(),
         );
         assert!(exists(cx, w, "download-activity"));
+        let (middle, activity_x) = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.find("status-bar").bounds().center().x,
+                    window.find("download-activity").bounds().origin.x,
+                )
+            })
+            .unwrap();
+        assert!(activity_x > middle, "download activity is on the right");
     }
 
     /// PARITY E-14, F-06
@@ -2004,6 +2029,97 @@ mod gap_regressions {
         assert_eq!(
             state.read_with(cx, |s, _| s.models.current_model.clone()),
             "b"
+        );
+    }
+
+    /// PARITY M-08 (a pending pick and load errors come before the model name)
+    #[gpui_kit::test]
+    fn selector_text_follows_status_and_pending_model(cx: &mut TestAppContext) {
+        use crate::ui::kit::{t, t_args};
+        use crate::ui::status_bar::selector_text;
+        let backend = FakeBackend::new();
+        backend.data.lock().models = vec![model("a"), model("b")];
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let text =
+            |cx: &mut TestAppContext| state.read_with(cx, |s, _| selector_text(s).to_string());
+        assert_eq!(text(cx), "A");
+        state.update(cx, |s, _| s.pending_model = Some("b".into()));
+        assert_eq!(text(cx), "B", "the pending pick shows at once");
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_started"}),
+        );
+        assert_eq!(
+            text(cx),
+            t_args("modelSelector.loading", &[("modelName", "B")]).to_string()
+        );
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_failed", "error": "bad gguf"}),
+        );
+        assert_eq!(text(cx), "bad gguf");
+        assert_eq!(state.read_with(cx, |s, _| s.pending_model.clone()), None);
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "unloaded"}),
+        );
+        assert_eq!(text(cx), "A", "unloaded still names the current model");
+        backend.data.lock().current_model = String::new();
+        state.update(cx, |s, cx| s.load_current_model(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            text(cx),
+            t("modelSelector.noModelDownloadRequired").to_string()
+        );
+    }
+
+    /// PARITY M-08 (the dropdown lists downloaded models; a pick switches)
+    #[gpui_kit::test]
+    fn selector_menu_lists_downloaded_models_and_switches(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut a = model("a");
+        a.is_downloaded = true;
+        let mut b = model("b");
+        b.is_downloaded = true;
+        backend.data.lock().models = vec![a, b, model("not-downloaded")];
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let (w, _) = open(cx, MainWindow::new);
+        with_window(cx, w, |window, cx| window.click("model-selector", cx));
+        let labels = cx
+            .update_window(w, |_, window, _| {
+                let menu = window.within("popup-menu");
+                (0..3usize)
+                    .map(|ix| {
+                        menu.try_find(ix)
+                            .map(|item| item.label().unwrap_or_default().to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(labels[0].as_deref().is_some_and(|l| l.starts_with('A')));
+        assert!(labels[1].as_deref().is_some_and(|l| l.starts_with('B')));
+        assert_eq!(labels[2], None, "not downloaded: not listed: {labels:?}");
+        with_window(cx, w, |window, cx| {
+            window.within("popup-menu").click(1usize, cx)
+        });
+        assert!(
+            backend.called("set_active_model b"),
+            "{:?}",
+            backend.calls()
+        );
+        assert_eq!(
+            state.read_with(cx, |s, _| s.pending_model.clone()),
+            Some("b".to_string())
         );
     }
 

@@ -179,7 +179,7 @@ Removed from the baseline: `is_model_loading`. It had no caller in this app, and
 | M-05 | Download progress %, MB/s (EMA 0.8/0.2, updated every ≥0.5 s), cancel; verifying state | test: download_speed_is_smoothed_and_throttled, test: download_progress_and_cancel |
 | M-06 | Delete with confirmation dialog (different text when the model is active) | test: delete_asks_for_confirmation |
 | M-07 | Retired models notice: total size, delete all, result toast | test: retired_notice_deletes_all_but_current |
-| M-08 | Status bar selector: status dot (ready/loading/downloading/verifying/error/unloaded/none), text priority, dropdown of downloaded models, optimistic pending selection | test: selector_status_transitions, test: status_bar_shows_model_and_update_status, test: selector_status_follows_the_current_model, test: selector_keeps_the_pending_model_until_the_load_ends, manual: HW-19 |
+| M-08 | Status bar selector: status dot (ready/loading/error/unloaded/none), text priority, dropdown of downloaded models, optimistic pending selection. Downloads and verification show in the separate download indicator (W-06) | test: selector_status_transitions, test: status_bar_shows_model_and_update_status, test: selector_status_follows_the_current_model, test: selector_keeps_the_pending_model_until_the_load_ends, test: selector_text_follows_status_and_pending_model, test: selector_menu_lists_downloaded_models_and_switches, manual: HW-19 |
 | M-09 | Multi-download display | test: progress_tracks_percentage_and_speed |
 
 ## H. History page
@@ -284,4 +284,4 @@ Removed from the baseline: `is_model_loading`. It had no caller in this app, and
 | HW-16 | Arabic / Hebrew UI renders right-to-left | all |
 | HW-17 | Screen reader (VoiceOver / Narrator / Orca) announces settings rows and controls | all |
 | HW-18 | Single-key dictation in a packaged build. Bind Fn, Right Option and Left Option; hold, speak, release pastes. Short tap does nothing. Double-press, speak, tap and long hold, still recording; double-press again stops and pastes. Option+C quick and after 400 ms held. Option+C while latched continues. Escape while latched cancels. Right bound, Left does nothing. Fn with Globe set to emoji and to Do Nothing; double-Fn with system Dictation. Arrow keys with Fn bound. Option held through lock screen or Cmd+Tab ends within 500 ms. A genuine long hold, including Fn, is not ended by the 500 ms check. Click between taps blocks a double. Spaceman Option-1. Secure Keyboard Entry. Saved chord after upgrade. Report whether 200/300/350 ms feel right and whether speech start clips | mac |
-| HW-19 | Status bar selector: the dot color and label for loading, error and no model; the dropdown lists only downloaded models, and picking one switches to it | all |
+| HW-19 | Status bar selector: the dot color for ready, loading, error, unloaded and no model | all |
