@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::meetings::types::PersonId;
+use crate::meetings::types::{PersonId, SpeakerModelId};
 
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
@@ -63,9 +63,9 @@ pub struct ClusterParams {
     pub max_threshold: f32,
     /// Cut used when the merge heights show no clear gap.
     pub default_threshold: f32,
-    /// A jump between consecutive merge heights at least this large, inside
-    /// `[min_threshold, max_threshold]`, is taken as the boundary between
-    /// "same speaker" and "different speakers".
+    /// A jump between consecutive merge heights at least this large, ending
+    /// above `default_threshold` and starting at most at `max_threshold`, is
+    /// taken as the boundary between "same speaker" and "different speakers".
     pub min_gap: f32,
 }
 
@@ -80,6 +80,14 @@ impl Default for ClusterParams {
             default_threshold: 0.5,
             min_gap: 0.1,
         }
+    }
+}
+
+impl ClusterParams {
+    /// The parameters for voiceprints of `model`. All models share the
+    /// default values until the evaluation harness measures them apart.
+    pub fn for_model(_model: SpeakerModelId) -> Self {
+        Self::default()
     }
 }
 
@@ -195,13 +203,14 @@ fn dendrogram(embeddings: &[Vec<f32>]) -> Vec<Merge> {
 }
 
 /// The adaptive cut: the midpoint of the largest jump between consecutive
-/// merge heights within the threshold window, or the default when no jump is
-/// large enough.
+/// merge heights that ends above the default cut, or the default when there
+/// is no such jump. A jump ending at or below the default sits among merges
+/// of one voice: cutting there would split that voice.
 fn choose_cut(heights: &[f32], p: &ClusterParams) -> f32 {
     let mut best: Option<(f32, f32)> = None; // (gap, cut)
     for w in heights.windows(2) {
         let (lo, hi) = (w[0], w[1]);
-        if hi < p.min_threshold || lo > p.max_threshold {
+        if hi <= p.default_threshold || lo > p.max_threshold {
             continue;
         }
         let gap = hi - lo;
@@ -520,6 +529,47 @@ pub(crate) mod tests {
         assert_eq!(agglomerate(&embs, &ClusterParams::default()).1, 2);
         assert_eq!(agglomerate(&embs[..1], &ClusterParams::default()).1, 1);
         assert_eq!(agglomerate(&[], &ClusterParams::default()).1, 0);
+    }
+
+    #[test]
+    fn jumps_among_merges_of_one_voice_do_not_split_it() {
+        let p = ClusterParams::default();
+        let heights = [0.20, 0.25, 0.38, 0.49];
+        assert_eq!(choose_cut(&heights, &p), p.default_threshold);
+        // Every merge happens: one cluster.
+        assert!(heights.iter().all(|h| *h <= choose_cut(&heights, &p)));
+        // A jump ending exactly at the default is still not above it.
+        assert_eq!(choose_cut(&[0.3, 0.5], &p), p.default_threshold);
+    }
+
+    #[test]
+    fn a_jump_straddling_the_default_still_splits() {
+        let p = ClusterParams::default();
+        let heights = [0.3, 0.45, 0.8];
+        let cut = choose_cut(&heights, &p);
+        assert!((cut - 0.625).abs() < 1e-6, "{cut}");
+        // The last merge doesn't happen: two clusters.
+        assert_eq!(heights.iter().filter(|h| **h <= cut).count(), 2);
+    }
+
+    #[test]
+    fn heights_without_a_jump_give_the_default_cut() {
+        let p = ClusterParams::default();
+        for heights in [&[][..], &[0.9][..], &[0.6, 0.6, 0.6][..]] {
+            assert_eq!(choose_cut(heights, &p), p.default_threshold);
+        }
+    }
+
+    #[test]
+    fn every_model_shares_the_default_parameters_for_now() {
+        let (d, m) = (
+            ClusterParams::default(),
+            ClusterParams::for_model(SpeakerModelId::TitanetLarge),
+        );
+        assert_eq!(d.default_threshold, m.default_threshold);
+        assert_eq!(d.min_threshold, m.min_threshold);
+        assert_eq!(d.max_threshold, m.max_threshold);
+        assert_eq!(d.min_gap, m.min_gap);
     }
 
     #[test]

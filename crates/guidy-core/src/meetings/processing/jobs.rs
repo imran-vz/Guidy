@@ -22,6 +22,7 @@ use anyhow::{bail, Result};
 use parking_lot::{Condvar, Mutex, MutexGuard};
 
 use super::cloud::CloudTranscriber;
+use super::cluster::ClusterParams;
 use super::pipeline::{
     next_stage, Diarizer, Embedder, Pipeline, PipelineConfig, SegmentTranscriber, TurnDetection,
 };
@@ -775,6 +776,10 @@ impl Processor {
             embedder: None,
             model: SpeakerModelId::Resnet34,
         };
+        let cluster_params = match diarization {
+            DiarizationEngine::Model(m) => ClusterParams::for_model(m),
+            DiarizationEngine::Deepgram => ClusterParams::default(),
+        };
         let mut deepgram = None;
         let diarizer = match diarization {
             DiarizationEngine::Model(m) if m.is_standard() => Diarizer::Voiceprints,
@@ -847,6 +852,7 @@ impl Processor {
             meetings_dir: &inner.meetings_dir,
             config: PipelineConfig {
                 preferred_language: Some(settings.app_language.clone()),
+                cluster: cluster_params,
                 ..PipelineConfig::from_settings(&settings.meetings)
             },
             mic,
