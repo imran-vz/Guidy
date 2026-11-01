@@ -16,4 +16,5 @@ pub mod overlay;
 pub mod recording_widget;
 pub mod requirements;
 pub mod settings_store;
+pub mod storage;
 pub mod usage;
