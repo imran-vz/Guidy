@@ -10,6 +10,8 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 
 `xtask parity` diffs the full list automatically against the baseline command list (`docs/baseline/commands.txt`). The rows below group them by behavior. Each `change_*_setting` needs a test that it persists, a test that it emits/applies its side effects, and a test that invalid input returns an error.
 
+Removed from the baseline: `is_model_loading`. It had no caller in this app, and it returned "no model is loaded", not "a load is running". `get_model_load_status` and `get_transcription_model_status` report the loaded model, and `model-state-changed` reports loads as they run (E-07, M-08).
+
 | ID | Group | Commands | Cover |
 |---|---|---|---|
 | C-01 | Bindings | change_binding, reset_binding, suspend_all_bindings, resume_all_bindings | test: reset_restores_default, test: binding_rollback_restores_the_original, test: system_recorder_suspends_bindings |
@@ -21,7 +23,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | C-07 | Post-process | set_post_process_provider, base_url/api_format/api_key/model setters, add/update/delete prompt, set selected prompt, fetch_post_process_models | test: create_prompt, test: api_rows, test: post_process_defaults_sync_builtin_api_format_but_keep_custom, test: anthropic_format_parses_messages_response |
 | C-08 | Accelerators | get_available_accelerators, change_transcribe_accelerator_setting, change_transcribe_gpu_device | test: accelerator_encoding_round_trips, test: normal_hosts_preserve_every_transcribe_accelerator_setting |
 | C-09 | Typing tools | get_available_typing_tools [lin] | test: paste_method_matrix, manual: HW-11 |
-| C-10 | Models | get_available_models, get_model_info, rescan_local_models, download_model, cancel_download, delete_model, set_active_model, get_current_model, get_transcription_model_status, is_model_loading, get_retired_models, delete_retired_model | test: card_clicks_download_or_select, test: download_progress_and_cancel, test: sections_and_rescan, test: test_discover_custom_transcribe_models |
+| C-10 | Models | get_available_models, get_model_info, rescan_local_models, download_model, cancel_download, delete_model, set_active_model, get_current_model, get_transcription_model_status, get_retired_models, delete_retired_model | test: card_clicks_download_or_select, test: download_progress_and_cancel, test: sections_and_rescan, test: test_discover_custom_transcribe_models |
 | C-11 | Audio | microphones list/select/get, output devices list/select/get, channels get/set, clamshell get/set, update/get_microphone_mode, play_test_sound, check_custom_sounds, is_recording | test: microphone_config_maps_the_selected_channel, test: channel_selector_only_for_multichannel_devices, test: debug_rows, manual: HW-02 |
 | C-12 | Windows mic permission | get_windows_microphone_permission_status, open_microphone_privacy_settings [win] | test: missing_permissions_send_returning_users_to_permissions, manual: HW-01 |
 | C-13 | Transcription | set_model_unload_timeout, get_model_load_status, unload_model_manually | test: model_unload_timeout_persists, test: unload_options_gate_sec15_on_debug |

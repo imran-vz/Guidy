@@ -83,7 +83,6 @@ get_windows_microphone_permission_status
 initialize_enigo
 initialize_shortcuts
 is_laptop
-is_model_loading
 is_portable
 is_recording
 is_update_checks_locked
