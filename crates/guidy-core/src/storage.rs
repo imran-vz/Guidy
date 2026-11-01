@@ -466,6 +466,9 @@ fn volume_space(_dir: &Path) -> Option<DiskSpace> {
 pub fn category_dir(category: Category, roots: &StorageRoots) -> Option<PathBuf> {
     let data = &roots.data_dir;
     match category {
+        // Portable mode's own Hugging Face cache also counts as Models, and
+        // only their common parent shows both.
+        Category::Models if data.join("huggingface").is_dir() => Some(data.clone()),
         Category::Models => Some(data.join("models")),
         Category::SharedModels => Some(roots.shared_cache_dir.clone()),
         Category::MeetingAudio => Some(crate::meetings::audio_store::audio_dir(data)),
@@ -770,6 +773,24 @@ mod tests {
         assert!(space.total_bytes > 0);
         assert!(space.free_bytes <= space.total_bytes);
         assert_eq!(space.used_bytes(), space.total_bytes - space.free_bytes);
+    }
+
+    #[test]
+    fn models_folder_shows_a_portable_cache_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = StorageRoots {
+            data_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert_eq!(
+            category_dir(Category::Models, &roots),
+            Some(dir.path().join("models"))
+        );
+        fs::create_dir_all(dir.path().join("huggingface")).unwrap();
+        assert_eq!(
+            category_dir(Category::Models, &roots),
+            Some(dir.path().to_path_buf())
+        );
     }
 
     #[test]
