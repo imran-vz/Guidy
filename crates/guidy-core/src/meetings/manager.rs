@@ -787,11 +787,7 @@ impl MeetingsManager {
                     },
                 })
                 .collect(),
-            default_model: SpeakerModelId::parse(
-                &crate::settings::get_settings(&self.app)
-                    .meetings
-                    .speaker_separation_model,
-            ),
+            default_model: speaker_model::effective_separation_model(&self.app),
             deepgram_has_key: !crate::settings::provider_api_key(deepgram::DEEPGRAM_PROVIDER_ID)
                 .trim()
                 .is_empty(),

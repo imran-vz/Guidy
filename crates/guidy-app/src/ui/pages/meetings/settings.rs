@@ -715,7 +715,13 @@ impl MeetingSettingsView {
     fn render_separation_model(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let options = self.diarization.as_ref().filter(|d| !d.models.is_empty())?;
         let theme = cx.theme().clone();
-        let chosen = SpeakerModelId::parse(&meeting_settings(cx).speaker_separation_model);
+        let chosen = guidy_core::meetings::processing::speaker_model::pick_separation_model(
+            &meeting_settings(cx).speaker_separation_model,
+            options
+                .models
+                .iter()
+                .any(|m| m.id == SpeakerModelId::TitanetLarge && m.installed),
+        );
         let items: Vec<DropdownOption> = options
             .models
             .iter()

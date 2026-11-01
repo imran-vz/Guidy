@@ -64,7 +64,8 @@ pub struct Choices {
     pub speech_model: Option<String>,
     /// `None`: the recommended place.
     pub summaries: Option<Summaries>,
-    /// The optional speaker-turn models.
+    /// The optional speaker-turn models: on unless unchecked, as lines that
+    /// hold two voices are the main cause of wrong speakers.
     pub better_turns: bool,
 }
 
@@ -75,7 +76,7 @@ impl Default for Choices {
             meetings: false,
             speech_model: None,
             summaries: None,
-            better_turns: false,
+            better_turns: true,
         }
     }
 }
@@ -467,7 +468,9 @@ mod tests {
             vec![
                 stt_id(DEFAULT_MEETING_MODEL_ID),
                 "speaker:resnet34".to_string(),
-                "llm:qwen".to_string()
+                "llm:qwen".to_string(),
+                "segmentation:pyannote".to_string(),
+                "separation:titanet_large".to_string(),
             ]
         );
     }
@@ -489,7 +492,9 @@ mod tests {
             p.download_ids(),
             vec![
                 stt_id(DEFAULT_MEETING_MODEL_ID),
-                "speaker:resnet34".to_string()
+                "speaker:resnet34".to_string(),
+                "segmentation:pyannote".to_string(),
+                "separation:titanet_large".to_string(),
             ],
             "cloud summaries download no LLM"
         );
@@ -533,6 +538,42 @@ mod tests {
             setting_writes(&choices, &p)[0].1["speaker_turn_models_consent"],
             true
         );
+    }
+
+    #[test]
+    fn the_speaker_turn_models_are_on_unless_unchecked() {
+        let w = World::new();
+        let on = Choices {
+            meetings: true,
+            ..Default::default()
+        };
+        let p = plan(&w.inputs(), &on);
+        assert_eq!(
+            setting_writes(&on, &p)[0].1["speaker_turn_models_consent"],
+            true
+        );
+        // Unchecked, the choice is stored and nothing extra downloads.
+        let off = Choices {
+            better_turns: false,
+            ..on
+        };
+        let p = plan(&w.inputs(), &off);
+        assert_eq!(
+            setting_writes(&off, &p)[0].1["speaker_turn_models_consent"],
+            false
+        );
+        let ids = p.download_ids();
+        assert!(
+            !ids.iter().any(|id| id.starts_with("segmentation:")),
+            "{ids:?}"
+        );
+        assert!(
+            !ids.iter().any(|id| id.starts_with("separation:")),
+            "{ids:?}"
+        );
+        // Dictation only writes no meeting settings at all.
+        let dictation = Choices::default();
+        assert!(setting_writes(&dictation, &plan(&w.inputs(), &dictation)).is_empty());
     }
 
     #[test]

@@ -405,6 +405,30 @@ pub fn separation_model_installed(app: &AppHandle, id: SpeakerModelId) -> bool {
         .is_ok_and(|p| std::fs::metadata(p).is_ok_and(|m| m.len() == size))
 }
 
+/// The model that tells voices apart for the `setting` (see
+/// `MeetingSettings::speaker_separation_model`): empty means automatic, TitaNet
+/// once it is on disk, else the standard one.
+pub fn pick_separation_model(setting: &str, titanet_installed: bool) -> SpeakerModelId {
+    if !setting.trim().is_empty() {
+        SpeakerModelId::parse(setting)
+    } else if titanet_installed {
+        SpeakerModelId::TitanetLarge
+    } else {
+        SpeakerModelId::Resnet34
+    }
+}
+
+/// The model that tells voices apart with the current settings, for a run and
+/// for what the app offers (see [`pick_separation_model`]).
+pub fn effective_separation_model(app: &AppHandle) -> SpeakerModelId {
+    pick_separation_model(
+        &crate::settings::get_settings(app)
+            .meetings
+            .speaker_separation_model,
+        separation_model_installed(app, SpeakerModelId::TitanetLarge),
+    )
+}
+
 /// A separation model's path, downloading it first if needed (the user
 /// chose it). Blocking, like [`ensure_speaker_model`]; `on_progress` gets
 /// `(downloaded, total)` bytes. The standard one goes through
@@ -779,6 +803,27 @@ impl super::turns::TurnSegmenter for PyannoteSegmenter {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn an_empty_setting_picks_titanet_once_it_is_installed() {
+        use SpeakerModelId::{Resnet34, TitanetLarge};
+        for (setting, installed, want) in [
+            ("", true, TitanetLarge),
+            ("", false, Resnet34),
+            ("  ", true, TitanetLarge),
+            ("resnet34", true, Resnet34),
+            ("resnet34", false, Resnet34),
+            ("titanet_large", true, TitanetLarge),
+            ("titanet_large", false, TitanetLarge),
+            ("unknown", true, Resnet34),
+        ] {
+            assert_eq!(
+                pick_separation_model(setting, installed),
+                want,
+                "{setting:?}"
+            );
+        }
+    }
 
     /// A speaker model file loads and embeds the fixture: halves of one
     /// voice are similar, the voice and silence-free noise aren't. Run with

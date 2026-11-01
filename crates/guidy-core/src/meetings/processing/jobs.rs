@@ -750,14 +750,10 @@ impl Processor {
             embedder: None,
             model: SpeakerModelId::Resnet34,
         };
-        // Without a redo's choice, the model chosen in settings, once it is
+        // Without a redo's choice, the model settings call for, once it is
         // downloaded (a run never waits on that download).
         let diarization = diarization.unwrap_or_else(|| {
-            let chosen = SpeakerModelId::parse(
-                &crate::settings::get_settings(&inner.app)
-                    .meetings
-                    .speaker_separation_model,
-            );
+            let chosen = super::speaker_model::effective_separation_model(&inner.app);
             if chosen.is_standard()
                 || super::speaker_model::separation_model_installed(&inner.app, chosen)
             {
