@@ -490,6 +490,9 @@ pub struct CallDetector {
     pending: Vec<Pending>,
     /// When the current call's app was last missing.
     gone_since: Option<i64>,
+    /// The current call's app released the microphone since its service was
+    /// last seen, so a different service in it is a new call.
+    released: bool,
     snoozed: Vec<Snooze>,
     last_observed: Option<i64>,
 }
@@ -537,6 +540,7 @@ impl CallDetector {
         if elapsed >= SNOOZE_ABSENT_MS {
             self.current = None;
             self.gone_since = None;
+            self.released = false;
         }
         let found = candidates(apps);
 
@@ -548,21 +552,26 @@ impl CallDetector {
             }
         }
 
+        let mut recording = None;
         if let Some(current) = &mut self.current {
             match found.iter().find(|(id, _)| *id == current.app_id) {
                 // The microphone was released and taken again for another
                 // known service: a new call, though in the same browser.
                 Some((_, source))
-                    if self.gone_since.is_some()
+                    if self.released
                         && rank(source) >= 2
                         && rank(&current.source) >= 2
                         && *source != current.source =>
                 {
                     self.current = None;
                     self.gone_since = None;
+                    self.released = false;
                 }
                 Some((_, source)) => {
                     self.gone_since = None;
+                    if rank(source) >= 2 {
+                        self.released = false;
+                    }
                     // Still on the microphone, on whatever page: the same
                     // call. A browser's page found later names it, if that
                     // says more, and the user's choice for that page applies.
@@ -571,17 +580,19 @@ impl CallDetector {
                         match source.policy(choices) {
                             CallPolicy::Never => self.snooze_current(now),
                             CallPolicy::Always => {
-                                return self.current.clone().map(Detection::Record);
+                                recording = self.current.clone().map(Detection::Record);
                             }
                             CallPolicy::Ask => {}
                         }
                     }
                 }
                 None => {
+                    self.released = true;
                     let gone = *self.gone_since.get_or_insert(now);
                     if now - gone >= END_GRACE_MS {
                         self.current = None;
                         self.gone_since = None;
+                        self.released = false;
                     }
                 }
             }
@@ -614,6 +625,9 @@ impl CallDetector {
             })
             .collect();
         self.pending = pending;
+        if recording.is_some() {
+            return recording;
+        }
 
         // Of those held long enough: the surest, then the longest held.
         let mut confirmed: Option<(String, CallSource, i64)> = None;
@@ -635,6 +649,7 @@ impl CallDetector {
         let (app_id, source, since) = confirmed?;
         self.pending.retain(|p| p.app_id != app_id);
         self.gone_since = None;
+        self.released = false;
         // A browser call displaced while it keeps the microphone isn't offered
         // again when the call app leaves.
         if let Some(displaced) = staying.map(str::to_string) {
@@ -661,6 +676,7 @@ impl CallDetector {
             self.snooze_app(call.app_id, now);
         }
         self.gone_since = None;
+        self.released = false;
     }
 
     /// [`Self::snooze_current`] for an app by its canonical id (a recording's
@@ -1075,6 +1091,8 @@ mod tests {
     const FIXTURES: &[&str] = &[
         include_str!("../../../../fixtures/calls/voice_note_bursts.json"),
         include_str!("../../../../fixtures/calls/voice_note_app_limit.json"),
+        include_str!("../../../../fixtures/calls/always_page_with_interrupted_run.json"),
+        include_str!("../../../../fixtures/calls/back_to_back_browser_page_late.json"),
         include_str!("../../../../fixtures/calls/always_page_keeps_other_run.json"),
         include_str!("../../../../fixtures/calls/back_to_back_same_browser.json"),
         include_str!("../../../../fixtures/calls/call_app_after_browser_service.json"),
