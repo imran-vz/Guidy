@@ -130,7 +130,10 @@ impl ModifierGesture {
             }
             State::AwaitSecond { released_at } => {
                 if self.is_chord_signal(event) {
-                    self.state = State::Dirty;
+                    // Dirty ends once the binding is up, and here it already
+                    // is. Waiting for a later event would trust that event's
+                    // flags, and a false Fn flag would swallow the next hold.
+                    self.state = State::Idle;
                 } else if self.is_press_edge(event, held) {
                     self.state = if !self.binding.matches(event.modifiers) {
                         State::Dirty
@@ -530,7 +533,7 @@ mod tests {
         g.on_event(&down(OPT), t0);
         g.on_event(&up(OPT), t0 + ms(50));
         g.on_event(&key_down(Key::C, Modifiers::empty()), t0 + ms(100));
-        assert_eq!(g.state, State::Dirty);
+        assert_eq!(g.state, State::Idle);
         g.on_event(&key_up(Key::C, Modifiers::empty()), t0 + ms(120));
         assert_eq!(g.state, State::Idle);
         g.on_event(&down(OPT), t0 + ms(150));
@@ -590,6 +593,24 @@ mod tests {
         g.on_event(&key_up(Key::LeftArrow, Modifiers::FN), t0 + ms(30));
         assert_eq!(g.state, State::Idle);
         assert_eq!(g.tick(t0 + ms(500)), None);
+    }
+
+    #[test]
+    fn arrow_between_fn_taps_does_not_swallow_the_next_hold() {
+        let t0 = Instant::now();
+        let mut g = ModifierGesture::new(Modifiers::FN);
+        g.on_event(&down(Modifiers::FN), t0);
+        g.on_event(&up(Modifiers::FN), t0 + ms(50));
+        g.on_event(&key_down(Key::LeftArrow, Modifiers::FN), t0 + ms(100));
+        g.on_event(&key_up(Key::LeftArrow, Modifiers::FN), t0 + ms(120));
+        g.on_event(&down(Modifiers::FN), t0 + ms(150));
+        assert_eq!(
+            g.state,
+            State::FirstDown {
+                pressed_at: t0 + ms(150)
+            }
+        );
+        assert_eq!(g.tick(t0 + ms(350)), Some(GestureIntent::HoldStart));
     }
 
     #[test]
