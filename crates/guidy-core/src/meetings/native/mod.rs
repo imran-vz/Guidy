@@ -460,7 +460,8 @@ pub fn set_preferred_microphone(name: Option<&str>) {
 }
 
 /// Start the mic (echo-cancelled) and system-audio streams. Fails, with
-/// nothing left running, if neither can start or mic access is not granted.
+/// nothing left running, if neither can start, or the mic alone was asked for
+/// and access to it is not granted.
 /// A stream that can't start while the other did is reported through
 /// `on_event` and keeps trying; its track stays on the clock with silence.
 /// Stalls and gaps come the same way, as `state:*` messages.
@@ -495,7 +496,9 @@ pub fn start_capture_streams(
             return Err(unsupported());
         }
         // Without the grant the mic would record silence without any error.
-        if streams.mic && !crate::permissions::check_microphone_permission() {
+        // With the system stream too, that recording goes on: the recorder
+        // checked first and shows the microphone as lost.
+        if streams.mic && !streams.system && !crate::permissions::check_microphone_permission() {
             anyhow::bail!("microphone access not granted");
         }
         let (tx, rx) = mpsc::channel();

@@ -590,6 +590,38 @@ pub struct CloudTranscriptionOption {
     pub has_key: bool,
 }
 
+/// How one source of a recording is doing.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceHealth {
+    #[default]
+    Healthy,
+    /// It stopped delivering and is being rebuilt.
+    Reconnecting,
+    /// It delivers, but only zeros, for longer than a pause in talk.
+    Silent,
+    /// Nothing is reaching its track, and it may not come back.
+    Lost,
+}
+
+/// How a recording is doing, live (`recorder/health.rs`). Warnings only.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct RecordingHealth {
+    pub mic: SourceHealth,
+    pub system: SourceHealth,
+    /// The permission was refused or taken away.
+    pub mic_denied: bool,
+    pub system_denied: bool,
+    /// Under 500 MB free where the audio is written.
+    pub low_disk: bool,
+    /// The writer is more than a minute behind capture.
+    pub backlog: bool,
+    /// No audio on either source for 15 minutes: stops then (unix ms) unless
+    /// told to keep going.
+    pub silence_stop_at: Option<i64>,
+}
+
 /// What the recorder is doing right now (drives the tray and the UI).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub enum RecorderState {
@@ -607,6 +639,9 @@ pub enum RecorderState {
         /// Total length of the pauses that already ended.
         #[serde(default)]
         paused_ms: i64,
+        /// How the sources are doing. Older states have none: all healthy.
+        #[serde(default)]
+        health: RecordingHealth,
     },
 }
 
@@ -773,6 +808,7 @@ mod tests {
             scheduled_end_at: None,
             paused_at: None,
             paused_ms: 0,
+            health: Default::default(),
         };
         assert_eq!(st.elapsed_ms(61_000), Some(60_000));
         if let RecorderState::Recording {

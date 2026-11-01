@@ -15,7 +15,8 @@ use guidy_core::meetings::calls::{
     holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange,
 };
 use guidy_core::meetings::types::{
-    format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState, Track,
+    format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState,
+    RecordingHealth, SourceHealth, Track,
 };
 use std::collections::VecDeque;
 
@@ -40,6 +41,72 @@ pub const MAX_ROWS: usize = 60;
 pub const OFFER_TIMEOUT_MS: i64 = 20_000;
 /// An unanswered "the call ended" stops the recording after this long.
 pub const LEFT_CALL_TIMEOUT_MS: i64 = 60_000;
+
+/// What the floater says about how a recording is doing, the worst first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HealthNotice {
+    /// No audio for 15 minutes; it stops soon unless kept.
+    NoAudio,
+    MicDenied,
+    SystemDenied,
+    MicLost,
+    SystemLost,
+    LowDisk,
+    MicReconnecting,
+    SystemReconnecting,
+    MicSilent,
+    SystemSilent,
+    Backlog,
+}
+
+impl HealthNotice {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::NoAudio => "meetings.widget.health.noAudio",
+            Self::MicDenied => "meetings.widget.health.micDenied",
+            Self::SystemDenied => "meetings.widget.health.systemDenied",
+            Self::MicLost => "meetings.widget.health.micLost",
+            Self::SystemLost => "meetings.widget.health.systemLost",
+            Self::LowDisk => "meetings.widget.health.lowDisk",
+            Self::MicReconnecting => "meetings.widget.health.micReconnecting",
+            Self::SystemReconnecting => "meetings.widget.health.systemReconnecting",
+            Self::MicSilent => "meetings.widget.health.micSilent",
+            Self::SystemSilent => "meetings.widget.health.systemSilent",
+            Self::Backlog => "meetings.widget.health.backlog",
+        }
+    }
+}
+
+/// The worst thing to say about `health`, if anything.
+pub fn health_notice(health: &RecordingHealth) -> Option<HealthNotice> {
+    use HealthNotice::*;
+    use SourceHealth as S;
+    Some(if health.silence_stop_at.is_some() {
+        NoAudio
+    } else if health.mic_denied {
+        MicDenied
+    } else if health.system_denied {
+        SystemDenied
+    } else if health.mic == S::Lost {
+        MicLost
+    } else if health.system == S::Lost {
+        SystemLost
+    } else if health.low_disk {
+        LowDisk
+    } else if health.mic == S::Reconnecting {
+        MicReconnecting
+    } else if health.system == S::Reconnecting {
+        SystemReconnecting
+    } else if health.mic == S::Silent {
+        MicSilent
+    } else if health.system == S::Silent {
+        SystemSilent
+    } else if health.backlog {
+        Backlog
+    } else {
+        return None;
+    })
+}
 
 /// What the call watcher should do after a poll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +274,33 @@ impl WidgetModel {
             self.pending_snoozes.push(c.app_id.clone());
         }
         self.more_open = false;
+    }
+
+    /// How the recording is doing (all healthy when idle).
+    pub fn health(&self) -> RecordingHealth {
+        match &self.recorder {
+            RecorderState::Recording { health, .. } => *health,
+            RecorderState::Idle => RecordingHealth::default(),
+        }
+    }
+
+    /// The source's own state, for its indicator.
+    pub fn source_health(&self, track: Track) -> SourceHealth {
+        let health = self.health();
+        match track {
+            Track::Mic => health.mic,
+            Track::System => health.system,
+        }
+    }
+
+    /// What to say beside the floater about the recording, if anything.
+    pub fn health_notice(&self) -> Option<HealthNotice> {
+        health_notice(&self.health())
+    }
+
+    /// A call is going on behind the recording.
+    pub fn recording_in_call(&self) -> bool {
+        self.recorder.is_recording() && self.recording_call.is_some() && self.left_at.is_none()
     }
 
     /// The apps to snooze since the last poll.
@@ -394,6 +488,10 @@ impl WidgetModel {
             self.recording_stopped();
         }
         self.recorder = state;
+        // Said beside the floater, not behind the open panel.
+        if self.health().silence_stop_at.is_some() {
+            self.expanded = false;
+        }
     }
 
     /// Stopped during a call: don't offer notes for it again. One that ended
@@ -486,6 +584,7 @@ mod tests {
             scheduled_end_at: None,
             paused_at: None,
             paused_ms: 0,
+            health: Default::default(),
         }
     }
 
@@ -999,6 +1098,70 @@ mod tests {
     }
 
     #[test]
+    fn the_worst_health_is_what_is_said() {
+        let healthy = RecordingHealth::default();
+        assert_eq!(health_notice(&healthy), None);
+        let mut health = RecordingHealth {
+            backlog: true,
+            ..healthy
+        };
+        assert_eq!(health_notice(&health), Some(HealthNotice::Backlog));
+        health.system = SourceHealth::Silent;
+        assert_eq!(health_notice(&health), Some(HealthNotice::SystemSilent));
+        health.mic = SourceHealth::Reconnecting;
+        assert_eq!(health_notice(&health), Some(HealthNotice::MicReconnecting));
+        health.low_disk = true;
+        assert_eq!(health_notice(&health), Some(HealthNotice::LowDisk));
+        health.system = SourceHealth::Lost;
+        assert_eq!(health_notice(&health), Some(HealthNotice::SystemLost));
+        health.system_denied = true;
+        assert_eq!(health_notice(&health), Some(HealthNotice::SystemDenied));
+        health.silence_stop_at = Some(1);
+        assert_eq!(health_notice(&health), Some(HealthNotice::NoAudio));
+    }
+
+    #[test]
+    fn a_new_state_with_only_its_health_changed_is_not_a_new_recording() {
+        let mut m = WidgetModel::default();
+        m.set_recorder(recording(1));
+        m.expanded = true;
+        m.push_levels([0.8, 0.0]);
+        let RecorderState::Recording {
+            meeting_id,
+            title,
+            started_at,
+            scheduled_end_at,
+            paused_at,
+            paused_ms,
+            ..
+        } = recording(1)
+        else {
+            unreachable!()
+        };
+        let with = |health| RecorderState::Recording {
+            meeting_id,
+            title: title.clone(),
+            started_at,
+            scheduled_end_at,
+            paused_at,
+            paused_ms,
+            health,
+        };
+        m.set_recorder(with(RecordingHealth {
+            system: SourceHealth::Lost,
+            ..Default::default()
+        }));
+        assert!(m.expanded && m.source_active(Track::Mic));
+        assert_eq!(m.source_health(Track::System), SourceHealth::Lost);
+        // Only the warning that stops it closes the panel.
+        m.set_recorder(with(RecordingHealth {
+            silence_stop_at: Some(1),
+            ..Default::default()
+        }));
+        assert!(!m.expanded);
+    }
+
+    #[test]
     fn meters_are_flat_while_paused() {
         let mut m = WidgetModel::default();
         m.set_recorder(RecorderState::Recording {
@@ -1008,6 +1171,7 @@ mod tests {
             scheduled_end_at: None,
             paused_at: Some(10),
             paused_ms: 0,
+            health: Default::default(),
         });
         m.push_levels([0.9, 0.9]);
         assert!(m.wave().all(|v| v == 0.0));

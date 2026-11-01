@@ -265,6 +265,20 @@ impl MeetingsManager {
         Ok(stopped)
     }
 
+    /// Whether a call is going on behind the recording.
+    pub fn set_recording_in_call(&self, in_call: bool) {
+        if let Some(r) = self.capture.recorder.get() {
+            r.set_in_call(in_call, crate::meetings::recorder::now_ms());
+        }
+    }
+
+    /// "Keep" on the no-audio warning.
+    pub fn keep_recording_through_silence(&self) {
+        if let Some(r) = self.capture.recorder.get() {
+            r.keep_through_silence(crate::meetings::recorder::now_ms());
+        }
+    }
+
     /// Pause (`true`) or resume (`false`) the recording. Returns whether
     /// anything changed.
     pub fn set_recording_paused(&self, pause: bool) -> bool {

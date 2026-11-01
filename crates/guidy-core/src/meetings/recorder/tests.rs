@@ -481,7 +481,9 @@ fn a_failed_write_stops_that_track_and_is_reported() {
     let (mic_pushes, mic_finished) = (mic.pushes.clone(), mic.finished.clone());
     let (sys_pushes, sys_finished) = (sys.pushes.clone(), sys.finished.clone());
     let (tx, rx) = channel();
-    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys));
+    let flow = Arc::new(AudioFlow::default());
+    let writer_flow = flow.clone();
+    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys, writer_flow));
     for _ in 0..4 {
         tx.send(WriterMsg::Samples(Track::Mic, vec![0.0; 320]))
             .unwrap();
@@ -495,6 +497,10 @@ fn a_failed_write_stops_that_track_and_is_reported() {
     // track isn't finished (no end marker after a torn record).
     assert_eq!(*mic_pushes.lock(), 2);
     assert!(!*mic_finished.lock());
+    // Said to the health tick, for that track only.
+    assert!(flow.write_failed[0].load(Ordering::Relaxed));
+    assert!(!flow.write_failed[1].load(Ordering::Relaxed));
+    assert_eq!(flow.queued[0].load(Ordering::Relaxed), -4 * 320);
     let err = format!("{:#}", mic.unwrap_err());
     assert!(err.contains("disk full"), "{err}");
     // The other track is unaffected.
@@ -695,6 +701,10 @@ fn interrupted_recordings_are_recovered() {
     // ended_at = the files' last write (now-ish, well after the fake T0).
     let ended = m.ended_at.unwrap();
     assert!(ended > T0 && ended <= now_ms(), "{ended}");
+    // It says why, and until when.
+    let reason = m.error.unwrap();
+    assert!(reason.starts_with(INTERRUPTED_PREFIX), "{reason}");
+    assert_eq!(reason.len(), INTERRUPTED_PREFIX.len() + "HH:MM".len());
     assert_eq!(r.repo.get_meeting(done).unwrap().unwrap().ended_at, Some(5));
 }
 
@@ -1108,4 +1118,213 @@ mod manager_section {
             audio_store::file_mtime_ms(&mgr.audio_dir().join(m.mic_audio_path.unwrap())).unwrap();
         assert_eq!(m.ended_at, Some(file_time.max(m.started_at)));
     }
+}
+
+// ----- Health ---------------------------------------------------------------
+
+fn health_of(r: &Rig) -> RecordingHealth {
+    match r.rec.state() {
+        RecorderState::Recording { health, .. } => health,
+        RecorderState::Idle => panic!("not recording"),
+    }
+}
+
+fn feed_both(r: &Rig, mic: f32, system: f32) {
+    r.capture.feed(Track::Mic, &[mic; 160]);
+    r.capture.feed(Track::System, &[system; 160]);
+}
+
+#[test]
+fn a_stream_failing_shows_in_the_state_at_the_next_tick_and_recovers() {
+    let r = rig();
+    r.rec.start(None, T0).unwrap();
+    feed_both(&r, 0.1, 0.1);
+    r.rec.health_tick(T0 + 1_000);
+    assert_eq!(health_of(&r).system, SourceHealth::Healthy);
+
+    r.capture.fail_stream(Track::System, "state:stalled");
+    feed_both(&r, 0.1, 0.0);
+    r.rec.health_tick(T0 + 2_000);
+    assert_eq!(health_of(&r).system, SourceHealth::Reconnecting);
+    assert_eq!(health_of(&r).mic, SourceHealth::Healthy);
+
+    r.capture.fail_stream(Track::System, "state:recovered");
+    r.capture.fail_stream(Track::System, "state:gap:1500");
+    feed_both(&r, 0.1, 0.1);
+    r.rec.health_tick(T0 + 3_000);
+    assert_eq!(health_of(&r).system, SourceHealth::Healthy);
+
+    // State changes are no errors of the meeting; real failures are, and show.
+    r.capture
+        .fail_stream(Track::Mic, "error: mic gone (retrying)");
+    feed_both(&r, 0.0, 0.1);
+    r.rec.health_tick(T0 + 4_000);
+    assert_eq!(health_of(&r).mic, SourceHealth::Lost);
+    let id = r.rec.stop(T0 + 5_000).unwrap().unwrap();
+    let error = r.repo.get_meeting(id).unwrap().unwrap().error.unwrap();
+    assert!(error.contains("mic gone"), "{error}");
+    assert!(!error.contains("state:"), "{error}");
+}
+
+#[test]
+fn a_stream_that_delivers_nothing_is_lost_within_ten_seconds() {
+    let r = rig();
+    r.rec.start(None, T0).unwrap();
+    for s in 1..=10 {
+        r.capture.feed(Track::Mic, &[0.1; 160]);
+        r.rec.health_tick(T0 + s * 1_000);
+    }
+    assert_eq!(health_of(&r).system, SourceHealth::Lost);
+    assert_eq!(health_of(&r).mic, SourceHealth::Healthy);
+    assert!(r.rec.is_recording(), "health warns, it doesn't stop");
+}
+
+#[test]
+fn preflight_refuses_a_start_only_when_both_sources_are_denied() {
+    for (mic, system, starts) in [
+        (true, true, true),
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let r = rig();
+        r.capture.preflight.lock().mic_granted = mic;
+        r.capture.preflight.lock().system_granted = system;
+        assert_eq!(r.rec.start(None, T0).is_ok(), starts, "{mic} {system}");
+        if !starts {
+            assert!(r.repo.list_meetings().unwrap().is_empty(), "no empty row");
+            continue;
+        }
+        let health = health_of(&r);
+        assert_eq!(health.mic_denied, !mic);
+        assert_eq!(health.system_denied, !system);
+        assert_eq!(health.mic == SourceHealth::Lost, !mic);
+        assert_eq!(health.system == SourceHealth::Lost, !system);
+    }
+}
+
+#[test]
+fn a_permission_revoked_while_recording_shows_within_ten_seconds() {
+    let r = rig();
+    r.rec.start(None, T0).unwrap();
+    feed_both(&r, 0.1, 0.1);
+    r.rec.health_tick(T0 + 1_000);
+    assert!(!health_of(&r).system_denied);
+    r.capture.preflight.lock().system_granted = false;
+    for s in 2..=(PREFLIGHT_EVERY_MS / 1_000 + 1) {
+        feed_both(&r, 0.1, 0.0);
+        r.rec.health_tick(T0 + s * 1_000);
+    }
+    assert!(health_of(&r).system_denied);
+    assert_eq!(health_of(&r).system, SourceHealth::Lost);
+}
+
+#[test]
+fn low_disk_warns_at_the_start_and_while_recording_but_records() {
+    let r = rig();
+    r.capture.preflight.lock().free_bytes = Some(LOW_DISK_BYTES - 1);
+    r.rec.start(None, T0).unwrap();
+    assert!(health_of(&r).low_disk);
+    r.capture.preflight.lock().free_bytes = Some(LOW_DISK_BYTES);
+    feed_both(&r, 0.1, 0.1);
+    r.rec.health_tick(T0 + PREFLIGHT_EVERY_MS);
+    assert!(!health_of(&r).low_disk);
+    r.capture.preflight.lock().free_bytes = Some(1);
+    feed_both(&r, 0.1, 0.1);
+    r.rec.health_tick(T0 + 2 * PREFLIGHT_EVERY_MS);
+    assert!(health_of(&r).low_disk);
+    assert!(r.rec.is_recording());
+}
+
+#[test]
+fn fifteen_silent_minutes_warn_then_stop_with_the_reason() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    let warn = health::NO_AUDIO_WARN_MS;
+    let mut t = T0;
+    while t < T0 + warn {
+        t += 1_000;
+        feed_both(&r, 0.0, 0.0);
+        r.rec.health_tick(t);
+    }
+    let stop_at = T0 + warn + health::NO_AUDIO_STOP_GRACE_MS;
+    assert_eq!(health_of(&r).silence_stop_at, Some(stop_at));
+    assert!(r.rec.is_recording());
+
+    // "Keep": another 15 minutes.
+    r.rec.keep_through_silence(t);
+    assert_eq!(health_of(&r).silence_stop_at, None);
+    let keep = t;
+    while t < keep + warn + health::NO_AUDIO_STOP_GRACE_MS {
+        assert!(r.rec.is_recording(), "at {t}");
+        t += 1_000;
+        feed_both(&r, 0.0, 0.0);
+        r.rec.health_tick(t);
+    }
+    assert!(!r.rec.is_recording());
+    assert_eq!(*r.finished.lock(), vec![id]);
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    assert_eq!(m.status, MeetingStatus::Recorded);
+    assert_eq!(m.error.as_deref(), Some(STOPPED_NO_AUDIO));
+}
+
+#[test]
+fn a_paused_recording_is_never_stopped_for_silence() {
+    let r = rig();
+    r.rec.start(None, T0).unwrap();
+    r.rec.set_paused(true, T0);
+    let mut t = T0;
+    while t < T0 + 20 * M {
+        t += 1_000;
+        feed_both(&r, 0.0, 0.0);
+        r.rec.health_tick(t);
+    }
+    assert!(r.rec.is_recording());
+    assert_eq!(health_of(&r).silence_stop_at, None);
+}
+
+#[test]
+fn capture_events_are_logged_beside_the_tracks_and_deleted_with_them() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    r.capture.fail_stream(Track::Mic, "state:stalled");
+    r.capture.fail_stream(Track::System, "error: tap gone");
+    r.rec.stop(T0 + 1_000).unwrap();
+    let path = r
+        .dir
+        .path()
+        .join("meetings/audio")
+        .join(audio_store::capture_log_name(id));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["track"], "mic");
+    assert_eq!(lines[0]["event"], "state:stalled");
+    assert_eq!(lines[1]["track"], "system");
+
+    let m = r.repo.get_meeting(id).unwrap().unwrap();
+    audio_store::delete_track_files(&r.dir.path().join("meetings/audio"), &m).unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+fn a_torn_track_left_by_a_crash_recovers_what_was_written() {
+    let r = rig();
+    let id = r.rec.start(None, T0).unwrap();
+    // Plenty of audio, then a crash mid-record: no end marker, a torn tail.
+    for _ in 0..200 {
+        r.capture.feed(Track::Mic, &[0.1; 1_600]);
+    }
+    let rel = audio_store::track_file_name(id, Track::Mic);
+    r.rec.stop(T0 + 1_000).unwrap();
+    let path = r.dir.path().join("meetings/audio").join(rel);
+    let whole = std::fs::metadata(&path).unwrap().len();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_len(whole - 7).unwrap();
+    let mut reader = TrackReader::open(&path).unwrap();
+    assert!(!reader.is_complete());
+    assert!(!reader.read_all().unwrap().is_empty());
 }

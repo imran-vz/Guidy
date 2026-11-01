@@ -4304,6 +4304,7 @@ mod recording_widget {
             scheduled_end_at: None,
             paused_at: None,
             paused_ms: 0,
+            health: Default::default(),
         }
     }
 

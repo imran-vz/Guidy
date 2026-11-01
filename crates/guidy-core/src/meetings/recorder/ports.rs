@@ -44,8 +44,29 @@ pub trait MeetingRepo: Send + Sync {
 pub type CaptureSink = Arc<dyn Fn(Track, Vec<f32>) + Send + Sync>;
 
 /// Called from the capture threads when a stream fails mid-recording (e.g.
-/// the mic or the system-audio tap stopped delivering audio). Must not block.
+/// the mic or the system-audio tap stopped delivering audio), or with its
+/// `state:*` messages ([`super::health::CaptureMessage`]). Must not block.
 pub type CaptureErrorSink = Arc<dyn Fn(Track, String) + Send + Sync>;
+
+/// What a recording could get right now. Only a clear refusal counts as not
+/// granted: a status that can't be read isn't one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preflight {
+    pub mic_granted: bool,
+    pub system_granted: bool,
+    /// Free bytes where the audio goes, if that can be read.
+    pub free_bytes: Option<u64>,
+}
+
+impl Default for Preflight {
+    fn default() -> Self {
+        Self {
+            mic_granted: true,
+            system_granted: true,
+            free_bytes: None,
+        }
+    }
+}
 
 /// Mic (echo-cancelled) + system-audio capture.
 pub trait CaptureBackend: Send + Sync {
@@ -54,6 +75,11 @@ pub trait CaptureBackend: Send + Sync {
         sink: CaptureSink,
         on_error: CaptureErrorSink,
     ) -> Result<Box<dyn CaptureSession>>;
+    /// Asked before a start and now and then during a recording. May take a
+    /// moment: not called with the session lock held.
+    fn preflight(&self, _audio_dir: &std::path::Path) -> Preflight {
+        Preflight::default()
+    }
 }
 
 /// Gets a copy of the recorded audio as it is captured (live transcription).
@@ -241,6 +267,7 @@ pub mod fakes {
         pub on_error: Mutex<Option<CaptureErrorSink>>,
         pub fail: Mutex<bool>,
         pub stops: Arc<Mutex<usize>>,
+        pub preflight: Mutex<Preflight>,
     }
 
     struct FakeSession(Arc<Mutex<usize>>);
@@ -277,6 +304,9 @@ pub mod fakes {
             *self.sink.lock() = Some(sink);
             *self.on_error.lock() = Some(on_error);
             Ok(Box::new(FakeSession(self.stops.clone())))
+        }
+        fn preflight(&self, _: &std::path::Path) -> Preflight {
+            *self.preflight.lock()
         }
     }
 

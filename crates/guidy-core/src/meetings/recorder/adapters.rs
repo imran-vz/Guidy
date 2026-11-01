@@ -109,15 +109,23 @@ impl CaptureBackend for NativeCapture {
             move |samples, rate| forward(&sink, Track::System, samples, rate, &mut sys_warned),
         )
         .with_events(move |e| {
-            if e.is_error() {
-                // A stream stopped delivering audio: the recorder keeps it
-                // for the meeting's error.
+            if e.is_error() || e.message.starts_with("state:") {
+                // A stream stopped delivering audio, or how it's doing: the
+                // recorder keeps errors for the meeting's error and shows both.
                 on_error(e.track, e.message);
             } else {
                 log::warn!("meeting capture ({:?}): {}", e.track, e.message);
             }
         });
         Ok(Box::new(NativeSession(native::start_capture(callbacks)?)))
+    }
+    fn preflight(&self, audio_dir: &std::path::Path) -> Preflight {
+        Preflight {
+            mic_granted: crate::permissions::check_microphone_permission(),
+            // Only a refusal: the status can be unknown (no private API).
+            system_granted: native::system_audio_status() != native::AuthStatus::Denied,
+            free_bytes: crate::downloads::free_space(audio_dir),
+        }
     }
 }
 

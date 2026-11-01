@@ -29,7 +29,7 @@ use crate::logic::floater::{
     Corner, Desk, DockChange, Floater, Neck, Release, Stage, Target, P, R,
 };
 use crate::logic::notch::bar_height;
-use crate::logic::recording_widget::{rows, CallCommand, CallPoll, Row, WidgetModel};
+use crate::logic::recording_widget::{rows, CallCommand, CallPoll, HealthNotice, Row, WidgetModel};
 use crate::state::AppState;
 use crate::ui::design::{self, hud, Tone};
 use crate::ui::kit::{icon, t, t_args};
@@ -40,7 +40,7 @@ use gpui_kit::*;
 use guidy_core::meetings::calls::{set_policy, Call, CallDetector, CallPolicy};
 use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::settings::RecordingControls;
-use guidy_core::meetings::types::{LiveStatus, LiveUpdate, RecorderState, Track};
+use guidy_core::meetings::types::{LiveStatus, LiveUpdate, RecorderState, SourceHealth, Track};
 use std::time::{Duration, Instant};
 
 /// Level poll / waveform scroll interval.
@@ -220,6 +220,7 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
         // Unix ms on the executor's clock (faked in tests).
         let (epoch, t0) = (now_ms(), cx.background_executor().now());
         let mut wait = CALL_POLL;
+        let mut told_in_call = false;
         loop {
             cx.background_executor().timer(wait).await;
             let watching = cx.update(|cx| {
@@ -270,6 +271,17 @@ pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
                 );
                 run_call_changes(changed, command, shown, cx);
             });
+            let in_call = cx.update(|cx| {
+                RecordingWidgetState::global(cx)
+                    .is_some_and(|state| state.read(cx).model.recording_in_call())
+            });
+            if in_call != told_in_call {
+                told_in_call = in_call;
+                let backend = cx.update(|cx| AppState::global(cx).read(cx).meetings.clone());
+                cx.background_executor()
+                    .spawn(async move { backend.set_recording_in_call(in_call) })
+                    .detach();
+            }
         }
     })
     .detach();
@@ -449,6 +461,13 @@ fn keep_recording(cx: &mut App) {
     }
 }
 
+/// "Keep" on the no-audio warning.
+fn keep_through_silence(cx: &mut App) {
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.background_spawn(async move { backend.keep_recording_through_silence() })
+        .detach();
+}
+
 /// The offer's "...": show or hide Always and Never.
 fn toggle_more(cx: &mut App) {
     if let Some(state) = RecordingWidgetState::global(cx) {
@@ -567,7 +586,9 @@ impl RecordingWidgetView {
                     Some(floater) => {
                         let (gx, gy) = crate::windows::pointer_location()?;
                         let p = s.desk.from_cocoa(gx, gy);
-                        let asking = s.model.hinting() || s.model.left_call().is_some();
+                        let asking = s.model.hinting()
+                            || s.model.left_call().is_some()
+                            || s.model.health_notice().is_some();
                         let hint = asking.then(|| floater.hint(&s.desk)).flatten();
                         s.desk.screen_rect(this.screen).contains(p)
                             && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)))
@@ -1189,7 +1210,12 @@ fn source_chip(model: &WidgetModel, track: Track, tone: Tone) -> AnyElement {
         .border_color(tone.hairline)
         .bg(tone.surface)
         .text_size(hud(12.))
-        .text_color(if active { tone.text } else { tone.text_muted })
+        .text_color(match model.source_health(track) {
+            SourceHealth::Lost => Hsla::from(rgb(RED)),
+            SourceHealth::Reconnecting | SourceHealth::Silent => tone.accent,
+            SourceHealth::Healthy if active => tone.text,
+            SourceHealth::Healthy => tone.text_muted,
+        })
         .child(icon(name).xsmall())
         .child(label)
         .child(meter)
@@ -1576,7 +1602,12 @@ impl RecordingWidgetView {
     /// floater's controls.
     fn render_hint(&self, m: &WidgetModel, f: &Floater, desk: &Desk) -> Option<AnyElement> {
         let left = m.left_call();
-        let call = left.or_else(|| m.hint_call().filter(|_| m.hinting()))?;
+        let call = left.or_else(|| m.hint_call().filter(|_| m.hinting()));
+        // A question asked comes first; a warning only needs seeing.
+        let notice = m.health_notice().filter(|_| left.is_none());
+        if call.is_none() && notice.is_none() {
+            return None;
+        }
         if f.screen(desk) != self.screen {
             return None;
         }
@@ -1590,6 +1621,38 @@ impl RecordingWidgetView {
             return None;
         }
         let tone = design::tone_on_black();
+        if let Some(notice) = notice {
+            let text = v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(hud(1.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(hud(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tone.text)
+                        .child(t("meetings.widget.healthTitle")),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(hud(12.))
+                        .text_color(tone.text_muted)
+                        .child(t(notice.key())),
+                );
+            let controls = if notice == HealthNotice::NoAudio {
+                vec![hint_action(
+                    "recording-widget-silence-keep",
+                    t("meetings.widget.keep"),
+                    keep_through_silence,
+                )]
+            } else {
+                Vec::new()
+            };
+            return Some(self.hint_bubble(r, content, "recording-widget-health", text, controls));
+        }
+        let call = call?;
         let text = v_flex()
             .flex_1()
             .min_w_0()

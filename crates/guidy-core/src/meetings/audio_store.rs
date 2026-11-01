@@ -123,6 +123,26 @@ pub fn resolve_track_path(audio_dir: &Path, rel: &str) -> Result<PathBuf> {
     Ok(audio_dir.join(p))
 }
 
+/// The append-only log of what happened to a recording's capture, kept with
+/// its tracks.
+pub fn capture_log_name(meeting_id: MeetingId) -> String {
+    format!("{meeting_id}.capture.jsonl")
+}
+
+/// The names meeting apps showed for the active speaker, kept with the tracks.
+pub fn speakers_log_name(meeting_id: MeetingId) -> String {
+    format!("{meeting_id}.speakers.jsonl")
+}
+
+/// The meeting a side file ([`capture_log_name`], [`speakers_log_name`]) belongs
+/// to.
+fn side_file_meeting(name: &str) -> Option<MeetingId> {
+    name.strip_suffix(".capture.jsonl")
+        .or_else(|| name.strip_suffix(".speakers.jsonl"))?
+        .parse()
+        .ok()
+}
+
 /// Delete a meeting's track files (missing files are fine). Paths that
 /// escape `audio_dir` are never touched. Every track is attempted; the first
 /// error is returned after that. Returns how many files were removed.
@@ -144,6 +164,19 @@ pub fn delete_track_files(audio_dir: &Path, meeting: &Meeting) -> Result<usize> 
             Ok(false) => {}
             Err(e) => {
                 first_err.get_or_insert(e);
+            }
+        }
+    }
+    // Their side files go with them, uncounted: not tracks.
+    for name in [capture_log_name(meeting.id), speakers_log_name(meeting.id)] {
+        let path = audio_dir.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                first_err.get_or_insert(
+                    anyhow::Error::new(e).context(format!("delete {}", path.display())),
+                );
             }
         }
     }
@@ -889,9 +922,17 @@ pub fn apply_retention(
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
-                || referenced.contains(name.as_str())
-            {
+            // A side file lives as long as either of its meeting's tracks.
+            let kept = match side_file_meeting(&name) {
+                Some(id) => [Track::Mic, Track::System]
+                    .iter()
+                    .any(|t| referenced.contains(track_file_name(id, *t).as_str())),
+                None => {
+                    path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
+                        || referenced.contains(name.as_str())
+                }
+            };
+            if kept {
                 continue;
             }
             let modified = entry

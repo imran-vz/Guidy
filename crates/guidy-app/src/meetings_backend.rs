@@ -209,6 +209,10 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn recorder_state(&self) -> RecorderState;
     fn start_recording(&self, calendar_event_id: Option<String>) -> MeetingsResult<MeetingId>;
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>>;
+    /// Whether a call is going on behind the recording.
+    fn set_recording_in_call(&self, in_call: bool);
+    /// "Keep" on the no-audio warning.
+    fn keep_recording_through_silence(&self);
     /// Pause (`true`) or resume (`false`) the recording; false when nothing
     /// changed.
     fn set_recording_paused(&self, paused: bool) -> bool;
@@ -588,6 +592,16 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         self.m()?.stop_recording().map_err(err)
+    }
+    fn set_recording_in_call(&self, in_call: bool) {
+        if let Some(m) = self.manager() {
+            m.set_recording_in_call(in_call);
+        }
+    }
+    fn keep_recording_through_silence(&self) {
+        if let Some(m) = self.manager() {
+            m.keep_recording_through_silence();
+        }
     }
     fn audio_input_apps(&self, name_browser_calls: bool) -> Vec<InputApp> {
         if self.manager().is_none() {
@@ -986,6 +1000,8 @@ impl MeetingsBackend for NoMeetings {
     fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
         Err(unavailable())
     }
+    fn set_recording_in_call(&self, _: bool) {}
+    fn keep_recording_through_silence(&self) {}
     fn audio_input_apps(&self, _: bool) -> Vec<InputApp> {
         Vec::new()
     }
@@ -1302,6 +1318,7 @@ pub mod fake {
                 scheduled_end_at: None,
                 paused_at: None,
                 paused_ms: 0,
+                health: Default::default(),
             };
             Ok(id)
         }
@@ -1321,6 +1338,10 @@ pub mod fake {
         }
         fn take_recording_levels(&self) -> [f32; 2] {
             [0.5, 0.0]
+        }
+        fn set_recording_in_call(&self, _: bool) {}
+        fn keep_recording_through_silence(&self) {
+            self.rec("keep_recording_through_silence");
         }
         fn stop_recording(&self) -> MeetingsResult<Option<MeetingId>> {
             self.rec("stop_recording");

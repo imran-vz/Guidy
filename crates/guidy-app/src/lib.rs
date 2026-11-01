@@ -154,6 +154,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     windows::spawn_appearance_watch(cx);
     windows::watch_displays(cx);
     windows::save_state_on_quit(cx);
+    stop_recording_on_quit(cx);
 
     // Queue backend events from now on; consumed once state exists.
     let (event_tx, event_rx) = smol::channel::unbounded::<CoreEvent>();
@@ -272,6 +273,34 @@ fn finish_start(
 /// Debug builds: replay a streaming session through the real overlay path
 /// (window placement + events) without a microphone.
 #[cfg(debug_assertions)]
+/// Quit finishes a recording, bounded: its tracks are crash-safe, so one that
+/// takes too long loses only what wasn't synced yet. On a thread, as the UI
+/// thread is what quit waits on.
+fn stop_recording_on_quit(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        if cx.has_global::<crate::state::GlobalAppState>() {
+            let backend = crate::state::AppState::global(cx).read(cx).meetings.clone();
+            if backend.recorder_state().is_recording() {
+                let (done, stopped) = std::sync::mpsc::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("meetings-quit-stop".into())
+                    .spawn(move || {
+                        if let Err(e) = backend.stop_recording() {
+                            log::error!("Stopping the recording on quit failed: {e}");
+                        }
+                        let _ = done.send(());
+                    });
+                let bound = std::time::Duration::from_secs(3);
+                if spawned.is_ok() && stopped.recv_timeout(bound).is_err() {
+                    log::warn!("Stopping the recording on quit is taking long: quitting anyway");
+                }
+            }
+        }
+        async {}
+    })
+    .detach();
+}
+
 fn overlay_demo(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
@@ -453,6 +482,7 @@ fn recording_widget_demo(app: &AppHandle, expanded: bool, cx: &mut App) {
                 scheduled_end_at: None,
                 paused_at: None,
                 paused_ms: 0,
+                health: Default::default(),
             },
         );
         std::thread::sleep(Duration::from_millis(1500));
