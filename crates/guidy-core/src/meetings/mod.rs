@@ -12,6 +12,7 @@
 //! - [`legacy`]: one-time conversion of data earlier versions encrypted.
 //! - [`native`]: macOS bridges (EventKit, mic, process tap, echo cancellation, notifications).
 //! - [`recorder`]: recording sessions, tray state, reminders, calendar prompts.
+//! - [`sample_budget`]: the bound on its audio queues.
 //! - [`live`]: live transcription of the recording in progress.
 //! - [`processing`]: VAD -> transcription -> voiceprints -> clustering -> timeline.
 //! - [`summarize`]: chunked LLM summaries and action items.
@@ -29,6 +30,7 @@ pub mod manager;
 pub mod native;
 pub mod processing;
 pub mod recorder;
+pub mod sample_budget;
 pub mod search;
 pub mod settings;
 pub mod store;

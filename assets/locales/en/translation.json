@@ -1003,6 +1003,7 @@
         "systemDenied": "System audio access is off: not recording others.",
         "micLost": "Microphone lost. Trying to get it back.",
         "systemLost": "System audio lost. Trying to get it back.",
+        "audioDropping": "Can't save audio fast enough. Some is being lost until this catches up.",
         "lowDisk": "Less than 500 MB free. Audio so far is safe.",
         "micReconnecting": "Microphone reconnecting…",
         "systemReconnecting": "System audio reconnecting…",

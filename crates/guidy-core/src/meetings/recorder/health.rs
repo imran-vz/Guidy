@@ -33,6 +33,11 @@ pub enum CaptureMessage {
     Failed,
     /// It came back up after failing (with nothing to say about its audio).
     Restarted,
+    /// Its queue is full: audio is being dropped.
+    Dropping,
+    /// The queue drained: this many samples were dropped and made up for
+    /// with silence.
+    Dropped(i64),
 }
 
 impl CaptureMessage {
@@ -45,10 +50,17 @@ impl CaptureMessage {
             "stalled" => Some(Self::Stalled),
             "recovered" => Some(Self::Recovered),
             "restarted" => Some(Self::Restarted),
-            other => other
-                .strip_prefix("gap:")
-                .and_then(|ms| ms.parse().ok())
-                .map(Self::Gap),
+            "dropping" => Some(Self::Dropping),
+            other => {
+                if let Some(ms) = other.strip_prefix("gap:") {
+                    ms.parse::<i64>().ok().map(Self::Gap)
+                } else {
+                    other
+                        .strip_prefix("dropped:")
+                        .and_then(|samples| samples.parse::<i64>().ok())
+                        .map(Self::Dropped)
+                }
+            }
         }
     }
 }
@@ -67,6 +79,10 @@ struct TrackState {
     failed: bool,
     write_failed: bool,
     denied: bool,
+    /// Audio is being dropped by the native delivery queue ...
+    delivery_dropping: bool,
+    /// ... or by the writer's.
+    writer_dropping: bool,
     last_samples: i64,
     last_sound: i64,
 }
@@ -80,9 +96,18 @@ impl TrackState {
         }
     }
 
+    fn is_dropping(&self) -> bool {
+        self.delivery_dropping || self.writer_dropping
+    }
+
     fn health(&self, now: i64, silent_after: Option<i64>) -> SourceHealth {
         let quiet = now - self.last_samples;
-        if self.write_failed || self.denied || self.failed || quiet >= NO_SAMPLES_LOST_MS {
+        if self.write_failed
+            || self.denied
+            || self.failed
+            || self.is_dropping()
+            || quiet >= NO_SAMPLES_LOST_MS
+        {
             return SourceHealth::Lost;
         }
         if self.stalled || quiet >= NO_SAMPLES_RECONNECTING_MS {
@@ -139,6 +164,8 @@ impl HealthTracker {
             CaptureMessage::Failed => state.failed = true,
             CaptureMessage::Restarted => state.failed = false,
             CaptureMessage::Gap(_) => {}
+            CaptureMessage::Dropping => state.delivery_dropping = true,
+            CaptureMessage::Dropped(_) => state.delivery_dropping = false,
         }
     }
 
@@ -163,6 +190,11 @@ impl HealthTracker {
 
     pub fn set_low_disk(&mut self, low: bool) {
         self.low_disk = low;
+    }
+
+    /// The writer's queue for `track` is full and audio is being dropped.
+    pub fn set_writer_dropping(&mut self, track: Track, dropping: bool) {
+        self.track(track).writer_dropping = dropping;
     }
 
     pub fn set_backlog(&mut self, behind: bool) {
@@ -220,6 +252,7 @@ impl HealthTracker {
             system_denied: self.system.denied,
             low_disk: self.low_disk,
             backlog: self.backlog,
+            audio_dropping: self.mic.is_dropping() || self.system.is_dropping(),
             silence_stop_at: (now >= warn_at).then_some(warn_at + NO_AUDIO_STOP_GRACE_MS),
         }
     }
@@ -264,6 +297,9 @@ mod tests {
         assert_eq!(CaptureMessage::parse("state:gap:1234"), Some(Gap(1234)));
         assert_eq!(CaptureMessage::parse("error: tap gone"), Some(Failed));
         assert_eq!(CaptureMessage::parse("state:gap:x"), None);
+        assert_eq!(CaptureMessage::parse("state:dropping"), Some(Dropping));
+        assert_eq!(CaptureMessage::parse("state:dropped:9"), Some(Dropped(9)));
+        assert_eq!(CaptureMessage::parse("state:dropped:x"), None);
         assert_eq!(CaptureMessage::parse("state:other"), None);
         assert_eq!(CaptureMessage::parse("microphone restarted"), None);
     }
@@ -334,6 +370,29 @@ mod tests {
         assert_eq!(h.health(319_000).system, SourceHealth::Healthy);
         run(&mut h, 320_000, 320_000, LIVE, ZEROS);
         assert_eq!(h.health(320_000).system, SourceHealth::Silent);
+    }
+
+    #[test]
+    fn dropping_audio_is_lost_and_says_so_until_it_ends() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 2_000, LIVE, LIVE);
+        h.set_writer_dropping(Track::Mic, true);
+        let health = h.health(2_000);
+        assert_eq!(health.mic, SourceHealth::Lost);
+        assert_eq!(health.system, SourceHealth::Healthy);
+        assert!(health.audio_dropping);
+        // Sound still reaching the capture side doesn't hide it.
+        run(&mut h, 3_000, 3_000, LIVE, LIVE);
+        assert_eq!(h.health(3_000).mic, SourceHealth::Lost);
+        h.set_writer_dropping(Track::Mic, false);
+        let health = h.health(3_000);
+        assert_eq!(health.mic, SourceHealth::Healthy);
+        assert!(!health.audio_dropping);
+        // The same from the delivery queue.
+        h.on_message(Track::System, CaptureMessage::Dropping);
+        assert_eq!(h.health(3_000).system, SourceHealth::Lost);
+        h.on_message(Track::System, CaptureMessage::Dropped(160));
+        assert_eq!(h.health(3_000).system, SourceHealth::Healthy);
     }
 
     #[test]

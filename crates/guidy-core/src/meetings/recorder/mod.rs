@@ -26,7 +26,7 @@ pub mod schedule;
 pub use ports::*;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
@@ -36,6 +36,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use parking_lot::{Condvar, Mutex};
 
 use crate::meetings::audio_store::{self, TrackSummary, TrackWriter};
+use crate::meetings::sample_budget::{Admission, SampleBudget};
 use crate::meetings::settings::MeetingSettings;
 use crate::meetings::types::*;
 use health::{CaptureMessage, Flow, HealthTracker};
@@ -44,7 +45,7 @@ use schedule::{ReminderState, MINUTE_MS};
 /// Below this free, the user is warned; recording goes on.
 pub const LOW_DISK_BYTES: u64 = 500 * 1024 * 1024;
 /// More than this queued for the writer (samples per track, a minute): warned.
-/// The queue itself stays unbounded: dropping would misalign the tracks.
+/// Past [`SampleBudget`]'s cap, audio is dropped and made up for with silence.
 const BACKLOG_SAMPLES: i64 = 60 * 16_000;
 /// How often permissions and free space are looked at while recording.
 const PREFLIGHT_EVERY_MS: i64 = 5_000;
@@ -82,7 +83,7 @@ struct AudioFlow {
     /// for the writer, whether writing it failed.
     buffers: [AtomicU64; 2],
     with_sound: [AtomicU64; 2],
-    queued: [AtomicI64; 2],
+    queued: [SampleBudget; 2],
     write_failed: [AtomicBool; 2],
 }
 
@@ -177,8 +178,47 @@ pub struct RecorderDeps {
 
 enum WriterMsg {
     Samples(Track, Vec<f32>),
+    /// Silence for this many samples dropped while the queue was full.
+    Silence(Track, i64),
     Finish,
 }
+
+/// Silence is written in pushes of at most a second.
+const SILENCE_PUSH_SAMPLES: usize = 16_000;
+
+/// Queue a buffer for the writer, or count it if the queue is full. Noted in
+/// `<id>.capture.jsonl` when dropping starts, and with the amount when it ends.
+fn queue_for_writer(
+    flow: &AudioFlow,
+    tx: &Sender<WriterMsg>,
+    log: &CaptureLog,
+    track: Track,
+    samples: Vec<f32>,
+) {
+    let budget = &flow.queued[track_index(track)];
+    match budget.offer(samples.len()) {
+        Admission::Drop { started } => {
+            if started {
+                log::error!("meetings: {track:?} writer queue is full, dropping audio");
+                log.append(track, WRITER_DROPPING);
+            }
+        }
+        Admission::Queue { silence_first } => {
+            if silence_first > 0 {
+                log::warn!("meetings: {track:?} writer recovered, {silence_first} samples lost");
+                log.append(track, &format!("{WRITER_DROPPED_PREFIX}{silence_first}"));
+                let _ = tx.send(WriterMsg::Silence(track, silence_first));
+            }
+            // Never blocks the audio thread.
+            let _ = tx.send(WriterMsg::Samples(track, samples));
+        }
+    }
+}
+
+/// Capture log entries for the writer's queue. Not the `state:*` messages:
+/// those report what capture says about a stream.
+const WRITER_DROPPING: &str = "writer:dropping";
+const WRITER_DROPPED_PREFIX: &str = "writer:dropped:";
 
 type WriterOutcome = (Result<TrackSummary>, Result<TrackSummary>);
 
@@ -188,6 +228,7 @@ struct Session {
     started_at: i64,
     scheduled_end_at: Option<i64>,
     last_reminder_at: Option<i64>,
+    capture_log: Arc<CaptureLog>,
     capture: Option<Box<dyn CaptureSession>>,
     tx: Sender<WriterMsg>,
     writer: Option<JoinHandle<WriterOutcome>>,
@@ -543,7 +584,7 @@ impl MeetingRecorder {
 
         let log_path = self.deps.audio_dir.join(audio_store::capture_log_name(id));
         created.push(log_path.clone());
-        let capture_log = CaptureLog::new(log_path);
+        let capture_log = Arc::new(CaptureLog::new(log_path));
         let speakers_path = self.deps.audio_dir.join(audio_store::speakers_log_name(id));
         created.push(speakers_path.clone());
         let speakers_log = (self.deps.settings)().speaker_names_from_apps.then(|| {
@@ -584,13 +625,13 @@ impl MeetingRecorder {
         }
         let live = self.deps.live.clone();
         let sink_flow = flow.clone();
+        let sink_log = capture_log.clone();
         let sink: CaptureSink = Arc::new(move |track, mut samples: Vec<f32>| {
             if samples.is_empty() {
                 return;
             }
             let i = track_index(track);
             sink_flow.buffers[i].fetch_add(1, Ordering::Relaxed);
-            sink_flow.queued[i].fetch_add(samples.len() as i64, Ordering::Relaxed);
             if sink_paused.load(Ordering::Relaxed) {
                 samples.fill(0.0);
             } else {
@@ -605,14 +646,14 @@ impl MeetingRecorder {
             if let Some(live) = &live {
                 live.push(track, &samples);
             }
-            // Unbounded channel: never blocks the audio thread.
-            let _ = sink_tx.lock().send(WriterMsg::Samples(track, samples));
+            queue_for_writer(&sink_flow, &sink_tx.lock(), &sink_log, track, samples);
         });
         let capture_errors = Arc::new(Mutex::new(Vec::new()));
         let errors = capture_errors.clone();
         let message_tracker = tracker.clone();
+        let error_log = capture_log.clone();
         let on_error: CaptureErrorSink = Arc::new(move |track, message: String| {
-            capture_log.append(track, &message);
+            error_log.append(track, &message);
             let parsed = CaptureMessage::parse(&message);
             if let Some(parsed) = parsed {
                 message_tracker.lock().on_message(track, parsed);
@@ -652,6 +693,7 @@ impl MeetingRecorder {
             scheduled_end_at: meeting.calendar_event.as_ref().map(|e| e.end_at),
             last_reminder_at: None,
             capture: Some(capture),
+            capture_log,
             tx,
             writer: Some(writer),
             capture_errors,
@@ -715,7 +757,7 @@ impl MeetingRecorder {
                 .flow
                 .queued
                 .iter()
-                .any(|q| q.load(Ordering::Relaxed) > BACKLOG_SAMPLES);
+                .any(|q| q.queued() > BACKLOG_SAMPLES);
             let mut tracker = s.tracker.lock();
             if let Some(preflight) = preflight {
                 s.last_preflight = now;
@@ -726,6 +768,7 @@ impl MeetingRecorder {
                 if s.flow.write_failed[i].load(Ordering::Relaxed) {
                     tracker.on_write_failed(track);
                 }
+                tracker.set_writer_dropping(track, s.flow.queued[i].is_dropping());
             }
             tracker.set_backlog(backlog);
             tracker.tick(now, flows[0], flows[1], s.paused_at.is_some());
@@ -864,6 +907,7 @@ impl MeetingRecorder {
         if let Some(live) = &self.deps.live {
             live.stop();
         }
+        send_owed_silence(&session.flow, &session.tx, &session.capture_log);
         let _ = session.tx.send(WriterMsg::Finish);
         let mut errors = std::mem::take(&mut *session.capture_errors.lock());
         match session.writer.take().map(|w| w.join()) {
@@ -1290,6 +1334,37 @@ impl TrackOutput for TrackWriter {
     }
 }
 
+/// At the end of a recording: what was dropped and not yet made up for.
+/// Capture has stopped by now, so nothing else offers samples.
+fn send_owed_silence(flow: &AudioFlow, tx: &Sender<WriterMsg>, log: &CaptureLog) {
+    for track in [Track::Mic, Track::System] {
+        let owed = flow.queued[track_index(track)].finish();
+        if owed > 0 {
+            log.append(track, &format!("{WRITER_DROPPED_PREFIX}{owed}"));
+            let _ = tx.send(WriterMsg::Silence(track, owed));
+        }
+    }
+}
+
+fn write_track<W: TrackOutput>(
+    slot: &mut Result<W>,
+    track: Track,
+    samples: &[f32],
+    flow: &AudioFlow,
+) {
+    let Ok(w) = slot else { return };
+    if let Err(e) = w.push(samples) {
+        log::error!(
+            "meetings: writing the {} track failed, stopping it: {e:#}",
+            track.as_str()
+        );
+        flow.write_failed[track_index(track)].store(true, Ordering::Relaxed);
+        // Drops (closes) the writer without its end marker.
+        let e = e.context("recording stopped early");
+        *slot = Err(e);
+    }
+}
+
 /// Writes both tracks until `Finish`. A track whose write fails is closed
 /// right there and never written again: appending after a possibly torn
 /// record would misalign every later one, while a torn *final* record just
@@ -1304,20 +1379,15 @@ fn writer_loop<W: TrackOutput>(
     for msg in rx {
         match msg {
             WriterMsg::Samples(track, samples) => {
-                flow.queued[track_index(track)].fetch_sub(samples.len() as i64, Ordering::Relaxed);
-                let slot = match track {
-                    Track::Mic => &mut tracks[0],
-                    Track::System => &mut tracks[1],
-                };
-                let Ok(w) = slot else { continue };
-                if let Err(e) = w.push(&samples) {
-                    log::error!(
-                        "meetings: writing the {} track failed, stopping it: {e:#}",
-                        track.as_str()
-                    );
-                    flow.write_failed[track_index(track)].store(true, Ordering::Relaxed);
-                    // Drops (closes) the writer without its end marker.
-                    *slot = Err(e.context("recording stopped early"));
+                flow.queued[track_index(track)].done(samples.len());
+                write_track(&mut tracks[track_index(track)], track, &samples, &flow);
+            }
+            WriterMsg::Silence(track, mut samples) => {
+                let zeros = vec![0.0f32; SILENCE_PUSH_SAMPLES];
+                while samples > 0 {
+                    let now = (samples as usize).min(SILENCE_PUSH_SAMPLES);
+                    samples -= now as i64;
+                    write_track(&mut tracks[track_index(track)], track, &zeros[..now], &flow);
                 }
             }
             WriterMsg::Finish => break,

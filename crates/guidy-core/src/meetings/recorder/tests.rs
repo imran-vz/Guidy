@@ -500,7 +500,7 @@ fn a_failed_write_stops_that_track_and_is_reported() {
     // Said to the health tick, for that track only.
     assert!(flow.write_failed[0].load(Ordering::Relaxed));
     assert!(!flow.write_failed[1].load(Ordering::Relaxed));
-    assert_eq!(flow.queued[0].load(Ordering::Relaxed), -4 * 320);
+    assert_eq!(flow.queued[0].queued(), -4 * 320);
     let err = format!("{:#}", mic.unwrap_err());
     assert!(err.contains("disk full"), "{err}");
     // The other track is unaffected.
@@ -1364,4 +1364,174 @@ fn speaker_names_are_sampled_only_with_the_setting_and_stay_local() {
     let m = r.repo.get_meeting(id).unwrap().unwrap();
     audio_store::delete_track_files(&audio, &m).unwrap();
     assert!(!audio.join(audio_store::speakers_log_name(id)).exists());
+}
+
+/// A track output that waits at a gate, and counts what it gets.
+#[derive(Clone)]
+struct GatedWriter {
+    gate: Arc<(Mutex<bool>, Condvar)>,
+    pushed: Arc<Mutex<usize>>,
+    nonzero: Arc<Mutex<usize>>,
+}
+
+impl GatedWriter {
+    fn new(gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+        Self {
+            gate,
+            pushed: Arc::default(),
+            nonzero: Arc::default(),
+        }
+    }
+}
+
+impl TrackOutput for GatedWriter {
+    fn push(&mut self, samples: &[f32]) -> Result<()> {
+        let (open, cv) = &*self.gate;
+        let mut open = open.lock();
+        while !*open {
+            cv.wait(&mut open);
+        }
+        drop(open);
+        *self.pushed.lock() += samples.len();
+        *self.nonzero.lock() += samples.iter().filter(|s| **s != 0.0).count();
+        Ok(())
+    }
+    fn finish(self) -> Result<TrackSummary> {
+        let samples = *self.pushed.lock() as u64;
+        Ok(TrackSummary { samples })
+    }
+}
+
+fn open_gate(gate: &(Mutex<bool>, Condvar)) {
+    *gate.0.lock() = true;
+    gate.1.notify_all();
+}
+
+fn wait_until_drained(flow: &AudioFlow, i: usize, to: i64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while flow.queued[i].queued() > to {
+        assert!(std::time::Instant::now() < deadline, "writer never drained");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_blocked_writer_is_bounded_warned_about_and_keeps_the_tracks_aligned() {
+    use crate::meetings::sample_budget::{QUEUE_CAP_SAMPLES, RESUME_BELOW_SAMPLES};
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("1.capture.jsonl");
+    let log = CaptureLog::new(log_path.clone());
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let mic = GatedWriter::new(gate.clone());
+    let sys = GatedWriter::new(gate.clone());
+    let (mic_nonzero, sys_nonzero) = (mic.nonzero.clone(), sys.nonzero.clone());
+    let (tx, rx) = channel();
+    let flow = Arc::new(AudioFlow::default());
+    let writer_flow = flow.clone();
+    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys, writer_flow));
+    let second = || vec![0.5f32; 16_000];
+
+    // Three hundred seconds with the writer blocked on its first push.
+    for _ in 0..300 {
+        queue_for_writer(&flow, &tx, &log, Track::Mic, second());
+        queue_for_writer(&flow, &tx, &log, Track::System, second());
+    }
+    for i in 0..2 {
+        assert!(flow.queued[i].queued() <= QUEUE_CAP_SAMPLES, "track {i}");
+        assert!(flow.queued[i].is_dropping(), "track {i}");
+    }
+    // Health says so, the one tick it reads this.
+    let mut tracker = HealthTracker::new(0);
+    tracker.set_writer_dropping(Track::Mic, flow.queued[0].is_dropping());
+    let health = tracker.health(0);
+    assert!(health.audio_dropping);
+    assert_eq!(health.mic, SourceHealth::Lost);
+
+    // The writer recovers, and the next buffers bring the gap with them.
+    open_gate(&gate);
+    wait_until_drained(&flow, 0, RESUME_BELOW_SAMPLES);
+    wait_until_drained(&flow, 1, RESUME_BELOW_SAMPLES);
+    for _ in 0..10 {
+        queue_for_writer(&flow, &tx, &log, Track::Mic, second());
+        queue_for_writer(&flow, &tx, &log, Track::System, second());
+    }
+    assert!(!flow.queued[0].is_dropping());
+    send_owed_silence(&flow, &tx, &log);
+    tx.send(WriterMsg::Finish).unwrap();
+    let (mic, sys) = thread.join().unwrap();
+
+    // Every sample of the timeline is accounted for, on both tracks.
+    assert_eq!(mic.unwrap().samples, 310 * 16_000);
+    assert_eq!(sys.unwrap().samples, 310 * 16_000);
+    // Only what fit in the queue, plus what came after, is real audio (the
+    // writer may have taken the mic's first second off the queue).
+    let real_limit = QUEUE_CAP_SAMPLES + 11 * 16_000;
+    assert!(*mic_nonzero.lock() as i64 <= real_limit);
+    assert!(*sys_nonzero.lock() as i64 <= real_limit);
+
+    let text = std::fs::read_to_string(&log_path).unwrap();
+    let events: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let line: serde_json::Value = serde_json::from_str(l).unwrap();
+            format!("{} {}", line["track"].as_str().unwrap(), line["event"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        events.iter().filter(|e| e.ends_with(WRITER_DROPPING)).count(),
+        2,
+        "{events:?}"
+    );
+    // At least 179 s of the 300 didn't fit, and it is said once per track.
+    for track in ["mic", "system"] {
+        let prefix = format!("{track} {WRITER_DROPPED_PREFIX}");
+        let amounts: Vec<i64> = events
+            .iter()
+            .filter_map(|e| e.strip_prefix(prefix.as_str()))
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert_eq!(amounts.len(), 1, "{events:?}");
+        assert!(amounts[0] >= 179 * 16_000, "{events:?}");
+    }
+}
+
+#[test]
+fn a_stop_while_dropping_still_makes_up_the_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = CaptureLog::new(dir.path().join("1.capture.jsonl"));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (mic, sys) = (GatedWriter::new(gate.clone()), GatedWriter::new(gate.clone()));
+    let (tx, rx) = channel();
+    let flow = Arc::new(AudioFlow::default());
+    let writer_flow = flow.clone();
+    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys, writer_flow));
+    for _ in 0..125 {
+        queue_for_writer(&flow, &tx, &log, Track::Mic, vec![0.5; 16_000]);
+    }
+    send_owed_silence(&flow, &tx, &log);
+    tx.send(WriterMsg::Finish).unwrap();
+    open_gate(&gate);
+    let (mic, _) = thread.join().unwrap();
+    assert_eq!(mic.unwrap().samples, 125 * 16_000);
+}
+
+#[test]
+fn the_writer_stops_silence_at_a_failed_write() {
+    let writer = |fail_at| FailingWriter {
+        fail_at,
+        pushes: Arc::default(),
+        finished: Arc::default(),
+    };
+    let (mic, sys) = (writer(Some(2)), writer(None));
+    let mic_pushes = mic.pushes.clone();
+    let (tx, rx) = channel();
+    let flow = Arc::new(AudioFlow::default());
+    let writer_flow = flow.clone();
+    let thread = std::thread::spawn(move || writer_loop(rx, mic, sys, writer_flow));
+    tx.send(WriterMsg::Silence(Track::Mic, 5 * 16_000)).unwrap();
+    tx.send(WriterMsg::Finish).unwrap();
+    let (mic, _) = thread.join().unwrap();
+    assert_eq!(*mic_pushes.lock(), 2);
+    assert!(mic.is_err());
+    assert!(flow.write_failed[0].load(Ordering::Relaxed));
 }

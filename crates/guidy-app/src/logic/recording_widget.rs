@@ -49,6 +49,8 @@ pub enum HealthNotice {
     NoAudio,
     MicDenied,
     SystemDenied,
+    /// A queue is full and audio is being dropped.
+    AudioDropping,
     MicLost,
     SystemLost,
     LowDisk,
@@ -65,7 +67,12 @@ impl HealthNotice {
     pub fn is_failure(self) -> bool {
         matches!(
             self,
-            Self::NoAudio | Self::MicDenied | Self::SystemDenied | Self::MicLost | Self::SystemLost
+            Self::NoAudio
+                | Self::MicDenied
+                | Self::SystemDenied
+                | Self::AudioDropping
+                | Self::MicLost
+                | Self::SystemLost
         )
     }
 
@@ -74,6 +81,7 @@ impl HealthNotice {
             Self::NoAudio => "meetings.widget.health.noAudio",
             Self::MicDenied => "meetings.widget.health.micDenied",
             Self::SystemDenied => "meetings.widget.health.systemDenied",
+            Self::AudioDropping => "meetings.widget.health.audioDropping",
             Self::MicLost => "meetings.widget.health.micLost",
             Self::SystemLost => "meetings.widget.health.systemLost",
             Self::LowDisk => "meetings.widget.health.lowDisk",
@@ -96,6 +104,8 @@ pub fn health_notice(health: &RecordingHealth) -> Option<HealthNotice> {
         MicDenied
     } else if health.system_denied {
         SystemDenied
+    } else if health.audio_dropping {
+        AudioDropping
     } else if health.mic == S::Lost {
         MicLost
     } else if health.system == S::Lost {
@@ -1117,6 +1127,13 @@ mod tests {
     fn the_worst_health_is_what_is_said() {
         let healthy = RecordingHealth::default();
         assert_eq!(health_notice(&healthy), None);
+        let dropping = RecordingHealth {
+            mic: SourceHealth::Lost,
+            audio_dropping: true,
+            ..RecordingHealth::default()
+        };
+        assert_eq!(health_notice(&dropping), Some(HealthNotice::AudioDropping));
+        assert!(HealthNotice::AudioDropping.is_failure());
         let mut health = RecordingHealth {
             backlog: true,
             ..healthy

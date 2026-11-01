@@ -23,9 +23,10 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use crate::meetings::manager::PermissionReport;
+use crate::meetings::sample_budget::{Admission, SampleBudget};
 use crate::meetings::types::{Attendee, CalendarEvent, Track};
 
 mod aec;
@@ -375,7 +376,106 @@ impl CaptureCallbacks {
 /// What the audio threads hand to the delivery thread.
 pub(crate) enum CaptureMsg {
     Audio(Track, Vec<f32>, u32),
+    /// This many samples of silence, for audio dropped while the queue was
+    /// full. No memory until the delivery thread gets to it.
+    Silence(Track, i64),
     Event(CaptureEvent),
+}
+
+/// The mic's and the system track's share of the delivery queue.
+#[derive(Debug, Default)]
+pub(crate) struct DeliveryBudgets([SampleBudget; 2]);
+
+impl DeliveryBudgets {
+    fn of(&self, track: Track) -> &SampleBudget {
+        match track {
+            Track::Mic => &self.0[0],
+            Track::System => &self.0[1],
+        }
+    }
+}
+
+/// Reported past the cap, and on recovery with the samples made up for
+/// (`recorder/health.rs` reads them, the capture log keeps them).
+pub(crate) const EVENT_DROPPING: &str = "state:dropping";
+pub(crate) fn event_dropped(samples: i64) -> String {
+    format!("state:dropped:{samples}")
+}
+
+/// One buffer from an audio thread: copied and queued, or counted if the
+/// delivery thread is two minutes behind. A send only fails once delivery has
+/// ended, when nothing wants it.
+pub(crate) fn offer_audio(
+    tx: &mpsc::Sender<CaptureMsg>,
+    budgets: &DeliveryBudgets,
+    track: Track,
+    samples: &[f32],
+    rate: u32,
+) {
+    match budgets.of(track).offer(samples.len()) {
+        Admission::Drop { started } => {
+            if started {
+                let _ = tx.send(CaptureMsg::Event(CaptureEvent {
+                    track,
+                    message: EVENT_DROPPING.into(),
+                }));
+            }
+        }
+        Admission::Queue { silence_first } => {
+            if silence_first > 0 {
+                let _ = tx.send(CaptureMsg::Silence(track, silence_first));
+                let _ = tx.send(CaptureMsg::Event(CaptureEvent {
+                    track,
+                    message: event_dropped(silence_first),
+                }));
+            }
+            let _ = tx.send(CaptureMsg::Audio(track, samples.to_vec(), rate));
+        }
+    }
+}
+
+/// Silence is delivered in buffers of at most a second.
+const SILENCE_BUFFER_SAMPLES: i64 = CAPTURE_SAMPLE_RATE as i64;
+
+fn deliver_audio(
+    callbacks: &mut CaptureCallbacks,
+    echo: &mut Option<EchoCanceller>,
+    track: Track,
+    samples: Vec<f32>,
+    rate: u32,
+) {
+    match (track, echo.as_mut()) {
+        (Track::Mic, Some(aec)) => {
+            let cleaned = aec.push_mic(&samples);
+            cleaned_mic(callbacks, cleaned)
+        }
+        (Track::System, Some(aec)) => {
+            let cleaned = aec.push_system(&samples);
+            (callbacks.on_system)(samples, rate);
+            cleaned_mic(callbacks, cleaned);
+        }
+        (Track::Mic, None) => (callbacks.on_mic)(samples, rate),
+        (Track::System, None) => (callbacks.on_system)(samples, rate),
+    }
+}
+
+fn deliver_silence(
+    callbacks: &mut CaptureCallbacks,
+    echo: &mut Option<EchoCanceller>,
+    track: Track,
+    mut samples: i64,
+) {
+    while samples > 0 {
+        let now = samples.min(SILENCE_BUFFER_SAMPLES);
+        samples -= now;
+        deliver_audio(
+            callbacks,
+            echo,
+            track,
+            vec![0.0; now as usize],
+            CAPTURE_SAMPLE_RATE,
+        );
+    }
 }
 
 /// Runs the callbacks until every sender is gone. With `echo`, the mic
@@ -385,24 +485,29 @@ pub(crate) fn deliver(
     rx: mpsc::Receiver<CaptureMsg>,
     mut callbacks: CaptureCallbacks,
     mut echo: Option<EchoCanceller>,
+    budgets: Arc<DeliveryBudgets>,
 ) {
     while let Ok(msg) = rx.recv() {
-        match (msg, echo.as_mut()) {
-            (CaptureMsg::Audio(Track::Mic, samples, _), Some(aec)) => {
-                cleaned_mic(&mut callbacks, aec.push_mic(&samples))
+        match msg {
+            CaptureMsg::Audio(track, samples, rate) => {
+                budgets.of(track).done(samples.len());
+                deliver_audio(&mut callbacks, &mut echo, track, samples, rate);
             }
-            (CaptureMsg::Audio(Track::System, samples, rate), Some(aec)) => {
-                let cleaned = aec.push_system(&samples);
-                (callbacks.on_system)(samples, rate);
-                cleaned_mic(&mut callbacks, cleaned);
+            CaptureMsg::Silence(track, samples) => {
+                deliver_silence(&mut callbacks, &mut echo, track, samples);
             }
-            (CaptureMsg::Audio(Track::Mic, samples, rate), None) => {
-                (callbacks.on_mic)(samples, rate)
-            }
-            (CaptureMsg::Audio(Track::System, samples, rate), None) => {
-                (callbacks.on_system)(samples, rate)
-            }
-            (CaptureMsg::Event(event), _) => (callbacks.on_event)(event),
+            CaptureMsg::Event(event) => (callbacks.on_event)(event),
+        }
+    }
+    // Capture has stopped: nothing offers samples any more.
+    for track in [Track::Mic, Track::System] {
+        let owed = budgets.of(track).finish();
+        if owed > 0 {
+            deliver_silence(&mut callbacks, &mut echo, track, owed);
+            (callbacks.on_event)(CaptureEvent {
+                track,
+                message: event_dropped(owed),
+            });
         }
     }
     if let Some(aec) = echo.as_mut() {
@@ -503,11 +608,12 @@ pub fn start_capture_streams(
             anyhow::bail!("microphone access not granted");
         }
         let (tx, rx) = mpsc::channel();
-        let inner = macos::Capture::start(streams, tx)?;
+        let budgets = Arc::new(DeliveryBudgets::default());
+        let inner = macos::Capture::start(streams, tx, budgets.clone())?;
         let echo = (streams.mic && streams.system).then(EchoCanceller::new);
         let delivery = std::thread::Builder::new()
             .name("meeting-capture".into())
-            .spawn(move || deliver(rx, callbacks, echo))?;
+            .spawn(move || deliver(rx, callbacks, echo, budgets))?;
         Ok(CaptureHandle {
             inner: Some(inner),
             delivery: Some(delivery),
