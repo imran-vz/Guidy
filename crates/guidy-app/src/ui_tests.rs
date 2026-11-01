@@ -366,6 +366,12 @@ mod main_window {
         assert_eq!(step(cx), Some(OnboardingStep::Welcome));
         assert!(exists(cx, w, "onboarding-welcome"));
         with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
+        use crate::logic::keyboard::OsType;
+        if !matches!(OsType::current(), OsType::MacOs | OsType::Windows) {
+            // Nothing to grant on other platforms: the step skips itself.
+            assert_eq!(step(cx), Some(OnboardingStep::Setup));
+            return;
+        }
         assert_eq!(step(cx), Some(OnboardingStep::Permissions));
         // Granted already on this fake: no auto-advance, Continue moves on.
         cx.executor().advance_clock(Duration::from_millis(400));
@@ -412,21 +418,88 @@ mod main_window {
         }
         with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
         assert!(exists(cx, w, "permissions-onboarding"));
+        let checks = || backend.data.lock().microphone_checks;
+        let advance = |cx: &mut TestAppContext, ms: u64| {
+            cx.executor().advance_clock(Duration::from_millis(ms));
+            cx.run_until_parked();
+        };
+        // No polling until the user acts.
+        let first = checks();
+        advance(cx, 3000);
+        assert_eq!(checks(), first);
         with_window(cx, w, |window, cx| {
             window.click("grant-microphone-permission", cx)
         });
         assert!(backend.called("request_microphone_permission"));
+        assert!(
+            !exists(cx, w, "grant-microphone-permission"),
+            "waiting replaces the button"
+        );
+        // One check every second while waiting, and Continue stays off.
+        advance(cx, 900);
+        assert_eq!(checks(), first);
+        advance(cx, 200);
+        assert_eq!(checks(), first + 1);
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
+        advance(cx, 800);
+        assert_eq!(checks(), first + 1);
+        advance(cx, 200);
+        assert_eq!(checks(), first + 2);
+        // Once granted, polling stops and the step waits for Continue.
         backend.data.lock().microphone = true;
-        cx.executor().advance_clock(Duration::from_millis(1100));
-        cx.run_until_parked();
-        cx.executor().advance_clock(Duration::from_millis(400));
-        cx.run_until_parked();
-        assert!(exists(cx, w, "microphone-permission"));
+        advance(cx, 1100);
+        assert_eq!(checks(), first + 3);
+        advance(cx, 3000);
+        assert_eq!(checks(), first + 3);
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
         with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
         assert_eq!(
             main.read_with(cx, |m, cx| m.step(cx)),
             Some(OnboardingStep::Setup)
         );
+    }
+
+    /// PARITY F-02 (Continue needs the microphone; Accessibility is optional)
+    #[gpui_kit::test]
+    fn microphone_is_required_but_accessibility_can_be_skipped(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.onboarding_completed = false);
+        backend.data.lock().microphone = false;
+        backend.data.lock().accessibility = false;
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        if crate::logic::keyboard::OsType::current() != crate::logic::keyboard::OsType::MacOs {
+            return;
+        }
+        with_window(cx, w, |window, cx| window.click("welcome-continue", cx));
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions),
+            "no microphone: Continue is off"
+        );
+        with_window(cx, w, |window, cx| {
+            window.click("grant-microphone-permission", cx)
+        });
+        backend.data.lock().microphone = true;
+        cx.executor().advance_clock(Duration::from_millis(1100));
+        cx.run_until_parked();
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Setup)
+        );
+        assert!(!backend.called("request_accessibility_permission"));
     }
 
     /// PARITY W-02
@@ -444,7 +517,7 @@ mod main_window {
         assert!(backend.called("update_setting debug_mode true"));
     }
 
-    /// PARITY W-06
+    /// PARITY W-06, M-08
     #[gpui_kit::test]
     fn status_bar_shows_model_and_update_status(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
@@ -453,6 +526,18 @@ mod main_window {
         cx.run_until_parked();
         assert!(exists(cx, w, "model-selector"));
         assert!(exists(cx, w, "update-status"));
+        let (selector_x, middle, update_x) = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.find("model-selector").bounds().origin.x,
+                    window.find("status-bar").bounds().center().x,
+                    window.find("update-status").bounds().origin.x,
+                )
+            })
+            .unwrap();
+        assert!(selector_x < middle, "the selector is on the left");
+        assert!(update_x > middle, "the update status is on the right");
         // The version is on the About page (`version-value`), not here.
         assert!(!exists(cx, w, "app-version"));
     }
@@ -998,6 +1083,19 @@ mod debug_and_about {
         ] {
             assert!(exists(cx, w, id), "{id}");
         }
+        let header = cx
+            .update_window(w, |_, window, _| {
+                window
+                    .find("version-value")
+                    .label()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .unwrap();
+        assert!(
+            header.contains(env!("CARGO_PKG_VERSION")),
+            "the version is shown: {header}"
+        );
         with_window(cx, w, |window, cx| window.click("open-app-data", cx));
         assert!(backend.called("open_app_data_dir"));
         with_window(cx, w, |window, cx| window.click("open-log-dir", cx));
@@ -1179,8 +1277,9 @@ mod onboarding_flows {
         w
     }
 
-    /// PARITY F-03: Finish queues the downloads, marks onboarding complete
-    /// and opens the app at once; the model is selected when it's done.
+    /// PARITY F-01 (reaching Done from Setup starts input and loads devices),
+    /// F-03: Finish queues the downloads, marks onboarding complete and opens
+    /// the app at once; the model is selected when it's done.
     #[gpui_kit::test]
     fn finish_queues_downloads_and_completes_without_waiting(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
@@ -1189,7 +1288,12 @@ mod onboarding_flows {
         backend.data.lock().models = vec![rec.clone()];
         let w = at_setup(cx, &backend);
         let state = cx.update(|cx| AppState::global(cx));
+        assert!(!backend.called("initialize_enigo"));
+        assert!(!backend.called("initialize_shortcuts"));
         with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("initialize_enigo"));
+        assert!(backend.called("initialize_shortcuts"));
+        assert!(backend.called("get_available_microphones"));
         assert!(
             backend.called("request_download stt:rec"),
             "{:?}",
@@ -1317,6 +1421,163 @@ mod onboarding_flows {
         );
         with_window(cx, w, |window, cx| window.click("setup-finish", cx));
         assert!(backend.called("request_download stt:other"));
+    }
+
+    /// PARITY F-03 (the model picked in the setup takes over when its
+    /// download finishes, even with a dictation model already in place)
+    #[gpui_kit::test]
+    fn a_chosen_model_takes_over_when_its_download_finishes(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut have = model("have");
+        have.is_downloaded = true;
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        let mut other = model("other");
+        backend.data.lock().models = vec![have.clone(), rec.clone(), other.clone()];
+        backend.data.lock().current_model = "have".into();
+        let w = at_setup(cx, &backend);
+        let state = cx.update(|cx| AppState::global(cx));
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-use", cx));
+        with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("request_download stt:other"));
+        assert!(!backend.called("set_active_model"), "{:?}", backend.calls());
+        other.is_downloaded = true;
+        backend.data.lock().models = vec![have, rec, other];
+        dispatch(
+            cx,
+            &state,
+            "model-download-complete",
+            serde_json::json!("other"),
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert!(backend.called("set_active_model other"));
+    }
+
+    /// PARITY F-03 (Cancel goes back to the setup and changes nothing)
+    #[gpui_kit::test]
+    fn picker_cancel_keeps_the_recommended_model(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        backend.data.lock().models = vec![rec, model("other")];
+        let w = at_setup(cx, &backend);
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-cancel", cx));
+        assert!(exists(cx, w, "onboarding-setup"));
+        assert!(!exists(cx, w, "model-picker"));
+        let state = cx.update(|cx| AppState::global(cx));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.startup.choices.speech_model.clone()),
+            None
+        );
+        with_window(cx, w, |window, cx| window.click("setup-finish", cx));
+        assert!(backend.called("request_download stt:rec"));
+        assert!(!backend.called("request_download stt:other"));
+    }
+
+    /// PARITY F-03 (the list follows the dictation language and the search)
+    #[gpui_kit::test]
+    fn picker_filters_by_language_and_search(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut rec = model("rec");
+        rec.is_recommended = true;
+        let mut japanese = model("japanese");
+        japanese.supported_languages = vec!["ja".into()];
+        backend.data.lock().models = vec![rec, model("other"), japanese];
+        let w = at_setup(cx, &backend);
+        with_window(cx, w, |window, cx| window.click("setup-choose-speech", cx));
+        assert!(exists(cx, w, "picker-model-rec"));
+        assert!(exists(cx, w, "picker-model-other"));
+        assert!(!exists(cx, w, "picker-model-japanese"));
+        with_window(cx, w, |window, cx| {
+            window.click("picker-search", cx);
+            window.input("other", cx);
+        });
+        assert!(!exists(cx, w, "picker-model-rec"));
+        assert!(exists(cx, w, "picker-model-other"));
+    }
+
+    /// PARITY F-03, F-04 (from the migration, Cancel returns to it, and a
+    /// pick selects the model and removes the retired one)
+    #[gpui_kit::test]
+    fn migration_picker_cancels_back_or_migrates(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut other = model("other");
+        other.is_downloaded = true;
+        backend.data.lock().models = vec![model("new"), other];
+        backend.data.lock().retired = vec![RetiredModel {
+            id: "old".into(),
+            name: "Old".into(),
+            size_mb: 300,
+            replacement_repo: "org/new".into(),
+        }];
+        backend.with_settings(|s| s.selected_model = "old".into());
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        with_window(cx, w, |window, cx| {
+            window.click("migration-choose-another", cx)
+        });
+        assert!(exists(cx, w, "model-picker"));
+        with_window(cx, w, |window, cx| window.click("picker-cancel", cx));
+        assert!(exists(cx, w, "model-migration"));
+        assert!(!exists(cx, w, "model-picker"));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Migration)
+        );
+        assert!(!backend.called("delete_retired_model"));
+        with_window(cx, w, |window, cx| {
+            window.click("migration-choose-another", cx)
+        });
+        with_window(cx, w, |window, cx| window.click("picker-model-other", cx));
+        with_window(cx, w, |window, cx| window.click("picker-use", cx));
+        assert!(backend.called("set_active_model other"));
+        assert!(backend.called("delete_retired_model old"));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Done)
+        );
+    }
+
+    /// PARITY F-01: a returning user who lost a permission sees that step
+    /// first (with no Back), then the migration.
+    #[gpui_kit::test]
+    fn returning_user_goes_through_missing_permissions_to_migration(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut new = model("new");
+        new.is_downloaded = true;
+        backend.data.lock().models = vec![new];
+        backend.data.lock().retired = vec![RetiredModel {
+            id: "old".into(),
+            name: "Old".into(),
+            size_mb: 300,
+            replacement_repo: "org/new".into(),
+        }];
+        backend.data.lock().accessibility = false;
+        backend.with_settings(|s| s.selected_model = "old".into());
+        setup(cx, backend.clone());
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        if crate::logic::keyboard::OsType::current() != crate::logic::keyboard::OsType::MacOs {
+            return;
+        }
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Permissions)
+        );
+        assert!(exists(cx, w, "grant-accessibility-permission"));
+        assert!(!exists(cx, w, "permissions-back"));
+        with_window(cx, w, |window, cx| window.click("permissions-continue", cx));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.step(cx)),
+            Some(OnboardingStep::Migration)
+        );
     }
 
     /// PARITY F-04
@@ -1617,6 +1878,7 @@ mod banners_and_events {
         let state = setup(cx, FakeBackend::new());
         let (w, _) = open(cx, |_, cx| StatusBar::new(cx));
         assert!(!exists(cx, w, "download-activity"));
+        let selector = state.read_with(cx, |s, _| s.selector_status);
         let mut item = DownloadItem::new(
             "separation:titanet_large",
             "TitaNet",
@@ -1628,9 +1890,29 @@ mod banners_and_events {
             cx,
             &state,
             guidy_core::downloads::DOWNLOADS_CHANGED_EVENT,
+            serde_json::to_value(vec![item.clone()]).unwrap(),
+        );
+        assert!(exists(cx, w, "download-activity"));
+        // Verifying shows here too, and neither touches the model selector.
+        item.state = DownloadState::Verifying;
+        dispatch(
+            cx,
+            &state,
+            guidy_core::downloads::DOWNLOADS_CHANGED_EVENT,
             serde_json::to_value(vec![item]).unwrap(),
         );
         assert!(exists(cx, w, "download-activity"));
+        assert_eq!(state.read_with(cx, |s, _| s.selector_status), selector);
+        let (middle, activity_x) = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.find("status-bar").bounds().center().x,
+                    window.find("download-activity").bounds().origin.x,
+                )
+            })
+            .unwrap();
+        assert!(activity_x > middle, "download activity is on the right");
     }
 
     /// PARITY E-14, F-06
@@ -1950,6 +2232,141 @@ mod gap_regressions {
         assert_eq!(
             state.read_with(cx, |s, _| s.selector_error.clone()),
             Some("bad gguf".into())
+        );
+    }
+
+    /// PARITY M-08 (a picked model shows at once, until its load ends or
+    /// the switch fails)
+    #[gpui_kit::test]
+    fn selector_keeps_the_pending_model_until_the_load_ends(cx: &mut TestAppContext) {
+        use crate::ui::status_bar::StatusBar;
+        let backend = FakeBackend::new();
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let (_w, bar) = open(cx, |_, cx| StatusBar::new(cx));
+        let pending = |cx: &mut TestAppContext| state.read_with(cx, |s, _| s.pending_model.clone());
+
+        bar.update(cx, |b, cx| b.select_model("b".into(), cx));
+        assert_eq!(pending(cx), Some("b".to_string()), "shown before the call");
+        cx.run_until_parked();
+        assert!(backend.called("set_active_model b"));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.models.current_model.clone()),
+            "b"
+        );
+        assert_eq!(pending(cx), Some("b".to_string()), "still loading");
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_completed"}),
+        );
+        assert_eq!(pending(cx), None);
+
+        backend.data.lock().fail_select = true;
+        bar.update(cx, |b, cx| b.select_model("c".into(), cx));
+        assert_eq!(pending(cx), Some("c".to_string()));
+        cx.run_until_parked();
+        assert_eq!(pending(cx), None, "a failed switch drops the pending model");
+        assert_eq!(
+            state.read_with(cx, |s, _| s.selector_status),
+            SelectorStatus::Error
+        );
+        assert_eq!(
+            state.read_with(cx, |s, _| s.models.current_model.clone()),
+            "b"
+        );
+    }
+
+    /// PARITY M-08 (a pending pick and load errors come before the model name)
+    #[gpui_kit::test]
+    fn selector_text_follows_status_and_pending_model(cx: &mut TestAppContext) {
+        use crate::ui::kit::{t, t_args};
+        use crate::ui::status_bar::selector_text;
+        let backend = FakeBackend::new();
+        backend.data.lock().models = vec![model("a"), model("b")];
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let text =
+            |cx: &mut TestAppContext| state.read_with(cx, |s, _| selector_text(s).to_string());
+        assert_eq!(text(cx), "A");
+        state.update(cx, |s, _| s.pending_model = Some("b".into()));
+        assert_eq!(text(cx), "B", "the pending pick shows at once");
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_started"}),
+        );
+        assert_eq!(
+            text(cx),
+            t_args("modelSelector.loading", &[("modelName", "B")]).to_string()
+        );
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_failed", "error": "bad gguf"}),
+        );
+        assert_eq!(text(cx), "bad gguf");
+        assert_eq!(state.read_with(cx, |s, _| s.pending_model.clone()), None);
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "unloaded"}),
+        );
+        assert_eq!(text(cx), "A", "unloaded still names the current model");
+        backend.data.lock().current_model = String::new();
+        state.update(cx, |s, cx| s.load_current_model(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            text(cx),
+            t("modelSelector.noModelDownloadRequired").to_string()
+        );
+    }
+
+    /// PARITY M-08 (the dropdown lists downloaded models; a pick switches)
+    #[gpui_kit::test]
+    fn selector_menu_lists_downloaded_models_and_switches(cx: &mut TestAppContext) {
+        let backend = FakeBackend::new();
+        let mut a = model("a");
+        a.is_downloaded = true;
+        let mut b = model("b");
+        b.is_downloaded = true;
+        backend.data.lock().models = vec![a, b, model("not-downloaded")];
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let (w, _) = open(cx, MainWindow::new);
+        with_window(cx, w, |window, cx| window.click("model-selector", cx));
+        let labels = cx
+            .update_window(w, |_, window, _| {
+                let menu = window.within("popup-menu");
+                (0..3usize)
+                    .map(|ix| {
+                        menu.try_find(ix)
+                            .map(|item| item.label().unwrap_or_default().to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(labels[0].as_deref().is_some_and(|l| l.starts_with('A')));
+        assert!(labels[1].as_deref().is_some_and(|l| l.starts_with('B')));
+        assert_eq!(labels[2], None, "not downloaded: not listed: {labels:?}");
+        with_window(cx, w, |window, cx| {
+            window.within("popup-menu").click(1usize, cx)
+        });
+        assert!(
+            backend.called("set_active_model b"),
+            "{:?}",
+            backend.calls()
+        );
+        assert_eq!(
+            state.read_with(cx, |s, _| s.pending_model.clone()),
+            Some("b".to_string())
         );
     }
 

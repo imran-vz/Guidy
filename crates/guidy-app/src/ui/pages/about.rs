@@ -132,6 +132,7 @@ impl AboutPage {
                             .text_size(design::TEXT_SECONDARY)
                             .text_color(tone.text_muted)
                             .truncate()
+                            .aria_label(facts.join(" · "))
                             .child(facts.join(" · "))
                             .test_support(),
                     ),

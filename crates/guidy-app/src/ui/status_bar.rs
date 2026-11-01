@@ -241,7 +241,7 @@ impl StatusBar {
         });
     }
 
-    fn select_model(&mut self, id: String, cx: &mut Context<Self>) {
+    pub(crate) fn select_model(&mut self, id: String, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             s.pending_model = Some(id.clone());
             s.select_model(&id, cx, |s, ok, _| {
@@ -257,34 +257,9 @@ impl StatusBar {
         let st = self.state.read(cx);
         let theme = cx.theme();
         let m = &st.models;
-        let display_id = st
-            .pending_model
-            .clone()
-            .unwrap_or_else(|| m.current_model.clone());
-        let current = m.model(&display_id);
-
-        // Downloads (of any model, for any feature) show in the downloads
-        // indicator, not here: this is the dictation model's state only.
+        let display_id = displayed_model_id(st);
         let status = st.selector_status;
-        let text: SharedString = {
-            match (status, current) {
-                (SelectorStatus::Ready, Some(c)) => model_name(c).into(),
-                (SelectorStatus::Ready, None) => t("modelSelector.modelReady"),
-                (SelectorStatus::Loading, Some(c)) => {
-                    t_args("modelSelector.loading", &[("modelName", &model_name(c))])
-                }
-                (SelectorStatus::Loading, None) => t("modelSelector.loadingGeneric"),
-                (SelectorStatus::Error, _) => st
-                    .selector_error
-                    .clone()
-                    .map(SharedString::from)
-                    .unwrap_or_else(|| t("modelSelector.modelError")),
-                (SelectorStatus::None, _) => t("modelSelector.noModelDownloadRequired"),
-                (SelectorStatus::Unknown, None) => "—".into(),
-                (_, Some(c)) => model_name(c).into(),
-                (_, None) => t("modelSelector.modelUnloaded"),
-            }
-        };
+        let text = selector_text(st);
         let tone = design::tone(cx);
         // Ready is green, busy states pulse in the accent, missing or
         // failed is red, unloaded is neutral.
@@ -466,6 +441,36 @@ impl StatusBar {
     }
 }
 
+/// The model the selector is about: a pending pick wins over the current one.
+fn displayed_model_id(st: &AppState) -> String {
+    st.pending_model
+        .clone()
+        .unwrap_or_else(|| st.models.current_model.clone())
+}
+
+/// The selector's text. Downloads (of any model, for any feature) show in the
+/// downloads indicator, not here: this is the dictation model's state only.
+pub(crate) fn selector_text(st: &AppState) -> SharedString {
+    let display_id = displayed_model_id(st);
+    match (st.selector_status, st.models.model(&display_id)) {
+        (SelectorStatus::Ready, Some(c)) => model_name(c).into(),
+        (SelectorStatus::Ready, None) => t("modelSelector.modelReady"),
+        (SelectorStatus::Loading, Some(c)) => {
+            t_args("modelSelector.loading", &[("modelName", &model_name(c))])
+        }
+        (SelectorStatus::Loading, None) => t("modelSelector.loadingGeneric"),
+        (SelectorStatus::Error, _) => st
+            .selector_error
+            .clone()
+            .map(SharedString::from)
+            .unwrap_or_else(|| t("modelSelector.modelError")),
+        (SelectorStatus::None, _) => t("modelSelector.noModelDownloadRequired"),
+        (SelectorStatus::Unknown, None) => "—".into(),
+        (_, Some(c)) => model_name(c).into(),
+        (_, None) => t("modelSelector.modelUnloaded"),
+    }
+}
+
 /// The downloads indicator's text, for the status bar (and anything else
 /// that wants one line about downloads): "Qwen3 4B · 34%", "Downloading 3
 /// models · 41%", "Download failed · Qwen3 4B". `None` when nothing needs
@@ -643,5 +648,6 @@ impl Render for StatusBar {
                         d.child(self.render_update_checker(cx))
                     }),
             )
+            .test_support()
     }
 }

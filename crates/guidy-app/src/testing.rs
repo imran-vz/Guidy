@@ -32,6 +32,9 @@ pub struct FakeData {
     pub microphone: bool,
     pub pp_models: Vec<String>,
     pub fail_download: bool,
+    pub fail_select: bool,
+    /// How many times the microphone permission was checked.
+    pub microphone_checks: u32,
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
     pub usage: guidy_core::llm::usage::UsageReport,
@@ -364,7 +367,9 @@ impl Backend for FakeBackend {
         self.data.lock().accessibility
     }
     fn check_microphone_permission(&self) -> bool {
-        self.data.lock().microphone
+        let mut data = self.data.lock();
+        data.microphone_checks += 1;
+        data.microphone
     }
     fn request_microphone_permission(&self) {
         self.rec("request_microphone_permission");
@@ -435,6 +440,9 @@ impl Backend for FakeBackend {
     }
     fn set_active_model(&self, model_id: &str) -> BackendResult<()> {
         self.rec(format!("set_active_model {model_id}"));
+        if self.data.lock().fail_select {
+            return Err("model file is damaged".into());
+        }
         self.data.lock().current_model = model_id.into();
         Ok(())
     }
