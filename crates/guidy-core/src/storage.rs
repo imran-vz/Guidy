@@ -489,12 +489,20 @@ fn roots(app: &AppHandle) -> Result<StorageRoots, String> {
         .try_state::<Arc<crate::managers::model::ModelManager>>()
         .map(|mm| mm.downloaded_paths())
         .unwrap_or_default();
+    // The Shared models row is about models outside the data directory: those
+    // inside it are counted as Models (portable mode's own cache).
+    let canonical_data = std::fs::canonicalize(&data_dir).unwrap_or_else(|_| data_dir.clone());
+    let shared: Vec<PathBuf> = model_paths
+        .iter()
+        .filter(|path| !path.starts_with(&canonical_data))
+        .cloned()
+        .collect();
     // A debug build's "app" is the repo checkout.
     let release = !cfg!(debug_assertions);
     Ok(StorageRoots {
         data_dir,
         log_dir,
-        shared_cache_dir: crate::managers::model::hf_cache_dir(&model_paths),
+        shared_cache_dir: crate::managers::model::hf_cache_dir(&shared),
         model_paths,
         resource_dir: release.then(|| app.path().resource_dir().ok()).flatten(),
         executable: release.then(|| std::env::current_exe().ok()).flatten(),
@@ -648,6 +656,7 @@ mod tests {
         assert_eq!(report.total_bytes, 0);
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn hardlink_counts_once() {
         let dir = tempfile::tempdir().unwrap();
