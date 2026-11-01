@@ -20,6 +20,11 @@ contracts between the workstreams.
   starting points, uncalibrated per model; measure them with
   `cargo xtask diar-eval <manifest.json>` (`processing/eval.rs`), and keep a
   default only if real-call DER improves and "you" precision doesn't fall.
+- **Echo in the mic track:** decided word by word in
+  `processing/timeline.rs::echo_cuts`, for clustering and the merge alike. Only
+  contiguous runs of at least 3 tokens matching nearby system words go; the rest
+  stays the user's, as one or more segments. A unit that lost words keeps no
+  voiceprint, because its audio still holds the bleed.
 - **llama.cpp:** a separate helper binary, `crates/guidy-llm` (`llama-cpp-2`
   with Metal). Two static copies of ggml can't link into one binary, so a
   worker *mode* of `guidy` is impossible. The app starts `guidy-llm` next to

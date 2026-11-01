@@ -2073,6 +2073,61 @@ fn echo_units_are_left_out_of_clustering_and_the_transcript() {
     assert_eq!(c.labels[0], c.labels[1]);
 }
 
+/// A line of `words`, each 500 ms from `t0`.
+fn spoken(t0: i64, words: &[&str]) -> UnitTranscript {
+    UnitTranscript {
+        text: words.join(" "),
+        words: words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| Word {
+                t0_ms: t0 + i as i64 * 500,
+                t1_ms: t0 + (i as i64 + 1) * 500,
+                text: w.to_string(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_unit_with_echo_taken_out_stays_the_users_and_points_at_its_unit() {
+    use Track::{Mic, System};
+    // Bleed, then the user's own words, on one mic unit. Its voiceprint is
+    // mostly the remote voice, unlike the user's: it must not become a guest.
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(1))),
+        (Mic, 10_000, 19_000, Some(axis(0))),
+        (System, 0, 4_000, Some(axis(1))),
+        (System, 20_000, 29_000, Some(axis(1))),
+    ]);
+    let bleed = ["let's", "ship", "the", "release", "friday"];
+    let mut mixed = spoken(0, &bleed);
+    let mine = spoken(7_000, &["sorry", "my", "line", "dropped"]);
+    mixed.text = format!("{} {}", mixed.text, mine.text);
+    mixed.words.extend(mine.words);
+    cache.transcripts = vec![
+        Some(mixed),
+        Some(spoken(10_000, &["what", "about", "the", "budget"])),
+        Some(spoken(0, &bleed)),
+        Some(spoken(20_000, &["we", "can", "look", "next"])),
+    ];
+    let config = PipelineConfig::default();
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert_eq!(c.labels[0], None);
+    let (speakers, segments, units) = build_transcript(&cache, &c, &config);
+    let user = speakers.iter().find(|s| s.is_user).unwrap().id;
+    let kept = segments
+        .iter()
+        .find(|s| s.track == Mic && s.t0_ms < 10_000)
+        .unwrap();
+    assert_eq!(kept.text, "sorry my line dropped");
+    assert_eq!((kept.t0_ms, kept.t1_ms), (7_000, 9_000));
+    assert_eq!(kept.speaker_id, Some(user));
+    let at = segments.iter().position(|s| s == kept).unwrap();
+    assert_eq!(units[at], 0, "still knows which unit it came from");
+    assert!(units.iter().all(|&u| u < cache.units.len()));
+}
+
 #[test]
 fn without_a_recorded_voice_every_mic_line_is_the_users() {
     use Track::Mic;

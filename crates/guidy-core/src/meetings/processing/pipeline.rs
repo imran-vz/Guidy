@@ -1300,10 +1300,14 @@ impl<'a> Pipeline<'a> {
         for (seg, unit) in segments.iter().zip(unit_of_segment) {
             by_time.insert((seg.track, seg.t0_ms, seg.t1_ms), *unit);
         }
+        let echoes = echo_units(cache, &self.config.echo);
         let embeddings: Vec<SegmentEmbedding> = stored_segments
             .iter()
             .filter_map(|s| {
                 let unit = *by_time.get(&(s.track, s.t0_ms, s.t1_ms))?;
+                if echoes.get(unit).copied().unwrap_or(false) {
+                    return None;
+                }
                 let embedding = cache.embeddings.get(unit)?.clone()??;
                 Some(SegmentEmbedding {
                     segment_id: s.id,
@@ -1447,19 +1451,21 @@ fn segments_by_track(cache: &ProcessingCache) -> (IndexedSegments, IndexedSegmen
     (mic, system)
 }
 
-/// Per unit, whether [`timeline::merge_timeline`] will drop it as an echo: the
-/// same flags on the same segments, so clustering never counts a line the
-/// transcript won't have.
+/// Per unit, whether [`timeline::merge_timeline`] will take echo out of it,
+/// by the same decision on the same segments. Such a unit's voiceprint covers
+/// its whole audio, bleed included, so it is no evidence of whose voice is
+/// left: it stays out of clustering (the mic line stays the user's) and out of
+/// the stored voiceprints. A redo embeds what was kept on its own.
 fn echo_units(cache: &ProcessingCache, echo: &EchoParams) -> Vec<bool> {
     let (mic, system) = segments_by_track(cache);
     let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
     let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
     let mut out = vec![false; cache.units.len()];
-    for ((i, _), is_echo) in mic
+    for ((i, _), cut) in mic
         .iter()
-        .zip(timeline::echo_flags(&mic_segs, &sys_segs, echo))
+        .zip(timeline::echo_cuts(&mic_segs, &sys_segs, echo))
     {
-        out[*i] = is_echo;
+        out[*i] = cut != timeline::EchoCut::Whole;
     }
     out
 }
@@ -2022,6 +2028,11 @@ pub fn build_transcript(
         };
         list.iter()
             .find(|(_, s)| s.t0_ms == seg.t0_ms && s.t1_ms == seg.t1_ms)
+            // What echo removal left of a unit lies inside it.
+            .or_else(|| {
+                list.iter()
+                    .find(|(_, s)| s.t0_ms <= seg.t0_ms && seg.t1_ms <= s.t1_ms)
+            })
             .map(|(i, _)| *i)
             .unwrap_or(usize::MAX)
     };
