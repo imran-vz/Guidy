@@ -13,7 +13,7 @@
 //! voice is enrolled from their three longest turns on the mic.
 //!
 //! The grid is {ResNet34, TitaNet} x {turns on, off} x {old, new clustering} x
-//! {current, earlier short-turn tunables} x cut values. Nothing is transcribed, so every line counts as speech and text
+//! cut values. Nothing is transcribed, so every line counts as speech and text
 //! echo detection doesn't run: mic bleed shows up as false alarm. "Old
 //! clustering" is the previous cut rule without the two tiers; the tracks stay
 //! apart, so a baseline of the old mixed tracks needs a pre-change commit.
@@ -413,33 +413,14 @@ impl Embedder for Voices<'_> {
     }
 }
 
-/// The turn finding and voiceprint floor for a row: the defaults, or the values
-/// from before the short-turn trial, to compare them.
-fn short_turn_tunables(short_turns: bool) -> (TurnParams, i64) {
-    if short_turns {
-        (
-            TurnParams::default(),
-            PipelineConfig::default().min_embed_ms,
-        )
-    } else {
-        let earlier = TurnParams {
-            scan_window_ms: 1_500,
-            scan_hop_ms: 500,
-            min_side_ms: 1_500,
-            ..TurnParams::default()
-        };
-        (earlier, 1_500)
-    }
-}
-
 /// `speech` cut where the voice changes.
 fn split_at_turns(
     pcm: &[f32],
     speech: &Speech,
     titanet: &SpeakerEmbedder,
     segmenter: &mut Option<PyannoteSegmenter>,
-    params: &TurnParams,
 ) -> Result<Vec<Span>> {
+    let params = TurnParams::default();
     let mut out = Vec::new();
     for &span in &speech.spans {
         if span.len_ms() < params.min_span_ms {
@@ -450,14 +431,14 @@ fn split_at_turns(
             slice(pcm, span.t0_ms, span.t1_ms),
             segmenter.as_mut().map(|s| s as &mut dyn TurnSegmenter),
             &mut Voices(titanet),
-            params,
+            &params,
         )?;
         out.extend(turns::split_span(
             span,
             &changes,
             &speech.probs,
             speech.frame_ms,
-            params,
+            &params,
         ));
     }
     Ok(out)
@@ -496,23 +477,16 @@ struct Row {
     titanet: bool,
     turns: bool,
     legacy: bool,
-    /// The current short-turn tunables, else the earlier values.
-    short_turns: bool,
     cut: f32,
 }
 
 impl Row {
     fn label(&self) -> String {
         format!(
-            "{:<8} turns={:<3} clustering={:<3} tunables={:<7} cut={:.2}",
+            "{:<8} turns={:<3} clustering={:<3} cut={:.2}",
             if self.titanet { "titanet" } else { "resnet34" },
             if self.turns { "on" } else { "off" },
             if self.legacy { "old" } else { "new" },
-            if self.short_turns {
-                "current"
-            } else {
-                "earlier"
-            },
             self.cut
         )
     }
@@ -530,9 +504,8 @@ struct Loaded {
     system: Vec<f32>,
     mic: Option<Vec<f32>>,
     system_speech: Speech,
-    /// `system_speech` cut at changes of voice (with TitaNet), with the earlier
-    /// and the current short-turn tunables.
-    system_turns: Option<[Vec<Span>; 2]>,
+    /// `system_speech` cut at changes of voice (with TitaNet).
+    system_turns: Option<Vec<Span>>,
     mic_speech: Vec<Span>,
     reference: Vec<Turn>,
     you: Option<String>,
@@ -555,18 +528,12 @@ fn load(base: &Path, m: &ManifestMeeting, models: &mut Models) -> Result<Loaded>
     }
     let system_speech = detect_speech(&system, &models.vad)?;
     let system_turns = match &models.titanet {
-        Some(t) => {
-            let mut split = |short_turns: bool| {
-                split_at_turns(
-                    &system,
-                    &system_speech,
-                    t,
-                    &mut models.segmenter,
-                    &short_turn_tunables(short_turns).0,
-                )
-            };
-            Some([split(false)?, split(true)?])
-        }
+        Some(t) => Some(split_at_turns(
+            &system,
+            &system_speech,
+            t,
+            &mut models.segmenter,
+        )?),
         None => None,
     };
     let mic_speech = match &mic {
@@ -609,10 +576,7 @@ fn load(base: &Path, m: &ManifestMeeting, models: &mut Models) -> Result<Loaded>
 
 /// What `row` makes of `meeting`, as hypothesis turns.
 fn diarize(meeting: &mut Loaded, models: &Models, row: Row) -> Result<Vec<Turn>> {
-    let (turn_params, min_embed_ms) = short_turn_tunables(row.short_turns);
     let config = PipelineConfig {
-        turns: turn_params,
-        min_embed_ms,
         cluster: ClusterParams {
             default_threshold: row.cut,
             legacy: row.legacy,
@@ -621,7 +585,7 @@ fn diarize(meeting: &mut Loaded, models: &Models, row: Row) -> Result<Vec<Turn>>
         ..PipelineConfig::default()
     };
     let system_spans: Vec<Span> = match (row.turns, &meeting.system_turns) {
-        (true, Some(spans)) => spans[usize::from(row.short_turns)].clone(),
+        (true, Some(spans)) => spans.clone(),
         _ => meeting.system_speech.spans.clone(),
     };
     let lines: Vec<(Track, Span)> = meeting
@@ -706,18 +670,15 @@ fn run_grid(manifest_path: &Path, vad_model: PathBuf) -> Result<()> {
     for titanet in [false, true] {
         for turns in [false, true] {
             for legacy in [true, false] {
-                for short_turns in [false, true] {
-                    for cut in CUTS {
-                        let needs_titanet = titanet || turns;
-                        if !needs_titanet || models.titanet.is_some() {
-                            rows.push(Row {
-                                titanet,
-                                turns,
-                                legacy,
-                                short_turns,
-                                cut,
-                            });
-                        }
+                for cut in CUTS {
+                    let needs_titanet = titanet || turns;
+                    if !needs_titanet || models.titanet.is_some() {
+                        rows.push(Row {
+                            titanet,
+                            turns,
+                            legacy,
+                            cut,
+                        });
                     }
                 }
             }
@@ -833,33 +794,6 @@ fn diar_eval() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_row_can_compare_the_short_turn_tunables() {
-        let (turns, floor) = short_turn_tunables(true);
-        assert_eq!(
-            (
-                turns.scan_window_ms,
-                turns.scan_hop_ms,
-                turns.min_side_ms,
-                floor
-            ),
-            (500, 250, 1_000, 1_000)
-        );
-        let (turns, floor) = short_turn_tunables(false);
-        assert_eq!(
-            (
-                turns.scan_window_ms,
-                turns.scan_hop_ms,
-                turns.min_side_ms,
-                floor
-            ),
-            (1_500, 500, 1_500, 1_500)
-        );
-        // Nothing else differs.
-        assert_eq!(turns.side_ms, TurnParams::default().side_ms);
-        assert_eq!(turns.merge_ms, TurnParams::default().merge_ms);
-    }
 
     fn turn(t0_ms: i64, t1_ms: i64, speaker: &str) -> Turn {
         Turn {

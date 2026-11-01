@@ -272,8 +272,6 @@ pub fn agglomerate(embeddings: &[Vec<f32>], params: &ClusterParams) -> (Vec<usiz
 
 /// Only lines at least this long form clusters: a shorter voiceprint can dip
 /// far enough inside one voice (see `turns::TurnParams`) to look like another.
-/// Shorter ones with a voiceprint, from `PipelineConfig::min_embed_ms`, are
-/// assigned to those clusters.
 pub const ANCHOR_MIN_MS: i64 = 3_000;
 /// A cluster with less speech than this is too little to call a speaker: its
 /// lines go back to being assigned.
@@ -804,22 +802,6 @@ pub(crate) mod tests {
         assert_eq!(tiers[4], Tier::Cluster(0));
         // As near one as the other: no lead.
         assert_eq!(tiers[5], Tier::Unplaced);
-    }
-
-    #[test]
-    fn a_line_of_a_second_is_assigned_and_never_forms_a_cluster() {
-        let (a, b, c) = (
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-            vec![0.0, 0.0, 1.0],
-        );
-        let vectors = vec![a.clone(), a.clone(), b.clone(), b, a, c.clone(), c];
-        let durations = [4_000, 4_000, 4_000, 4_000, 1_000, 1_000, 2_999];
-        let (tiers, k) = two_tier(&vectors, &durations, &ClusterParams::default());
-        assert_eq!(k, 2);
-        assert_eq!(tiers[4], Tier::Cluster(0));
-        // Like neither cluster: short lines make no third one together.
-        assert_eq!(&tiers[5..], &[Tier::Unplaced, Tier::Unplaced]);
     }
 
     #[test]

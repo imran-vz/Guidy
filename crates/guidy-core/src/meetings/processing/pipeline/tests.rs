@@ -354,34 +354,6 @@ fn without_a_recorded_voice_the_mic_is_the_user() {
 }
 
 #[test]
-fn a_line_of_a_second_gets_a_voiceprint_and_a_shorter_one_none() {
-    let f = fixture();
-    // With the VAD's 150 ms padding each way: about 1.3 s and 0.9 s.
-    let r = run_tracks(&f, None, &[], &[(0, 1_000, 2_000), (1, 5_000, 5_600)]);
-    r.result.unwrap();
-    assert_eq!(r.embed_calls, 1);
-}
-
-#[test]
-fn tagging_a_short_line_stores_no_voiceprint() {
-    let f = fixture();
-    run_tracks(&f, None, &[], &[(0, 1_000, 2_000)])
-        .result
-        .unwrap();
-    let line = f.store.segments(f.id).unwrap().remove(0);
-    let person = naming::assign_segment(
-        &f.store,
-        line.id,
-        PersonRef::New {
-            display_name: "Alice".into(),
-            email: None,
-        },
-    )
-    .unwrap();
-    assert!(f.store.voiceprints_for_person(person).unwrap().is_empty());
-}
-
-#[test]
 fn processes_a_meeting_end_to_end() {
     let f = fixture();
     let r = run(&f, None);
@@ -2154,6 +2126,83 @@ fn a_unit_with_echo_taken_out_stays_the_users_and_points_at_its_unit() {
     let at = segments.iter().position(|s| s == kept).unwrap();
     assert_eq!(units[at], 0, "still knows which unit it came from");
     assert!(units.iter().all(|&u| u < cache.units.len()));
+}
+
+#[test]
+fn store_voiceprints_skips_a_trimmed_mic_units_mixed_embedding() {
+    use Track::{Mic, System};
+    let f = fixture();
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 10_000, 19_000, Some(axis(2))),
+        (System, 0, 3_000, Some(axis(1))),
+    ]);
+    let phrase = ["ship", "it", "now"];
+    let mut mixed = spoken(0, &phrase);
+    let local = spoken(7_000, &["my", "connection", "dropped"]);
+    mixed.text = format!("{} {}", mixed.text, local.text);
+    mixed.words.extend(local.words);
+    cache.transcripts = vec![
+        Some(mixed),
+        Some(spoken(10_000, &["what", "about", "the", "budget"])),
+        Some(spoken(0, &phrase)),
+    ];
+    let config = PipelineConfig::default();
+    let clustering = cluster_units(&cache, &config, &[], &[]);
+    let built = build_transcript(&cache, &clustering, &config);
+    let stored = f
+        .store
+        .replace_transcript(f.id, &built.0, &built.1)
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let mut transcriber = FakeTranscriber {
+        calls: Rc::new(Cell::new(0)),
+        cancel_after: None,
+        accented: None,
+    };
+    let mut embedder = FakeEmbedder {
+        calls: Rc::new(Cell::new(0)),
+    };
+    let pipeline = Pipeline {
+        meeting_id: f.id,
+        store: &f.store,
+        meetings_dir: f.dir.path(),
+        config,
+        mic: None,
+        system: None,
+        vad: Box::new(|| Ok(Box::new(FakeVad) as Box<dyn SpeechScorer>)),
+        transcriber: &mut transcriber,
+        embedder: &mut embedder,
+        diarizer: Default::default(),
+        turns: None,
+        cancel: &cancel,
+        on_line: None,
+        on_progress: Box::new(|_| {}),
+    };
+    pipeline
+        .store_voiceprints(&cache, &clustering, &built, &stored)
+        .unwrap();
+    let embeddings = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    let trimmed = stored
+        .1
+        .iter()
+        .find(|s| s.text == "my connection dropped")
+        .unwrap();
+    assert!(embeddings.iter().all(|e| e.segment_id != trimmed.id));
+    assert_eq!(embeddings.len(), 2, "clean mic and system prints remain");
+    for (track, voice) in [(Mic, axis(2)), (System, axis(1))] {
+        let segment = stored
+            .1
+            .iter()
+            .find(|s| s.track == track && s.id != trimmed.id)
+            .unwrap();
+        let embedding = embeddings
+            .iter()
+            .find(|e| e.segment_id == segment.id)
+            .unwrap();
+        assert_eq!(embedding.embedding, voice);
+        assert_eq!(embedding.duration_ms, segment.t1_ms - segment.t0_ms);
+    }
 }
 
 #[test]

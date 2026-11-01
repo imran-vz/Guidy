@@ -20,10 +20,6 @@ pub const MAX_PRINTS_PER_MEETING: usize = 20;
 /// A line this unlike its speaker's centroid gives no voiceprint to store: it
 /// holds someone else too, and would match them to this person from now on.
 pub const PRINT_MIN_CENTROID_SIMILARITY: f32 = 0.5;
-/// A line shorter than this gives no print. Short lines get a voiceprint so they
-/// can be placed in a meeting, but it may be mostly another voice's, and a stored
-/// print would go on matching that voice in later meetings.
-const PRINT_MIN_MS: i64 = 1_500;
 
 /// Every named person's voiceprints, grouped per person (sorted by id, so
 /// matching is deterministic).
@@ -304,11 +300,10 @@ pub fn voice_samples(store: &MeetingsStore, person_id: PersonId) -> Result<Vec<V
     Ok(out)
 }
 
-/// The voiceprints worth keeping of `lines`: those at least [`PRINT_MIN_MS`]
-/// long and like `centroid` (see [`PRINT_MIN_CENTROID_SIMILARITY`]; all, without
-/// one to compare with), longest first, at most [`MAX_PRINTS_PER_MEETING`].
+/// The voiceprints worth keeping of `lines`: those like `centroid` (see
+/// [`PRINT_MIN_CENTROID_SIMILARITY`]; all, without one to compare with),
+/// longest first, at most [`MAX_PRINTS_PER_MEETING`].
 fn pick_prints(mut lines: Vec<SegmentEmbedding>, centroid: Option<&[f32]>) -> Vec<Vec<f32>> {
-    lines.retain(|e| e.duration_ms >= PRINT_MIN_MS);
     if let Some(c) = centroid {
         lines.retain(|e| {
             e.embedding.len() != c.len()
@@ -535,8 +530,7 @@ pub fn assign_segment(
     store.set_segment_speaker(segment_id, Some(target.id))?;
     store.pin_segments(meeting_id, std::slice::from_ref(&segment), person_id, true)?;
 
-    let long_enough = segment.t1_ms - segment.t0_ms >= PRINT_MIN_MS;
-    let voice = segment_voiceprint(store, &segment).filter(|_| long_enough);
+    let voice = segment_voiceprint(store, &segment);
     if let Some(voice) = &voice {
         // Out of whoever it was wrongly given to (one print each)...
         let mut cleared = HashSet::new();
@@ -619,19 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn a_short_line_gives_no_print() {
-        let c = [1.0, 0.0];
-        let lines = || {
-            vec![
-                line(1, 1_499, vec![1.0, 0.0]),
-                line(2, 1_500, vec![0.9, 0.1]),
-            ]
-        };
-        assert_eq!(pick_prints(lines(), Some(&c)), vec![vec![0.9, 0.1]]);
-        assert_eq!(pick_prints(lines(), None), vec![vec![0.9, 0.1]]);
-    }
-
-    #[test]
     fn without_a_usable_centroid_every_print_stays() {
         let lines = || {
             vec![
@@ -649,7 +630,7 @@ mod tests {
     fn the_cap_keeps_the_longest_prints_that_remain() {
         let c = [1.0, 0.0];
         let mut lines: Vec<SegmentEmbedding> = (0..25)
-            .map(|i| line(i, 1_500 + i, vec![1.0, i as f32 / 100.0]))
+            .map(|i| line(i, 1_000 + i, vec![1.0, i as f32 / 100.0]))
             .collect();
         lines.push(line(99, 99_000, vec![0.0, 1.0]));
         let prints = pick_prints(lines, Some(&c));
