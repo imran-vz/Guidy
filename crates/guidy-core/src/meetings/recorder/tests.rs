@@ -74,11 +74,18 @@ fn ev(id: &str, start: i64, end: i64) -> CalendarEvent {
         start_at: start,
         end_at: end,
         meeting_url: Some("https://meet.google.com/abc-defg-hij".into()),
-        attendees: vec![Attendee {
-            name: Some("Ann".into()),
-            email: Some("ann@example.com".into()),
-            is_current_user: false,
-        }],
+        attendees: vec![
+            Attendee {
+                name: Some("Ann".into()),
+                email: Some("ann@example.com".into()),
+                is_current_user: false,
+            },
+            Attendee {
+                name: Some("Ben".into()),
+                email: Some("ben@example.com".into()),
+                is_current_user: false,
+            },
+        ],
     }
 }
 
@@ -545,11 +552,14 @@ fn reminders_for_a_manual_session_use_the_interval_setting() {
 fn calendar_prompts_once_at_start_time() {
     let r = rig();
     *r.calendar.events.lock() = vec![ev("sync", T0, T0 + 30 * M)];
-    r.rec.tick(T0 - 30_000);
+    // Read once a minute, judged every tick: on time though no read is due.
+    r.rec.tick(T0 - 2 * M);
     assert!(r.notifier.posted.lock().is_empty());
-    r.rec.tick(T0 + 20_000); // polled at most once a minute: skipped
+    assert_eq!(*r.calendar.queries.lock(), 1);
+    r.rec.tick(T0 - schedule::PROMPT_LEAD_MS - 1);
     assert!(r.notifier.posted.lock().is_empty());
-    r.rec.tick(T0 + 31_000);
+    r.rec.tick(T0 - schedule::PROMPT_LEAD_MS);
+    assert_eq!(*r.calendar.queries.lock(), 1);
     {
         let posted = r.notifier.posted.lock();
         assert_eq!(posted.len(), 1);

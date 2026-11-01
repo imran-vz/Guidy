@@ -11,7 +11,9 @@
 //! ([`guidy_core::meetings::calls`]), it shows stopped, with a hint to take
 //! notes, until the call ends or the hint is dismissed.
 
-use guidy_core::meetings::calls::Call;
+use guidy_core::meetings::calls::{
+    holds_microphone, Call, CallPresence, Detection, InputApp, PresenceChange,
+};
 use guidy_core::meetings::types::{
     format_elapsed, LiveLine, LiveStatus, LiveTranscript, LiveUpdate, RecorderState, Track,
 };
@@ -32,6 +34,30 @@ const SOURCE_SAMPLES: usize = 8;
 const ACTIVE_LEVEL: f32 = 0.06;
 /// Transcript rows kept on screen (older ones scroll out of memory too).
 pub const MAX_ROWS: usize = 60;
+
+/// An unanswered offer closes after this long (only the offer: the call goes
+/// on, unoffered).
+pub const OFFER_TIMEOUT_MS: i64 = 20_000;
+/// An unanswered "the call ended" stops the recording after this long.
+pub const LEFT_CALL_TIMEOUT_MS: i64 = 60_000;
+
+/// What the call watcher should do after a poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallCommand {
+    Start,
+    Stop,
+}
+
+/// One poll of the call watcher, for [`WidgetModel::apply_call_poll`].
+#[derive(Clone, Debug)]
+pub struct CallPoll<'a> {
+    pub apps: &'a [InputApp],
+    /// The call in progress.
+    pub current: Option<Call>,
+    /// What a call confirmed by this poll leads to.
+    pub detection: Option<Detection>,
+    pub now: i64,
+}
 
 /// Consecutive live lines from the same source, shown as one paragraph.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +119,23 @@ pub struct WidgetModel {
     /// The last start from the hint failed (said in the hint until the
     /// next try or the next call).
     start_failed: bool,
+    /// When the offer for the current call first showed.
+    offer_since: Option<i64>,
+    /// The offer's "..." is open: Always and Never instead of Take notes.
+    pub more_open: bool,
+    /// Apps the call watcher should snooze
+    /// ([`guidy_core::meetings::calls::CallDetector::snooze_app`]).
+    pending_snoozes: Vec<String>,
+    /// The call behind the recording in progress.
+    recording_call: Option<Call>,
+    presence: CallPresence,
+    /// When that call was seen to have ended, while the user is being asked.
+    left_at: Option<i64>,
+    /// A stop was asked for by the watcher and hasn't reported in.
+    stopping: bool,
+    /// Start recording the next call once this recording is stopped: the
+    /// provider is Always, and it came on while this one's call was ending.
+    record_next: bool,
     /// The waveform (both sources together).
     wave: VecDeque<f32>,
     /// Recent levels per source: mic, system.
@@ -109,6 +152,14 @@ impl Default for WidgetModel {
             dismissed: None,
             starting: false,
             start_failed: false,
+            offer_since: None,
+            more_open: false,
+            pending_snoozes: Vec::new(),
+            recording_call: None,
+            presence: CallPresence::default(),
+            left_at: None,
+            stopping: false,
+            record_next: false,
             wave: VecDeque::from(vec![0.0; BARS]),
             sources: [
                 VecDeque::from(vec![0.0; SOURCE_SAMPLES]),
@@ -138,15 +189,122 @@ impl WidgetModel {
     pub fn set_call(&mut self, call: Option<Call>) {
         if call.as_ref().map(|c| c.since) != self.call.as_ref().map(|c| c.since) {
             self.start_failed = false;
+            self.offer_since = None;
+            self.more_open = false;
         }
         self.call = call;
     }
 
-    /// "Not now": stop offering notes for this call.
+    /// "Not now", or the offer timed out: stop offering notes for this call,
+    /// and for this app until it has left the microphone.
     pub fn dismiss_call(&mut self) {
         if let Some(c) = &self.call {
             self.dismissed = Some(c.since);
+            self.pending_snoozes.push(c.app_id.clone());
         }
+        self.more_open = false;
+    }
+
+    /// The apps to snooze since the last poll.
+    pub fn take_snoozes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_snoozes)
+    }
+
+    /// The call behind the recording has ended and the user is being asked:
+    /// Keep or Stop. Stops by itself at [`LEFT_CALL_TIMEOUT_MS`].
+    pub fn left_call(&self) -> Option<&Call> {
+        self.left_at.and(self.recording_call.as_ref())
+    }
+
+    /// "Keep": the recording goes on, no longer tied to that call.
+    pub fn keep_recording(&mut self) {
+        self.left_at = None;
+        self.recording_call = None;
+        self.presence = CallPresence::default();
+    }
+
+    /// Stop following calls (the feature was turned off). A recording goes
+    /// on until it's stopped by hand.
+    pub fn stop_following_calls(&mut self) {
+        self.set_call(None);
+        self.keep_recording();
+        self.record_next = false;
+    }
+
+    /// Take in a poll of the call watcher; returns what it should do.
+    pub fn apply_call_poll(&mut self, poll: CallPoll<'_>) -> Option<CallCommand> {
+        let CallPoll {
+            apps,
+            current,
+            detection,
+            now,
+        } = poll;
+        let record = matches!(detection, Some(Detection::Record(_)));
+        self.set_call(current);
+        if self.recorder.is_recording() {
+            return self.follow_recording_call(apps, record, now);
+        }
+        let wanted = std::mem::take(&mut self.record_next) || record;
+        if wanted && self.hint_call().is_some() && self.begin_start() {
+            return Some(CallCommand::Start);
+        }
+        if self.hinting() && !self.starting() {
+            let since = *self.offer_since.get_or_insert(now);
+            if now - since >= OFFER_TIMEOUT_MS {
+                self.dismiss_call();
+                self.offer_since = None;
+            }
+        } else {
+            self.offer_since = None;
+        }
+        None
+    }
+
+    /// While recording: the call behind it, whether it ended, and whether a
+    /// new one means a separate note.
+    fn follow_recording_call(
+        &mut self,
+        apps: &[InputApp],
+        record: bool,
+        now: i64,
+    ) -> Option<CallCommand> {
+        if self.recording_call.is_none() {
+            // Started by hand or from a calendar prompt: whatever call shows
+            // up is what it's for.
+            self.recording_call = self.call.clone();
+            self.presence = CallPresence::default();
+            self.left_at = None;
+        }
+        let tracked = self.recording_call.clone()?;
+        match self
+            .presence
+            .observe(holds_microphone(apps, &tracked.app_id), now)
+        {
+            Some(PresenceChange::Left) => self.left_at = Some(now),
+            Some(PresenceChange::Back) => self.left_at = None,
+            None => {}
+        }
+        // Back-to-back: a different call once this one's app left, or another
+        // service after a release in the same browser. The same service
+        // coming back (a long sleep, a rejoin) is the same note.
+        let new_call = self.call.as_ref().is_some_and(|c| {
+            c.since != tracked.since
+                && (self.presence.has_left()
+                    || (c.app_id == tracked.app_id && c.source != tracked.source))
+        });
+        let timed_out = self
+            .left_at
+            .is_some_and(|at| now - at >= LEFT_CALL_TIMEOUT_MS);
+        if !(new_call || timed_out) {
+            return None;
+        }
+        if new_call {
+            self.record_next |= record;
+        }
+        if std::mem::replace(&mut self.stopping, true) {
+            return None;
+        }
+        Some(CallCommand::Stop)
     }
 
     /// Starting a recording from the hint, until it reports in.
@@ -210,14 +368,34 @@ impl WidgetModel {
                 live: std::mem::take(&mut self.live),
                 call: self.call.clone(),
                 dismissed: self.dismissed,
+                pending_snoozes: std::mem::take(&mut self.pending_snoozes),
                 ..Self::default()
             };
         }
-        // Stopped during a call: don't offer notes for it again.
         if self.recorder.is_recording() && !state.is_recording() {
-            self.dismiss_call();
+            self.recording_stopped();
         }
         self.recorder = state;
+    }
+
+    /// Stopped during a call: don't offer notes for it again. One that ended
+    /// first needs no such thing, and a new call behind it is still offered.
+    fn recording_stopped(&mut self) {
+        let tracked = self.recording_call.take();
+        let left = self.presence.has_left();
+        self.presence = CallPresence::default();
+        self.left_at = None;
+        self.stopping = false;
+        let Some(tracked) = tracked else {
+            self.dismiss_call();
+            return;
+        };
+        let new_call = self.call.as_ref().filter(|c| c.since != tracked.since);
+        if new_call.is_none() && self.call.is_some() {
+            self.dismiss_call();
+        } else if !left && new_call.is_none_or(|c| c.app_id != tracked.app_id) {
+            self.pending_snoozes.push(tracked.app_id);
+        }
     }
 
     pub fn apply_live(&mut self, update: &LiveUpdate) {
@@ -278,6 +456,7 @@ impl WidgetModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guidy_core::meetings::calls::{CallSource, END_GRACE_MS};
 
     fn recording(id: i64) -> RecorderState {
         RecorderState::Recording {
@@ -420,6 +599,230 @@ mod tests {
         // So does the next call.
         m.set_call(Some(call(20)));
         assert!(!m.start_failed());
+    }
+
+    fn chrome(since: i64) -> Call {
+        Call {
+            source: CallSource::Meet,
+            since,
+            app_id: "com.google.Chrome".into(),
+        }
+    }
+
+    fn holding(id: &str) -> Vec<InputApp> {
+        vec![InputApp {
+            bundle_id: id.into(),
+            ..Default::default()
+        }]
+    }
+
+    fn poll(apps: &[InputApp], current: Option<Call>, now: i64) -> CallPoll<'_> {
+        CallPoll {
+            apps,
+            current,
+            detection: None,
+            now,
+        }
+    }
+
+    #[test]
+    fn an_unanswered_offer_closes_and_snoozes_only_itself() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        assert_eq!(m.apply_call_poll(poll(&zoom, Some(call(1)), 1_000)), None);
+        assert!(m.hinting());
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 1_000 + OFFER_TIMEOUT_MS - 1));
+        assert!(m.hinting());
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 1_000 + OFFER_TIMEOUT_MS));
+        assert!(!m.hinting());
+        assert_eq!(m.take_snoozes(), ["us.zoom.xos"]);
+        // Nothing was stopped or started.
+        assert!(!m.recorder.is_recording());
+        // While it starts, the offer doesn't time out.
+        let mut m = WidgetModel::default();
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        assert!(m.begin_start());
+        m.apply_call_poll(poll(&zoom, Some(call(1)), OFFER_TIMEOUT_MS));
+        assert!(m.hinting() && m.take_snoozes().is_empty());
+    }
+
+    #[test]
+    fn a_call_set_to_always_starts_recording_once() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        let detected = CallPoll {
+            apps: &zoom,
+            current: Some(call(1)),
+            detection: Some(Detection::Record(call(1))),
+            now: 0,
+        };
+        assert_eq!(
+            m.apply_call_poll(detected.clone()),
+            Some(CallCommand::Start)
+        );
+        assert_eq!(m.apply_call_poll(detected), None, "already starting");
+    }
+
+    #[test]
+    fn a_call_that_ended_asks_then_stops_by_itself() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        assert_eq!(m.apply_call_poll(poll(&zoom, Some(call(1)), 0)), None);
+        // Left: asked after the grace, not before.
+        assert_eq!(m.apply_call_poll(poll(&[], Some(call(1)), 1_000)), None);
+        assert!(m.left_call().is_none());
+        let left = 1_000 + END_GRACE_MS;
+        assert_eq!(m.apply_call_poll(poll(&[], None, left)), None);
+        assert!(m.left_call().is_some());
+        assert_eq!(m.apply_call_poll(poll(&[], None, left + 59_000)), None);
+        // No answer in a minute: stop, once.
+        let late = left + LEFT_CALL_TIMEOUT_MS;
+        assert_eq!(
+            m.apply_call_poll(poll(&[], None, late)),
+            Some(CallCommand::Stop)
+        );
+        assert_eq!(m.apply_call_poll(poll(&[], None, late + 1_000)), None);
+        m.set_recorder(RecorderState::Idle);
+        assert!(m.left_call().is_none());
+        // It had ended: a new call in the same app is offered.
+        assert!(m.take_snoozes().is_empty());
+    }
+
+    #[test]
+    fn keep_keeps_recording_and_coming_back_cancels_the_question() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        m.apply_call_poll(poll(&[], None, 1_000));
+        m.apply_call_poll(poll(&[], None, 1_000 + END_GRACE_MS));
+        assert!(m.left_call().is_some());
+        // Back in the call before answering.
+        m.apply_call_poll(poll(&zoom, None, 20_000));
+        assert!(m.left_call().is_none());
+        // Left again; this time "Keep".
+        m.apply_call_poll(poll(&[], None, 21_000));
+        m.apply_call_poll(poll(&[], None, 21_000 + END_GRACE_MS));
+        assert!(m.left_call().is_some());
+        m.keep_recording();
+        for t in 0..10 {
+            let now = 30_000 + t * LEFT_CALL_TIMEOUT_MS;
+            assert_eq!(m.apply_call_poll(poll(&[], None, now)), None);
+        }
+        assert!(m.recorder.is_recording());
+    }
+
+    #[test]
+    fn stopping_while_the_call_goes_on_snoozes_it() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        m.set_recorder(RecorderState::Idle);
+        assert!(!m.hinting());
+        assert_eq!(m.take_snoozes(), ["us.zoom.xos"]);
+    }
+
+    #[test]
+    fn a_call_starting_after_this_one_ended_makes_a_separate_note() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        let teams_apps = holding("com.microsoft.teams2");
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 30_000,
+            app_id: "com.microsoft.teams2".into(),
+        };
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&zoom, Some(call(1)), 0));
+        // Teams appears while Zoom's grace still runs: not yet a new note.
+        m.apply_call_poll(poll(&teams_apps, None, 1_000));
+        assert_eq!(
+            m.apply_call_poll(poll(&teams_apps, Some(teams.clone()), 2_000)),
+            None
+        );
+        // Zoom has left: stop this one.
+        assert_eq!(
+            m.apply_call_poll(poll(&teams_apps, Some(teams.clone()), 1_000 + END_GRACE_MS)),
+            Some(CallCommand::Stop)
+        );
+        m.set_recorder(RecorderState::Idle);
+        // And Teams is offered, not dismissed with it.
+        assert!(m.hinting());
+        assert_eq!(m.hint_call().map(|c| c.since), Some(30_000));
+        assert!(m.take_snoozes().is_empty());
+    }
+
+    #[test]
+    fn a_new_service_in_the_same_browser_makes_a_separate_note_but_a_rejoin_does_not() {
+        let mut m = WidgetModel::default();
+        let browser = holding("com.google.Chrome");
+        m.set_call(Some(chrome(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&browser, Some(chrome(1)), 0));
+        // The same service, a new detection (a long sleep): the same note.
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(chrome(500_000)), 500_000)),
+            None
+        );
+        // Another service in that browser, after a release.
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 600_000,
+            app_id: "com.google.Chrome".into(),
+        };
+        assert_eq!(
+            m.apply_call_poll(poll(&browser, Some(teams), 600_000)),
+            Some(CallCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn an_always_call_after_a_split_starts_once_the_stop_reports_in() {
+        let mut m = WidgetModel::default();
+        let teams_apps = holding("com.microsoft.teams2");
+        let teams = Call {
+            source: CallSource::Teams,
+            since: 30_000,
+            app_id: "com.microsoft.teams2".into(),
+        };
+        m.set_call(Some(call(1)));
+        m.set_recorder(recording(1));
+        m.apply_call_poll(poll(&holding("us.zoom.xos"), Some(call(1)), 0));
+        m.apply_call_poll(poll(&[], None, 1_000));
+        let at = 1_000 + END_GRACE_MS;
+        let detected = CallPoll {
+            apps: &teams_apps,
+            current: Some(teams.clone()),
+            detection: Some(Detection::Record(teams.clone())),
+            now: at,
+        };
+        assert_eq!(m.apply_call_poll(detected), Some(CallCommand::Stop));
+        m.set_recorder(RecorderState::Idle);
+        assert_eq!(
+            m.apply_call_poll(poll(&teams_apps, Some(teams), at + 1_000)),
+            Some(CallCommand::Start)
+        );
+    }
+
+    #[test]
+    fn a_recording_started_by_hand_follows_the_call_that_shows_up() {
+        let mut m = WidgetModel::default();
+        let zoom = holding("us.zoom.xos");
+        m.set_recorder(recording(1));
+        // No call: nothing to follow, nothing to stop.
+        for t in 0..10 {
+            assert_eq!(m.apply_call_poll(poll(&[], None, t * 60_000)), None);
+        }
+        m.apply_call_poll(poll(&zoom, Some(call(600_000)), 600_000));
+        m.apply_call_poll(poll(&[], None, 601_000));
+        m.apply_call_poll(poll(&[], None, 601_000 + END_GRACE_MS));
+        assert!(m.left_call().is_some());
     }
 
     #[test]

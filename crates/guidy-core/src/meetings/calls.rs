@@ -202,6 +202,36 @@ impl std::fmt::Debug for CallProviderChoice {
     }
 }
 
+/// The services the settings list, by provider key and name. Sites chosen from
+/// an offer are listed after them.
+pub const KNOWN_PROVIDERS: &[(&str, &str)] = &[
+    ("zoom", "Zoom"),
+    ("teams", "Microsoft Teams"),
+    ("google_meet", "Google Meet"),
+    ("slack", "Slack"),
+    ("facetime", "FaceTime"),
+    ("webex", "Webex"),
+    ("discord", "Discord"),
+    ("whatsapp", "WhatsApp"),
+];
+
+/// The user's choice for `key`; [`CallPolicy::Ask`] leaves no entry behind.
+pub fn set_policy(
+    choices: &mut Vec<CallProviderChoice>,
+    key: &str,
+    label: &str,
+    policy: CallPolicy,
+) {
+    choices.retain(|c| c.key != key);
+    if policy != CallPolicy::Ask {
+        choices.push(CallProviderChoice {
+            key: key.to_string(),
+            label: label.to_string(),
+            policy,
+        });
+    }
+}
+
 /// The page a browser shows. In memory only; `Debug` hides it so it can't
 /// reach a log by accident.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -694,6 +724,11 @@ impl CallDetector {
     /// [`Self::snooze_current`] for an app by its canonical id (a recording's
     /// call may no longer be the current one).
     pub fn snooze_app(&mut self, app_id: String, now: i64) {
+        if self.current.as_ref().is_some_and(|c| c.app_id == app_id) {
+            self.current = None;
+            self.gone_since = None;
+            self.released = false;
+        }
         self.pending.retain(|p| p.app_id != app_id);
         self.snoozed.retain(|s| s.app_id != app_id);
         self.snoozed.push(Snooze {
@@ -1026,6 +1061,23 @@ mod tests {
             CallPolicy::Never
         );
         assert_eq!(CallSource::BrowserUnknown.provider(), None);
+    }
+
+    #[test]
+    fn choices_are_kept_only_when_they_differ_from_ask() {
+        let mut choices = Vec::new();
+        set_policy(&mut choices, "zoom", "Zoom", CallPolicy::Always);
+        set_policy(&mut choices, "zoom", "Zoom", CallPolicy::Never);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].policy, CallPolicy::Never);
+        set_policy(&mut choices, "zoom", "Zoom", CallPolicy::Ask);
+        assert!(choices.is_empty());
+        for (key, name) in KNOWN_PROVIDERS {
+            assert!(!key.is_empty() && !name.is_empty());
+        }
+        assert!(KNOWN_PROVIDERS
+            .iter()
+            .any(|(key, _)| Some(key.to_string()) == CallSource::Meet.provider().map(|p| p.key)));
     }
 
     #[test]

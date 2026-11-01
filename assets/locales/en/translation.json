@@ -943,6 +943,12 @@
       "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends.",
       "callTitle": "{{app}} call",
       "callPrompt": "Take meeting notes?",
+      "callEndedTitle": "{{app}} call ended",
+      "callEndedPrompt": "Stops in a minute unless you keep it.",
+      "keep": "Keep",
+      "more": "More choices",
+      "always": "Always",
+      "never": "Never",
       "start": "Take notes",
       "starting": "Starting…",
       "startFailed": "Couldn't start. Try again?",
@@ -1266,7 +1272,20 @@
       },
       "callSuggestions": {
         "title": "Suggest notes on calls",
-        "description": "When a Zoom, Google Meet or WhatsApp call starts, show the floater, stopped, with an offer to take notes."
+        "description": "When a call starts in another app or a browser, show the floater, stopped, with an offer to take notes."
+      },
+      "detectedCallsGroup": "Detected calls",
+      "callPolicy": {
+        "description": "When a call starts here",
+        "ask": "Ask",
+        "always": "Always record",
+        "never": "Never offer"
+      },
+      "nameBrowserCalls": {
+        "title": "Name browser calls",
+        "description": "Read the address of your browser's front tab to name a call. macOS asks once per browser. Addresses stay in memory on this Mac. Without it, browser calls are still offered, unnamed, after 20 seconds.",
+        "turnOn": "Name browser calls",
+        "turnOff": "Stop naming"
       },
       "recordingControls": {
         "title": "Recording controls",

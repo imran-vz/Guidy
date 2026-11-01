@@ -286,8 +286,13 @@ impl MeetingRecorder {
     fn current_event(&self, now: i64) -> Option<CalendarEvent> {
         // Any timed event, with or without a meeting link (plan 1.3);
         // `schedule::current_event` still prefers one with a link.
-        match self.deps.calendar.timed_events_between(now, now + 1) {
-            Ok(events) => schedule::current_event(&events, now).cloned(),
+        match self.deps.calendar.timed_events_between(
+            now - schedule::START_LINK_GRACE_MS,
+            now + schedule::UPCOMING_LINK_MS,
+        ) {
+            Ok(events) => schedule::current_event(&events, now)
+                .or_else(|| schedule::nearby_call_event(&events, now))
+                .cloned(),
             Err(e) => {
                 log::debug!("meetings: no calendar for manual start: {e:#}");
                 None
@@ -723,7 +728,8 @@ impl MeetingRecorder {
     }
 
     /// One scheduler step: retry pending finishes, post a due reminder, and
-    /// (at most once a minute) poll the calendar for events starting now.
+    /// prompt for events about to start (the calendar is read at most once a
+    /// minute).
     pub fn tick(&self, now: i64) {
         let settings = (self.deps.settings)();
         let strings = (self.deps.strings)();
@@ -741,25 +747,30 @@ impl MeetingRecorder {
         if !(settings.enabled && settings.calendar_notifications) || self.is_recording() {
             return;
         }
-        {
+        let poll_due = {
             let mut p = self.prompts.lock();
-            if p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t) {
-                return;
+            let due = !p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t);
+            if due {
+                p.last_poll = Some(now);
             }
-            p.last_poll = Some(now);
-        }
+            due
+        };
         // The (slow) lookup runs without `op`, so it never holds up a start
-        // or stop.
-        let events = match self
-            .deps
-            .calendar
-            .events_between(now - schedule::PROMPT_WINDOW_MS, now + MINUTE_MS)
-        {
-            Ok(e) => e,
-            Err(e) => {
-                log::debug!("meetings: calendar poll failed: {e:#}");
-                return;
+        // or stop. Read once a minute, judged every tick, so a prompt lands
+        // on time.
+        let polled = if poll_due {
+            match self.deps.calendar.events_between(
+                now - schedule::PROMPT_WINDOW_MS,
+                now + schedule::PROMPT_LOOKAHEAD_MS,
+            ) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    log::debug!("meetings: calendar poll failed: {e:#}");
+                    return;
+                }
             }
+        } else {
+            None
         };
         // Re-checked, decided and posted under `op`: a recording started
         // meanwhile gets no prompt (and one starting now withdraws it after).
@@ -769,8 +780,11 @@ impl MeetingRecorder {
         }
         let to_post: Vec<CalendarEvent> = {
             let mut p = self.prompts.lock();
+            if let Some(events) = polled {
+                p.seen = events;
+            }
             let list: Vec<CalendarEvent> =
-                schedule::events_to_prompt(&events, now, |id| p.prompted.contains_key(id))
+                schedule::events_to_prompt(&p.seen, now, |id| p.prompted.contains_key(id))
                     .into_iter()
                     .cloned()
                     .collect();
@@ -779,7 +793,6 @@ impl MeetingRecorder {
             }
             p.prompted
                 .retain(|_, start| now - *start < 24 * 60 * MINUTE_MS);
-            p.seen = events.clone();
             list
         };
         for e in to_post {

@@ -44,6 +44,7 @@ use guidy_core::downloads::format_bytes;
 use guidy_core::managers::transcription::meeting::{
     configured_meeting_model_missing, DEFAULT_MEETING_MODEL_ID, DEFAULT_MEETING_MODEL_NAME,
 };
+use guidy_core::meetings::calls::{set_policy, CallPolicy, KNOWN_PROVIDERS};
 use guidy_core::meetings::manager::PermissionReport;
 use guidy_core::meetings::processing::speaker_model::{
     segmentation_download_id, separation_download_id, separation_model, speaker_download_id,
@@ -160,6 +161,78 @@ pub fn update_meetings(cx: &mut App, f: impl FnOnce(&mut MeetingSettings)) {
     if patch.as_object().is_some_and(|p| !p.is_empty()) {
         AppState::global(cx).update(cx, |s, cx| s.update_setting("meetings", patch, cx));
     }
+}
+
+/// The rows of the Detected calls group: naming browser calls, then the choice
+/// for each service and for each site one was made for.
+fn detected_call_rows(m: &MeetingSettings) -> Vec<AnyElement> {
+    let naming = m.name_browser_calls;
+    let mut rows = vec![SettingRow::new(
+        "meetings-name-browser-calls",
+        t("meetings.settings.nameBrowserCalls.title"),
+    )
+    .description(t("meetings.settings.nameBrowserCalls.description"))
+    .control(
+        Button::new("meetings-name-browser-calls-button")
+            .outline()
+            .small()
+            .label(if naming {
+                t("meetings.settings.nameBrowserCalls.turnOff")
+            } else {
+                t("meetings.settings.nameBrowserCalls.turnOn")
+            })
+            .on_click(move |_, _, cx| {
+                update_meetings(cx, |m| m.name_browser_calls = !naming);
+            }),
+    )
+    .into_any_element()];
+    let known = KNOWN_PROVIDERS
+        .iter()
+        .map(|(key, label)| (key.to_string(), label.to_string()));
+    let sites = m
+        .call_providers
+        .iter()
+        .filter(|c| !KNOWN_PROVIDERS.iter().any(|(key, _)| *key == c.key))
+        .map(|c| (c.key.clone(), c.label.clone()));
+    for (key, label) in known.chain(sites) {
+        let policy = m
+            .call_providers
+            .iter()
+            .find(|c| c.key == key)
+            .map(|c| c.policy)
+            .unwrap_or_default();
+        let (on_key, on_label) = (key.clone(), label.clone());
+        rows.push(
+            SettingRow::new(SharedString::from(format!("meetings-call-{key}")), label)
+                .description(t("meetings.settings.callPolicy.description"))
+                .control(
+                    Dropdown::new(SharedString::from(format!("meetings-call-{key}-dropdown")))
+                        .options(vec![
+                            DropdownOption::new("ask", t("meetings.settings.callPolicy.ask")),
+                            DropdownOption::new("always", t("meetings.settings.callPolicy.always")),
+                            DropdownOption::new("never", t("meetings.settings.callPolicy.never")),
+                        ])
+                        .selected(Some(match policy {
+                            CallPolicy::Ask => "ask",
+                            CallPolicy::Always => "always",
+                            CallPolicy::Never => "never",
+                        }))
+                        .min_width(CONTROL_W)
+                        .on_select(move |v, _, cx| {
+                            let policy = match v {
+                                "always" => CallPolicy::Always,
+                                "never" => CallPolicy::Never,
+                                _ => CallPolicy::Ask,
+                            };
+                            update_meetings(cx, |m| {
+                                set_policy(&mut m.call_providers, &on_key, &on_label, policy)
+                            });
+                        }),
+                )
+                .into_any_element(),
+        );
+    }
+    rows
 }
 
 /// Which permission a row is about.
@@ -1293,6 +1366,12 @@ impl MeetingSettingsView {
         vec![
             group(Some(t("meetings.settings.recording")), while_recording, cx).into_any_element(),
             group(Some(t("meetings.settings.calendarGroup")), calendar, cx).into_any_element(),
+            group(
+                Some(t("meetings.settings.detectedCallsGroup")),
+                detected_call_rows(&m),
+                cx,
+            )
+            .into_any_element(),
         ]
     }
 
