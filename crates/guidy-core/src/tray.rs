@@ -32,6 +32,7 @@ use log::{error, info, trace, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -41,6 +42,16 @@ pub const OPEN_SECTION_EVENT: &str = "tray-open-section";
 /// Asks the app to copy a meeting's transcript (payload: the meeting id). The
 /// export format lives in the UI crate.
 pub const COPY_MEETING_TRANSCRIPT_EVENT: &str = "tray-copy-meeting-transcript";
+
+/// The build has an update endpoint, so the app can check at all. Only the UI
+/// crate knows: see [`set_updater_configured`].
+static UPDATER_CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// Tells the tray whether "Check for Updates…" can work in this build. Call
+/// before the tray is first synced.
+pub fn set_updater_configured(configured: bool) {
+    UPDATER_CONFIGURED.store(configured, Ordering::Relaxed);
+}
 
 /// Managed marker: present once the native tray has been built. The native
 /// `tray_icon::TrayIcon` itself is main-thread-only and lives in [`NATIVE`].
@@ -83,7 +94,8 @@ struct MenuInputs {
     has_last_dictation: bool,
     /// There is a meeting transcript to copy.
     has_last_meeting: bool,
-    /// Update checks are on, so "Check for Updates…" would do something.
+    /// The build has an updater and update checks are on, so "Check for
+    /// Updates…" would do something.
     update_checks: bool,
     meeting: MeetingMenu,
 }
@@ -806,7 +818,8 @@ fn compute_desired(
 
     let meeting = meeting_menu(app, &settings);
     let has_last_dictation = last_dictation(app).is_some();
-    let update_checks = settings::update_checks_effectively_enabled(&settings);
+    let update_checks = UPDATER_CONFIGURED.load(Ordering::Relaxed)
+        && settings::update_checks_effectively_enabled(&settings);
 
     desired_from(
         icon_state,
@@ -1148,6 +1161,12 @@ fn meeting_entries(
     let mut items = Vec::new();
     if meeting.recording {
         items.push(MenuEntry::item(
+            "meeting_stop",
+            &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
+            true,
+            None,
+        ));
+        items.push(MenuEntry::item(
             "meeting_title",
             &meeting.status_label(strings, now),
             false,
@@ -1167,12 +1186,6 @@ fn meeting_entries(
             )
         };
         items.push(MenuEntry::item(id, &or_en(label, label_en), true, None));
-        items.push(MenuEntry::item(
-            "meeting_stop",
-            &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
-            true,
-            None,
-        ));
     } else if meeting.available {
         items.push(MenuEntry::item(
             "meeting_start",
@@ -1925,22 +1938,22 @@ mod tests {
             assert_eq!(
                 menu.entries[0],
                 MenuEntry::Item {
-                    id: "meeting_title".into(),
-                    label: "● Weekly sync · 12:34".into(),
-                    enabled: false,
-                    accelerator: None,
-                }
-            );
-            assert_eq!(menu.entries[1].id(), Some("meeting_pause"));
-            assert_eq!(
-                menu.entries[2],
-                MenuEntry::Item {
                     id: "meeting_stop".into(),
                     label: "Stop Recording".into(),
                     enabled: true,
                     accelerator: None,
                 }
             );
+            assert_eq!(
+                menu.entries[1],
+                MenuEntry::Item {
+                    id: "meeting_title".into(),
+                    label: "● Weekly sync · 12:34".into(),
+                    enabled: false,
+                    accelerator: None,
+                }
+            );
+            assert_eq!(menu.entries[2].id(), Some("meeting_pause"));
             assert_eq!(menu.entries[3].id(), Some("copy_last_meeting"));
             assert_eq!(menu.entries[4].id(), Some("open_meetings"));
             assert_eq!(menu.entries[5], MenuEntry::Separator);
@@ -1962,10 +1975,10 @@ mod tests {
         };
         let menu = build_menu_at(&i, 500_000);
         assert!(matches!(
-            &menu.entries[0],
+            &menu.entries[1],
             MenuEntry::Item { label, .. } if label == "❚❚ Paused · 1:05"
         ));
-        assert_eq!(menu.entries[1].id(), Some("meeting_resume"));
+        assert_eq!(menu.entries[2].id(), Some("meeting_resume"));
     }
 
     #[test]

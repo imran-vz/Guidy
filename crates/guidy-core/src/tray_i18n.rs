@@ -1,7 +1,7 @@
 //! Tray menu internationalization
 //!
 //! Everything is auto-generated at compile time by build.rs from the
-//! frontend locale files (src/i18n/locales/*/translation.json).
+//! locale files (assets/locales/*/translation.json).
 //!
 //! The English translation.json is the single source of truth:
 //! - TrayStrings struct fields are derived from the English "tray" keys
@@ -9,7 +9,7 @@
 //!
 //! To add a new tray menu item:
 //! 1. Add the key to en/translation.json under "tray"
-//! 2. Add translations to other locale files
+//! 2. Fall back to English where a locale lacks the key (tray.rs `or_en`)
 //! 3. Update tray.rs to use the new field (e.g., strings.new_field)
 
 use crate::chinese_script::chinese_script_for_locale;

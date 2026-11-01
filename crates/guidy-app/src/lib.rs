@@ -227,6 +227,7 @@ fn finish_start(
             return;
         }
     };
+    guidy_core::tray::set_updater_configured(updater::configured());
     let decision = guidy_core::initialize_app(&app, &cli_args, !cli_args.no_tray, managers);
     state.update(cx, |s, cx| s.core_ready(cx));
 
