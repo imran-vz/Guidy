@@ -96,10 +96,34 @@ fn system_text_near(system: &[RawSegment], t0: i64, t1: i64) -> String {
     out.join(" ")
 }
 
+/// Mic segments with fewer tokens than this are never called echoes: a short
+/// reply ("yes", "right") too easily matches words said nearby.
+pub const ECHO_MIN_TOKENS: usize = 3;
+
+/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: its [`tokens`], with
+/// each character of a script written without spaces counted as one.
+fn word_count(text: &str) -> usize {
+    let unspaced = |c: char| {
+        matches!(c as u32,
+            0x0E00..=0x0E7F // Thai
+            | 0x3040..=0x30FF // Kana
+            | 0x3400..=0x9FFF // CJK ideographs
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+        )
+    };
+    tokens(text)
+        .iter()
+        .map(|t| t.chars().filter(|c| unspaced(*c)).count().max(1))
+        .sum()
+}
+
 /// For each mic segment, whether it is an echo of the system track.
 pub fn echo_flags(mic: &[RawSegment], system: &[RawSegment], p: &EchoParams) -> Vec<bool> {
     mic.iter()
         .map(|m| {
+            if word_count(&m.text) < ECHO_MIN_TOKENS {
+                return false;
+            }
             let (t0, t1) = (m.t0_ms - p.slack_ms, m.t1_ms + p.slack_ms);
             if !system.iter().any(|s| s.overlaps(t0, t1)) {
                 return false;
@@ -238,6 +262,35 @@ mod tests {
         assert_eq!(tl[0].speaker, Some(0));
         assert_eq!(tl[1].segment.text, "Sounds good to me.");
         assert_eq!(tl[1].speaker, Some(9));
+    }
+
+    #[test]
+    fn a_short_reply_is_kept_and_a_three_word_echo_dropped() {
+        let system = vec![seg(Track::System, 1000, 4000, "yes ship it now")];
+        let p = EchoParams::default();
+        for reply in ["Yes.", "yes ship"] {
+            let mic = vec![seg(Track::Mic, 1200, 2000, reply)];
+            assert_eq!(echo_flags(&mic, &system, &p), vec![false], "{reply}");
+        }
+        let mic = vec![seg(Track::Mic, 1200, 3000, "ship it now")];
+        assert_eq!(echo_flags(&mic, &system, &p), vec![true]);
+    }
+
+    #[test]
+    fn a_script_without_spaces_counts_each_character() {
+        assert_eq!(word_count("ship it"), 2);
+        assert_eq!(word_count("明日リリース"), 6);
+        let system = vec![seg(Track::System, 1000, 4000, "明日リリースします")];
+        let mic = vec![seg(Track::Mic, 1200, 3000, "明日リリースします")];
+        assert_eq!(
+            echo_flags(&mic, &system, &EchoParams::default()),
+            vec![true]
+        );
+        let mic = vec![seg(Track::Mic, 1200, 1500, "明日")];
+        assert_eq!(
+            echo_flags(&mic, &system, &EchoParams::default()),
+            vec![false]
+        );
     }
 
     #[test]

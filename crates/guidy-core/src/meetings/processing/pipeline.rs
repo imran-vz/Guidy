@@ -1272,6 +1272,39 @@ fn offset_words(words: Vec<Word>, span: vad::Span) -> Vec<Word> {
         .collect()
 }
 
+/// The transcribed units of each track, `(mic, system)`, with their indices.
+fn segments_by_track(
+    cache: &ProcessingCache,
+) -> (Vec<(usize, RawSegment)>, Vec<(usize, RawSegment)>) {
+    let (mut mic, mut system) = (Vec::new(), Vec::new());
+    for i in 0..cache.units.len() {
+        if let Some(seg) = cache.raw_segment(i) {
+            match seg.track {
+                Track::Mic => mic.push((i, seg)),
+                Track::System => system.push((i, seg)),
+            }
+        }
+    }
+    (mic, system)
+}
+
+/// Per unit, whether [`timeline::merge_timeline`] will drop it as an echo: the
+/// same flags on the same segments, so clustering never counts a line the
+/// transcript won't have.
+fn echo_units(cache: &ProcessingCache, echo: &EchoParams) -> Vec<bool> {
+    let (mic, system) = segments_by_track(cache);
+    let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
+    let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
+    let mut out = vec![false; cache.units.len()];
+    for ((i, _), is_echo) in mic
+        .iter()
+        .zip(timeline::echo_flags(&mic_segs, &sys_segs, echo))
+    {
+        out[*i] = is_echo;
+    }
+    out
+}
+
 /// The least speech a mic cluster needs to be someone other than the user.
 const OTHERS_ON_MIC_MIN_MS: i64 = 8_000;
 
@@ -1350,7 +1383,8 @@ pub fn cluster_units_with(
                     .is_some_and(|t| !t.text.is_empty())
         })
         .collect();
-    let mic_others: Vec<usize> = (0..n).filter(|&i| on_mic[i]).collect();
+    let echoes = echo_units(cache, &config.echo);
+    let mic_others: Vec<usize> = (0..n).filter(|&i| on_mic[i] && !echoes[i]).collect();
     let speech: Vec<usize> = mic_others.iter().chain(&system).copied().collect();
     let vector_of = |i: usize| -> Option<Vec<f32>> {
         match source {
@@ -1798,17 +1832,7 @@ pub fn build_transcript(
     clustering: &Clustering,
     config: &PipelineConfig,
 ) -> (Vec<MeetingSpeaker>, Vec<Segment>, Vec<usize>) {
-    let n = cache.units.len();
-    let mut mic: Vec<(usize, RawSegment)> = Vec::new();
-    let mut system: Vec<(usize, RawSegment)> = Vec::new();
-    for i in 0..n {
-        if let Some(seg) = cache.raw_segment(i) {
-            match seg.track {
-                Track::Mic => mic.push((i, seg)),
-                Track::System => system.push((i, seg)),
-            }
-        }
-    }
+    let (mic, system) = segments_by_track(cache);
     let mic_segs: Vec<RawSegment> = mic.iter().map(|(_, s)| s.clone()).collect();
     let sys_segs: Vec<RawSegment> = system.iter().map(|(_, s)| s.clone()).collect();
     let speakers_of = |units: &[(usize, RawSegment)]| -> Vec<Option<usize>> {

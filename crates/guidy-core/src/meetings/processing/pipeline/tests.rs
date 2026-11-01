@@ -1751,6 +1751,47 @@ fn a_user_like_mic_line_never_joins_a_system_cluster() {
 }
 
 #[test]
+fn echo_units_are_left_out_of_clustering_and_the_transcript() {
+    use Track::{Mic, System};
+    let mut cache = cache_of(&[
+        (Mic, 0, 9_000, Some(axis(0))),
+        (Mic, 20_000, 29_000, Some(axis(0))),
+        (System, 0, 9_000, Some(axis(1))),
+        (System, 10_000, 19_000, Some(axis(1))),
+        (System, 20_000, 29_000, Some(axis(1))),
+    ]);
+    let say = |text: &str| {
+        Some(UnitTranscript {
+            text: text.into(),
+            words: Vec::new(),
+        })
+    };
+    cache.transcripts = vec![
+        say("let's ship the release on friday"),
+        say("what about the budget though"),
+        say("let's ship the release on friday"),
+        say("something else entirely here"),
+        say("we can look at numbers next"),
+    ];
+    let config = PipelineConfig::default();
+    // Line 1's 9 s alone is enough for a mic speaker; line 0 would add to it.
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert_eq!(c.labels[0], None, "an echo is nobody's");
+    assert!(c.labels[1].is_some());
+    assert_ne!(c.labels[1], c.labels[2]);
+    assert_eq!(c.voices[0], None);
+    // The merge drops the same line, and only it.
+    let (_, segments, units) = build_transcript(&cache, &c, &config);
+    assert_eq!(segments.len(), 4);
+    assert!(!units.contains(&0));
+    // A mic line no longer an echo counts again: 18 s in one cluster.
+    cache.transcripts[0] = say("completely different words said here");
+    let c = cluster_units(&cache, &config, &[], &[axis(3)]);
+    assert!(c.labels[0].is_some());
+    assert_eq!(c.labels[0], c.labels[1]);
+}
+
+#[test]
 fn without_a_recorded_voice_every_mic_line_is_the_users() {
     use Track::Mic;
     let cache = cache_of(&[
