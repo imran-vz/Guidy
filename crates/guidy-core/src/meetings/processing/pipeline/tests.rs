@@ -1734,7 +1734,10 @@ fn a_failed_separation_model_falls_back_to_the_standard_voiceprints() {
         run_with_separation_model(&f, &mut model).unwrap();
         assert_eq!(model.calls, fail_on, "stops at the first failure");
         let segments = f.store.segments(f.id).unwrap();
-        let speaker = |ms: i64| segments.iter().find(|s| s.t0_ms == ms).unwrap().speaker_id;
+        let speaker = |ms: i64| {
+            let at = |s: &&Segment| s.t0_ms <= ms && ms < s.t1_ms;
+            segments.iter().find(at).unwrap().speaker_id
+        };
         assert_eq!(speaker(1000), speaker(13000));
         assert_eq!(speaker(5000), speaker(17000));
         assert_eq!(speaker(9000), speaker(21000));
