@@ -39,6 +39,8 @@ use crate::meetings::types::Track;
 const FRAME_MS: i64 = 10;
 /// Reference boundaries this close (each way) aren't scored.
 const COLLAR_MS: i64 = 250;
+/// No meeting runs longer than this: a later RTTM time is a mistake.
+const MAX_RTTM_SECONDS: f64 = 86_400.0;
 /// A hypothesis speaker's name for the user's mic lines.
 const YOU: &str = "you";
 const CUTS: [f32; 3] = [0.4, 0.5, 0.6];
@@ -51,7 +53,8 @@ struct Turn {
     speaker: Option<String>,
 }
 
-/// The reference turns of an RTTM file.
+/// The reference turns of an RTTM file. Turns of no length are left out; they
+/// would count as a speaker and mask speech with their collar.
 fn parse_rttm(text: &str) -> Result<Vec<Turn>> {
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
@@ -68,6 +71,12 @@ fn parse_rttm(text: &str) -> Result<Vec<Turn>> {
         let Some((start, duration, name)) = parsed else {
             bail!("RTTM line {}: {line}", n + 1);
         };
+        if !(start >= 0.0 && duration >= 0.0 && start + duration <= MAX_RTTM_SECONDS) {
+            bail!("RTTM line {}: times out of range: {line}", n + 1);
+        }
+        if (duration * 1000.0).round() == 0.0 {
+            continue;
+        }
         let t0_ms = (start * 1000.0).round() as i64;
         out.push(Turn {
             t0_ms,
@@ -280,11 +289,13 @@ fn score(reference: &[Turn], hypothesis: &[Turn], collar_ms: i64) -> Score {
     let best_of_each_ref: u64 = (0..ref_ids.len())
         .map(|r| overlap.iter().map(|row| row[r]).max().unwrap_or(0))
         .sum();
+    // Speech where the reference scores none is all wrong, not perfect.
+    let whole = if total == 0 { false_alarm } else { total };
     Score {
-        der: share(missed + false_alarm + confusion, total),
-        missed: share(missed, total),
-        false_alarm: share(false_alarm, total),
-        confusion: share(confusion, total),
+        der: share(missed + false_alarm + confusion, whole),
+        missed: share(missed, whole),
+        false_alarm: share(false_alarm, whole),
+        confusion: share(confusion, whole),
         speaker_count_error: ref_ids.len().abs_diff(hyp_ids.len()),
         purity: share(best_of_each_hyp, hyp_on_ref),
         coverage: share(best_of_each_ref, ref_frames.iter().sum()),
@@ -482,6 +493,9 @@ fn load(base: &Path, m: &ManifestMeeting, models: &mut Models) -> Result<Loaded>
     let text = std::fs::read_to_string(base.join(&m.reference))
         .with_context(|| format!("read {}", m.reference.display()))?;
     let reference = parse_rttm(&text)?;
+    if reference.is_empty() {
+        bail!("{}: no speaker turns", m.reference.display());
+    }
     let system_speech = detect_speech(&system, &models.vad)?;
     let system_turns = match &models.titanet {
         Some(t) => Some(split_at_turns(
@@ -504,9 +518,16 @@ fn load(base: &Path, m: &ManifestMeeting, models: &mut Models) -> Result<Loaded>
             .filter(|t| t.speaker.as_deref() == Some(you.as_str()))
             .collect();
         turns.sort_by_key(|t| std::cmp::Reverse(t.t1_ms - t.t0_ms));
-        for t in turns.into_iter().take(3) {
-            if let Some(v) = models.resnet.embed(slice(pcm, t.t0_ms, t.t1_ms))? {
+        for t in turns {
+            let sample = slice(pcm, t.t0_ms, t.t1_ms);
+            if sample.is_empty() {
+                continue;
+            }
+            if let Some(v) = models.resnet.embed(sample)? {
                 user_voice.push(cluster::normalized(&v));
+            }
+            if user_voice.len() == 3 {
+                break;
             }
         }
     }
@@ -789,6 +810,12 @@ mod tests {
     }
 
     #[test]
+    fn speech_against_an_empty_reference_is_all_wrong() {
+        let s = score(&[], &[turn(0, 10_000, "x")], COLLAR_MS);
+        assert_eq!((s.der, s.false_alarm), (1.0, 1.0));
+    }
+
+    #[test]
     fn the_assignment_takes_the_best_total_over_the_greedy_pick() {
         // Greedy takes 9 and is left with 1; the best total is 8 + 8.
         let w = vec![vec![9, 8], vec![8, 1]];
@@ -814,6 +841,15 @@ mod tests {
         );
         assert!(parse_rttm("SPEAKER m 1 x 1 <NA> <NA> bob").is_err());
         assert!(parse_rttm("SPEAKER m 1 4").is_err());
+        for bad in [
+            "NaN 1", "inf 1", "1 inf", "1 NaN", "-1 1", "1 -1", "1 999999",
+        ] {
+            let line = format!("SPEAKER m 1 {bad} <NA> <NA> bob <NA> <NA>");
+            assert!(parse_rttm(&line).is_err(), "{bad}");
+        }
+        // No length: not a speaker at all.
+        let ghost = "SPEAKER m 1 4 0 <NA> <NA> ghost <NA> <NA>";
+        assert!(parse_rttm(ghost).unwrap().is_empty());
     }
 
     #[test]
