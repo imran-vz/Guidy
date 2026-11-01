@@ -22,6 +22,9 @@ pub const QUERY_LIMIT: Duration = Duration::from_secs(2);
 const QUERY_INTERVAL: Duration = Duration::from_secs(1);
 /// A page read this long ago still names the call, when a query fails.
 const PAGE_MEMORY: Duration = Duration::from_secs(60);
+/// Unpolled this long (suggestions off, the Mac asleep), no page held says
+/// anything about what the browsers show now.
+const POLL_GAP: Duration = Duration::from_secs(10);
 /// After macOS refuses Automation, how long before asking it again.
 const DENIED_BACKOFF: Duration = Duration::from_secs(60);
 /// After a query fails or times out, how long before trying that browser again.
@@ -143,6 +146,7 @@ pub struct TabReader {
     backoff: Vec<(String, Instant)>,
     /// App id, its page, when it was read.
     memory: Vec<(String, PageInfo, Instant)>,
+    last_poll: Option<Instant>,
 }
 
 impl TabReader {
@@ -154,12 +158,21 @@ impl TabReader {
             started: Vec::new(),
             backoff: Vec::new(),
             memory: Vec::new(),
+            last_poll: None,
         }
     }
 
     /// Only the browsers in `held` still hold the microphone: forget the
-    /// others' pages, so their next call starts fresh.
-    pub fn retain_apps(&mut self, held: &[String]) {
+    /// others' pages, so their next call starts fresh. Called every poll,
+    /// whether or not pages are read, so a finished query is always collected.
+    pub fn retain_apps(&mut self, held: &[String], now: Instant) {
+        if self
+            .last_poll
+            .replace(now)
+            .is_some_and(|last| now.saturating_duration_since(last) > POLL_GAP)
+        {
+            self.memory.clear();
+        }
         self.memory.retain(|(app, _, _)| held.contains(app));
         self.started.retain(|(app, _)| held.contains(app));
         if let Some(running) = &mut self.running {
@@ -168,6 +181,7 @@ impl TabReader {
             }
         }
         self.held = held.to_vec();
+        self.collect(now);
     }
 
     fn collect(&mut self, now: Instant) {
@@ -479,11 +493,17 @@ mod tests {
         settle(&mut reader, t0);
         // Leaving the microphone forgets the page.
         let held = ["com.apple.Safari".to_string()];
-        reader.retain_apps(&held);
+        reader.retain_apps(&held, t0);
         assert!(reader
             .memory
             .iter()
             .all(|(app, _, _)| app != "com.google.Chrome"));
+        // Not polled for a while: nothing held is trusted.
+        reader
+            .memory
+            .push(("com.apple.Safari".into(), PageInfo::default(), t0));
+        reader.retain_apps(&held, t0 + Duration::from_secs(11));
+        assert!(reader.memory.is_empty());
     }
 
     #[test]
@@ -525,7 +545,7 @@ mod tests {
         let held = [chrome.clone(), safari.clone()];
         let t0 = Instant::now();
         let mut reader = TabReader::new(query);
-        reader.retain_apps(&held);
+        reader.retain_apps(&held, t0);
         reader.page(&chrome, t0);
         assert_eq!(reader.running.as_ref().unwrap().app_id, chrome);
         settle(&mut reader, t0);
@@ -537,8 +557,7 @@ mod tests {
         assert_eq!(reader.running.as_ref().unwrap().app_id, safari);
 
         // Safari leaves mid-query: Chrome waits for it, its answer dropped.
-        reader.retain_apps(std::slice::from_ref(&chrome));
-        assert!(reader.running.as_ref().unwrap().stale);
+        reader.retain_apps(std::slice::from_ref(&chrome), t1);
         settle(&mut reader, t1);
         assert!(reader.memory.is_empty());
         reader.page(&chrome, t1 + Duration::from_secs(1));

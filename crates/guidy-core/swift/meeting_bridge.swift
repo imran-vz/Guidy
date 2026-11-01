@@ -1695,10 +1695,14 @@ public func guidyMbAudioInputProcesses() -> UnsafeMutablePointer<CChar>? {
 @_cdecl("guidy_mb_focused_web_url")
 public func guidyMbFocusedWebUrl(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     guard let bundleID = bundleID, AXIsProcessTrusted() else { return nil }
+    // The whole read stays inside the tab query's 2 s limit, however many
+    // requests time out at 250 ms each past this.
+    let deadline = Date().addingTimeInterval(1)
     return autoreleasepool { () -> UnsafeMutablePointer<CChar>? in
         for app in NSRunningApplication.runningApplications(
             withBundleIdentifier: String(cString: bundleID))
         {
+            guard Date() < deadline else { break }
             let root = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(root, 0.25)
             var focused: CFTypeRef?
@@ -1708,8 +1712,6 @@ public func guidyMbFocusedWebUrl(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
             else { continue }
             var element = start as! AXUIElement
             var address: String?
-            // The whole walk stays well inside the tab query's 2 s limit.
-            let deadline = Date().addingTimeInterval(1.5)
             for _ in 0..<64 {
                 guard Date() < deadline else { break }
                 // A timeout belongs to one element, not to those read from it.
@@ -1744,6 +1746,8 @@ public func guidyMbFocusedWebUrl(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
 public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     guard let bundleID = bundleID, AXIsProcessTrusted() else { return jsonStrings([]) }
     var titles: [String] = []
+    // Called every poll: slow windows can't hold it up for long.
+    let deadline = Date().addingTimeInterval(1)
     for app in NSRunningApplication.runningApplications(
         withBundleIdentifier: String(cString: bundleID))
     {
@@ -1755,6 +1759,7 @@ public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMuta
             == .success, let list = windows as? [AXUIElement]
         else { continue }
         for window in list {
+            guard Date() < deadline else { break }
             // A timeout belongs to one element, not to those read from it.
             AXUIElementSetMessagingTimeout(window, 0.25)
             var title: CFTypeRef?

@@ -662,9 +662,9 @@ pub fn audio_input_apps(name_browser_calls: bool) -> Vec<crate::meetings::calls:
             .collect();
         {
             let mut reader = reader.lock();
-            reader.retain_apps(if name_browser_calls { &browsers } else { &[] });
+            let now = std::time::Instant::now();
+            reader.retain_apps(if name_browser_calls { &browsers } else { &[] }, now);
             if name_browser_calls {
-                let now = std::time::Instant::now();
                 for app in apps.iter_mut().filter(|a| a.is_browser) {
                     app.page = reader.page(&app.canonical, now);
                 }
