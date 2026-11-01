@@ -241,7 +241,7 @@ impl StatusBar {
         });
     }
 
-    fn select_model(&mut self, id: String, cx: &mut Context<Self>) {
+    pub(crate) fn select_model(&mut self, id: String, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             s.pending_model = Some(id.clone());
             s.select_model(&id, cx, |s, ok, _| {

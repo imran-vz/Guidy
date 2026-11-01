@@ -444,7 +444,7 @@ mod main_window {
         assert!(backend.called("update_setting debug_mode true"));
     }
 
-    /// PARITY W-06
+    /// PARITY W-06, M-08
     #[gpui_kit::test]
     fn status_bar_shows_model_and_update_status(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
@@ -453,6 +453,16 @@ mod main_window {
         cx.run_until_parked();
         assert!(exists(cx, w, "model-selector"));
         assert!(exists(cx, w, "update-status"));
+        let (selector_x, update_x) = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                (
+                    window.find("model-selector").bounds().origin.x,
+                    window.find("update-status").bounds().origin.x,
+                )
+            })
+            .unwrap();
+        assert!(selector_x < update_x, "selector left, update status right");
         // The version is on the About page (`version-value`), not here.
         assert!(!exists(cx, w, "app-version"));
     }
@@ -1950,6 +1960,50 @@ mod gap_regressions {
         assert_eq!(
             state.read_with(cx, |s, _| s.selector_error.clone()),
             Some("bad gguf".into())
+        );
+    }
+
+    /// PARITY M-08 (a picked model shows at once, until its load ends or
+    /// the switch fails)
+    #[gpui_kit::test]
+    fn selector_keeps_the_pending_model_until_the_load_ends(cx: &mut TestAppContext) {
+        use crate::ui::status_bar::StatusBar;
+        let backend = FakeBackend::new();
+        backend.data.lock().current_model = "a".into();
+        backend.data.lock().loaded_model = Some("a".into());
+        let state = setup(cx, backend.clone());
+        let (_w, bar) = open(cx, |_, cx| StatusBar::new(cx));
+        let pending = |cx: &mut TestAppContext| state.read_with(cx, |s, _| s.pending_model.clone());
+
+        bar.update(cx, |b, cx| b.select_model("b".into(), cx));
+        assert_eq!(pending(cx), Some("b".to_string()), "shown before the call");
+        cx.run_until_parked();
+        assert!(backend.called("set_active_model b"));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.models.current_model.clone()),
+            "b"
+        );
+        assert_eq!(pending(cx), Some("b".to_string()), "still loading");
+        dispatch(
+            cx,
+            &state,
+            "model-state-changed",
+            json!({"event_type": "loading_completed"}),
+        );
+        assert_eq!(pending(cx), None);
+
+        backend.data.lock().fail_select = true;
+        bar.update(cx, |b, cx| b.select_model("c".into(), cx));
+        assert_eq!(pending(cx), Some("c".to_string()));
+        cx.run_until_parked();
+        assert_eq!(pending(cx), None, "a failed switch drops the pending model");
+        assert_eq!(
+            state.read_with(cx, |s, _| s.selector_status),
+            SelectorStatus::Error
+        );
+        assert_eq!(
+            state.read_with(cx, |s, _| s.models.current_model.clone()),
+            "b"
         );
     }
 

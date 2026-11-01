@@ -32,6 +32,7 @@ pub struct FakeData {
     pub microphone: bool,
     pub pp_models: Vec<String>,
     pub fail_download: bool,
+    pub fail_select: bool,
     pub fail_devices: bool,
     pub loaded_model: Option<String>,
     pub usage: guidy_core::llm::usage::UsageReport,
@@ -435,6 +436,9 @@ impl Backend for FakeBackend {
     }
     fn set_active_model(&self, model_id: &str) -> BackendResult<()> {
         self.rec(format!("set_active_model {model_id}"));
+        if self.data.lock().fail_select {
+            return Err("model file is damaged".into());
+        }
         self.data.lock().current_model = model_id.into();
         Ok(())
     }
