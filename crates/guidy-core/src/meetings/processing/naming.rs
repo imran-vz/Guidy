@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 
-use super::cluster::{rank_people, KnownVoice};
+use super::cluster::{self, rank_people, KnownVoice};
 use super::sidecar::{self, SegmentEmbedding};
 use crate::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
 use crate::meetings::settings::MeetingSettings;
@@ -16,6 +16,10 @@ use crate::meetings::types::*;
 /// At most this many voiceprints are stored per person per meeting (the
 /// longest segments win).
 pub const MAX_PRINTS_PER_MEETING: usize = 20;
+
+/// A line this unlike its speaker's centroid gives no voiceprint to store: it
+/// holds someone else too, and would match them to this person from now on.
+pub const PRINT_MIN_CENTROID_SIMILARITY: f32 = 0.5;
 
 /// Every named person's voiceprints, grouped per person (sorted by id, so
 /// matching is deterministic).
@@ -296,8 +300,31 @@ pub fn voice_samples(store: &MeetingsStore, person_id: PersonId) -> Result<Vec<V
     Ok(out)
 }
 
+/// The voiceprints worth keeping of `lines`: those like `centroid` (see
+/// [`PRINT_MIN_CENTROID_SIMILARITY`]; all, without one to compare with),
+/// longest first, at most [`MAX_PRINTS_PER_MEETING`].
+fn pick_prints(mut lines: Vec<SegmentEmbedding>, centroid: Option<&[f32]>) -> Vec<Vec<f32>> {
+    if let Some(c) = centroid {
+        lines.retain(|e| {
+            e.embedding.len() != c.len()
+                || cluster::cosine(&e.embedding, c) >= PRINT_MIN_CENTROID_SIMILARITY
+        });
+    }
+    lines.sort_by(|a, b| {
+        b.duration_ms
+            .cmp(&a.duration_ms)
+            .then(a.segment_id.cmp(&b.segment_id))
+    });
+    lines
+        .into_iter()
+        .take(MAX_PRINTS_PER_MEETING)
+        .map(|e| e.embedding)
+        .collect()
+}
+
 /// This speaker's voiceprints, longest segments first (at most
-/// [`MAX_PRINTS_PER_MEETING`]). Falls back to the cluster centroid when the
+/// [`MAX_PRINTS_PER_MEETING`]), without lines unlike the speaker as a whole.
+/// Falls back to the cluster centroid when the
 /// per-segment sidecar is missing.
 pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result<Vec<Vec<f32>>> {
     let segment_ids: HashSet<i64> = store
@@ -316,28 +343,18 @@ pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result
             Vec::new()
         }
     };
-    let mut mine: Vec<SegmentEmbedding> = stored
+    let mine: Vec<SegmentEmbedding> = stored
         .into_iter()
         .filter(|e| segment_ids.contains(&e.segment_id) && !e.embedding.is_empty())
         .collect();
-    mine.sort_by(|a, b| {
-        b.duration_ms
-            .cmp(&a.duration_ms)
-            .then(a.segment_id.cmp(&b.segment_id))
-    });
-    let prints: Vec<Vec<f32>> = mine
-        .into_iter()
-        .take(MAX_PRINTS_PER_MEETING)
-        .map(|e| e.embedding)
-        .collect();
+    let centroid = store
+        .speaker_embedding(speaker.id)?
+        .filter(|c| !c.is_empty());
+    let prints = pick_prints(mine, centroid.as_deref());
     if !prints.is_empty() {
         return Ok(prints);
     }
-    Ok(store
-        .speaker_embedding(speaker.id)?
-        .filter(|c| !c.is_empty())
-        .into_iter()
-        .collect())
+    Ok(centroid.into_iter().collect())
 }
 
 /// Store the speaker's voiceprints under `person_id`, skipping ones already
@@ -553,4 +570,61 @@ pub fn confirm(store: &MeetingsStore, speaker_id: SpeakerId) -> Result<()> {
         store_prints(store, &speaker, person_id)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(segment_id: i64, duration_ms: i64, embedding: Vec<f32>) -> SegmentEmbedding {
+        SegmentEmbedding {
+            segment_id,
+            duration_ms,
+            embedding,
+        }
+    }
+
+    #[test]
+    fn a_line_unlike_its_speaker_gives_no_print() {
+        let c = [1.0, 0.0];
+        let lines = vec![
+            line(1, 5_000, vec![0.9, 0.1]),
+            // The longest, and someone else.
+            line(2, 9_000, vec![0.0, 1.0]),
+            // Just over and just under.
+            line(3, 4_000, vec![0.51, 0.86]),
+            line(4, 3_000, vec![0.49, 0.87]),
+        ];
+        assert_eq!(
+            pick_prints(lines, Some(&c)),
+            vec![vec![0.9, 0.1], vec![0.51, 0.86]]
+        );
+    }
+
+    #[test]
+    fn without_a_usable_centroid_every_print_stays() {
+        let lines = || {
+            vec![
+                line(1, 5_000, vec![1.0, 0.0]),
+                line(2, 4_000, vec![0.0, 1.0]),
+            ]
+        };
+        let both = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert_eq!(pick_prints(lines(), None), both);
+        // From another model, say: nothing to compare with.
+        assert_eq!(pick_prints(lines(), Some(&[1.0, 0.0, 0.0])), both);
+    }
+
+    #[test]
+    fn the_cap_keeps_the_longest_prints_that_remain() {
+        let c = [1.0, 0.0];
+        let mut lines: Vec<SegmentEmbedding> = (0..25)
+            .map(|i| line(i, 1_000 + i, vec![1.0, i as f32 / 100.0]))
+            .collect();
+        lines.push(line(99, 99_000, vec![0.0, 1.0]));
+        let prints = pick_prints(lines, Some(&c));
+        assert_eq!(prints.len(), MAX_PRINTS_PER_MEETING);
+        assert_eq!(prints[0], vec![1.0, 0.24]);
+        assert_eq!(prints[19], vec![1.0, 0.05]);
+    }
 }

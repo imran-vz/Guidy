@@ -649,6 +649,32 @@ fn a_stored_transcript_resumes_at_the_voiceprints() {
     assert_eq!(cache.mic_ms, None);
 }
 
+#[test]
+fn an_outlier_line_gives_its_speaker_no_voiceprint() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speaker = f.store.speakers(f.id).unwrap()[1].clone();
+    let lines: Vec<i64> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(speaker.id))
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(lines.len(), 2);
+    let mut stored = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    for e in stored.iter_mut().filter(|e| e.segment_id == lines[0]) {
+        e.embedding = voice(15);
+    }
+    sidecar::write_embeddings(&f.store, f.id, &stored).unwrap();
+    let prints = naming::speaker_prints(&f.store, &speaker).unwrap();
+    assert_eq!(prints.len(), 1);
+    assert!(!prints.contains(&voice(15)));
+    let person = f.store.insert_person("Alice", None).unwrap().id;
+    assert_eq!(naming::store_prints(&f.store, &speaker, person).unwrap(), 1);
+}
+
 /// Twelve words, one a second from `t0_ms`, each lasting 900 ms.
 fn twelve_words(t0_ms: i64) -> Vec<Word> {
     (0..12)
