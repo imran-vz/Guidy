@@ -449,6 +449,17 @@ impl NativeKeysState {
                 if binding_to_hotkey.contains_key(binding_id) {
                     return Err(format!("'{binding_id}' is already registered"));
                 }
+                // Settings saved elsewhere can hold what validation rejects.
+                validate_shortcut(hotkey_string)?;
+                // The blocking manager would swallow the gesture's modifier.
+                let held_by_manager = hotkey_to_binding.values().find(|(_, other)| {
+                    single_modifier_binding(other).is_some_and(|m| m.intersects(modifiers))
+                });
+                if let Some((other_id, other)) = held_by_manager {
+                    return Err(format!(
+                        "'{hotkey_string}' overlaps '{other}' used by '{other_id}'"
+                    ));
+                }
                 gestures.register(binding_id, hotkey_string, modifiers)?;
                 debug!("Registered gesture shortcut: {binding_id} -> {hotkey_string}");
                 return Ok(());

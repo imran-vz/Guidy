@@ -23,6 +23,7 @@
 //! Anything that shows the modifier is part of a chord sends the gesture to
 //! `Dirty`, which waits for the binding to come up before listening again.
 
+use crate::transcription_coordinator::is_transcribe_binding;
 use key_listener::{Hotkey, Key, KeyEvent, Modifiers};
 use std::time::{Duration, Instant};
 
@@ -363,6 +364,28 @@ pub fn single_modifier_binding(binding: &str) -> Option<Modifiers> {
 /// Whether a binding string is a single modifier, and so uses the gesture.
 pub fn is_single_modifier_binding(binding: &str) -> bool {
     single_modifier_binding(binding).is_some()
+}
+
+/// The other binding that `new_binding` can't coexist with on `id`, if any.
+/// A gesture needs its physical key to itself: another gesture on it would
+/// compete, and a lone modifier on the blocking manager would swallow it.
+/// Checks saved settings, because registrations are suspended while recording
+/// a new shortcut, when the overlap would otherwise go unnoticed.
+pub fn conflicting_binding<'a>(
+    bindings: impl IntoIterator<Item = (&'a str, &'a str)>,
+    id: &str,
+    new_binding: &str,
+) -> Option<&'a str> {
+    let modifiers = single_modifier_binding(new_binding)?;
+    bindings
+        .into_iter()
+        .find(|&(other_id, other_binding)| {
+            other_id != id
+                && (is_transcribe_binding(id) || is_transcribe_binding(other_id))
+                && single_modifier_binding(other_binding)
+                    .is_some_and(|other| other.intersects(modifiers))
+        })
+        .map(|(_, other_binding)| other_binding)
 }
 
 #[cfg(test)]
@@ -854,6 +877,28 @@ mod tests {
         g.tick(t0 + ms(10) + ARM);
         assert_eq!(g.reset(), Some(GestureIntent::Abort));
         assert_eq!(g.state, State::Idle);
+    }
+
+    #[test]
+    fn conflicting_binding_finds_physical_overlap_with_a_gesture() {
+        let bindings = [
+            ("transcribe_with_post_process", "option_right"),
+            ("cancel", "escape"),
+            ("test", "ctrl_right"),
+        ];
+        let conflict = |id, new| conflicting_binding(bindings, id, new);
+        assert_eq!(conflict("transcribe", "option"), Some("option_right"));
+        assert_eq!(conflict("transcribe", "option_right"), Some("option_right"));
+        assert_eq!(conflict("transcribe", "ctrl"), Some("ctrl_right"));
+        assert_eq!(conflict("transcribe", "option_left"), None);
+        assert_eq!(conflict("transcribe", "option+space"), None);
+        // A binding doesn't conflict with itself, nor two manager bindings.
+        assert_eq!(
+            conflict("transcribe_with_post_process", "option_right"),
+            None
+        );
+        assert_eq!(conflict("cancel", "ctrl_right"), None);
+        assert_eq!(conflict("cancel", "option_right"), Some("option_right"));
     }
 
     #[test]

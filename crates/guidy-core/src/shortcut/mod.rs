@@ -223,6 +223,20 @@ pub fn change_binding(
         return Err(e);
     }
 
+    // Registrations may be suspended for the recorder, so check saved settings.
+    if settings.keyboard_implementation == KeyboardImplementation::NativeKeys {
+        let saved = settings
+            .bindings
+            .iter()
+            .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
+        if let Some(other) = gesture::conflicting_binding(saved, &id, &binding) {
+            let error_msg = format!("'{binding}' overlaps another shortcut, '{other}'");
+            warn!("change_binding validation error: {}", error_msg);
+            restore_registration(&app, &binding_to_modify);
+            return Err(error_msg);
+        }
+    }
+
     // Create an updated binding
     let mut updated_binding = binding_to_modify.clone();
     updated_binding.current_binding = binding;
