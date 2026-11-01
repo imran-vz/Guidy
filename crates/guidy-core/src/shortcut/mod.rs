@@ -194,6 +194,24 @@ pub fn change_binding(
         }
     };
 
+    // Registrations may be suspended for the recorder, and cancel is registered
+    // only while recording, so check saved settings. A disabled post-processing
+    // binding isn't registered and holds no key.
+    if settings.keyboard_implementation == KeyboardImplementation::NativeKeys {
+        let saved = settings
+            .bindings
+            .iter()
+            .filter(|(id, _)| {
+                settings.post_process_enabled || id.as_str() != "transcribe_with_post_process"
+            })
+            .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
+        if let Some(other) = gesture::conflicting_binding(saved, &id, &binding) {
+            let error_msg = format!("'{binding}' overlaps another shortcut, '{other}'");
+            warn!("change_binding validation error: {}", error_msg);
+            return Err(error_msg);
+        }
+    }
+
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
@@ -221,20 +239,6 @@ pub fn change_binding(
         warn!("change_binding validation error: {}", e);
         restore_registration(&app, &binding_to_modify);
         return Err(e);
-    }
-
-    // Registrations may be suspended for the recorder, so check saved settings.
-    if settings.keyboard_implementation == KeyboardImplementation::NativeKeys {
-        let saved = settings
-            .bindings
-            .iter()
-            .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
-        if let Some(other) = gesture::conflicting_binding(saved, &id, &binding) {
-            let error_msg = format!("'{binding}' overlaps another shortcut, '{other}'");
-            warn!("change_binding validation error: {}", error_msg);
-            restore_registration(&app, &binding_to_modify);
-            return Err(error_msg);
-        }
     }
 
     // Create an updated binding
