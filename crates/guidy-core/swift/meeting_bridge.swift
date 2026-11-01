@@ -873,9 +873,10 @@ private final class MicCapture {
             recovering = false
             return
         }
+        stopEngine()
+        // After the old tap is gone, so a last buffer can't say it recovered.
         // Reported until the first new buffer says it's back.
         markStalled()
-        stopEngine()
         device = plan.device
         if plan.note != note {
             note = plan.note
@@ -1424,10 +1425,11 @@ private final class SystemTapCapture {
     /// the first attempt, the tap too. Retried with backoff until Stop.
     private func rebuild(generation: Int, attempt: Int, quiet: Bool) {
         if stopped || generation != rebuildGeneration { return }
+        teardownDevice()
+        // After the old IOProc is gone, so a last buffer can't say it recovered.
         if !quiet && otherProcessIsPlaying() {
             markStalled()
         }
-        teardownDevice()
         do {
             if attempt > 0 || tapID == kAudioObjectUnknown {
                 destroyTap()
