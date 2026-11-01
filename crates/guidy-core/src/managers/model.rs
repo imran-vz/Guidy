@@ -315,6 +315,11 @@ fn hf_caches() -> Vec<Cache> {
     caches
 }
 
+/// The active shared Hugging Face cache.
+pub fn hf_cache_dir() -> PathBuf {
+    Cache::from_env().path().clone()
+}
+
 fn hf_cached_path(repo_id: &str, revision: &str, filename: &str) -> Option<PathBuf> {
     hf_cached_path_in(&hf_caches(), repo_id, revision, filename)
 }
@@ -1905,13 +1910,7 @@ impl ModelManager {
         models
             .iter()
             .filter_map(|m| {
-                let path = match &m.source {
-                    ModelSource::HuggingFace { repo_id, revision } => {
-                        hf_cached_path(repo_id, revision, &m.filename)
-                            .unwrap_or_else(|| self.models_dir.join(&m.filename))
-                    }
-                    _ => self.models_dir.join(&m.filename),
-                };
+                let path = self.downloaded_path(m);
                 fs::metadata(&path).ok().map(|meta| {
                     if meta.is_dir() {
                         crate::downloads::dir_size(&path)
@@ -1921,6 +1920,36 @@ impl ModelManager {
                 })
             })
             .sum()
+    }
+
+    /// Where a downloaded model lives: the models dir or the shared Hugging
+    /// Face cache.
+    fn downloaded_path(&self, model: &ModelInfo) -> PathBuf {
+        match &model.source {
+            ModelSource::HuggingFace { repo_id, revision } => {
+                hf_cached_path(repo_id, revision, &model.filename)
+                    .unwrap_or_else(|| self.models_dir.join(&model.filename))
+            }
+            _ => self.models_dir.join(&model.filename),
+        }
+    }
+
+    /// The real location of every downloaded model. Hugging Face snapshot
+    /// paths are symlinks: this canonicalizes them to their blobs, and
+    /// leaves out anything no longer on disk.
+    pub fn downloaded_paths(&self) -> Vec<PathBuf> {
+        let models: Vec<ModelInfo> = self
+            .available_models
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|m| m.is_downloaded)
+            .cloned()
+            .collect();
+        models
+            .iter()
+            .filter_map(|m| fs::canonicalize(self.downloaded_path(m)).ok())
+            .collect()
     }
 
     async fn download_model_inner(

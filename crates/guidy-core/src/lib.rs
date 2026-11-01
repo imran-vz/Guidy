@@ -38,6 +38,7 @@ pub mod settings;
 pub mod shortcut;
 pub mod signal_handle;
 pub mod single_instance;
+pub mod storage;
 pub mod transcription_coordinator;
 pub mod tray;
 pub mod tray_i18n;
