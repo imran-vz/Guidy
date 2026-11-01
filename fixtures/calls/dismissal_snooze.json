@@ -1,0 +1,63 @@
+{
+  "name": "dismissal_snooze",
+  "description": "Dismissed: not offered again until 60 s off the microphone.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 3000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ],
+      "dismiss": true
+    },
+    {
+      "from": 4000,
+      "to": 10000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 11000,
+      "to": 40000,
+      "apps": []
+    },
+    {
+      "from": 41000,
+      "to": 50000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 51000,
+      "to": 120000,
+      "apps": []
+    },
+    {
+      "from": 121000,
+      "to": 125000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "zoom"
+    },
+    {
+      "t": 123000,
+      "source": "zoom"
+    }
+  ]
+}

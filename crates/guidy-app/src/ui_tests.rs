@@ -4472,7 +4472,7 @@ mod recording_widget {
         // Zoom takes the microphone: after a few seconds, the hint.
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "us.zoom.xos".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(exists(cx, w, "recording-widget-blob"));
@@ -4506,7 +4506,7 @@ mod recording_widget {
         poll(cx, END_GRACE_MS + 2_000);
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "net.whatsapp.WhatsApp".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(exists(cx, w, "recording-widget-hint"));
@@ -4524,7 +4524,7 @@ mod recording_widget {
         poll(cx, END_GRACE_MS + 2_000);
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "us.zoom.xos".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(!exists(cx, w, "recording-widget-blob"));

@@ -7,7 +7,7 @@
 //! recorded, which sources are picking up sound, the live transcript and
 //! the controls.
 //!
-//! While nothing records but a call is on in Zoom, Google Meet or WhatsApp
+//! While nothing records but a call is on in another app or a browser
 //! ([`guidy_core::meetings::calls`]), it shows stopped, with a hint to take
 //! notes, until the call ends or the hint is dismissed.
 
@@ -129,12 +129,14 @@ impl WidgetModel {
     }
 
     /// The call offered notes for, unless dismissed.
-    pub fn hint_call(&self) -> Option<Call> {
-        self.call.filter(|c| Some(c.since) != self.dismissed)
+    pub fn hint_call(&self) -> Option<&Call> {
+        self.call
+            .as_ref()
+            .filter(|c| Some(c.since) != self.dismissed)
     }
 
     pub fn set_call(&mut self, call: Option<Call>) {
-        if call.map(|c| c.since) != self.call.map(|c| c.since) {
+        if call.as_ref().map(|c| c.since) != self.call.as_ref().map(|c| c.since) {
             self.start_failed = false;
         }
         self.call = call;
@@ -142,7 +144,7 @@ impl WidgetModel {
 
     /// "Not now": stop offering notes for this call.
     pub fn dismiss_call(&mut self) {
-        if let Some(c) = self.call {
+        if let Some(c) = &self.call {
             self.dismissed = Some(c.since);
         }
     }
@@ -206,7 +208,7 @@ impl WidgetModel {
                 // The live transcriber starts before the recorder reports
                 // the recording: keep what it already said.
                 live: std::mem::take(&mut self.live),
-                call: self.call,
+                call: self.call.clone(),
                 dismissed: self.dismissed,
                 ..Self::default()
             };
@@ -355,8 +357,9 @@ mod tests {
 
     fn call(since: i64) -> Call {
         Call {
-            app: guidy_core::meetings::calls::CallApp::Zoom,
+            source: guidy_core::meetings::calls::CallSource::Zoom,
             since,
+            app_id: "us.zoom.xos".into(),
         }
     }
 

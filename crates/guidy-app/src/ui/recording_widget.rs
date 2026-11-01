@@ -10,7 +10,7 @@
 //! - tucked into a corner, a leaf with the waveform and stop; a click opens
 //!   the panel beside it.
 //!
-//! While nothing records but a call is on in Zoom, Google Meet or WhatsApp,
+//! While nothing records but a call is on in another app or a browser,
 //! it shows stopped: a flat waveform and a record button, with a hint
 //! beside it to take notes ([`watch_calls`]).
 //!
@@ -264,7 +264,9 @@ pub fn set_call(call: Option<Call>, cx: &mut App) -> bool {
         if call.is_some() && s.model.call.is_none() {
             log::info!(
                 "A {} call started: offering meeting notes",
-                call.map(|c| c.app.name()).unwrap_or_default()
+                call.as_ref()
+                    .map(|c| c.source.log_name())
+                    .unwrap_or_default()
             );
         }
         s.model.set_call(call);
@@ -1420,7 +1422,7 @@ impl RecordingWidgetView {
                     .text_color(tone.text)
                     .child(t_args(
                         "meetings.widget.callTitle",
-                        &[("app", call.app.name())],
+                        &[("app", call.source.name())],
                     )),
             )
             .child(div().truncate().text_size(hud(12.)).map(|d| {

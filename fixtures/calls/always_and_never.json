@@ -1,0 +1,48 @@
+{
+  "name": "always_and_never",
+  "description": "Always records, Never is silent even on another service.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 20000,
+      "apps": []
+    },
+    {
+      "from": 21000,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "zoom",
+      "record": true
+    }
+  ],
+  "choices": [
+    {
+      "key": "zoom",
+      "label": "zoom",
+      "policy": "always"
+    },
+    {
+      "key": "teams",
+      "label": "teams",
+      "policy": "never"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "back_to_back_same_app",
+  "description": "A second Zoom call 30 s after an unanswered one: offered.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 10000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 11000,
+      "to": 40000,
+      "apps": []
+    },
+    {
+      "from": 41000,
+      "to": 45000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "zoom"
+    },
+    {
+      "t": 43000,
+      "source": "zoom"
+    }
+  ]
+}

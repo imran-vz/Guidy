@@ -252,8 +252,9 @@ fn finish_start(
     if call_demo {
         // The stopped floater offering notes for a Zoom call (no detection).
         let call = guidy_core::meetings::calls::Call {
-            app: guidy_core::meetings::calls::CallApp::Zoom,
+            source: guidy_core::meetings::calls::CallSource::Zoom,
             since: guidy_core::meetings::recorder::now_ms(),
+            app_id: "us.zoom.xos".into(),
         };
         if crate::ui::recording_widget::set_call(Some(call), cx) {
             windows::sync_recording_controls(cx);

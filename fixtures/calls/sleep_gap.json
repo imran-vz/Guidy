@@ -1,0 +1,30 @@
+{
+  "name": "sleep_gap",
+  "description": "No observations for 15 s (sleep): the count restarts at the wake.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 15000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 30000,
+      "to": 52000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 50000,
+      "source": "browser_unknown"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "unknown_page_offer",
+  "description": "A browser on an unknown page: offered at 20 s, once.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 20000,
+      "source": "browser_unknown"
+    }
+  ]
+}

@@ -632,6 +632,7 @@ pub fn audio_input_apps() -> Vec<crate::meetings::calls::InputApp> {
                     .map(macos::window_titles)
                     .unwrap_or_default(),
                 bundle_id,
+                ..Default::default()
             })
             .collect()
     }

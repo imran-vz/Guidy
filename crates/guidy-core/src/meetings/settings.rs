@@ -18,8 +18,8 @@ pub struct MeetingSettings {
     pub audio_retention_days: Option<u32>,
     /// Post "Take notes for <event>?" at a calendar event's start time.
     pub calendar_notifications: bool,
-    /// Offer to take notes (the floater, stopped) when a Zoom, Google Meet or
-    /// WhatsApp call starts ([`crate::meetings::calls`]).
+    /// Offer to take notes (the floater, stopped) when a call starts in
+    /// another app or a browser ([`crate::meetings::calls`]).
     pub suggest_notes_on_calls: bool,
     /// Minutes between "still recording" reminders.
     pub reminder_interval_minutes: u32,
