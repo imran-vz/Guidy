@@ -42,6 +42,8 @@ pub enum CaptureMessage {
     Failed,
     /// It came back up after failing (with nothing to say about its audio).
     Restarted,
+    /// The device under it changed: said for a moment, whatever else happens.
+    Switched,
     /// Its queue is full: audio is being dropped.
     Dropping,
     /// The queue drained: this many samples were dropped and made up for
@@ -59,6 +61,7 @@ impl CaptureMessage {
             "stalled" => Some(Self::Stalled),
             "recovered" => Some(Self::Recovered),
             "restarted" => Some(Self::Restarted),
+            "switched" => Some(Self::Switched),
             "dropping" => Some(Self::Dropping),
             other => {
                 if let Some(ms) = other.strip_prefix("gap:") {
@@ -197,6 +200,7 @@ impl HealthTracker {
             }
             CaptureMessage::Restarted => state.failed = false,
             CaptureMessage::Gap(_) => {}
+            CaptureMessage::Switched => state.stalled_since_tick = true,
             CaptureMessage::Dropping => state.delivery_dropping = true,
             CaptureMessage::Dropped(_) => state.delivery_dropping = false,
         }
@@ -355,6 +359,7 @@ mod tests {
         assert_eq!(CaptureMessage::parse("state:gap:1234"), Some(Gap(1234)));
         assert_eq!(CaptureMessage::parse("error: tap gone"), Some(Failed));
         assert_eq!(CaptureMessage::parse("state:gap:x"), None);
+        assert_eq!(CaptureMessage::parse("state:switched"), Some(Switched));
         assert_eq!(CaptureMessage::parse("state:dropping"), Some(Dropping));
         assert_eq!(CaptureMessage::parse("state:dropped:9"), Some(Dropped(9)));
         assert_eq!(CaptureMessage::parse("state:dropped:x"), None);
@@ -426,6 +431,18 @@ mod tests {
         assert_eq!(h.health(2_000).mic, SourceHealth::Reconnecting);
         run(&mut h, 3_000, 3_000, LIVE, LIVE);
         assert_eq!(h.health(3_000).mic, SourceHealth::Healthy);
+    }
+
+    #[test]
+    fn a_device_switch_shows_for_a_tick_without_a_stall() {
+        let mut h = HealthTracker::new(0);
+        run(&mut h, 1_000, 1_000, LIVE, ZEROS);
+        h.on_message(Track::System, CaptureMessage::Switched);
+        run(&mut h, 2_000, 2_000, LIVE, ZEROS);
+        assert_eq!(h.health(2_000).system, SourceHealth::Reconnecting);
+        // Nothing to report recovery from: it just ends.
+        run(&mut h, 3_000, 3_000, LIVE, ZEROS);
+        assert_eq!(h.health(3_000).system, SourceHealth::Healthy);
     }
 
     #[test]

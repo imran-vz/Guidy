@@ -189,10 +189,11 @@ private let outputSampleRate: Double = 16_000
 
 /// A stream with no callbacks for this long is stalled, and rebuilt.
 private let watchdogNanos: UInt64 = 3_000_000_000
-/// Waits between attempts to rebuild a stream, until it works or Stop. Short
-/// at first: a Bluetooth device settles within a few seconds of a switch, and
-/// the scorecard allows a 3 s gap.
-private let rebuildDelays: [Double] = [0.25, 0.5, 0.75, 1, 2, 4, 5]
+/// Waits between attempts to rebuild a stream, until it works or Stop. Tried
+/// often for the first 2.5 s: a Bluetooth device settles within a few seconds
+/// of a switch, and the scorecard allows a 3 s gap.
+private let rebuildDelays: [Double] =
+    [Double](repeating: 0.25, count: 10) + [0.5, 1, 2, 4, 5]
 /// With no callbacks and nothing playing, a tap may just be idle: rebuilt at
 /// most this often, and quietly (it may be dead, but nothing says so).
 private let idleRebuildNanos: UInt64 = 30_000_000_000
@@ -204,6 +205,8 @@ private let eventStalled = "state:stalled"
 private let eventRecovered = "state:recovered"
 /// It came back up after an `error:`; `state:recovered` follows audio, if any.
 private let eventRestarted = "state:restarted"
+/// The device under it changed, whether or not anything is playing to tell.
+private let eventSwitched = "state:switched"
 private func eventGap(_ nanos: UInt64) -> String { "state:gap:\(nanos / 1_000_000)" }
 
 /// Forwards converted audio to the Rust callbacks. `close()` guarantees that,
@@ -1378,6 +1381,7 @@ private final class SystemTapCapture {
     private func installDefaultOutputListener() {
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self = self else { return }
+            self.sink?.event(GUIDY_MB_STREAM_SYSTEM, eventSwitched)
             self.rebuildGeneration += 1
             self.rebuild(generation: self.rebuildGeneration, attempt: 0, quiet: false)
         }
@@ -1437,6 +1441,7 @@ private final class SystemTapCapture {
             UInt32(1)) ?? 0
         if alive != 0 && rate == watchedOutputRate { return }
         watchedOutputRate = rate
+        sink?.event(GUIDY_MB_STREAM_SYSTEM, eventSwitched)
         rebuildGeneration += 1
         rebuild(generation: rebuildGeneration, attempt: 0, quiet: false)
     }
@@ -1496,6 +1501,8 @@ private final class SystemTapCapture {
     /// the first attempt, the tap too. Retried with backoff until Stop.
     private func rebuild(generation: Int, attempt: Int, quiet: Bool) {
         if stopped || generation != rebuildGeneration { return }
+        // What this build is for: a change from here on needs another.
+        let builtForRate = defaultDevice(input: false).map { outputRate($0) } ?? 0
         teardownDevice()
         // After the old IOProc is gone, so a last buffer can't say it recovered.
         if !quiet && otherProcessIsPlaying() {
@@ -1509,6 +1516,7 @@ private final class SystemTapCapture {
             try buildDevice()
             recovering = false
             watchOutputDevice()
+            watchedOutputRate = builtForRate
             if reportedFailure {
                 reportedFailure = false
                 sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRestarted)
