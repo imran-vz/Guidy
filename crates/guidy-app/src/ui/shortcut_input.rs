@@ -266,7 +266,14 @@ impl ShortcutInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_recording() {
+        // Opening the menu cancels a live recording, whose restore write may
+        // still be running. A second write now could finish first and lose.
+        let writing = self
+            .state
+            .read(cx)
+            .settings
+            .is_updating(&format!("binding_{}", self.binding_id));
+        if self.is_recording() || writing {
             return;
         }
         if value == DICTATION_KEY_CUSTOM {

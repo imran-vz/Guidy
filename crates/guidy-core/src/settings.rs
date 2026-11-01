@@ -1026,8 +1026,9 @@ pub fn default_binding_for_implementation(
     }
 }
 
-/// A store on the system shortcut implementation can pick up the single-modifier
-/// default when its binding is missing or was salvaged. Saved chords are untouched.
+/// Salvaging can put the single-modifier default back into a store on the system
+/// shortcut implementation. Saved chords are untouched, and so is
+/// `default_binding`, which still applies if the user switches back.
 fn keep_transcribe_chord_under_system_shortcuts(settings: &mut AppSettings) -> bool {
     if settings.keyboard_implementation != KeyboardImplementation::Tauri {
         return false;
@@ -1039,7 +1040,6 @@ fn keep_transcribe_chord_under_system_shortcuts(settings: &mut AppSettings) -> b
         return false;
     }
     binding.current_binding = transcribe_chord_default().to_string();
-    binding.default_binding = transcribe_chord_default().to_string();
     true
 }
 
@@ -1177,7 +1177,7 @@ fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
     let Some(settings_value) = store.get("settings") else {
         return (get_default_settings(), true);
     };
-    let (mut settings, mut updated) =
+    let (mut settings, salvaged) =
         match serde_json::from_value::<AppSettings>(settings_value.clone()) {
             Ok(settings) => (settings, false),
             Err(e) => {
@@ -1186,20 +1186,25 @@ fn load_settings(store: &crate::host::Store) -> (AppSettings, bool) {
             }
         };
 
+    let mut updated = salvaged;
+
     if apply_settings_migrations(&mut settings, &settings_value) {
         updated = true;
     }
 
     // Merge in any bindings added since this store was written.
-    for (key, value) in default_bindings() {
+    let implementation = settings.keyboard_implementation;
+    for (key, mut value) in default_bindings() {
         if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
             debug!("Adding missing binding: {}", entry.key());
+            value.current_binding =
+                default_binding_for_implementation(&value.current_binding, implementation);
             entry.insert(value);
             updated = true;
         }
     }
 
-    if keep_transcribe_chord_under_system_shortcuts(&mut settings) {
+    if salvaged && keep_transcribe_chord_under_system_shortcuts(&mut settings) {
         updated = true;
     }
 
@@ -1553,21 +1558,6 @@ mod tests {
     }
 
     #[test]
-    fn saved_chord_survives_load() {
-        let t = TestApp::new();
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/settings/legacy_store.json"
-        );
-        let dest = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
-        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-        std::fs::copy(fixture, &dest).unwrap();
-
-        let s = get_settings(&t.app);
-        assert_eq!(s.bindings["transcribe"].current_binding, "ctrl+shift+space");
-    }
-
-    #[test]
     fn system_shortcuts_reset_to_a_chord_not_a_single_modifier() {
         use KeyboardImplementation::{NativeKeys, Tauri};
         let chord = transcribe_chord_default();
@@ -1599,6 +1589,10 @@ mod tests {
         assert_eq!(
             settings.bindings["transcribe"].current_binding,
             transcribe_chord_default()
+        );
+        assert_eq!(
+            settings.bindings["transcribe"].default_binding,
+            get_default_settings().bindings["transcribe"].default_binding
         );
 
         set(&mut settings, "ctrl+shift+k");
@@ -2189,6 +2183,21 @@ mod tests {
 mod store_compat_tests {
     use super::*;
     use crate::host::testing::TestApp;
+
+    #[test]
+    fn saved_chord_survives_load() {
+        let t = TestApp::new();
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/settings/legacy_store.json"
+        );
+        let dest = t.app.paths().app_data_dir.join(SETTINGS_STORE_PATH);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(fixture, &dest).unwrap();
+
+        let s = get_settings(&t.app);
+        assert_eq!(s.bindings["transcribe"].current_binding, "ctrl+shift+space");
+    }
 
     #[test]
     fn legacy_store_file_loads_and_migrates() {
