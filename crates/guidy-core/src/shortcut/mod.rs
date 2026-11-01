@@ -778,6 +778,9 @@ pub fn change_update_checks_setting(app: AppHandle, enabled: bool) -> Result<(),
 
     settings::update_settings(&app, |s| s.update_checks_enabled = enabled);
 
+    // The tray's "Check for Updates…" follows this setting.
+    tray::update_tray_menu(&app);
+
     let _ = app.emit(
         "settings-changed",
         serde_json::json!({

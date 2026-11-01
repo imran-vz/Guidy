@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Inställningar...",
-    "recentTranscripts": "Senaste transkriptioner",
-    "noTranscripts": "Inga transkriptioner än",
     "unloadModel": "Avlasta modell",
     "model": "Modell",
     "quit": "Avsluta",

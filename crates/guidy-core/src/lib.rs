@@ -242,7 +242,7 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool, managers: Cor
         tray::update_tray_menu(&app_handle_for_listener);
     });
 
-    // Refresh the tray's recent transcripts when history changes
+    // Refresh the tray's Copy Last Dictation item when history changes
     let app_handle_for_history = app_handle.clone();
     app_handle.listen(
         <managers::history::HistoryUpdatePayload as host::TypedEvent>::NAME,
@@ -294,6 +294,11 @@ fn init_meetings(app_handle: &AppHandle) {
     app_handle.listen(meetings::types::events::RECORDER_STATE, move |_| {
         tray::update_tray_menu(&tray_app);
     });
+    // "Copy Last Meeting Transcript" follows transcripts and deletions.
+    let tray_app = app_handle.clone();
+    app_handle.listen(meetings::types::events::MEETING_CHANGED, move |_| {
+        tray::refresh_last_meeting(&tray_app);
+    });
     // The `meetings.enabled` switch starts the manager the first time it is
     // turned on, starts/stops the scheduler, and shows or hides the tray
     // items.
@@ -303,6 +308,8 @@ fn init_meetings(app_handle: &AppHandle) {
     });
 
     start_meetings_if_wanted(app_handle);
+    // Seeds the tray if the manager was already running.
+    tray::refresh_last_meeting(app_handle);
 }
 
 /// Whether a `settings-changed` payload (`{"setting": name, ...}`) may
@@ -561,6 +568,7 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
                     let _ = app.emit(MEETINGS_READY_EVENT, ());
                     manager.start_background();
                     tray::update_tray_menu(&app);
+                    tray::refresh_last_meeting(&app);
                 }
                 Err(e) => {
                     let error = format!("{e:#}");

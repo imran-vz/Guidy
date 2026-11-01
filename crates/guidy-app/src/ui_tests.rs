@@ -2080,6 +2080,45 @@ mod meetings_page {
         (backend, m)
     }
 
+    /// PARITY E-17
+    #[gpui_kit::test]
+    fn tray_copy_event_puts_the_meeting_transcript_on_the_clipboard(cx: &mut TestAppContext) {
+        let (backend, m) = fixture();
+        let state = setup_meetings(cx, backend, m);
+        let clipboard = |cx: &mut TestAppContext| {
+            cx.update(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+        };
+        let event = guidy_core::tray::COPY_MEETING_TRANSCRIPT_EVENT;
+
+        // Meeting 2 has no segments and 99 doesn't exist: nothing is written.
+        dispatch(cx, &state, event, serde_json::json!(2));
+        dispatch(cx, &state, event, serde_json::json!(99));
+        assert_eq!(clipboard(cx), None);
+
+        dispatch(cx, &state, event, serde_json::json!(1));
+        let text = clipboard(cx).expect("transcript copied");
+        assert!(text.starts_with("# Weekly sync\n"), "{text}");
+        assert!(text.contains("Hello everyone"), "{text}");
+        assert!(text.contains("Ada: Sounds good"), "{text}");
+    }
+
+    /// PARITY E-16
+    #[test]
+    fn tray_section_event_names_a_section() {
+        use crate::ui::main_window::Section;
+        let section = |v: serde_json::Value| crate::tray_section(&v);
+        assert_eq!(
+            section(serde_json::json!("meetings")),
+            Some(Section::Meetings)
+        );
+        assert_eq!(
+            section(serde_json::json!("general")),
+            Some(Section::General)
+        );
+        assert_eq!(section(serde_json::json!("nope")), None);
+        assert_eq!(section(serde_json::Value::Null), None);
+    }
+
     #[gpui_kit::test]
     fn page_renders_list_and_records(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();

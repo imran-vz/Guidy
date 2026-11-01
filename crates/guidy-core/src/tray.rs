@@ -32,8 +32,26 @@ use log::{error, info, trace, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
+
+/// Asks the app to show the main window on a section (payload: the section
+/// id). The section type lives in the UI crate.
+pub const OPEN_SECTION_EVENT: &str = "tray-open-section";
+/// Asks the app to copy a meeting's transcript (payload: the meeting id). The
+/// export format lives in the UI crate.
+pub const COPY_MEETING_TRANSCRIPT_EVENT: &str = "tray-copy-meeting-transcript";
+
+/// The build has an update endpoint, so the app can check at all. Only the UI
+/// crate knows: see [`set_updater_configured`].
+static UPDATER_CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// Tells the tray whether "Check for Updates…" can work in this build. Call
+/// before the tray is first synced.
+pub fn set_updater_configured(configured: bool) {
+    UPDATER_CONFIGURED.store(configured, Ordering::Relaxed);
+}
 
 /// Managed marker: present once the native tray has been built. The native
 /// `tray_icon::TrayIcon` itself is main-thread-only and lives in [`NATIVE`].
@@ -72,17 +90,24 @@ struct MenuInputs {
     /// `(id, name)` of downloaded models, sorted by name.
     downloaded_models: Vec<(String, String)>,
     locale: String,
-    /// `(history id, menu label)` of the newest completed transcripts,
-    /// newest first.
-    recent_transcripts: Vec<(i64, String)>,
+    /// There is a dictation transcript to copy.
+    has_last_dictation: bool,
+    /// There is a meeting transcript to copy.
+    has_last_meeting: bool,
+    /// The build has an updater and update checks are on, so "Check for
+    /// Updates…" would do something.
+    update_checks: bool,
     meeting: MeetingMenu,
 }
 
 /// The meeting-notes part of the tray menu.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct MeetingMenu {
-    /// Show "Start/Stop Meeting Notes" (supported macOS, meetings enabled,
-    /// or a recording in progress).
+    /// The sidebar has a Meetings section (supported macOS, even with meeting
+    /// notes turned off), so the transcript and Meetings… items show.
+    supported: bool,
+    /// Show "Record Meeting"/"Stop Recording" (supported macOS, meetings
+    /// enabled, or a recording in progress).
     available: bool,
     recording: bool,
     /// Title of the meeting being recorded (the linked event's title).
@@ -149,6 +174,7 @@ fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMen
             paused_ms,
             ..
         } => MeetingMenu {
+            supported: true,
             available: true,
             recording: true,
             title: Some(title),
@@ -157,6 +183,7 @@ fn meeting_menu(app: &AppHandle, settings: &settings::AppSettings) -> MeetingMen
             paused_ms,
         },
         RecorderState::Idle => MeetingMenu {
+            supported: crate::meetings::is_supported(),
             available: manager.is_some()
                 && settings.meetings.enabled
                 && crate::meetings::is_supported(),
@@ -211,6 +238,14 @@ struct TrayInner {
     animating: bool,
     /// The meeting clock thread is running.
     meeting_clock: bool,
+    /// A meeting has a transcript to copy. Kept here because a store write can
+    /// hold the store's lock for a while and snapshots are computed on the
+    /// dictation path and the main thread: see [`refresh_last_meeting`].
+    has_last_meeting: bool,
+    /// The [`refresh_last_meeting`] thread is running.
+    meeting_lookup_running: bool,
+    /// Meetings changed since that thread last looked.
+    meeting_lookup_again: bool,
     /// Latest computed snapshot, waiting to be (or just) applied.
     desired: Option<TrayDesired>,
     /// Icon the native tray currently shows. Only updated when `set_icon`
@@ -242,6 +277,9 @@ impl TrayState {
             anim_frame: 0,
             animating: false,
             meeting_clock: false,
+            has_last_meeting: false,
+            meeting_lookup_running: false,
+            meeting_lookup_again: false,
             desired: None,
             applied_icon: None,
             applied_menu: None,
@@ -479,6 +517,64 @@ pub fn refresh_tray_icon(app: &AppHandle) {
     sync_tray(app);
 }
 
+/// Lets a later [`refresh_last_meeting`] start a new thread if this one panics.
+/// A normal exit clears the flag under the lock instead, so an event arriving
+/// just as the thread leaves isn't lost.
+struct LookupReset<'a>(&'a AppHandle);
+
+impl Drop for LookupReset<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Some(state) = self.0.try_state::<TrayState>() {
+                state.lock().meeting_lookup_running = false;
+            }
+        }
+    }
+}
+
+/// Re-checks off-thread whether a meeting has a transcript to copy, then
+/// syncs the menu. Safe to call from any thread, with any
+/// lock held: it never touches the store itself, and bursts share one lookup.
+pub fn refresh_last_meeting(app: &AppHandle) {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return;
+    };
+    {
+        let mut inner = state.lock();
+        inner.meeting_lookup_again = true;
+        if std::mem::replace(&mut inner.meeting_lookup_running, true) {
+            return;
+        }
+    }
+    let lookup_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-last-meeting".into())
+        .spawn(move || {
+            let app = &lookup_app;
+            let _reset = LookupReset(app);
+            loop {
+                let Some(state) = app.try_state::<TrayState>() else {
+                    return;
+                };
+                {
+                    let mut inner = state.lock();
+                    if !std::mem::replace(&mut inner.meeting_lookup_again, false) {
+                        inner.meeting_lookup_running = false;
+                        return;
+                    }
+                }
+                let available = last_meeting(app).is_some();
+                state.lock().has_last_meeting = available;
+                // No rebuild unless the answer changed: the applier diffs.
+                update_tray_menu(app);
+            }
+        });
+    if let Err(err) = spawned {
+        error!("Failed to start the tray meeting lookup: {err}");
+        state.lock().meeting_lookup_running = false;
+    }
+}
+
 /// Re-syncs the tray after something the menu depends on changed (model
 /// list/selection/loaded state, language, settings).
 pub fn update_tray_menu(app: &AppHandle) {
@@ -503,11 +599,16 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
 
     // Record intent and claim a sequence number in one critical section, so
     // sequence order == the order in which state changes were requested.
-    let (seq, icon_state, anim_frame) = {
+    let (seq, icon_state, anim_frame, has_last_meeting) = {
         let mut inner = state.lock();
         update(&mut inner);
         inner.next_seq += 1;
-        (inner.next_seq, inner.icon_state, inner.anim_frame)
+        (
+            inner.next_seq,
+            inner.icon_state,
+            inner.anim_frame,
+            inner.has_last_meeting,
+        )
     };
 
     // Tray not built yet (early secure-input monitor callbacks). The intent
@@ -516,7 +617,7 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
         return;
     }
 
-    let desired = compute_desired(app, icon_state, anim_frame);
+    let desired = compute_desired(app, icon_state, anim_frame, has_last_meeting);
     let start_clock =
         desired.menu.meeting.recording && !std::mem::replace(&mut state.lock().meeting_clock, true);
     if start_clock {
@@ -695,7 +796,12 @@ struct Bar {
     bottom: usize,
 }
 
-fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -> TrayDesired {
+fn compute_desired(
+    app: &AppHandle,
+    icon_state: TrayIconState,
+    anim_frame: u8,
+    has_last_meeting: bool,
+) -> TrayDesired {
     let settings = settings::get_settings(app);
     let theme = get_current_theme(app);
     let warning = crate::secure_input::tray_warning_active(app);
@@ -711,10 +817,9 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
     let meeting = meeting_menu(app, &settings);
-    let recent_transcripts = recent_transcripts(app)
-        .iter()
-        .map(|entry| (entry.id, transcript_label(last_transcript_text(entry))))
-        .collect();
+    let has_last_dictation = last_dictation(app).is_some();
+    let update_checks = UPDATER_CONFIGURED.load(Ordering::Relaxed)
+        && settings::update_checks_effectively_enabled(&settings);
 
     desired_from(
         icon_state,
@@ -727,7 +832,9 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -
             selected_model: settings.selected_model,
             downloaded_models,
             locale: settings.app_language,
-            recent_transcripts,
+            has_last_dictation,
+            has_last_meeting,
+            update_checks,
             meeting,
         },
     )
@@ -972,21 +1079,7 @@ fn build_menu(inputs: &MenuInputs) -> MenuModel {
 /// [`build_menu`] with the meeting clock read at `now` (unix ms).
 fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
     let strings = get_tray_translations(Some(inputs.locale.clone()));
-
-    // Secure Input warning entry (macOS): clicking opens the settings window
-    // where the full warning banner explains the situation. Locales that
-    // haven't translated the key yet get the English string rather than a
-    // blank menu item (build.rs emits "" for missing keys).
-    let secure_input_warning = if inputs.warning {
-        let label = if strings.secure_input_warning.is_empty() {
-            get_tray_translations(Some("en".to_string())).secure_input_warning
-        } else {
-            strings.secure_input_warning.clone()
-        };
-        Some(label)
-    } else {
-        None
-    };
+    let en = get_tray_translations(Some("en".to_string()));
 
     // Platform-specific accelerators
     #[cfg(target_os = "macos")]
@@ -994,126 +1087,157 @@ fn build_menu_at(inputs: &MenuInputs, now: i64) -> MenuModel {
     #[cfg(not(target_os = "macos"))]
     let (settings_accelerator, quit_accelerator) = (Some("Ctrl+,"), Some("Ctrl+Q"));
 
-    let settings_i = MenuEntry::item("settings", &strings.settings, true, settings_accelerator);
-    let en = get_tray_translations(Some("en".to_string()));
-    let recent_items = if inputs.recent_transcripts.is_empty() {
-        vec![MenuEntry::item(
-            "no_transcripts",
-            &or_en(&strings.no_transcripts, &en.no_transcripts),
-            false,
-            None,
-        )]
-    } else {
-        inputs
-            .recent_transcripts
-            .iter()
-            .map(|(id, label)| MenuEntry::item(&format!("copy_transcript:{id}"), label, true, None))
-            .collect()
-    };
-    let recent_transcripts_i = MenuEntry::Submenu {
-        id: "recent_transcripts".to_string(),
-        label: or_en(&strings.recent_transcripts, &en.recent_transcripts),
-        items: recent_items,
-    };
-    let quit_i = MenuEntry::item("quit", &strings.quit, true, quit_accelerator);
-
     let mut entries = Vec::new();
+    let mut tooltip = version_label();
+
+    // Secure Input warning entry (macOS), on top so it's the first actionable
+    // thing seen: clicking opens the settings window, where the full warning
+    // banner explains the situation.
+    if inputs.warning {
+        let label = or_en(&strings.secure_input_warning, &en.secure_input_warning);
+        tooltip = format!("{} — {}", tooltip, label);
+        entries.push(MenuEntry::item("secure_input_warning", &label, true, None));
+        entries.push(MenuEntry::Separator);
+    }
+
+    entries.extend(meeting_entries(inputs, &strings, &en, now));
+
+    entries.push(MenuEntry::item(
+        "copy_last_dictation",
+        &or_en(&strings.copy_last_dictation, &en.copy_last_dictation),
+        inputs.has_last_dictation,
+        None,
+    ));
+    entries.push(MenuEntry::item(
+        "settings",
+        &or_en(&strings.settings, &en.settings),
+        true,
+        settings_accelerator,
+    ));
     if inputs.busy {
-        entries.push(MenuEntry::item("cancel", &strings.cancel, true, None));
-        entries.push(MenuEntry::Separator);
-        entries.push(recent_transcripts_i);
-        entries.push(MenuEntry::Separator);
-    } else {
-        // Build model submenu — label is the active model name
-        let submenu_label = inputs
-            .downloaded_models
-            .iter()
-            .find(|(id, _)| *id == inputs.selected_model)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| strings.model.clone());
-        let items = inputs
-            .downloaded_models
-            .iter()
-            .map(|(id, name)| MenuEntry::Check {
-                id: format!("model_select:{}", id),
-                label: name.clone(),
-                checked: *id == inputs.selected_model,
-            })
-            .collect();
-        entries.push(recent_transcripts_i);
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Submenu {
-            id: "model_submenu".to_string(),
-            label: submenu_label,
-            items,
-        });
         entries.push(MenuEntry::item(
-            "unload_model",
-            &strings.unload_model,
-            inputs.model_loaded,
+            "cancel",
+            &or_en(&strings.cancel, &en.cancel),
+            true,
+            None,
+        ));
+    } else {
+        entries.push(model_submenu(inputs, &strings, &en));
+    }
+    entries.push(MenuEntry::Separator);
+
+    if inputs.update_checks {
+        entries.push(MenuEntry::item(
+            "check_updates",
+            &or_en(&strings.check_for_updates, &en.check_for_updates),
+            true,
             None,
         ));
         entries.push(MenuEntry::Separator);
     }
-    entries.push(quit_i);
 
-    // Meeting notes precede transcripts and model controls.
-    if inputs.meeting.available {
-        let mut items = Vec::new();
-        if inputs.meeting.recording {
-            items.push(MenuEntry::item(
-                "meeting_title",
-                &inputs.meeting.status_label(&strings, now),
-                false,
-                None,
-            ));
-            let (id, label, label_en) = if inputs.meeting.paused_at.is_some() {
-                (
-                    "meeting_resume",
-                    &strings.resume_meeting_notes,
-                    &en.resume_meeting_notes,
-                )
-            } else {
-                (
-                    "meeting_pause",
-                    &strings.pause_meeting_notes,
-                    &en.pause_meeting_notes,
-                )
-            };
-            items.push(MenuEntry::item(id, &or_en(label, label_en), true, None));
-            items.push(MenuEntry::item(
-                "meeting_stop",
-                &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
-                true,
-                None,
-            ));
-        } else {
-            items.push(MenuEntry::item(
-                "meeting_start",
-                &or_en(&strings.start_meeting_notes, &en.start_meeting_notes),
-                true,
-                None,
-            ));
-        }
-        items.push(MenuEntry::Separator);
-        entries.splice(0..0, items);
-    }
-
-    entries.insert(0, MenuEntry::Separator);
-    entries.insert(0, settings_i);
-
-    // The warning goes on top so it's the first actionable thing seen.
-    let mut tooltip = version_label();
-    if let Some(label) = secure_input_warning {
-        tooltip = format!("{} — {}", tooltip, label);
-        entries.insert(
-            0,
-            MenuEntry::item("secure_input_warning", &label, true, None),
-        );
-        entries.insert(1, MenuEntry::Separator);
-    }
+    entries.push(MenuEntry::item(
+        "quit",
+        &or_en(&strings.quit, &en.quit),
+        true,
+        quit_accelerator,
+    ));
 
     MenuModel { entries, tooltip }
+}
+
+/// The meeting group and the separator below it; empty where the app has no
+/// Meetings section.
+fn meeting_entries(
+    inputs: &MenuInputs,
+    strings: &TrayStrings,
+    en: &TrayStrings,
+    now: i64,
+) -> Vec<MenuEntry> {
+    let meeting = &inputs.meeting;
+    if !meeting.supported && !meeting.available {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    if meeting.recording {
+        items.push(MenuEntry::item(
+            "meeting_stop",
+            &or_en(&strings.stop_meeting_notes, &en.stop_meeting_notes),
+            true,
+            None,
+        ));
+        items.push(MenuEntry::item(
+            "meeting_title",
+            &meeting.status_label(strings, now),
+            false,
+            None,
+        ));
+        let (id, label, label_en) = if meeting.paused_at.is_some() {
+            (
+                "meeting_resume",
+                &strings.resume_meeting_notes,
+                &en.resume_meeting_notes,
+            )
+        } else {
+            (
+                "meeting_pause",
+                &strings.pause_meeting_notes,
+                &en.pause_meeting_notes,
+            )
+        };
+        items.push(MenuEntry::item(id, &or_en(label, label_en), true, None));
+    } else if meeting.available {
+        items.push(MenuEntry::item(
+            "meeting_start",
+            &or_en(&strings.start_meeting_notes, &en.start_meeting_notes),
+            true,
+            None,
+        ));
+    }
+    items.push(MenuEntry::item(
+        "copy_last_meeting",
+        &or_en(
+            &strings.copy_last_meeting_transcript,
+            &en.copy_last_meeting_transcript,
+        ),
+        inputs.has_last_meeting,
+        None,
+    ));
+    items.push(MenuEntry::item(
+        "open_meetings",
+        &or_en(&strings.meetings, &en.meetings),
+        true,
+        None,
+    ));
+    items.push(MenuEntry::Separator);
+    items
+}
+
+/// The downloaded models, then Unload Model behind a separator.
+fn model_submenu(inputs: &MenuInputs, strings: &TrayStrings, en: &TrayStrings) -> MenuEntry {
+    let mut items: Vec<MenuEntry> = inputs
+        .downloaded_models
+        .iter()
+        .map(|(id, name)| MenuEntry::Check {
+            id: format!("model_select:{}", id),
+            label: name.clone(),
+            checked: *id == inputs.selected_model,
+        })
+        .collect();
+    if !items.is_empty() {
+        items.push(MenuEntry::Separator);
+    }
+    items.push(MenuEntry::item(
+        "unload_model",
+        &or_en(&strings.unload_model, &en.unload_model),
+        inputs.model_loaded,
+        None,
+    ));
+    MenuEntry::Submenu {
+        id: "model_submenu".to_string(),
+        label: or_en(&strings.model, &en.model),
+        items,
+    }
 }
 
 fn to_native_menu(model: &MenuModel) -> Result<tray_icon::menu::Menu, String> {
@@ -1172,35 +1296,28 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
         .unwrap_or(&entry.transcription_text)
 }
 
-/// How many recent transcripts the tray offers to copy.
-const RECENT_TRANSCRIPTS: usize = 3;
-/// Longest transcript preview shown in the tray, in characters.
-const TRANSCRIPT_LABEL_CHARS: usize = 40;
-
-fn recent_transcripts(app: &AppHandle) -> Vec<HistoryEntry> {
-    let Some(history) = app.try_state::<Arc<HistoryManager>>() else {
-        return Vec::new();
-    };
-    match history.get_recent_completed_entries(RECENT_TRANSCRIPTS) {
-        Ok(entries) => entries
-            .into_iter()
-            .filter(|entry| !last_transcript_text(entry).trim().is_empty())
-            .collect(),
+fn last_dictation(app: &AppHandle) -> Option<HistoryEntry> {
+    let history = app.try_state::<Arc<HistoryManager>>()?;
+    match history.get_latest_copyable_entry() {
+        Ok(entry) => entry,
         Err(err) => {
-            error!("Failed to fetch recent transcripts for the tray: {}", err);
-            Vec::new()
+            error!("Failed to fetch the last transcript for the tray: {}", err);
+            None
         }
     }
 }
 
-/// A one-line preview of a transcript for its tray item.
-fn transcript_label(text: &str) -> String {
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if line.chars().count() <= TRANSCRIPT_LABEL_CHARS {
-        return line;
+/// The newest meeting with a transcript. `None` until the meetings manager
+/// has started. Reads the store: not for the main thread or the dictation path.
+fn last_meeting(app: &AppHandle) -> Option<crate::meetings::types::MeetingId> {
+    let manager = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>()?;
+    match manager.latest_transcribed_meeting() {
+        Ok(id) => id,
+        Err(err) => {
+            error!("Failed to find the last meeting for the tray: {err:#}");
+            None
+        }
     }
-    let cut: String = line.chars().take(TRANSCRIPT_LABEL_CHARS - 1).collect();
-    format!("{}…", cut.trim_end())
 }
 
 pub fn set_tray_visibility(app: &AppHandle, visible: bool) {
@@ -1245,10 +1362,10 @@ pub fn recreate_tray_icon(app: &AppHandle) {
     });
 }
 
-/// Copies the recent transcript with history id `id` to the clipboard.
-pub fn copy_transcript(app: &AppHandle, id: i64) {
-    let Some(entry) = recent_transcripts(app).into_iter().find(|e| e.id == id) else {
-        warn!("Transcript {} is no longer available for tray copy.", id);
+/// Copies the latest dictation transcript to the clipboard.
+fn copy_last_dictation(app: &AppHandle) {
+    let Some(entry) = last_dictation(app) else {
+        warn!("No transcript is available for tray copy.");
         return;
     };
 
@@ -1258,7 +1375,15 @@ pub fn copy_transcript(app: &AppHandle, id: i64) {
         return;
     }
 
-    info!("Copied transcript {} to clipboard via tray.", id);
+    info!("Copied transcript {} to clipboard via tray.", entry.id);
+}
+
+/// Shows the main window on `section` (a section id of the UI crate).
+fn open_section(app: &AppHandle, section: &str) {
+    if let Err(err) = app.emit(OPEN_SECTION_EVENT, section) {
+        error!("Failed to open the {section} section: {err}");
+        app.shell().show_main_window();
+    }
 }
 
 /// Build the native tray icon. Must run on the main thread, after the
@@ -1358,10 +1483,33 @@ fn build_native_tray(app: &AppHandle) -> Result<(), String> {
 /// Tray menu actions.
 pub fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
-        "settings" | "secure_input_warning" => {
-            // The secure-input entry opens the window, where the full
-            // warning banner explains the situation.
+        "settings" => open_section(app, "general"),
+        "open_meetings" => open_section(app, "meetings"),
+        "secure_input_warning" => {
+            // Opens the window, where the full warning banner explains the
+            // situation.
             app.shell().show_main_window();
+        }
+        "copy_last_dictation" => copy_last_dictation(app),
+        "copy_last_meeting" => {
+            // The store must not be read on the main thread.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let Some(id) = last_meeting(&app) else {
+                    warn!("No meeting transcript is available for tray copy.");
+                    return;
+                };
+                if let Err(err) = app.emit(COPY_MEETING_TRANSCRIPT_EVENT, id) {
+                    error!("Failed to copy the transcript of meeting {id}: {err}");
+                }
+            });
+        }
+        "check_updates" => {
+            // The result shows in the window's footer.
+            app.shell().show_main_window();
+            if let Err(err) = crate::trigger_update_check(app.clone()) {
+                error!("Failed to check for updates: {err}");
+            }
         }
         "unload_model" => {
             let transcription_manager = app.state::<Arc<TranscriptionManager>>();
@@ -1408,11 +1556,6 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "quit" => {
             app.exit(0);
         }
-        id if id.starts_with("copy_transcript:") => {
-            if let Ok(entry_id) = id["copy_transcript:".len()..].parse::<i64>() {
-                copy_transcript(app, entry_id);
-            }
-        }
         id if id.starts_with("model_select:") => {
             let model_id = id.strip_prefix("model_select:").unwrap().to_string();
             let current_model = settings::get_settings(app).selected_model;
@@ -1436,8 +1579,8 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 mod tests {
     use super::{
         build_menu, build_menu_at, desired_from, effective_icon_state, get_icon_path,
-        last_transcript_text, load_tray_icon, transcript_label, waveform_frame, AppTheme,
-        MeetingMenu, MenuEntry, MenuInputs, TrayDesired, TrayIconState, ANIMATION_FRAMES,
+        last_transcript_text, load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry,
+        MenuInputs, MenuModel, TrayDesired, TrayIconState, ANIMATION_FRAMES,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -1463,7 +1606,9 @@ mod tests {
             selected_model: "small".to_string(),
             downloaded_models: vec![("small".to_string(), "Small".to_string())],
             locale: "en".to_string(),
-            recent_transcripts: vec![(7, "Hello world".to_string())],
+            has_last_dictation: true,
+            has_last_meeting: true,
+            update_checks: true,
             meeting: MeetingMenu::default(),
         }
     }
@@ -1524,44 +1669,125 @@ mod tests {
             .collect()
     }
 
+    fn model_items(menu: &MenuModel) -> Vec<MenuEntry> {
+        menu.entries
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Submenu { id, items, .. } if id == "model_submenu" => {
+                    Some(items.clone())
+                }
+                _ => None,
+            })
+            .expect("model submenu")
+    }
+
+    fn enabled(menu: &MenuModel, wanted: &str) -> bool {
+        menu.entries
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Item { id, enabled, .. } if id == wanted => Some(*enabled),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {wanted} item"))
+    }
+
     #[test]
     fn idle_menu_has_model_submenu_and_unload() {
         let menu = build_menu(&inputs(false));
-        let ids = ids(&menu.entries);
-        assert_eq!(ids[0], "settings");
-        assert!(!ids.contains(&"check_updates".to_string()));
-        assert!(!ids.contains(&"version".to_string()));
-        assert!(ids.contains(&"model_submenu".to_string()));
-        assert!(ids.contains(&"unload_model".to_string()));
-        assert!(!ids.contains(&"cancel".to_string()));
-        assert_eq!(ids.last().unwrap(), "quit");
-        let sub = menu
+        assert_eq!(
+            ids(&menu.entries),
+            [
+                "copy_last_dictation",
+                "settings",
+                "model_submenu",
+                "---",
+                "check_updates",
+                "---",
+                "quit",
+            ]
+        );
+        let label = menu.entries.iter().find_map(|e| match e {
+            MenuEntry::Submenu { label, .. } => Some(label.as_str()),
+            _ => None,
+        });
+        assert_eq!(label, Some("Transcription Model"));
+        assert_eq!(
+            model_items(&menu),
+            vec![
+                MenuEntry::Check {
+                    id: "model_select:small".into(),
+                    label: "Small".into(),
+                    checked: true
+                },
+                MenuEntry::Separator,
+                MenuEntry::Item {
+                    id: "unload_model".into(),
+                    label: "Unload Model".into(),
+                    enabled: true,
+                    accelerator: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn labels_and_accelerators_match_the_design() {
+        let mut i = inputs(false);
+        i.meeting.supported = true;
+        i.meeting.available = true;
+        let labels: Vec<(String, String, Option<&'static str>)> = build_menu(&i)
             .entries
             .iter()
-            .find_map(|e| match e {
-                MenuEntry::Submenu {
-                    id, label, items, ..
-                } if id == "model_submenu" => Some((label.clone(), items.clone())),
+            .filter_map(|e| match e {
+                MenuEntry::Item {
+                    id,
+                    label,
+                    accelerator,
+                    ..
+                } => Some((id.clone(), label.clone(), *accelerator)),
                 _ => None,
             })
-            .unwrap();
-        assert_eq!(sub.0, "Small");
-        assert_eq!(
-            sub.1,
-            vec![MenuEntry::Check {
-                id: "model_select:small".into(),
-                label: "Small".into(),
-                checked: true
-            }]
-        );
+            .collect();
+        let settings = if cfg!(target_os = "macos") {
+            "Cmd+,"
+        } else {
+            "Ctrl+,"
+        };
+        let quit = if cfg!(target_os = "macos") {
+            "Cmd+Q"
+        } else {
+            "Ctrl+Q"
+        };
+        let expected: Vec<(String, String, Option<&'static str>)> = [
+            ("meeting_start", "Record Meeting", None),
+            ("copy_last_meeting", "Copy Last Meeting Transcript", None),
+            ("open_meetings", "Meetings…", None),
+            ("copy_last_dictation", "Copy Last Dictation", None),
+            ("settings", "Settings…", Some(settings)),
+            ("check_updates", "Check for Updates…", None),
+            ("quit", "Quit Guidy", Some(quit)),
+        ]
+        .into_iter()
+        .map(|(id, label, accelerator)| (id.to_string(), label.to_string(), accelerator))
+        .collect();
+        assert_eq!(labels, expected);
     }
 
     #[test]
     fn busy_menu_offers_cancel_instead_of_models() {
         let ids = ids(&build_menu(&inputs(true)).entries);
-        assert_eq!(ids[0], "settings");
-        assert_eq!(ids[2], "cancel");
-        assert!(!ids.contains(&"model_submenu".to_string()));
+        assert_eq!(
+            ids,
+            [
+                "copy_last_dictation",
+                "settings",
+                "cancel",
+                "---",
+                "check_updates",
+                "---",
+                "quit",
+            ]
+        );
     }
 
     #[test]
@@ -1571,6 +1797,7 @@ mod tests {
         let menu = build_menu(&i);
         assert_eq!(menu.entries[0].id(), Some("secure_input_warning"));
         assert_eq!(menu.entries[1], MenuEntry::Separator);
+        assert_eq!(menu.entries[2].id(), Some("copy_last_dictation"));
         assert!(menu.tooltip.contains(" — "));
     }
 
@@ -1578,69 +1805,65 @@ mod tests {
     fn unload_disabled_when_no_model_loaded() {
         let mut i = inputs(false);
         i.model_loaded = false;
-        let menu = build_menu(&i);
-        assert!(menu.entries.iter().any(|e| matches!(
+        let items = model_items(&build_menu(&i));
+        assert!(items.iter().any(|e| matches!(
             e,
             MenuEntry::Item { id, enabled: false, .. } if id == "unload_model"
         )));
     }
 
-    fn recent_submenu(menu: &super::MenuModel) -> Vec<MenuEntry> {
-        menu.entries
-            .iter()
-            .find_map(|e| match e {
-                MenuEntry::Submenu { id, items, .. } if id == "recent_transcripts" => {
-                    Some(items.clone())
-                }
-                _ => None,
-            })
-            .expect("recent transcripts submenu")
+    #[test]
+    fn model_submenu_has_no_leading_separator_without_models() {
+        let mut i = inputs(false);
+        i.downloaded_models.clear();
+        assert_eq!(ids(&model_items(&build_menu(&i))), ["unload_model"]);
     }
 
     #[test]
-    fn recent_transcripts_submenu_lists_copyable_items() {
+    fn copy_last_dictation_is_disabled_without_a_transcript() {
         for busy in [false, true] {
             let mut i = inputs(busy);
-            i.recent_transcripts = vec![(9, "newest".into()), (4, "older".into())];
-            let items = recent_submenu(&build_menu(&i));
-            assert_eq!(
-                items,
-                vec![
-                    MenuEntry::Item {
-                        id: "copy_transcript:9".into(),
-                        label: "newest".into(),
-                        enabled: true,
-                        accelerator: None,
-                    },
-                    MenuEntry::Item {
-                        id: "copy_transcript:4".into(),
-                        label: "older".into(),
-                        enabled: true,
-                        accelerator: None,
-                    },
-                ]
-            );
+            assert!(enabled(&build_menu(&i), "copy_last_dictation"));
+            i.has_last_dictation = false;
+            assert!(!enabled(&build_menu(&i), "copy_last_dictation"));
         }
     }
 
     #[test]
-    fn recent_transcripts_submenu_says_when_empty() {
+    fn copy_last_meeting_is_disabled_without_a_meeting() {
         let mut i = inputs(false);
-        i.recent_transcripts.clear();
-        let items = recent_submenu(&build_menu(&i));
-        assert!(matches!(
-            items.as_slice(),
-            [MenuEntry::Item { id, enabled: false, .. }] if id == "no_transcripts"
-        ));
+        i.meeting.supported = true;
+        assert!(enabled(&build_menu(&i), "copy_last_meeting"));
+        i.has_last_meeting = false;
+        assert!(!enabled(&build_menu(&i), "copy_last_meeting"));
     }
 
     #[test]
-    fn transcript_labels_are_one_short_line() {
-        assert_eq!(transcript_label("  hello\n  world "), "hello world");
-        let long = "word ".repeat(20);
-        let label = transcript_label(&long);
-        assert_eq!(label.chars().count(), 40);
-        assert!(label.ends_with('…'));
+    fn check_for_updates_is_hidden_when_update_checks_are_off() {
+        let mut i = inputs(false);
+        i.update_checks = false;
+        assert_eq!(
+            ids(&build_menu(&i).entries),
+            [
+                "copy_last_dictation",
+                "settings",
+                "model_submenu",
+                "---",
+                "quit"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_menu_has_no_recent_transcripts_submenu() {
+        let menu = build_menu(&inputs(false));
+        let submenus: Vec<_> = menu
+            .entries
+            .iter()
+            .filter(|e| matches!(e, MenuEntry::Submenu { .. }))
+            .collect();
+        assert_eq!(submenus.len(), 1);
+        assert_eq!(submenus[0].id(), Some("model_submenu"));
     }
 
     #[test]
@@ -1656,30 +1879,43 @@ mod tests {
     fn meeting_items_hidden_when_unavailable() {
         let ids = ids(&build_menu(&inputs(false)).entries);
         assert!(!ids.iter().any(|id| id.starts_with("meeting_")));
+        assert!(!ids.contains(&"copy_last_meeting".to_string()));
+        assert!(!ids.contains(&"open_meetings".to_string()));
+        assert_eq!(ids[0], "copy_last_dictation");
+    }
+
+    #[test]
+    fn meetings_turned_off_keep_past_transcripts_but_cannot_record() {
+        let mut i = inputs(false);
+        i.meeting.supported = true;
+        assert_eq!(
+            ids(&build_menu(&i).entries)[..3],
+            ["copy_last_meeting", "open_meetings", "---"]
+        );
     }
 
     #[test]
     fn meeting_start_item_when_idle() {
         let mut i = inputs(false);
+        i.meeting.supported = true;
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert_eq!(menu.entries[2].id(), Some("meeting_start"));
-        assert_eq!(menu.entries[3], MenuEntry::Separator);
         assert!(matches!(
-            &menu.entries[2],
-            MenuEntry::Item { label, enabled: true, .. } if label == "Start Meeting Notes"
+            &menu.entries[0],
+            MenuEntry::Item { label, enabled: true, .. } if label == "Record Meeting"
         ));
         assert_eq!(
             ids(&menu.entries),
             [
-                "settings",
-                "---",
                 "meeting_start",
+                "copy_last_meeting",
+                "open_meetings",
                 "---",
-                "recent_transcripts",
-                "---",
+                "copy_last_dictation",
+                "settings",
                 "model_submenu",
-                "unload_model",
+                "---",
+                "check_updates",
                 "---",
                 "quit",
             ]
@@ -1691,6 +1927,7 @@ mod tests {
         for busy in [false, true] {
             let mut i = inputs(busy);
             i.meeting = MeetingMenu {
+                supported: true,
                 available: true,
                 recording: true,
                 title: Some("Weekly sync".into()),
@@ -1699,7 +1936,16 @@ mod tests {
             };
             let menu = build_menu_at(&i, 1_000 + 754_000);
             assert_eq!(
-                menu.entries[2],
+                menu.entries[0],
+                MenuEntry::Item {
+                    id: "meeting_stop".into(),
+                    label: "Stop Recording".into(),
+                    enabled: true,
+                    accelerator: None,
+                }
+            );
+            assert_eq!(
+                menu.entries[1],
                 MenuEntry::Item {
                     id: "meeting_title".into(),
                     label: "● Weekly sync · 12:34".into(),
@@ -1707,8 +1953,9 @@ mod tests {
                     accelerator: None,
                 }
             );
-            assert_eq!(menu.entries[3].id(), Some("meeting_pause"));
-            assert_eq!(menu.entries[4].id(), Some("meeting_stop"));
+            assert_eq!(menu.entries[2].id(), Some("meeting_pause"));
+            assert_eq!(menu.entries[3].id(), Some("copy_last_meeting"));
+            assert_eq!(menu.entries[4].id(), Some("open_meetings"));
             assert_eq!(menu.entries[5], MenuEntry::Separator);
             assert!(!ids(&menu.entries).contains(&"meeting_start".to_string()));
         }
@@ -1718,6 +1965,7 @@ mod tests {
     fn paused_meeting_offers_resume_and_freezes_the_clock() {
         let mut i = inputs(false);
         i.meeting = MeetingMenu {
+            supported: true,
             available: true,
             recording: true,
             title: Some("Weekly sync".into()),
@@ -1727,19 +1975,25 @@ mod tests {
         };
         let menu = build_menu_at(&i, 500_000);
         assert!(matches!(
-            &menu.entries[2],
+            &menu.entries[1],
             MenuEntry::Item { label, .. } if label == "❚❚ Paused · 1:05"
         ));
-        assert_eq!(menu.entries[3].id(), Some("meeting_resume"));
+        assert_eq!(menu.entries[2].id(), Some("meeting_resume"));
     }
 
     #[test]
     fn untranslated_meeting_labels_fall_back_to_english() {
         let mut i = inputs(false);
         i.locale = "de".to_string();
+        i.meeting.supported = true;
         i.meeting.available = true;
         let menu = build_menu(&i);
-        assert!(matches!(&menu.entries[2], MenuEntry::Item { label, .. } if !label.is_empty()));
+        assert!(matches!(&menu.entries[0], MenuEntry::Item { label, .. } if !label.is_empty()));
+        // New keys are English-only for now.
+        assert!(matches!(
+            &menu.entries[1],
+            MenuEntry::Item { label, .. } if label == "Copy Last Meeting Transcript"
+        ));
     }
 
     #[test]
@@ -1781,10 +2035,11 @@ mod tests {
             desired.icon_path,
             get_icon_path(AppTheme::Dark, TrayIconState::Recording, false)
         );
-        let ids = ids(&build_menu(&desired.menu).entries);
+        let menu = build_menu(&desired.menu);
+        assert!(ids(&model_items(&menu)).contains(&"unload_model".to_string()));
+        let ids = ids(&menu.entries);
         assert!(ids.contains(&"meeting_stop".to_string()));
         assert!(ids.contains(&"model_submenu".to_string()));
-        assert!(ids.contains(&"unload_model".to_string()));
         assert!(!ids.contains(&"cancel".to_string()));
 
         // Dictation busy during a meeting: Cancel shows, dictation's icon wins.

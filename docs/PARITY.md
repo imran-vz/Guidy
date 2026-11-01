@@ -50,6 +50,8 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | E-13 | native-keys-event | Shortcut recorder | test: native_keys_recording_commits_on_key_release |
 | E-14 | check-for-updates | Manual update check | test: tray_update_check_event_runs_a_manual_check |
 | E-15 | log stream | Debug live log viewer | test: live_logs_buffer_and_clear, test: level_numbers_match_the_log_viewer |
+| E-16 | tray-open-section (section id) | Main window opens on that section | test: tray_section_event_names_a_section, manual: HW-04 |
+| E-17 | tray-copy-meeting-transcript (meeting id) | The meeting page's transcript export goes on the clipboard | test: tray_copy_event_puts_the_meeting_transcript_on_the_clipboard |
 
 ## S. Startup, CLI, process
 
@@ -74,10 +76,10 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 
 | ID | Behavior | Cover |
 |---|---|---|
-| T-01 | Menu items: settings, recent transcripts submenu (last 3, `copy_transcript:<id>`), unload model, cancel (only while busy), model submenu `model_select:<id>`, quit; secure-input warning item | test: idle_menu_has_model_submenu_and_unload, test: recent_transcripts_submenu_lists_copyable_items, test: busy_menu_offers_cancel_instead_of_models, test: secure_input_warning_is_slotted_below_version, manual: HW-04 |
+| T-01 | Menu, top to bottom: secure-input warning (when active); `meeting_start` Record Meeting, or while recording `meeting_stop` Stop Recording, `meeting_title` status, `meeting_pause`/`meeting_resume`; `copy_last_meeting` (disabled if none); `open_meetings` Meetings…; `copy_last_dictation` (disabled if none); `settings` Settings… (Cmd/Ctrl+,); `model_submenu` Transcription Model with `model_select:<id>` then `unload_model` behind a separator, or `cancel` while dictation is busy; `check_updates` (hidden when update checks are off or the build has no updater); `quit` Quit Guidy. The meeting group shows only where the Meetings section exists; Record Meeting needs meetings enabled | test: idle_menu_has_model_submenu_and_unload, test: labels_and_accelerators_match_the_design, test: the_menu_has_no_recent_transcripts_submenu, test: copy_last_dictation_is_disabled_without_a_transcript, test: copy_last_meeting_is_disabled_without_a_meeting, test: check_for_updates_is_hidden_when_update_checks_are_off, test: meetings_turned_off_keep_past_transcripts_but_cannot_record, test: busy_menu_offers_cancel_instead_of_models, test: secure_input_warning_is_slotted_below_version, test: latest_copyable_entry_looks_past_any_number_of_blank_entries, test: latest_transcribed_meeting_skips_recording_and_blank_meetings, manual: HW-04 |
 | T-02 | Icon states: idle / recording / transcribing / warning, each with light and dark variants; updates on OS theme change | test: recording_and_transcribing_share_a_menu, test: tray_icon_returns_err_when_file_does_not_exist, manual: HW-04 |
 | T-03 | Localized labels from the locale (exact → Chinese script → base → en) | test: localized_labels_follow_the_locale, test: resolves_locale_fallbacks |
-| T-04 | `show_tray_icon` toggle; refresh on model-state-changed and on OS light/dark changes (also with no window open); Linux tray runs on its own GTK thread | test: unload_disabled_when_no_model_loaded_and_updates_disabled, test: app_group_rows_and_overlay_position_visibility, manual: HW-04 |
+| T-04 | `show_tray_icon` toggle; refresh on model-state-changed and on OS light/dark changes (also with no window open); Linux tray runs on its own GTK thread | test: unload_disabled_when_no_model_loaded, test: app_group_rows_and_overlay_position_visibility, manual: HW-04 |
 
 ## R. Recording pipeline (core)
 
@@ -265,7 +267,7 @@ Platform tags: **[mac] [win] [lin] [wl]** (Wayland). Rows without a tag apply to
 | HW-01 | First-run mic + accessibility permission prompts | mac, win |
 | HW-02 | Dictate into TextEdit/Notepad/gedit, Chrome, Terminal with each paste method | all |
 | HW-03 | Hold / toggle / push-to-talk / cancel on a physical keyboard | all |
-| HW-04 | Tray menu + model switching; icon states in light and dark menu bar | all |
+| HW-04 | Tray menu: every item in T-01 acts (both copy items paste the right text, Meetings… and Settings… open the right section with the window closed and open, Check for Updates… shows its result in the footer) + model switching and Unload Model; icon states in light and dark menu bar | all |
 | HW-05 | Overlay top/bottom on a secondary monitor; does not steal focus | all, wl |
 | HW-06 | Autostart after reboot | all |
 | HW-07 | Update N → N+1 via the updater | all |

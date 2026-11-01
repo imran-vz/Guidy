@@ -547,6 +547,41 @@ impl HistoryManager {
         Self::get_recent_completed_entries_with_conn(&conn, limit)
     }
 
+    /// The newest entry whose text (post-processed if any, else raw) isn't
+    /// blank: what the tray's "Copy Last Dictation" copies.
+    pub fn get_latest_copyable_entry(&self) -> Result<Option<HistoryEntry>> {
+        let conn = self.get_connection()?;
+        Self::get_latest_copyable_entry_with_conn(&conn)
+    }
+
+    /// The `TRIM` set is Rust's `char::is_whitespace`.
+    fn get_latest_copyable_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
+        Ok(conn
+            .query_row(
+                "SELECT
+                    id,
+                    file_name,
+                    timestamp,
+                    saved,
+                    title,
+                    transcription_text,
+                    post_processed_text,
+                    post_process_prompt,
+                    post_process_requested
+                 FROM transcription_history
+                 WHERE TRIM(COALESCE(post_processed_text, transcription_text), char(
+                     9, 10, 11, 12, 13, 32, 133, 160, 5760,
+                     8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+                     8232, 8233, 8239, 8287, 12288
+                 )) <> ''
+                 ORDER BY timestamp DESC, id DESC
+                 LIMIT 1",
+                [],
+                Self::map_history_entry,
+            )
+            .optional()?)
+    }
+
     fn get_recent_completed_entries_with_conn(
         conn: &Connection,
         limit: usize,
@@ -753,6 +788,39 @@ mod tests {
 
         assert_eq!(entry.timestamp, 100);
         assert_eq!(entry.transcription_text, "completed");
+    }
+
+    #[test]
+    fn latest_copyable_entry_looks_past_any_number_of_blank_entries() {
+        let conn = setup_conn();
+        assert!(HistoryManager::get_latest_copyable_entry_with_conn(&conn)
+            .expect("fetch copyable entry")
+            .is_none());
+
+        insert_entry(&conn, 100, "keep me", None);
+        insert_entry(&conn, 200, "raw", Some(" \n\u{a0}"));
+        for timestamp in 300..310 {
+            insert_entry(&conn, timestamp, " \t\u{3000}", None);
+        }
+        insert_entry(&conn, 400, "", None);
+
+        let entry = HistoryManager::get_latest_copyable_entry_with_conn(&conn)
+            .expect("fetch copyable entry")
+            .expect("copyable entry exists");
+        assert_eq!(entry.timestamp, 100);
+
+        insert_entry(&conn, 500, " ", Some("processed"));
+        let entry = HistoryManager::get_latest_copyable_entry_with_conn(&conn)
+            .expect("fetch copyable entry")
+            .expect("copyable entry exists");
+        assert_eq!(entry.timestamp, 500);
+
+        // Post-processed text counts even when the raw text is empty.
+        insert_entry(&conn, 600, "", Some("processed only"));
+        let entry = HistoryManager::get_latest_copyable_entry_with_conn(&conn)
+            .expect("fetch copyable entry")
+            .expect("copyable entry exists");
+        assert_eq!(entry.timestamp, 600);
     }
 
     #[test]

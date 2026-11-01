@@ -486,6 +486,11 @@ impl MeetingsManager {
         self.store.list_meetings()
     }
 
+    /// The newest meeting with transcript text, for the tray.
+    pub fn latest_transcribed_meeting(&self) -> Result<Option<MeetingId>> {
+        self.store.latest_transcribed_meeting()
+    }
+
     pub fn get_meeting(&self, id: MeetingId) -> Result<Option<Meeting>> {
         self.store.get_meeting(id)
     }

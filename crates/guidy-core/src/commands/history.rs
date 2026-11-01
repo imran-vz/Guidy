@@ -101,6 +101,9 @@ pub async fn update_history_limit(
         .cleanup_old_entries()
         .map_err(|e| e.to_string())?;
 
+    // Cleanup may have removed what "Copy Last Dictation" would copy.
+    crate::tray::update_tray_menu(&app);
+
     Ok(())
 }
 pub async fn update_recording_retention_period(
@@ -124,6 +127,9 @@ pub async fn update_recording_retention_period(
     history_manager
         .cleanup_old_entries()
         .map_err(|e| e.to_string())?;
+
+    // Cleanup may have removed what "Copy Last Dictation" would copy.
+    crate::tray::update_tray_menu(&app);
 
     Ok(())
 }

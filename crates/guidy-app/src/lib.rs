@@ -227,6 +227,7 @@ fn finish_start(
             return;
         }
     };
+    guidy_core::tray::set_updater_configured(updater::configured());
     let decision = guidy_core::initialize_app(&app, &cli_args, !cli_args.no_tray, managers);
     state.update(cx, |s, cx| s.core_ready(cx));
 
@@ -537,6 +538,44 @@ fn spawn_event_loop(
     .detach();
 }
 
+/// The section a tray "open section" event asks for.
+fn tray_section(payload: &serde_json::Value) -> Option<crate::ui::main_window::Section> {
+    payload
+        .as_str()
+        .and_then(crate::ui::main_window::Section::from_id)
+}
+
+/// Puts meeting `id`'s transcript on the clipboard (the tray's "Copy Last
+/// Meeting Transcript"). The store is read off the main thread.
+fn copy_meeting_transcript(
+    id: guidy_core::meetings::types::MeetingId,
+    state: &Entity<AppState>,
+    cx: &mut App,
+) {
+    let (backend, user_display_name) = {
+        let s = state.read(cx);
+        (
+            s.meetings.clone(),
+            s.app_settings()
+                .map(|settings| settings.meetings.user_display_name.clone())
+                .unwrap_or_default(),
+        )
+    };
+    let locale = guidy_i18n::language();
+    let export = cx.background_spawn(async move {
+        logic::meetings::meeting_transcript_export(&*backend, id, &user_display_name, &locale)
+    });
+    cx.spawn(async move |cx| match export.await {
+        Ok(Some(text)) => {
+            cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            log::info!("Copied the transcript of meeting {id} via tray.");
+        }
+        Ok(None) => log::warn!("Meeting {id} has no transcript to copy."),
+        Err(e) => log::error!("Failed to read the transcript of meeting {id}: {e}"),
+    })
+    .detach();
+}
+
 /// Route one backend event to the app state and (if relevant) the overlay.
 pub fn dispatch_event(
     event: &CoreEvent,
@@ -577,6 +616,16 @@ pub fn dispatch_event(
             ),
         ) {
             widget.update(cx, |w, cx| w.apply_live(&update, cx));
+        }
+    }
+    if event.name == guidy_core::tray::OPEN_SECTION_EVENT {
+        if let Some(section) = tray_section(&event.payload) {
+            cx.defer(move |cx| windows::show_section(section, cx));
+        }
+    }
+    if event.name == guidy_core::tray::COPY_MEETING_TRANSCRIPT_EVENT {
+        if let Some(id) = event.payload.as_i64() {
+            copy_meeting_transcript(id, state, cx);
         }
     }
     if event.name != "mic-level" {

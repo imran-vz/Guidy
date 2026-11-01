@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Configuración...",
-    "recentTranscripts": "Transcripciones recientes",
-    "noTranscripts": "Aún no hay transcripciones",
     "unloadModel": "Descargar modelo",
     "model": "Modelo",
     "quit": "Salir",

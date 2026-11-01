@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "Paramètres...",
-    "recentTranscripts": "Transcriptions récentes",
-    "noTranscripts": "Aucune transcription pour l'instant",
     "unloadModel": "Décharger le modèle",
     "model": "Modèle",
     "quit": "Quitter",

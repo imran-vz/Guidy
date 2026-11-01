@@ -1,8 +1,6 @@
 {
   "tray": {
     "settings": "设置...",
-    "recentTranscripts": "最近的转录",
-    "noTranscripts": "还没有转录文本",
     "unloadModel": "卸载模型",
     "model": "模型",
     "quit": "退出",
