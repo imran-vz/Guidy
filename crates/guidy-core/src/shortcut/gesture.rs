@@ -51,11 +51,24 @@ pub enum GestureIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
-    FirstDown { pressed_at: Instant },
-    AwaitSecond { released_at: Instant },
-    SecondDown { pressed_at: Instant },
-    Holding { pressed_at: Instant },
+    FirstDown {
+        pressed_at: Instant,
+    },
+    AwaitSecond {
+        released_at: Instant,
+    },
+    SecondDown {
+        pressed_at: Instant,
+    },
+    Holding {
+        pressed_at: Instant,
+    },
     Dirty,
+    /// `Dirty` entered between taps, with the binding already up. It ends when
+    /// the chording key or modifier comes up rather than on a flag reading,
+    /// because a key-up can carry a false Fn flag that would swallow the next
+    /// hold. Pressing the binding while that key is down joins the chord.
+    DirtyBindingUp,
 }
 
 /// Gesture recognizer for one single-modifier binding.
@@ -130,10 +143,7 @@ impl ModifierGesture {
             }
             State::AwaitSecond { released_at } => {
                 if self.is_chord_signal(event) {
-                    // Dirty ends once the binding is up, and here it already
-                    // is. Waiting for a later event would trust that event's
-                    // flags, and a false Fn flag would swallow the next hold.
-                    self.state = State::Idle;
+                    self.state = State::DirtyBindingUp;
                 } else if self.is_press_edge(event, held) {
                     self.state = if !self.binding.matches(event.modifiers) {
                         State::Dirty
@@ -171,6 +181,14 @@ impl ModifierGesture {
             }
             State::Dirty => {
                 if !held {
+                    self.state = State::Idle;
+                }
+                None
+            }
+            State::DirtyBindingUp => {
+                if self.is_press_edge(event, held) {
+                    self.state = State::Dirty;
+                } else if !event.is_key_down {
                     self.state = State::Idle;
                 }
                 None
@@ -533,11 +551,40 @@ mod tests {
         g.on_event(&down(OPT), t0);
         g.on_event(&up(OPT), t0 + ms(50));
         g.on_event(&key_down(Key::C, Modifiers::empty()), t0 + ms(100));
-        assert_eq!(g.state, State::Idle);
+        assert_eq!(g.state, State::DirtyBindingUp);
+        // Auto-repeat keeps it dirty even though the binding reads as up.
+        g.on_event(&key_down(Key::C, Modifiers::empty()), t0 + ms(110));
+        assert_eq!(g.state, State::DirtyBindingUp);
         g.on_event(&key_up(Key::C, Modifiers::empty()), t0 + ms(120));
         assert_eq!(g.state, State::Idle);
         g.on_event(&down(OPT), t0 + ms(150));
         assert_eq!(g.on_event(&up(OPT), t0 + ms(200)), None);
+    }
+
+    #[test]
+    fn key_held_across_second_press_stays_a_chord() {
+        let t0 = Instant::now();
+        let mut g = option();
+        g.on_event(&down(OPT), t0);
+        g.on_event(&up(OPT), t0 + ms(50));
+        g.on_event(&key_down(Key::C, Modifiers::empty()), t0 + ms(100));
+        g.on_event(&down(OPT), t0 + ms(150));
+        assert_eq!(g.state, State::Dirty);
+        assert_eq!(g.tick(t0 + ms(350)), None);
+        assert_eq!(g.on_event(&up(OPT), t0 + ms(400)), None);
+        assert_eq!(g.state, State::Idle);
+    }
+
+    #[test]
+    fn extra_modifier_between_taps_clears_when_it_comes_up() {
+        let t0 = Instant::now();
+        let mut g = option();
+        g.on_event(&down(OPT), t0);
+        g.on_event(&up(OPT), t0 + ms(50));
+        g.on_event(&down(Modifiers::SHIFT_LEFT), t0 + ms(100));
+        assert_eq!(g.state, State::DirtyBindingUp);
+        g.on_event(&up(Modifiers::SHIFT_LEFT), t0 + ms(150));
+        assert_eq!(g.state, State::Idle);
     }
 
     #[test]
