@@ -1,0 +1,25 @@
+{
+  "name": "lookalike_host",
+  "description": "A host that only looks like Meet is an ordinary site: 19 s, so within 20 s of the mic, not 2 s.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 22000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com.evil.io",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": {
+        "browser_site": "meet.google.com.evil.io"
+      }
+    }
+  ]
+}

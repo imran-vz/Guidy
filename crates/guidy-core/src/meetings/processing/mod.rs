@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod naming;
 pub mod pipeline;
 pub mod sidecar;
+pub mod speaker_hints;
 pub mod speaker_model;
 pub mod timeline;
 pub mod turns;

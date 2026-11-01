@@ -53,7 +53,14 @@ typedef void (*guidy_mb_audio_cb)(void *ctx, int32_t stream, const float *sample
 typedef void (*guidy_mb_event_cb)(void *ctx, int32_t stream, const char *message);
 
 // Starts the requested streams. Returns an opaque handle, or NULL with
-// `*error_out` set (nothing is left running in that case).
+// `*error_out` set (nothing is left running in that case) when none of them
+// could start. One that couldn't while another did reports `error: ...` and
+// keeps trying until stopped, its track kept on the clock with silence.
+//
+// A running stream reports through `event_cb`: `state:stalled` (it stopped
+// delivering, or is being rebuilt), `state:recovered` (delivering again),
+// `state:gap:<ms>` (how long it was gone, or the Mac slept), `state:restarted`
+// (it came back up after an `error:`).
 //
 // Timeline: both streams share one time origin, the moment this function is
 // called. Sample n of either stream (counted from its first callback) was
@@ -68,6 +75,10 @@ void *guidy_mb_capture_start(int32_t want_mic, int32_t want_system, guidy_mb_aud
 // Stops and frees the handle. After it returns no callback is running or will
 // run for this handle.
 void guidy_mb_capture_stop(void *handle);
+// The input device to record by name (NULL: the default, a Bluetooth input
+// replaced by the built-in microphone). Takes effect at the next start or
+// device change.
+void guidy_mb_set_preferred_microphone(const char *name);
 
 // System-audio (process tap) permission. Best effort: uses the private TCC
 // preflight when available (run off the main thread, at most ~2 s), else
@@ -108,9 +119,17 @@ void guidy_mb_remove_notification(const char *notification_id);
 void guidy_mb_set_notification_handler(guidy_mb_notification_cb cb);
 
 // ----- Calls in other apps ---------------------------------------------------
-// A JSON array of the bundle ids of the other processes capturing from an
-// input device now (macOS 14+; `[]` before), or NULL.
-char *guidy_mb_audio_input_bundle_ids(void);
+// A JSON array describing the other processes capturing from an input device
+// now, `{pid, bundle, name, parents}` with `parents` the bundle ids up its
+// parent chain, nearest first (macOS 14+; `[]` before), or NULL.
+char *guidy_mb_audio_input_processes(void);
+// The address of the web page holding the focused element of the running app
+// with `bundle_id` (Accessibility), or NULL.
+char *guidy_mb_focused_web_url(const char *bundle_id);
+// A JSON array of accessibility labels in the app's windows that mention
+// speaking or talking (Accessibility; `[]` without it), or NULL. Bounded to
+// about 200 ms and a few hundred elements.
+char *guidy_mb_speaker_labels(const char *bundle_id);
 // A JSON array of the window titles of the running apps with `bundle_id`
 // (Accessibility; `[]` without it), or NULL.
 char *guidy_mb_window_titles(const char *bundle_id);

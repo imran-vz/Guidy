@@ -1,0 +1,37 @@
+{
+  "name": "call_app_after_browser",
+  "description": "A browser call in progress, then Zoom joins while it keeps the mic: Zoom is offered.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 21000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 22000,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": "browser_unknown"
+    },
+    {
+      "t": 24000,
+      "source": "zoom"
+    }
+  ]
+}

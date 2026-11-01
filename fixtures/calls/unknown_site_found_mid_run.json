@@ -1,0 +1,34 @@
+{
+  "name": "unknown_site_found_mid_run",
+  "description": "An ordinary site is found at 6 s: still 19 s, so within 20 s of the mic from the start of the run.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 25000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "www.example.com",
+          "path": "/talk"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": {
+        "browser_site": "example.com"
+      }
+    }
+  ]
+}

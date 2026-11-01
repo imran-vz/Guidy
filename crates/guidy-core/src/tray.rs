@@ -128,6 +128,7 @@ impl MeetingMenu {
             scheduled_end_at: None,
             paused_at: self.paused_at,
             paused_ms: self.paused_ms,
+            health: Default::default(),
         }
     }
 

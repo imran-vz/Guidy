@@ -1,0 +1,72 @@
+{
+  "name": "voice_note_bursts",
+  "description": "3-6 s microphone bursts with pauses: no offer, in a browser, a voice-note app or a recorder.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 3000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 4000,
+      "to": 8000,
+      "apps": []
+    },
+    {
+      "from": 9000,
+      "to": 15000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 16000,
+      "to": 20000,
+      "apps": []
+    },
+    {
+      "from": 21000,
+      "to": 25000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 26000,
+      "to": 90000,
+      "apps": []
+    },
+    {
+      "from": 91000,
+      "to": 94000,
+      "apps": [
+        {
+          "id": "net.whatsapp.WhatsApp"
+        }
+      ]
+    },
+    {
+      "from": 95000,
+      "to": 100000,
+      "apps": []
+    },
+    {
+      "from": 101000,
+      "to": 160000,
+      "apps": [
+        {
+          "id": "com.apple.VoiceMemos"
+        }
+      ]
+    }
+  ],
+  "offers": []
+}

@@ -1,0 +1,52 @@
+{
+  "name": "displaced_browser_not_reoffered",
+  "description": "Meet in Chrome, Zoom takes over, Zoom leaves, Chrome stayed on the mic: no second Meet offer.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 10000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 11000,
+      "to": 40000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "google_meet"
+    },
+    {
+      "t": 8000,
+      "source": "zoom"
+    }
+  ]
+}

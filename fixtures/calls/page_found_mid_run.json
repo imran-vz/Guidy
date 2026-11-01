@@ -1,0 +1,32 @@
+{
+  "name": "page_found_mid_run",
+  "description": "The Meet page is found at 6 s: the count kept, so offered then, not 2 s later.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 12000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 6000,
+      "source": "google_meet"
+    }
+  ]
+}

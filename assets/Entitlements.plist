@@ -11,5 +11,9 @@
          is not sandboxed. -->
     <key>com.apple.security.personal-information.calendars</key>
     <true/>
+    <!-- "Name browser calls": without it the Hardened Runtime refuses to send
+         Apple events to a browser. Optional: nothing else needs it. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
   </dict>
 </plist>

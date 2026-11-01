@@ -707,6 +707,7 @@ fn build_meeting_bridge() {
         "UserNotifications",
         "AppKit",
         "ApplicationServices",
+        "IOKit",
     ] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }

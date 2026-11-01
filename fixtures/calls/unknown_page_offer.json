@@ -1,0 +1,21 @@
+{
+  "name": "unknown_page_offer",
+  "description": "A browser on an unknown page: offered at 19 s, so within 20 s of the mic, once.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": "browser_unknown"
+    }
+  ]
+}

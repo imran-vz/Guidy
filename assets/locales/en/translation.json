@@ -996,6 +996,26 @@
       "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends.",
       "callTitle": "{{app}} call",
       "callPrompt": "Take meeting notes?",
+      "healthTitle": "Recording needs attention",
+      "health": {
+        "noAudio": "No audio for 15 minutes. Stops in a minute.",
+        "micDenied": "Microphone access is off: not recording you.",
+        "systemDenied": "System audio access is off: not recording others.",
+        "micLost": "Microphone lost. Trying to get it back.",
+        "systemLost": "System audio lost. Trying to get it back.",
+        "lowDisk": "Less than 500 MB free. Audio so far is safe.",
+        "micReconnecting": "Microphone reconnecting…",
+        "systemReconnecting": "System audio reconnecting…",
+        "micSilent": "Your microphone isn't picking up anything.",
+        "systemSilent": "No sound from the call.",
+        "backlog": "Saving audio is falling behind."
+      },
+      "callEndedTitle": "{{app}} call ended",
+      "callEndedPrompt": "Stops in a minute unless you keep it.",
+      "keep": "Keep",
+      "more": "More choices",
+      "always": "Always",
+      "never": "Never",
       "start": "Take notes",
       "starting": "Starting…",
       "startFailed": "Couldn't start. Try again?",
@@ -1145,6 +1165,7 @@
       "suggestions": "Suggestions",
       "attendee": "Attendee",
       "knownPerson": "Known person",
+      "meetingApp": "Shown by the meeting app",
       "noSuggestions": "No suggestions",
       "newPerson": "New person",
       "namePlaceholder": "Name",
@@ -1319,7 +1340,25 @@
       },
       "callSuggestions": {
         "title": "Suggest notes on calls",
-        "description": "When a Zoom, Google Meet or WhatsApp call starts, show the floater, stopped, with an offer to take notes."
+        "description": "When a Zoom, Google Meet or WhatsApp call starts, show the floater, stopped, with an offer to take notes.",
+        "anyCall": "When a call starts in another app or a browser, show the floater, stopped, with an offer to take notes."
+      },
+      "detectedCallsGroup": "Detected calls",
+      "callPolicy": {
+        "description": "When a call starts here",
+        "ask": "Ask",
+        "always": "Always record",
+        "never": "Never offer"
+      },
+      "speakerNamesFromApps": {
+        "title": "Speaker names from meeting apps",
+        "description": "Experimental. While recording, read who's speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac. Applies from the next recording."
+      },
+      "nameBrowserCalls": {
+        "title": "Name browser calls",
+        "description": "Read the address of your browser's front tab to name a call. macOS asks once per browser. Addresses stay in memory on this Mac. Without it, browser calls are still offered, unnamed, after 20 seconds.",
+        "turnOn": "Name browser calls",
+        "turnOff": "Stop naming"
       },
       "recordingControls": {
         "title": "Recording controls",

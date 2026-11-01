@@ -1,0 +1,39 @@
+{
+  "name": "back_to_back_sources",
+  "description": "Zoom leaves, Teams takes the microphone: a second call.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 20000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 21000,
+      "to": 24000,
+      "apps": []
+    },
+    {
+      "from": 25000,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "zoom"
+    },
+    {
+      "t": 27000,
+      "source": "teams"
+    }
+  ]
+}

@@ -3,7 +3,8 @@
 //!
 //! Layout (see `docs/MEETING_NOTES_ARCH.md` for ownership and contracts):
 //! - [`types`]: shared data types used by every layer and the UI.
-//! - [`calls`]: Zoom, Meet or WhatsApp calls in progress (to offer notes).
+//! - [`calls`]: calls in other apps and browsers in progress (to offer notes).
+//! - [`call_sites`]: which web pages are calls.
 //! - [`settings`]: the nested `meetings` settings object.
 //! - [`store`]: plain SQLite `meetings.db`.
 //! - [`audio_store`]: Opus track files + retention.
@@ -18,6 +19,7 @@
 //! - [`manager`]: [`manager::MeetingsManager`], the facade the app calls.
 
 pub mod audio_store;
+pub mod call_sites;
 pub mod calls;
 pub mod legacy;
 pub mod live;

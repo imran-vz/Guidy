@@ -1,0 +1,100 @@
+{
+  "name": "two_apps_alternating",
+  "description": "Zoom and Teams both on the mic, reported in changing order: one is confirmed, not neither.",
+  "steps": [
+    {
+      "from": 0,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        },
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    },
+    {
+      "from": 1000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 2000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        },
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    },
+    {
+      "from": 3000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 4000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        },
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    },
+    {
+      "from": 5000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "apps": [
+        {
+          "id": "us.zoom.xos"
+        },
+        {
+          "id": "com.microsoft.teams2"
+        }
+      ]
+    },
+    {
+      "from": 7000,
+      "apps": [
+        {
+          "id": "com.microsoft.teams2"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "teams"
+    }
+  ]
+}

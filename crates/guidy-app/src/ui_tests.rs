@@ -4383,6 +4383,7 @@ mod recording_widget {
             scheduled_end_at: None,
             paused_at: None,
             paused_ms: 0,
+            health: Default::default(),
         }
     }
 
@@ -4551,7 +4552,7 @@ mod recording_widget {
         // Zoom takes the microphone: after a few seconds, the hint.
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "us.zoom.xos".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(exists(cx, w, "recording-widget-blob"));
@@ -4585,7 +4586,7 @@ mod recording_widget {
         poll(cx, END_GRACE_MS + 2_000);
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "net.whatsapp.WhatsApp".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(exists(cx, w, "recording-widget-hint"));
@@ -4603,10 +4604,78 @@ mod recording_widget {
         poll(cx, END_GRACE_MS + 2_000);
         meetings.data.lock().input_apps = vec![InputApp {
             bundle_id: "us.zoom.xos".into(),
-            titles: vec![],
+            ..Default::default()
         }];
         poll(cx, CONFIRM_MS + 2_000);
         assert!(!exists(cx, w, "recording-widget-blob"));
+    }
+
+    #[gpui_kit::test]
+    fn a_recorded_call_that_ended_asks_keep_or_stop(cx: &mut TestAppContext) {
+        use guidy_core::meetings::calls::{InputApp, CONFIRM_MS, END_GRACE_MS};
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let (meetings, widget, w) = widget_setup_with(cx, false, backend.clone());
+        cx.update(|cx| crate::ui::recording_widget::watch_calls(|_| {}, cx));
+        let poll = |cx: &mut TestAppContext, ms: i64| {
+            for _ in 0..(ms / 1_000 + 1) {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_secs(1));
+                cx.run_until_parked();
+            }
+        };
+        meetings.data.lock().input_apps = vec![InputApp {
+            bundle_id: "us.zoom.xos".into(),
+            ..Default::default()
+        }];
+        poll(cx, CONFIRM_MS + 1_000);
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recording(4), cx)));
+        poll(cx, 1_000);
+        assert!(!exists(cx, w, "recording-widget-left"));
+
+        // Zoom lets go: asked after the grace, still recording.
+        meetings.data.lock().input_apps.clear();
+        poll(cx, END_GRACE_MS + 1_000);
+        assert!(exists(cx, w, "recording-widget-left"));
+        assert!(exists(cx, w, "recording-widget-stop-blob"));
+        assert!(!meetings.called("stop_recording"));
+
+        // Keep: the question goes, nothing stops.
+        with_window(cx, w, |window, cx| {
+            window.click("recording-widget-left-keep", cx)
+        });
+        assert!(!exists(cx, w, "recording-widget-left"));
+        poll(cx, 70_000);
+        assert!(!meetings.called("stop_recording"));
+    }
+
+    #[gpui_kit::test]
+    fn an_unanswered_left_call_question_stops_the_recording(cx: &mut TestAppContext) {
+        use crate::logic::recording_widget::LEFT_CALL_TIMEOUT_MS;
+        use guidy_core::meetings::calls::{InputApp, CONFIRM_MS, END_GRACE_MS};
+        let backend = FakeBackend::new();
+        backend.with_settings(|s| s.meetings.enabled = true);
+        let (meetings, widget, w) = widget_setup_with(cx, false, backend.clone());
+        cx.update(|cx| crate::ui::recording_widget::watch_calls(|_| {}, cx));
+        let poll = |cx: &mut TestAppContext, ms: i64| {
+            for _ in 0..(ms / 1_000 + 1) {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_secs(1));
+                cx.run_until_parked();
+            }
+        };
+        meetings.data.lock().input_apps = vec![InputApp {
+            bundle_id: "us.zoom.xos".into(),
+            ..Default::default()
+        }];
+        poll(cx, CONFIRM_MS + 1_000);
+        cx.update(|cx| widget.update(cx, |s, cx| s.set_recorder(recording(4), cx)));
+        poll(cx, 1_000);
+        meetings.data.lock().input_apps.clear();
+        poll(cx, END_GRACE_MS + 1_000);
+        assert!(exists(cx, w, "recording-widget-left"));
+        poll(cx, LEFT_CALL_TIMEOUT_MS);
+        assert!(meetings.called("stop_recording"), "{:?}", meetings.calls());
     }
 
     #[gpui_kit::test]

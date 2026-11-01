@@ -10,7 +10,7 @@
 //! - tucked into a corner, a leaf with the waveform and stop; a click opens
 //!   the panel beside it.
 //!
-//! While nothing records but a call is on in Zoom, Google Meet or WhatsApp,
+//! While nothing records but a call is on in another app or a browser,
 //! it shows stopped: a flat waveform and a record button, with a hint
 //! beside it to take notes ([`watch_calls`]).
 //!
@@ -29,7 +29,7 @@ use crate::logic::floater::{
     Corner, Desk, DockChange, Floater, Neck, Release, Stage, Target, P, R,
 };
 use crate::logic::notch::bar_height;
-use crate::logic::recording_widget::{rows, Row, WidgetModel};
+use crate::logic::recording_widget::{rows, CallCommand, CallPoll, HealthNotice, Row, WidgetModel};
 use crate::state::AppState;
 use crate::ui::design::{self, hud, Tone};
 use crate::ui::kit::{icon, t, t_args};
@@ -37,16 +37,16 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::{h_flex, v_flex, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use guidy_core::meetings::calls::{Call, CallDetector};
+use guidy_core::meetings::calls::{set_policy, Call, CallDetector, CallPolicy};
 use guidy_core::meetings::recorder::now_ms;
 use guidy_core::meetings::settings::RecordingControls;
-use guidy_core::meetings::types::{LiveStatus, LiveUpdate, RecorderState, Track};
+use guidy_core::meetings::types::{LiveStatus, LiveUpdate, RecorderState, SourceHealth, Track};
 use std::time::{Duration, Instant};
 
 /// Level poll / waveform scroll interval.
 const TICK: Duration = Duration::from_millis(90);
 /// How often the microphone's users are checked for a call.
-const CALL_POLL: Duration = Duration::from_secs(2);
+const CALL_POLL: Duration = Duration::from_secs(1);
 /// Pointer poll while shown: whether the window takes the pointer.
 const POINTER_POLL: Duration = Duration::from_millis(16);
 const WAVE_MAX: f32 = 16.;
@@ -210,45 +210,165 @@ fn set_paused(paused: bool, cx: &mut App) {
 }
 
 /// Watch for calls in other apps (polling who holds the microphone), so
-/// the floater can offer notes while nothing records: meeting notes on and
-/// the "Suggest notes on calls" setting. Runs for the app's lifetime;
-/// `shown` follows each change (opening or closing the floater's windows).
+/// the floater can offer notes while nothing records and ask when a recorded
+/// call ends: meeting notes on and the "Suggest notes on calls" setting. Runs
+/// for the app's lifetime; `shown` follows each change (opening or closing the
+/// floater's windows).
 pub fn watch_calls(shown: fn(&mut App), cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut detector = CallDetector::default();
         // Unix ms on the executor's clock (faked in tests).
         let (epoch, t0) = (now_ms(), cx.background_executor().now());
+        let mut wait = CALL_POLL;
+        let mut told_in_call = (None, false);
         loop {
-            cx.background_executor().timer(CALL_POLL).await;
-            let backend = cx.update(|cx| {
+            cx.background_executor().timer(wait).await;
+            let watching = cx.update(|cx| {
                 let state = AppState::global(cx).read(cx);
-                let on = state
-                    .app_settings()
-                    .is_some_and(|s| s.meetings.enabled && s.meetings.suggest_notes_on_calls);
-                on.then(|| state.meetings.clone())
+                let settings = state.app_settings()?;
+                let meetings = &settings.meetings;
+                (meetings.enabled && meetings.suggest_notes_on_calls).then(|| {
+                    (
+                        state.meetings.clone(),
+                        meetings.name_browser_calls,
+                        meetings.call_providers.clone(),
+                    )
+                })
             });
-            let call = match backend {
-                Some(backend) => {
-                    let apps = cx
-                        .background_executor()
-                        .spawn(async move { backend.audio_input_apps() })
-                        .await;
-                    let now = epoch + (cx.background_executor().now() - t0).as_millis() as i64;
-                    detector.observe(&apps, now)
-                }
-                None => {
-                    detector.reset();
-                    None
-                }
+            let started = cx.background_executor().now();
+            let Some((backend, name_browser_calls, choices)) = watching else {
+                detector.reset();
+                let now = epoch + (started - t0).as_millis() as i64;
+                cx.update(|cx| {
+                    let (changed, command) = apply_idle_poll(now, cx);
+                    run_call_changes(changed, command, shown, cx);
+                    tell_in_call(&mut told_in_call, cx);
+                });
+                wait = CALL_POLL;
+                continue;
             };
+            let apps = cx
+                .background_executor()
+                .spawn(async move { backend.audio_input_apps(name_browser_calls) })
+                .await;
+            let finished = cx.background_executor().now();
+            let now = epoch + (finished - t0).as_millis() as i64;
+            // Every second, however long reading the apps took.
+            wait = CALL_POLL.saturating_sub(finished - started);
+            for app_id in cx.update(take_snoozes) {
+                detector.snooze_app(app_id, now);
+            }
+            let detection = detector.detect(&apps, &choices, now);
+            let current = detector.current().cloned();
             cx.update(|cx| {
-                if set_call(call, cx) {
-                    shown(cx);
-                }
+                let (changed, command) = apply_call_poll(
+                    CallPoll {
+                        apps: &apps,
+                        current,
+                        detection,
+                        now,
+                    },
+                    cx,
+                );
+                run_call_changes(changed, command, shown, cx);
+                tell_in_call(&mut told_in_call, cx);
             });
         }
     })
     .detach();
+}
+
+/// Tell the recorder whether a call is behind the recording.
+fn tell_in_call(told: &mut (Option<i64>, bool), cx: &mut App) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return;
+    };
+    let model = &state.read(cx).model;
+    let now = (model.meeting_id(), model.recording_in_call());
+    // Told again every poll while recording: these go out of order on the
+    // background executor, and the last one is what stays.
+    if now == *told && now.0.is_none() {
+        return;
+    }
+    *told = now;
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.background_spawn(async move { backend.set_recording_in_call(now.1) })
+        .detach();
+}
+
+fn run_call_changes(
+    changed: bool,
+    command: Option<CallCommand>,
+    shown: fn(&mut App),
+    cx: &mut App,
+) {
+    if changed {
+        shown(cx);
+    }
+    match command {
+        Some(CallCommand::Start) => start_recording(cx),
+        Some(CallCommand::Stop) => stop(cx),
+        None => {}
+    }
+}
+
+fn take_snoozes(cx: &mut App) -> Vec<String> {
+    RecordingWidgetState::global(cx)
+        .map(|state| state.update(cx, |s, _| s.model.take_snoozes()))
+        .unwrap_or_default()
+}
+
+/// A poll with the watcher off: returns whether what's shown changed, and what
+/// to do.
+fn apply_idle_poll(now: i64, cx: &mut App) -> (bool, Option<CallCommand>) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return (false, None);
+    };
+    state.update(cx, |s, cx| {
+        let before = (s.model.visible(), s.model.left_call().is_some());
+        let command = s.model.apply_idle_poll(now);
+        let after = (s.model.visible(), s.model.left_call().is_some());
+        if before != after {
+            cx.notify();
+        }
+        (before.0 != after.0, command)
+    })
+}
+
+/// Take in a poll: returns whether what's shown changed, and what to do.
+fn apply_call_poll(poll: CallPoll<'_>, cx: &mut App) -> (bool, Option<CallCommand>) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return (false, None);
+    };
+    state.update(cx, |s, cx| {
+        let before = (
+            s.model.visible(),
+            s.model.call.clone(),
+            s.model.left_call().is_some(),
+            s.model.hinting(),
+        );
+        if poll.current.is_some() && s.model.call.is_none() {
+            log::info!(
+                "A {} call started",
+                poll.current
+                    .as_ref()
+                    .map(|c| c.source.log_name())
+                    .unwrap_or_default()
+            );
+        }
+        let command = s.model.apply_call_poll(poll);
+        let after = (
+            s.model.visible(),
+            s.model.call.clone(),
+            s.model.left_call().is_some(),
+            s.model.hinting(),
+        );
+        let changed = before != after;
+        if changed {
+            cx.notify();
+        }
+        (changed && before.0 != after.0, command)
+    })
 }
 
 /// The call in progress (from [`watch_calls`]): shows or hides the hint.
@@ -264,7 +384,9 @@ pub fn set_call(call: Option<Call>, cx: &mut App) -> bool {
         if call.is_some() && s.model.call.is_none() {
             log::info!(
                 "A {} call started: offering meeting notes",
-                call.map(|c| c.app.name()).unwrap_or_default()
+                call.as_ref()
+                    .map(|c| c.source.log_name())
+                    .unwrap_or_default()
             );
         }
         s.model.set_call(call);
@@ -299,9 +421,16 @@ fn start(cx: &mut App) {
         cx.notify();
         begun
     });
-    if !begun {
-        return;
+    if begun {
+        start_recording(cx);
     }
+}
+
+/// Start the recording the floater already shows starting.
+fn start_recording(cx: &mut App) {
+    let Some(state) = RecordingWidgetState::global(cx) else {
+        return;
+    };
     let backend = AppState::global(cx).read(cx).meetings.clone();
     cx.spawn(async move |cx| {
         let started = cx
@@ -329,6 +458,61 @@ fn stop(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Keep or Stop, once the call behind the recording ended: "Keep". It stands
+/// for the no-audio stop too, which this question may be showing in front of.
+fn keep_recording(cx: &mut App) {
+    if let Some(state) = RecordingWidgetState::global(cx) {
+        state.update(cx, |s, cx| {
+            s.model.keep_recording();
+            cx.notify();
+        });
+    }
+    keep_through_silence(cx);
+}
+
+/// "Keep" on the no-audio warning.
+fn keep_through_silence(cx: &mut App) {
+    let backend = AppState::global(cx).read(cx).meetings.clone();
+    cx.background_spawn(async move { backend.keep_recording_through_silence() })
+        .detach();
+}
+
+/// The offer's "...": show or hide Always and Never.
+fn toggle_more(cx: &mut App) {
+    if let Some(state) = RecordingWidgetState::global(cx) {
+        state.update(cx, |s, cx| {
+            s.model.more_open = !s.model.more_open;
+            cx.notify();
+        });
+    }
+}
+
+/// The offer's Always or Never: remembered for this service, and acted on.
+fn choose_policy(policy: CallPolicy, cx: &mut App) {
+    let provider = RecordingWidgetState::global(cx).and_then(|s| {
+        s.read(cx)
+            .model
+            .hint_call()
+            .and_then(|c| c.source.provider())
+    });
+    let Some(provider) = provider else {
+        return;
+    };
+    crate::ui::pages::meetings::settings::update_meetings(cx, |m| {
+        set_policy(
+            &mut m.call_providers,
+            &provider.key,
+            &provider.label,
+            policy,
+        )
+    });
+    match policy {
+        CallPolicy::Always => start(cx),
+        CallPolicy::Never => dismiss_call(cx),
+        CallPolicy::Ask => {}
+    }
 }
 
 fn open_notes(meeting_id: i64, cx: &mut App) {
@@ -413,7 +597,12 @@ impl RecordingWidgetView {
                     Some(floater) => {
                         let (gx, gy) = crate::windows::pointer_location()?;
                         let p = s.desk.from_cocoa(gx, gy);
-                        let hint = s.model.hinting().then(|| floater.hint(&s.desk)).flatten();
+                        // A warning with nothing to click lets clicks through:
+                        // it may be up for hours.
+                        let asking = s.model.hinting()
+                            || s.model.left_call().is_some()
+                            || s.model.health_notice() == Some(HealthNotice::NoAudio);
+                        let hint = asking.then(|| floater.hint(&s.desk)).flatten();
                         s.desk.screen_rect(this.screen).contains(p)
                             && (floater.hit(&s.desk, p) || hint.is_some_and(|r| r.contains(p)))
                     }
@@ -958,6 +1147,32 @@ fn icon_button(id: &'static str, name: &str, label: SharedString, tone: Tone) ->
         .child(icon(name).small())
 }
 
+/// A small text button in the bubble beside the floater.
+fn hint_action(
+    id: &'static str,
+    label: SharedString,
+    on_click: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    h_flex()
+        .id(id)
+        .aria_label(label.clone())
+        .h(hud(28.))
+        .px(hud(10.))
+        .flex_none()
+        .items_center()
+        .rounded_full()
+        .text_size(hud(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(black())
+        .bg(hsla(0., 0., 1., 0.92))
+        .cursor_pointer()
+        .hover(|s| s.bg(hsla(0., 0., 1., 1.)))
+        .child(label)
+        .on_click(move |_, _, cx| on_click(cx))
+        .test_support()
+        .into_any_element()
+}
+
 /// A labelled pill button.
 fn pill(id: &'static str, name: &str, label: SharedString, tone: Tone) -> Stateful<Div> {
     h_flex()
@@ -1008,7 +1223,12 @@ fn source_chip(model: &WidgetModel, track: Track, tone: Tone) -> AnyElement {
         .border_color(tone.hairline)
         .bg(tone.surface)
         .text_size(hud(12.))
-        .text_color(if active { tone.text } else { tone.text_muted })
+        .text_color(match model.source_health(track) {
+            SourceHealth::Lost => Hsla::from(rgb(RED)),
+            SourceHealth::Reconnecting | SourceHealth::Silent => tone.accent,
+            SourceHealth::Healthy if active => tone.text,
+            SourceHealth::Healthy => tone.text_muted,
+        })
         .child(icon(name).xsmall())
         .child(label)
         .child(meter)
@@ -1394,7 +1614,13 @@ impl RecordingWidgetView {
     /// notes?", the start button and "Not now". It fades in with the
     /// floater's controls.
     fn render_hint(&self, m: &WidgetModel, f: &Floater, desk: &Desk) -> Option<AnyElement> {
-        let call = m.hint_call().filter(|_| m.hinting())?;
+        let left = m.left_call();
+        let call = left.or_else(|| m.hint_call().filter(|_| m.hinting()));
+        // A question asked comes first; a warning only needs seeing.
+        let notice = m.health_notice().filter(|_| left.is_none());
+        if call.is_none() && notice.is_none() {
+            return None;
+        }
         if f.screen(desk) != self.screen {
             return None;
         }
@@ -1408,6 +1634,42 @@ impl RecordingWidgetView {
             return None;
         }
         let tone = design::tone_on_black();
+        if let Some(notice) = notice {
+            let text = v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(hud(1.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(hud(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tone.text)
+                        .child(t("meetings.widget.healthTitle")),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(hud(12.))
+                        .text_color(tone.text_muted)
+                        .child(t(notice.key())),
+                );
+            let controls = if notice == HealthNotice::NoAudio {
+                vec![hint_action(
+                    "recording-widget-silence-keep",
+                    t("meetings.widget.keep"),
+                    keep_through_silence,
+                )]
+            } else {
+                Vec::new()
+            };
+            return Some(self.hint_bubble(r, content, "recording-widget-health", text, controls));
+        }
+        let call = call?;
+        // A failure can't wait for the answer to the left-call question.
+        let failure = m
+            .health_notice()
+            .filter(|n| left.is_some() && n.is_failure());
         let text = v_flex()
             .flex_1()
             .min_w_0()
@@ -1418,13 +1680,28 @@ impl RecordingWidgetView {
                     .text_size(hud(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(tone.text)
-                    .child(t_args(
-                        "meetings.widget.callTitle",
-                        &[("app", call.app.name())],
-                    )),
+                    .child(if failure.is_some() {
+                        // The stop still counts down: said here, as the failure
+                        // takes the line below.
+                        t("meetings.widget.callEndedPrompt")
+                    } else {
+                        t_args(
+                            if left.is_some() {
+                                "meetings.widget.callEndedTitle"
+                            } else {
+                                "meetings.widget.callTitle"
+                            },
+                            &[("app", call.source.name())],
+                        )
+                    }),
             )
             .child(div().truncate().text_size(hud(12.)).map(|d| {
-                if m.start_failed() {
+                if let Some(failure) = failure {
+                    d.text_color(rgb(RED)).child(t(failure.key()))
+                } else if left.is_some() {
+                    d.text_color(tone.text_muted)
+                        .child(t("meetings.widget.callEndedPrompt"))
+                } else if m.start_failed() {
                     d.text_color(rgb(RED))
                         .child(t("meetings.widget.startFailed"))
                 } else {
@@ -1432,6 +1709,26 @@ impl RecordingWidgetView {
                         .child(t("meetings.widget.callPrompt"))
                 }
             }));
+        if left.is_some() {
+            return Some(self.hint_bubble(
+                r,
+                content,
+                "recording-widget-left",
+                text,
+                vec![
+                    hint_action(
+                        "recording-widget-left-keep",
+                        t("meetings.widget.keep"),
+                        keep_recording,
+                    ),
+                    hint_action(
+                        "recording-widget-left-stop",
+                        t("meetings.widget.stop"),
+                        stop,
+                    ),
+                ],
+            ));
+        }
         let starting = m.starting();
         let label = if starting {
             t("meetings.widget.starting")
@@ -1469,33 +1766,78 @@ impl RecordingWidgetView {
         )
         .on_click(|_, _, cx| dismiss_call(cx))
         .test_support();
-        Some(
-            place(r)
-                .child(
-                    h_flex()
-                        .id("recording-widget-hint")
-                        .size_full()
-                        .pl(hud(14.))
-                        .pr(hud(6.))
-                        .gap(hud(8.))
-                        .items_center()
-                        .rounded(px(r.h / 2.))
-                        .bg(black())
-                        .shadow(vec![BoxShadow {
-                            color: hsla(0., 0., 0., 0.35),
-                            offset: point(px(0.), hud(6.)),
-                            blur_radius: hud(18.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
-                        .child(text)
-                        .child(take)
-                        .child(dismiss)
-                        .test_support(),
+        let mut controls: Vec<AnyElement> = Vec::new();
+        if m.more_open && !starting {
+            if call.source.can_always_record() {
+                controls.push(hint_action(
+                    "recording-widget-hint-always",
+                    t("meetings.widget.always"),
+                    |cx| choose_policy(CallPolicy::Always, cx),
+                ));
+            }
+            controls.push(hint_action(
+                "recording-widget-hint-never",
+                t("meetings.widget.never"),
+                |cx| choose_policy(CallPolicy::Never, cx),
+            ));
+        } else {
+            controls.push(take.into_any_element());
+        }
+        // Not for an unknown page: a choice would cover every page. Nothing
+        // to choose once a start is on its way, and no taking it back.
+        if call.source.provider().is_some() && !starting {
+            controls.push(
+                icon_button(
+                    "recording-widget-hint-more",
+                    "ellipsis",
+                    t("meetings.widget.more"),
+                    tone,
                 )
-                .opacity(content)
+                .on_click(|_, _, cx| toggle_more(cx))
+                .test_support()
                 .into_any_element(),
-        )
+            );
+        }
+        if !starting {
+            controls.push(dismiss.into_any_element());
+        }
+        Some(self.hint_bubble(r, content, "recording-widget-hint", text, controls))
+    }
+
+    /// The bubble beside the floater: a call's offer, or the question when a
+    /// recorded one ended.
+    fn hint_bubble(
+        &self,
+        r: R,
+        content: f32,
+        id: &'static str,
+        text: Div,
+        controls: Vec<AnyElement>,
+    ) -> AnyElement {
+        place(r)
+            .child(
+                h_flex()
+                    .id(id)
+                    .size_full()
+                    .pl(hud(14.))
+                    .pr(hud(6.))
+                    .gap(hud(8.))
+                    .items_center()
+                    .rounded(px(r.h / 2.))
+                    .bg(black())
+                    .shadow(vec![BoxShadow {
+                        color: hsla(0., 0., 0., 0.35),
+                        offset: point(px(0.), hud(6.)),
+                        blur_radius: hud(18.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .child(text)
+                    .children(controls)
+                    .test_support(),
+            )
+            .opacity(content)
+            .into_any_element()
     }
 
     fn render_neck(&self, f: &Floater, desk: &Desk) -> Option<AnyElement> {
@@ -1611,6 +1953,17 @@ impl RecordingWidgetView {
             .border_color(tone.hairline)
             .child(source_chip(m, Track::Mic, tone))
             .child(source_chip(m, Track::System, tone));
+        // Beside the floater this has no room while the panel is open.
+        let health_line = m.health_notice().map(|notice| {
+            div()
+                .id("recording-widget-panel-health")
+                .px(hud(14.))
+                .pb(hud(8.))
+                .text_size(hud(12.))
+                .text_color(tone.accent)
+                .child(t(notice.key()))
+                .test_support()
+        });
 
         let body: Vec<AnyElement> = if rows.is_empty() {
             vec![transcript_notice(&status, tone, cx)]
@@ -1694,6 +2047,7 @@ impl RecordingWidgetView {
             .children(header)
             .child(title)
             .child(sources)
+            .children(health_line)
             .child(transcript)
             .child(footer)
             .test_support()

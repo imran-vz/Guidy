@@ -154,6 +154,7 @@ fn start(app: AppHandle, cli_args: CliArgs, cx: &mut App) {
     windows::spawn_appearance_watch(cx);
     windows::watch_displays(cx);
     windows::save_state_on_quit(cx);
+    stop_recording_on_quit(cx);
 
     // Queue backend events from now on; consumed once state exists.
     let (event_tx, event_rx) = smol::channel::unbounded::<CoreEvent>();
@@ -253,8 +254,9 @@ fn finish_start(
     if call_demo {
         // The stopped floater offering notes for a Zoom call (no detection).
         let call = guidy_core::meetings::calls::Call {
-            app: guidy_core::meetings::calls::CallApp::Zoom,
+            source: guidy_core::meetings::calls::CallSource::Zoom,
             since: guidy_core::meetings::recorder::now_ms(),
+            app_id: "us.zoom.xos".into(),
         };
         if crate::ui::recording_widget::set_call(Some(call), cx) {
             windows::sync_recording_controls(cx);
@@ -267,6 +269,34 @@ fn finish_start(
     if decision.show_main_window && !early.show_main_window {
         windows::show_main(cx);
     }
+}
+
+/// Quit finishes a recording, bounded: its tracks are crash-safe, so one that
+/// takes too long loses only what wasn't synced yet. On a thread, as the UI
+/// thread is what quit waits on.
+fn stop_recording_on_quit(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        if cx.has_global::<crate::state::GlobalAppState>() {
+            let backend = crate::state::AppState::global(cx).read(cx).meetings.clone();
+            if backend.recorder_state().is_recording() {
+                let (done, stopped) = std::sync::mpsc::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("meetings-quit-stop".into())
+                    .spawn(move || {
+                        if let Err(e) = backend.stop_recording() {
+                            log::error!("Stopping the recording on quit failed: {e}");
+                        }
+                        let _ = done.send(());
+                    });
+                let bound = std::time::Duration::from_secs(3);
+                if spawned.is_ok() && stopped.recv_timeout(bound).is_err() {
+                    log::warn!("Stopping the recording on quit is taking long: quitting anyway");
+                }
+            }
+        }
+        async {}
+    })
+    .detach();
 }
 
 /// Debug builds: replay a streaming session through the real overlay path
@@ -453,6 +483,7 @@ fn recording_widget_demo(app: &AppHandle, expanded: bool, cx: &mut App) {
                 scheduled_end_at: None,
                 paused_at: None,
                 paused_ms: 0,
+                health: Default::default(),
             },
         );
         std::thread::sleep(Duration::from_millis(1500));

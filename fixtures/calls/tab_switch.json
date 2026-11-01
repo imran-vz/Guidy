@@ -1,0 +1,54 @@
+{
+  "name": "tab_switch",
+  "description": "Switching tabs mid-call is the same call: no second offer.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 30000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "docs.google.com",
+          "path": "/document"
+        }
+      ]
+    },
+    {
+      "from": 31000,
+      "to": 60000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "example.com",
+          "path": "/"
+        }
+      ]
+    },
+    {
+      "from": 61000,
+      "to": 70000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "google_meet"
+    }
+  ]
+}

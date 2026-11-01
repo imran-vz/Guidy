@@ -1,0 +1,48 @@
+{
+  "name": "generic_site_becomes_meet",
+  "description": "A generic offer on the Meet landing page, then a room set to Always: it records.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 19000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/landing"
+        }
+      ]
+    },
+    {
+      "from": 20000,
+      "to": 23000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "meet.google.com",
+          "path": "/abc-defg-hij"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": {
+        "browser_site": "meet.google.com"
+      }
+    },
+    {
+      "t": 20000,
+      "source": "google_meet",
+      "record": true
+    }
+  ],
+  "choices": [
+    {
+      "key": "google_meet",
+      "label": "google_meet",
+      "policy": "always"
+    }
+  ]
+}

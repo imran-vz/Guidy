@@ -59,6 +59,8 @@ pub enum SuggestionSource {
     Attendee,
     /// From the People list.
     KnownPerson,
+    /// The name a meeting app showed while this speaker spoke (listed first).
+    MeetingApp,
 }
 
 /// Result of turning meeting notes on (permission prompts).
@@ -265,6 +267,20 @@ impl MeetingsManager {
         Ok(stopped)
     }
 
+    /// Whether a call is going on behind the recording.
+    pub fn set_recording_in_call(&self, in_call: bool) {
+        if let Some(r) = self.capture.recorder.get() {
+            r.set_in_call(in_call, crate::meetings::recorder::now_ms());
+        }
+    }
+
+    /// "Keep" on the no-audio warning.
+    pub fn keep_recording_through_silence(&self) {
+        if let Some(r) = self.capture.recorder.get() {
+            r.keep_through_silence(crate::meetings::recorder::now_ms());
+        }
+    }
+
     /// Pause (`true`) or resume (`false`) the recording. Returns whether
     /// anything changed.
     pub fn set_recording_paused(&self, pause: bool) -> bool {
@@ -397,7 +413,7 @@ impl MeetingsManager {
         // The one place notifications made moot are withdrawn: every start
         // and stop (UI, tray, notification "Start"/"Stop") goes through the
         // recorder, which emits a state change (also when a stop's finish
-        // fails). Recordings never end by themselves: past the scheduled end
+        // fails). Past the scheduled end
         // there are only reminders.
         self.app.listen(events::RECORDER_STATE, |e| {
             if let Ok(state) = serde_json::from_value::<RecorderState>(e.payload) {
@@ -871,7 +887,14 @@ impl MeetingsManager {
     /// Attendees first, then known people (by voice similarity).
     pub fn speaker_suggestions(&self, speaker_id: SpeakerId) -> Result<Vec<NameSuggestion>> {
         let settings = crate::settings::get_settings(&self.app).meetings;
-        crate::meetings::processing::naming::suggestions(&self.store, speaker_id, &settings)
+        let suggestions =
+            crate::meetings::processing::naming::suggestions(&self.store, speaker_id, &settings)?;
+        crate::meetings::processing::speaker_hints::with_app_name(
+            &self.store,
+            &self.audio_dir(),
+            speaker_id,
+            suggestions,
+        )
     }
 
     /// Name a speaker. Stores that speaker's voiceprints under the person and

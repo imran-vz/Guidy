@@ -1015,6 +1015,7 @@ fn meeting_recording(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
         scheduled_end_at: None,
         paused_at: None,
         paused_ms: 0,
+        health: Default::default(),
     };
     {
         let mut d = h.meetings.data.lock();
@@ -1431,6 +1432,7 @@ fn recording_widget(h: &mut Harness, size: Size<Pixels>, expanded: bool) -> AnyW
                     scheduled_end_at: None,
                     paused_at: None,
                     paused_ms: 0,
+                    health: Default::default(),
                 },
                 cx,
             );

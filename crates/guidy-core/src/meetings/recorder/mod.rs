@@ -19,13 +19,14 @@
 //! machine is tested with fakes; [`adapters`] wires the real app.
 
 pub mod adapters;
+pub mod health;
 pub mod ports;
 pub mod schedule;
 
 pub use ports::*;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
@@ -37,7 +38,92 @@ use parking_lot::{Condvar, Mutex};
 use crate::meetings::audio_store::{self, TrackSummary, TrackWriter};
 use crate::meetings::settings::MeetingSettings;
 use crate::meetings::types::*;
+use health::{CaptureMessage, Flow, HealthTracker};
 use schedule::{ReminderState, MINUTE_MS};
+
+/// Below this free, the user is warned; recording goes on.
+pub const LOW_DISK_BYTES: u64 = 500 * 1024 * 1024;
+/// More than this queued for the writer (samples per track, a minute): warned.
+/// The queue itself stays unbounded: dropping would misalign the tracks.
+const BACKLOG_SAMPLES: i64 = 60 * 16_000;
+/// How often permissions and free space are looked at while recording.
+const PREFLIGHT_EVERY_MS: i64 = 5_000;
+/// The meeting's error when 15 minutes without audio ended the recording.
+pub const STOPPED_NO_AUDIO: &str = "Stopped after 15 minutes without audio";
+/// The start of the meeting's error when a crash ended the recording.
+pub const INTERRUPTED_PREFIX: &str = "Recording was interrupted; saved up to ";
+
+/// Appends the name a meeting app shows to `<id>.speakers.jsonl`, beside the
+/// tracks. Local only, and read back as a suggestion. Best effort.
+struct SpeakerLog {
+    path: PathBuf,
+}
+
+impl SpeakerLog {
+    fn append(&self, t_ms: i64, name: &str) {
+        use std::io::Write;
+        let line = serde_json::json!({ "t": t_ms, "name": name });
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut f| writeln!(f, "{line}"));
+        if written.is_err() {
+            log::debug!("meetings: couldn't append to the speakers log");
+        }
+    }
+}
+
+/// What flows through a recording, from the capture and writer threads, read
+/// by the health tick. All atomics: the audio threads must not wait.
+#[derive(Default)]
+struct AudioFlow {
+    /// Per track: buffers seen, ones with anything but zeros, samples queued
+    /// for the writer, whether writing it failed.
+    buffers: [AtomicU64; 2],
+    with_sound: [AtomicU64; 2],
+    queued: [AtomicI64; 2],
+    write_failed: [AtomicBool; 2],
+}
+
+/// Appends what happens to a recording's capture to `<id>.capture.jsonl`,
+/// beside its tracks. Best effort: losing a line never hurts the recording.
+struct CaptureLog {
+    path: PathBuf,
+    file: Mutex<Option<std::fs::File>>,
+}
+
+impl CaptureLog {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            file: Mutex::new(None),
+        }
+    }
+
+    fn append(&self, track: Track, message: &str) {
+        use std::io::Write;
+        let mut file = self.file.lock();
+        if file.is_none() {
+            *file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .ok();
+        }
+        let Some(f) = file.as_mut() else {
+            return;
+        };
+        let line = serde_json::json!({
+            "t": now_ms(),
+            "track": track.as_str(),
+            "event": message,
+        });
+        if writeln!(f, "{line}").is_err() {
+            log::debug!("meetings: couldn't append to the capture log");
+        }
+    }
+}
 
 /// Localized notification texts (from the tray translations).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +199,19 @@ struct Session {
     paused_at: Option<i64>,
     /// Total length of the pauses that already ended.
     paused_ms: i64,
+    /// Fed from the capture thread and the health tick.
+    tracker: Arc<Mutex<HealthTracker>>,
+    flow: Arc<AudioFlow>,
+    /// What the flow counters said at the last tick.
+    last_flow: [(u64, u64); 2],
+    /// The health last reported.
+    health: RecordingHealth,
+    last_preflight: i64,
+    /// Where to write the names meeting apps show: the setting was on when
+    /// this recording started.
+    speakers_log: Option<Arc<SpeakerLog>>,
+    /// How long after `started_at` the tracks' time 0 is.
+    audio_starts_ms: i64,
 }
 
 impl Session {
@@ -124,6 +223,7 @@ impl Session {
             scheduled_end_at: self.scheduled_end_at,
             paused_at: self.paused_at,
             paused_ms: self.paused_ms,
+            health: self.health,
         }
     }
 }
@@ -286,8 +386,13 @@ impl MeetingRecorder {
     fn current_event(&self, now: i64) -> Option<CalendarEvent> {
         // Any timed event, with or without a meeting link (plan 1.3);
         // `schedule::current_event` still prefers one with a link.
-        match self.deps.calendar.timed_events_between(now, now + 1) {
-            Ok(events) => schedule::current_event(&events, now).cloned(),
+        match self.deps.calendar.timed_events_between(
+            now - schedule::START_LINK_GRACE_MS,
+            now + schedule::UPCOMING_LINK_MS,
+        ) {
+            Ok(events) => schedule::current_event(&events, now)
+                .or_else(|| schedule::nearby_call_event(&events, now))
+                .cloned(),
             Err(e) => {
                 log::debug!("meetings: no calendar for manual start: {e:#}");
                 None
@@ -300,9 +405,14 @@ impl MeetingRecorder {
     /// can't be found ([`Self::find_event`]), it links to the event happening
     /// now, if any.
     pub fn start(&self, calendar_event_id: Option<String>, now: i64) -> Result<MeetingId> {
+        let began = std::time::Instant::now();
         let _op = self.op.lock();
         if self.session.lock().is_some() {
             bail!("a meeting is already being recorded");
+        }
+        let preflight = self.deps.capture.preflight(&self.deps.audio_dir);
+        if !preflight.mic_granted && !preflight.system_granted {
+            bail!("Guidy has no access to the microphone or to system audio");
         }
         // Failing ones stay pending: recording a new meeting isn't blocked.
         if let Err(e) = self.retry_pending() {
@@ -351,7 +461,7 @@ impl MeetingRecorder {
         };
         let id = self.deps.repo.insert_meeting(&meeting)?;
 
-        let session = match self.open_session(meeting, id) {
+        let session = match self.open_session(meeting, id, preflight, began) {
             Ok(s) => s,
             Err(e) => {
                 // Don't leave an empty meeting behind for a start that never
@@ -380,9 +490,15 @@ impl MeetingRecorder {
     /// Create the track files and start capture. On failure, every file it
     /// created is deleted (tracked here, not read back from the row: the
     /// failure may be the row update itself).
-    fn open_session(&self, meeting: Meeting, id: MeetingId) -> Result<Session> {
+    fn open_session(
+        &self,
+        meeting: Meeting,
+        id: MeetingId,
+        preflight: Preflight,
+        began: std::time::Instant,
+    ) -> Result<Session> {
         let mut created = Vec::new();
-        let result = self.open_session_inner(meeting, id, &mut created);
+        let result = self.open_session_inner(meeting, id, preflight, began, &mut created);
         if result.is_err() {
             // The writers are dropped (closed) by now.
             for path in &created {
@@ -403,6 +519,8 @@ impl MeetingRecorder {
         &self,
         mut meeting: Meeting,
         id: MeetingId,
+        preflight: Preflight,
+        began: std::time::Instant,
         created: &mut Vec<PathBuf>,
     ) -> Result<Session> {
         let mic_rel = audio_store::track_file_name(id, Track::Mic);
@@ -423,11 +541,37 @@ impl MeetingRecorder {
         meeting.mic_audio_path = Some(mic_rel);
         meeting.system_audio_path = Some(sys_rel);
 
+        let log_path = self.deps.audio_dir.join(audio_store::capture_log_name(id));
+        created.push(log_path.clone());
+        let capture_log = CaptureLog::new(log_path);
+        let speakers_path = self.deps.audio_dir.join(audio_store::speakers_log_name(id));
+        created.push(speakers_path.clone());
+        let speakers_log = (self.deps.settings)().speaker_names_from_apps.then(|| {
+            Arc::new(SpeakerLog {
+                path: speakers_path,
+            })
+        });
+
+        let flow = Arc::new(AudioFlow::default());
+        let writer_flow = flow.clone();
         let (tx, rx) = channel();
         let writer = std::thread::Builder::new()
             .name(format!("meeting-writer-{id}"))
-            .spawn(move || writer_loop(rx, mic, sys))
+            .spawn(move || writer_loop(rx, mic, sys, writer_flow))
             .context("spawn meeting writer")?;
+
+        let mut tracker = HealthTracker::new(meeting.started_at);
+        tracker.set_permissions(preflight.mic_granted, preflight.system_granted);
+        tracker.set_low_disk(is_low_disk(preflight));
+        if !preflight.mic_granted || !preflight.system_granted {
+            log::warn!(
+                "meetings: recording with one source only (mic granted: {}, system granted: {})",
+                preflight.mic_granted,
+                preflight.system_granted
+            );
+        }
+        let health = tracker.health(meeting.started_at);
+        let tracker = Arc::new(Mutex::new(tracker));
 
         let sink_tx = Mutex::new(tx.clone());
         let paused = Arc::new(AtomicBool::new(false));
@@ -439,17 +583,24 @@ impl MeetingRecorder {
             l.store(0, Ordering::Relaxed);
         }
         let live = self.deps.live.clone();
+        let sink_flow = flow.clone();
         let sink: CaptureSink = Arc::new(move |track, mut samples: Vec<f32>| {
             if samples.is_empty() {
                 return;
             }
+            let i = track_index(track);
+            sink_flow.buffers[i].fetch_add(1, Ordering::Relaxed);
+            sink_flow.queued[i].fetch_add(samples.len() as i64, Ordering::Relaxed);
             if sink_paused.load(Ordering::Relaxed) {
                 samples.fill(0.0);
             } else {
                 // Non-negative floats order like their bits.
                 let bits = rms_level(&samples).to_bits();
                 level.fetch_max(bits, Ordering::Relaxed);
-                track_levels[track_index(track)].fetch_max(bits, Ordering::Relaxed);
+                track_levels[i].fetch_max(bits, Ordering::Relaxed);
+                if samples.iter().any(|s| s.abs() > 1e-6) {
+                    sink_flow.with_sound[i].fetch_add(1, Ordering::Relaxed);
+                }
             }
             if let Some(live) = &live {
                 live.push(track, &samples);
@@ -459,7 +610,17 @@ impl MeetingRecorder {
         });
         let capture_errors = Arc::new(Mutex::new(Vec::new()));
         let errors = capture_errors.clone();
+        let message_tracker = tracker.clone();
         let on_error: CaptureErrorSink = Arc::new(move |track, message: String| {
+            capture_log.append(track, &message);
+            let parsed = CaptureMessage::parse(&message);
+            if let Some(parsed) = parsed {
+                message_tracker.lock().on_message(track, parsed);
+            }
+            if message.starts_with("state:") {
+                log::info!("meetings: {track:?} capture of meeting {id}: {message}");
+                return;
+            }
             log::error!("meetings: {track:?} capture of meeting {id} failed: {message}");
             let msg = format!("{} capture: {message}", track.as_str());
             let mut errors = errors.lock();
@@ -470,6 +631,9 @@ impl MeetingRecorder {
         if let Some(live) = &self.deps.live {
             live.start(id);
         }
+        // The tracks' time 0: capture takes its origin as it starts, some way
+        // into `started_at` (a calendar read, the live transcriber loading).
+        let audio_starts_ms = began.elapsed().as_millis() as i64;
         let capture = match self.deps.capture.start(sink, on_error) {
             Ok(c) => c,
             Err(e) => {
@@ -494,7 +658,139 @@ impl MeetingRecorder {
             paused,
             paused_at: None,
             paused_ms: 0,
+            tracker,
+            flow,
+            last_flow: [(0, 0); 2],
+            health,
+            last_preflight: meeting.started_at,
+            speakers_log,
+            audio_starts_ms,
         })
+    }
+
+    /// One second's look at how the recording is doing: tell the UI of any
+    /// change, and stop it if 15 minutes without audio have run out. Never
+    /// blocks on a start or stop.
+    pub fn health_tick(&self, now: i64) {
+        let (preflight_due, speakers) = {
+            let session = self.session.lock();
+            let Some(s) = session.as_ref() else {
+                return;
+            };
+            let speakers = s
+                .speakers_log
+                .clone()
+                .filter(|_| s.paused_at.is_none())
+                .map(|log| (log, now - s.started_at - s.audio_starts_ms));
+            (
+                !(0..PREFLIGHT_EVERY_MS).contains(&(now - s.last_preflight)),
+                speakers,
+            )
+        };
+        if let Some((log, t_ms)) = speakers {
+            if let Some(name) = self.deps.capture.active_speaker() {
+                log.append(t_ms, &name);
+            }
+        }
+        // Outside the lock: reading permissions can take a moment.
+        let preflight = preflight_due.then(|| self.deps.capture.preflight(&self.deps.audio_dir));
+        let (id, health, stop) = {
+            let mut session = self.session.lock();
+            let Some(s) = session.as_mut() else {
+                return;
+            };
+            let flows = [0, 1].map(|i| {
+                let seen = (
+                    s.flow.buffers[i].load(Ordering::Relaxed),
+                    s.flow.with_sound[i].load(Ordering::Relaxed),
+                );
+                let flow = Flow {
+                    samples: seen.0 != s.last_flow[i].0,
+                    sound: seen.1 != s.last_flow[i].1,
+                };
+                s.last_flow[i] = seen;
+                flow
+            });
+            let backlog = s
+                .flow
+                .queued
+                .iter()
+                .any(|q| q.load(Ordering::Relaxed) > BACKLOG_SAMPLES);
+            let mut tracker = s.tracker.lock();
+            if let Some(preflight) = preflight {
+                s.last_preflight = now;
+                tracker.set_permissions(preflight.mic_granted, preflight.system_granted);
+                tracker.set_low_disk(is_low_disk(preflight));
+            }
+            for (i, track) in [Track::Mic, Track::System].into_iter().enumerate() {
+                if s.flow.write_failed[i].load(Ordering::Relaxed) {
+                    tracker.on_write_failed(track);
+                }
+            }
+            tracker.set_backlog(backlog);
+            tracker.tick(now, flows[0], flows[1], s.paused_at.is_some());
+            let health = tracker.health(now);
+            let stop = s.paused_at.is_none() && tracker.stop_due(now);
+            drop(tracker);
+            let changed = health != s.health;
+            if stop {
+                let mut errors = s.capture_errors.lock();
+                if !errors.iter().any(|e| e == STOPPED_NO_AUDIO) {
+                    errors.push(STOPPED_NO_AUDIO.to_string());
+                }
+            }
+            (s.meeting_id, changed.then_some(health), stop)
+        };
+        // Under `op`, so a stop can't report Idle in between and be overwritten.
+        // A start or stop under way: the next tick says it. All of this is for
+        // recording `id`: it may have just stopped and another started.
+        if let Some(health) = health {
+            if let Some(_op) = self.op.try_lock() {
+                let state = self
+                    .session
+                    .lock()
+                    .as_mut()
+                    .filter(|s| s.meeting_id == id)
+                    .map(|s| {
+                        s.health = health;
+                        s.state()
+                    });
+                if let Some(state) = state {
+                    self.set_state(state);
+                }
+            }
+        }
+        if stop {
+            let stopped = {
+                let _op = self.op.lock();
+                if self.current_meeting_id() != Some(id) {
+                    return;
+                }
+                log::warn!("meetings: no audio for 15 minutes: stopping the recording");
+                self.stop_holding_op(now)
+            };
+            match stopped {
+                Ok(Some(id)) => (self.deps.on_recording_finished)(id),
+                Ok(None) => {}
+                Err(e) => log::warn!("meetings: stopping a silent recording: {e:#}"),
+            }
+        }
+    }
+
+    /// Whether a call is going on behind this recording: without one, nothing
+    /// on system audio is no cause for a warning.
+    pub fn set_in_call(&self, in_call: bool, now: i64) {
+        if let Some(s) = self.session.lock().as_ref() {
+            s.tracker.lock().set_in_call(in_call, now);
+        }
+    }
+
+    /// "Keep" on the no-audio warning: another 15 minutes from `now`.
+    pub fn keep_through_silence(&self, now: i64) {
+        if let Some(s) = self.session.lock().as_ref() {
+            s.tracker.lock().keep_going(now);
+        }
+        self.health_tick(now);
     }
 
     /// Pause (`true`) or resume (`false`) the recording at `now`. Returns
@@ -551,6 +847,11 @@ impl MeetingRecorder {
     /// [`RecorderDeps::on_recording_finished`], not returned.
     pub fn stop(&self, now: i64) -> Result<Option<MeetingId>> {
         let _op = self.op.lock();
+        self.stop_holding_op(now)
+    }
+
+    /// [`Self::stop`]. Callers hold `op`.
+    fn stop_holding_op(&self, now: i64) -> Result<Option<MeetingId>> {
         let Some(mut session) = self.session.lock().take() else {
             return self.retry_pending().map(|()| None);
         };
@@ -723,7 +1024,8 @@ impl MeetingRecorder {
     }
 
     /// One scheduler step: retry pending finishes, post a due reminder, and
-    /// (at most once a minute) poll the calendar for events starting now.
+    /// prompt for events about to start (the calendar is read at most once a
+    /// minute).
     pub fn tick(&self, now: i64) {
         let settings = (self.deps.settings)();
         let strings = (self.deps.strings)();
@@ -741,25 +1043,34 @@ impl MeetingRecorder {
         if !(settings.enabled && settings.calendar_notifications) || self.is_recording() {
             return;
         }
-        {
+        let poll_due = {
             let mut p = self.prompts.lock();
-            if p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t) {
-                return;
+            // Also right before a prompt: an event may have been cancelled,
+            // moved or renamed since the last read.
+            let due = !p.last_poll.is_some_and(|t| now - t < MINUTE_MS && now >= t)
+                || !schedule::events_to_prompt(&p.seen, now, |id| p.prompted.contains_key(id))
+                    .is_empty();
+            if due {
+                p.last_poll = Some(now);
             }
-            p.last_poll = Some(now);
-        }
+            due
+        };
         // The (slow) lookup runs without `op`, so it never holds up a start
-        // or stop.
-        let events = match self
-            .deps
-            .calendar
-            .events_between(now - schedule::PROMPT_WINDOW_MS, now + MINUTE_MS)
-        {
-            Ok(e) => e,
-            Err(e) => {
-                log::debug!("meetings: calendar poll failed: {e:#}");
-                return;
+        // or stop. Read about once a minute, judged every tick, so a prompt
+        // lands on time.
+        let polled = if poll_due {
+            match self.deps.calendar.events_between(
+                now - schedule::PROMPT_WINDOW_MS,
+                now + schedule::PROMPT_LOOKAHEAD_MS,
+            ) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    log::debug!("meetings: calendar poll failed: {e:#}");
+                    return;
+                }
             }
+        } else {
+            None
         };
         // Re-checked, decided and posted under `op`: a recording started
         // meanwhile gets no prompt (and one starting now withdraws it after).
@@ -769,8 +1080,11 @@ impl MeetingRecorder {
         }
         let to_post: Vec<CalendarEvent> = {
             let mut p = self.prompts.lock();
+            if let Some(events) = polled {
+                p.seen = events;
+            }
             let list: Vec<CalendarEvent> =
-                schedule::events_to_prompt(&events, now, |id| p.prompted.contains_key(id))
+                schedule::events_to_prompt(&p.seen, now, |id| p.prompted.contains_key(id))
                     .into_iter()
                     .cloned()
                     .collect();
@@ -779,7 +1093,6 @@ impl MeetingRecorder {
             }
             p.prompted
                 .retain(|_, start| now - *start < 24 * 60 * MINUTE_MS);
-            p.seen = events.clone();
             list
         };
         for e in to_post {
@@ -877,7 +1190,12 @@ impl MeetingRecorder {
                 .filter_map(|p| audio_store::file_mtime_ms(&p))
                 .max();
             let ended_at = last_write.unwrap_or(m.started_at).max(m.started_at);
-            if !self.deps.repo.finish_recording(m.id, ended_at, None)? {
+            let reason = format!("{INTERRUPTED_PREFIX}{}", local_time(ended_at, "%H:%M"));
+            if !self
+                .deps
+                .repo
+                .finish_recording(m.id, ended_at, Some(&reason))?
+            {
                 continue;
             }
             log::warn!("meetings: recovered interrupted recording {}", m.id);
@@ -928,6 +1246,12 @@ impl MeetingRecorder {
     }
 }
 
+fn is_low_disk(preflight: Preflight) -> bool {
+    preflight
+        .free_bytes
+        .is_some_and(|free| free < LOW_DISK_BYTES)
+}
+
 fn track_index(track: Track) -> usize {
     match track {
         Track::Mic => 0,
@@ -970,11 +1294,17 @@ impl TrackOutput for TrackWriter {
 /// right there and never written again: appending after a possibly torn
 /// record would misalign every later one, while a torn *final* record just
 /// reads as the end of the file. Its outcome is the write error.
-fn writer_loop<W: TrackOutput>(rx: Receiver<WriterMsg>, mic: W, sys: W) -> WriterOutcome {
+fn writer_loop<W: TrackOutput>(
+    rx: Receiver<WriterMsg>,
+    mic: W,
+    sys: W,
+    flow: Arc<AudioFlow>,
+) -> WriterOutcome {
     let mut tracks: [Result<W>; 2] = [Ok(mic), Ok(sys)];
     for msg in rx {
         match msg {
             WriterMsg::Samples(track, samples) => {
+                flow.queued[track_index(track)].fetch_sub(samples.len() as i64, Ordering::Relaxed);
                 let slot = match track {
                     Track::Mic => &mut tracks[0],
                     Track::System => &mut tracks[1],
@@ -985,6 +1315,7 @@ fn writer_loop<W: TrackOutput>(rx: Receiver<WriterMsg>, mic: W, sys: W) -> Write
                         "meetings: writing the {} track failed, stopping it: {e:#}",
                         track.as_str()
                     );
+                    flow.write_failed[track_index(track)].store(true, Ordering::Relaxed);
                     // Drops (closes) the writer without its end marker.
                     *slot = Err(e.context("recording stopped early"));
                 }
@@ -1004,7 +1335,8 @@ pub fn now_ms() -> i64 {
 // Scheduler thread
 // ---------------------------------------------------------------------------
 
-/// Background thread calling [`MeetingRecorder::tick`] every 15 s.
+/// Background thread calling [`MeetingRecorder::tick`] every 15 s and
+/// [`MeetingRecorder::health_tick`] every second.
 ///
 /// Dropping it signals the thread to stop and returns without joining: a
 /// tick can wait on the recorder's op lock (a stop finishing) or a calendar
@@ -1016,6 +1348,8 @@ pub struct Scheduler {
 }
 
 pub const TICK: Duration = Duration::from_secs(15);
+/// How often the health of a recording is looked at.
+pub const HEALTH_TICK: Duration = Duration::from_secs(1);
 
 impl Scheduler {
     pub fn start(recorder: Arc<MeetingRecorder>) -> Result<Self> {
@@ -1025,6 +1359,7 @@ impl Scheduler {
             .name("meetings-scheduler".into())
             .spawn(move || {
                 let (lock, cv) = &*thread_stop;
+                let mut last_tick: Option<std::time::Instant> = None;
                 loop {
                     {
                         let _ticking = recorder.ticking.lock();
@@ -1033,11 +1368,15 @@ impl Scheduler {
                         if *lock.lock() {
                             break;
                         }
-                        recorder.tick(now_ms());
+                        if last_tick.is_none_or(|t| t.elapsed() >= TICK) {
+                            last_tick = Some(std::time::Instant::now());
+                            recorder.tick(now_ms());
+                        }
+                        recorder.health_tick(now_ms());
                     }
                     let mut stopped = lock.lock();
                     if !*stopped {
-                        cv.wait_for(&mut stopped, TICK);
+                        cv.wait_for(&mut stopped, HEALTH_TICK);
                     }
                     if *stopped {
                         break;

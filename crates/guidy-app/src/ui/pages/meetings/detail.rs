@@ -32,6 +32,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::manager::{NameSuggestion, PersonRef, SuggestionSource};
+use guidy_core::meetings::recorder::INTERRUPTED_PREFIX;
 use guidy_core::meetings::types::{
     CloudTranscriptionOption, DiarizationOptions, LiveStatus, Meeting, MeetingId, MeetingSpeaker,
     MeetingStatus, Person, ProcessingProgress, ProvisionalLine, Segment, SpeakerId, Track,
@@ -2214,17 +2215,24 @@ impl MeetingDetail {
                     .child(self.meta_line(&m))
                     .test_support(),
             )
-            .when_some(m.error.clone().filter(|_| failed), |d, e| {
+            // A recording that ended early says why, whatever came after.
+            .when_some(m.error.clone(), |d, e| {
                 d.child(
                     div()
+                        .id("meeting-detail-error")
                         .min_w_0()
                         .truncate()
                         .text_size(design::TEXT_SECONDARY)
-                        .text_color(theme.danger)
-                        .child(e),
+                        .text_color(if failed {
+                            theme.danger
+                        } else {
+                            tone.text_muted
+                        })
+                        .child(e)
+                        .test_support(),
                 )
             })
-            .when(!failed, |d| {
+            .when(!failed && m.error.is_none(), |d| {
                 d.when_some(m.description.clone(), |d, text| {
                     d.child(
                         div()
@@ -2318,6 +2326,7 @@ impl MeetingDetail {
                     let source = match s.source {
                         SuggestionSource::Attendee => t("meetings.speaker.attendee"),
                         SuggestionSource::KnownPerson => t("meetings.speaker.knownPerson"),
+                        SuggestionSource::MeetingApp => t("meetings.speaker.meetingApp"),
                     };
                     let mut tip = source.to_string();
                     if let Some(e) = &s.email {
@@ -3834,6 +3843,37 @@ impl Render for MeetingDetail {
                     .pt(dp(8.))
                     .child(render_model_download("detail", &missing, cx))
             });
+        let recovered_banner = self
+            .meeting
+            .as_ref()
+            .filter(|m| m.status == MeetingStatus::Recorded)
+            .and_then(|m| m.error.clone())
+            .filter(|e| e.starts_with(INTERRUPTED_PREFIX))
+            .map(|reason| {
+                h_flex()
+                    .id("meeting-recovered-banner")
+                    .flex_none()
+                    .px(dp(12.))
+                    .pt(dp(8.))
+                    .gap(dp(8.))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(design::TEXT_SECONDARY)
+                            .child(reason),
+                    )
+                    .child(
+                        Button::new("meeting-recovered-process")
+                            .small()
+                            .label(t("meetings.list.process"))
+                            .loading(self.processing_busy)
+                            .disabled(self.processing_busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.process(cx))),
+                    )
+                    .test_support()
+            });
         let body: AnyElement = if side {
             h_flex()
                 .flex_1()
@@ -3905,6 +3945,7 @@ impl Render for MeetingDetail {
             .children(self.render_what_changed(cx))
             .children(self.render_quality_notice(cx))
             .children(model_banner)
+            .children(recovered_banner)
             .child(body)
             .test_support()
     }

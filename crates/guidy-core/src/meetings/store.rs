@@ -340,6 +340,12 @@ pub(crate) static MIGRATIONS: &[M] = &[
 /// File name of the database inside the app data dir.
 pub const MEETINGS_DB_FILE: &str = "meetings.db";
 
+/// Why a recording ended early ([`crate::meetings::recorder::INTERRUPTED_PREFIX`],
+/// [`crate::meetings::recorder::STOPPED_NO_AUDIO`]) stays on the meeting through
+/// processing: the user may only open it after that. Other errors don't.
+const INTERRUPTED_LIKE: &str = "Recording was interrupted; %";
+const STOPPED_NO_AUDIO_LIKE: &str = "%Stopped after 15 minutes without audio%";
+
 /// Encode an embedding as little-endian f32 bytes (the `voiceprints.embedding`
 /// BLOB format).
 pub fn encode_embedding(v: &[f32]) -> Vec<u8> {
@@ -1064,10 +1070,11 @@ impl MeetingsStore {
                     THEN error_before_processing ELSE error END,
                 stage_before_processing = CASE WHEN status = 'processing'
                     THEN stage_before_processing ELSE processing_stage END,
-                status = 'processing', error = NULL
+                status = 'processing',
+                error = CASE WHEN error LIKE ?3 OR error LIKE ?4 THEN error END
              WHERE id = ?1 AND status != 'recording'
                AND (NOT ?2 OR mic_audio_path IS NOT NULL OR system_audio_path IS NOT NULL)",
-            params![id, needs_audio],
+            params![id, needs_audio, INTERRUPTED_LIKE, STOPPED_NO_AUDIO_LIKE],
         )? > 0)
     }
 
@@ -1124,11 +1131,18 @@ impl MeetingsStore {
         error: Option<&str>,
     ) -> Result<()> {
         let n = self.conn.lock().execute(
-            "UPDATE meetings SET status = ?2, error = ?3,
+            "UPDATE meetings SET status = ?2,
+                error = COALESCE(?3, CASE WHEN error LIKE ?4 OR error LIKE ?5 THEN error END),
                 status_before_processing = NULL, error_before_processing = NULL,
                 stage_before_processing = NULL
              WHERE id = ?1",
-            params![id, status.as_str(), error],
+            params![
+                id,
+                status.as_str(),
+                error,
+                INTERRUPTED_LIKE,
+                STOPPED_NO_AUDIO_LIKE
+            ],
         )?;
         expect_one(n, "meeting", id)
     }
@@ -3870,5 +3884,35 @@ pub(crate) mod tests {
             assert_eq!(source(3), TitleSource::User);
         }
         assert_eq!(source(4), TitleSource::Calendar);
+    }
+
+    #[test]
+    fn why_a_recording_ended_early_stays_through_processing() {
+        use crate::meetings::recorder::{INTERRUPTED_PREFIX, STOPPED_NO_AUDIO};
+        assert!(INTERRUPTED_PREFIX.starts_with(INTERRUPTED_LIKE.trim_end_matches('%')));
+        assert!(STOPPED_NO_AUDIO_LIKE.contains(STOPPED_NO_AUDIO));
+        let s = MeetingsStore::open_in_memory().unwrap();
+        let interrupted = format!("{INTERRUPTED_PREFIX}10:30");
+        for (error, kept) in [
+            (interrupted.as_str(), true),
+            (STOPPED_NO_AUDIO, true),
+            ("system capture: tap stopped", false),
+        ] {
+            let id = s.insert_meeting(&meeting("m", 1)).unwrap();
+            s.set_meeting_status(id, MeetingStatus::Recorded, Some(error))
+                .unwrap();
+            assert!(s.mark_processing(id, false).unwrap());
+            let during = s.get_meeting(id).unwrap().unwrap().error;
+            assert_eq!(during.is_some(), kept, "{error}");
+            s.finish_processing(id, MeetingStatus::Processed, None)
+                .unwrap();
+            let after = s.get_meeting(id).unwrap().unwrap().error;
+            assert_eq!(after.as_deref(), kept.then_some(error));
+            // A failure of processing says so instead.
+            s.finish_processing(id, MeetingStatus::Failed, Some("no model"))
+                .unwrap();
+            let failed = s.get_meeting(id).unwrap().unwrap().error;
+            assert_eq!(failed.as_deref(), Some("no model"));
+        }
     }
 }
