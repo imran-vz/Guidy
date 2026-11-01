@@ -390,12 +390,12 @@ pub fn title_source(bundle_id: &str) -> Option<&'static str> {
 }
 
 /// A window title of a Google Meet call (`Meet - abc-defg-hij`, `Meet –
-/// Weekly sync`, `Google Meet - Brave`), or one showing an address on
-/// meet.google.com. Only a word that is that address counts:
-/// `meet.google.com.evil.io` and `How to use Google Meet` do not.
+/// Weekly sync`, `Google Meet - Brave`), or one that starts with an address
+/// on meet.google.com: `meet.google.com.evil.io`, `How to use Google Meet`
+/// and `Notes on meet.google.com` do not count.
 pub fn is_meet_title(title: &str) -> bool {
     let t = title.trim();
-    let on_meet = t.split_whitespace().any(|word| {
+    let on_meet = t.split_whitespace().next().is_some_and(|word| {
         let host = word
             .strip_prefix("https://")
             .or_else(|| word.strip_prefix("http://"))
@@ -434,7 +434,7 @@ fn classify_app(app: &InputApp) -> Option<CallSource> {
     Some(CallSource::BrowserUnknown)
 }
 
-/// How sure a source is: a dedicated app wins over a browser.
+/// How sure a source is: a known service over a known site over any page.
 fn rank(source: &CallSource) -> u8 {
     match source {
         CallSource::BrowserUnknown => 0,
@@ -548,19 +548,14 @@ impl CallDetector {
             }
         }
 
-        // What a run must beat to take over from the call in progress.
-        let mut to_beat = None;
         if let Some(current) = &mut self.current {
             match found.iter().find(|(id, _)| *id == current.app_id) {
                 Some((_, source)) => {
                     self.gone_since = None;
-                    to_beat = Some(rank(source).max(rank(&current.source)));
                     // Still on the microphone, on whatever page: the same
-                    // call. A browser's page found later names it, and the
-                    // user's choice for that page then applies.
-                    if current.source == CallSource::BrowserUnknown
-                        && *source != CallSource::BrowserUnknown
-                    {
+                    // call. A browser's page found later names it, if that
+                    // says more, and the user's choice for that page applies.
+                    if rank(source) > rank(&current.source) && rank(&current.source) < 2 {
                         current.source = source.clone();
                         match source.policy(choices) {
                             CallPolicy::Never => self.snooze_current(now),
@@ -581,16 +576,20 @@ impl CallDetector {
                 }
             }
         }
-        // A call app taking the microphone from a browser call is a new call;
-        // a second browser tab or equal app isn't, while the first stays.
+        // While a call's app stays on the microphone, only a call app taking
+        // over from a browser is a new call: not a second browser, not an
+        // equal app. Whatever is current now, after the above.
         let current_app = self.current.as_ref().map(|c| c.app_id.clone());
+        let staying = current_app
+            .as_deref()
+            .filter(|id| holds_microphone(apps, id));
         let eligible: Vec<(String, CallSource)> = found
             .into_iter()
             .filter(|(id, source)| {
                 Some(id) != current_app.as_ref()
                     && !self.snoozed.iter().any(|s| s.app_id == *id)
                     && source.policy(choices) != CallPolicy::Never
-                    && to_beat.is_none_or(|beat| rank(source) > beat)
+                    && staying.is_none_or(|app| is_browser_app(app) && !is_browser_app(id))
             })
             .collect();
         let pending: Vec<Pending> = eligible
@@ -626,6 +625,11 @@ impl CallDetector {
         let (app_id, source, since) = confirmed?;
         self.pending.retain(|p| p.app_id != app_id);
         self.gone_since = None;
+        // A browser call displaced while it keeps the microphone isn't offered
+        // again when the call app leaves.
+        if let Some(displaced) = staying.map(str::to_string) {
+            self.snooze_app(displaced, now);
+        }
         let policy = source.policy(choices);
         let call = Call {
             source,
@@ -644,14 +648,20 @@ impl CallDetector {
     /// it has left the microphone for [`SNOOZE_ABSENT_MS`].
     pub fn snooze_current(&mut self, now: i64) {
         if let Some(call) = self.current.take() {
-            self.pending.retain(|p| p.app_id != call.app_id);
-            self.snoozed.retain(|s| s.app_id != call.app_id);
-            self.snoozed.push(Snooze {
-                app_id: call.app_id,
-                last_present: now,
-            });
+            self.snooze_app(call.app_id, now);
         }
         self.gone_since = None;
+    }
+
+    /// [`Self::snooze_current`] for an app by its canonical id (a recording's
+    /// call may no longer be the current one).
+    pub fn snooze_app(&mut self, app_id: String, now: i64) {
+        self.pending.retain(|p| p.app_id != app_id);
+        self.snoozed.retain(|s| s.app_id != app_id);
+        self.snoozed.push(Snooze {
+            app_id,
+            last_present: now,
+        });
     }
 
     /// Forget everything (the feature was turned off).
@@ -827,6 +837,7 @@ mod tests {
             "https://meet.google.com.evil.io/abc-defg-hij"
         ));
         assert!(!is_meet_title("How to use Google Meet - YouTube"));
+        assert!(!is_meet_title("How to use meet.google.com - Google Docs"));
     }
 
     #[test]
@@ -1054,6 +1065,10 @@ mod tests {
     const FIXTURES: &[&str] = &[
         include_str!("../../../../fixtures/calls/voice_note_bursts.json"),
         include_str!("../../../../fixtures/calls/voice_note_app_limit.json"),
+        include_str!("../../../../fixtures/calls/call_app_after_browser_service.json"),
+        include_str!("../../../../fixtures/calls/displaced_browser_not_reoffered.json"),
+        include_str!("../../../../fixtures/calls/never_page_keeps_other_run.json"),
+        include_str!("../../../../fixtures/calls/generic_site_becomes_meet.json"),
         include_str!("../../../../fixtures/calls/call_app_after_browser.json"),
         include_str!("../../../../fixtures/calls/two_apps_alternating.json"),
         include_str!("../../../../fixtures/calls/page_policy_after_offer.json"),

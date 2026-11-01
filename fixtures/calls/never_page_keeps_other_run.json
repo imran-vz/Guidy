@@ -1,0 +1,57 @@
+{
+  "name": "never_page_keeps_other_run",
+  "description": "An offered browser turns out to be a Never page while Slack is counting: Slack keeps its count.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 19000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        }
+      ]
+    },
+    {
+      "from": 20000,
+      "apps": [
+        {
+          "id": "com.google.Chrome"
+        },
+        {
+          "id": "com.tinyspeck.slackmacgap"
+        }
+      ]
+    },
+    {
+      "from": 21000,
+      "to": 26000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "teams.microsoft.com",
+          "path": "/"
+        },
+        {
+          "id": "com.tinyspeck.slackmacgap"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 19000,
+      "source": "browser_unknown"
+    },
+    {
+      "t": 24000,
+      "source": "slack"
+    }
+  ],
+  "choices": [
+    {
+      "key": "teams",
+      "label": "teams",
+      "policy": "never"
+    }
+  ]
+}

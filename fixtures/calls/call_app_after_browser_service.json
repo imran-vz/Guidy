@@ -1,0 +1,41 @@
+{
+  "name": "call_app_after_browser_service",
+  "description": "Teams on the web, then the Zoom app joins while Chrome keeps the mic: Zoom is offered.",
+  "steps": [
+    {
+      "from": 0,
+      "to": 5000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "teams.microsoft.com",
+          "path": "/"
+        }
+      ]
+    },
+    {
+      "from": 6000,
+      "to": 10000,
+      "apps": [
+        {
+          "id": "com.google.Chrome",
+          "host": "teams.microsoft.com",
+          "path": "/"
+        },
+        {
+          "id": "us.zoom.xos"
+        }
+      ]
+    }
+  ],
+  "offers": [
+    {
+      "t": 2000,
+      "source": "teams"
+    },
+    {
+      "t": 8000,
+      "source": "zoom"
+    }
+  ]
+}
