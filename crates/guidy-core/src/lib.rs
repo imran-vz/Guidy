@@ -247,9 +247,10 @@ fn initialize_core_logic(app_handle: &AppHandle, build_tray: bool, managers: Cor
     app_handle.listen(
         <managers::history::HistoryUpdatePayload as host::TypedEvent>::NAME,
         move |_| {
-            tray::update_tray_menu(&app_handle_for_history);
+            tray::refresh_last_dictation(&app_handle_for_history);
         },
     );
+    tray::refresh_last_dictation(app_handle);
 
     // Cloud model names, context windows and prices (models.dev).
     llm::registry::load_and_refresh_if_stale(app_handle);

@@ -238,14 +238,10 @@ struct TrayInner {
     animating: bool,
     /// The meeting clock thread is running.
     meeting_clock: bool,
-    /// A meeting has a transcript to copy. Kept here because a store write can
-    /// hold the store's lock for a while and snapshots are computed on the
-    /// dictation path and the main thread: see [`refresh_last_meeting`].
-    has_last_meeting: bool,
-    /// The [`refresh_last_meeting`] thread is running.
-    meeting_lookup_running: bool,
-    /// Meetings changed since that thread last looked.
-    meeting_lookup_again: bool,
+    /// Availability is read off-thread: snapshots run on the main thread and
+    /// the dictation path, where waiting for either database would stall input.
+    dictation_lookup: TranscriptLookup,
+    meeting_lookup: TranscriptLookup,
     /// Latest computed snapshot, waiting to be (or just) applied.
     desired: Option<TrayDesired>,
     /// Icon the native tray currently shows. Only updated when `set_icon`
@@ -277,9 +273,8 @@ impl TrayState {
             anim_frame: 0,
             animating: false,
             meeting_clock: false,
-            has_last_meeting: false,
-            meeting_lookup_running: false,
-            meeting_lookup_again: false,
+            dictation_lookup: TranscriptLookup::default(),
+            meeting_lookup: TranscriptLookup::default(),
             desired: None,
             applied_icon: None,
             applied_menu: None,
@@ -517,61 +512,100 @@ pub fn refresh_tray_icon(app: &AppHandle) {
     sync_tray(app);
 }
 
-/// Lets a later [`refresh_last_meeting`] start a new thread if this one panics.
-/// A normal exit clears the flag under the lock instead, so an event arriving
-/// just as the thread leaves isn't lost.
-struct LookupReset<'a>(&'a AppHandle);
+#[derive(Default)]
+struct TranscriptLookup {
+    available: bool,
+    running: bool,
+    again: bool,
+}
+
+#[derive(Clone, Copy)]
+enum TranscriptKind {
+    Dictation,
+    Meeting,
+}
+
+impl TranscriptKind {
+    fn lookup(self, inner: &mut TrayInner) -> &mut TranscriptLookup {
+        match self {
+            Self::Dictation => &mut inner.dictation_lookup,
+            Self::Meeting => &mut inner.meeting_lookup,
+        }
+    }
+}
+
+/// Lets a later refresh start a new worker if this one panics. A normal exit
+/// clears the flag under the lock so an event arriving as it leaves isn't lost.
+struct LookupReset<'a>(&'a AppHandle, TranscriptKind);
 
 impl Drop for LookupReset<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             if let Some(state) = self.0.try_state::<TrayState>() {
-                state.lock().meeting_lookup_running = false;
+                self.1.lookup(&mut state.lock()).running = false;
             }
         }
     }
 }
 
-/// Re-checks off-thread whether a meeting has a transcript to copy, then
-/// syncs the menu. Safe to call from any thread, with any
-/// lock held: it never touches the store itself, and bursts share one lookup.
+/// Re-checks dictation availability off-thread after history changes.
+pub fn refresh_last_dictation(app: &AppHandle) {
+    refresh_last_transcript(app, TranscriptKind::Dictation);
+}
+
+/// Re-checks meeting availability off-thread after transcripts or meetings change.
 pub fn refresh_last_meeting(app: &AppHandle) {
+    refresh_last_transcript(app, TranscriptKind::Meeting);
+}
+
+/// Safe with a store lock held: records intent without reading either database.
+/// Each kind has its own worker so a slow meeting write cannot delay dictation.
+fn refresh_last_transcript(app: &AppHandle, kind: TranscriptKind) {
     let Some(state) = app.try_state::<TrayState>() else {
         return;
     };
     {
         let mut inner = state.lock();
-        inner.meeting_lookup_again = true;
-        if std::mem::replace(&mut inner.meeting_lookup_running, true) {
+        let lookup = kind.lookup(&mut inner);
+        lookup.again = true;
+        if std::mem::replace(&mut lookup.running, true) {
             return;
         }
     }
     let lookup_app = app.clone();
+    let name = match kind {
+        TranscriptKind::Dictation => "tray-last-dictation",
+        TranscriptKind::Meeting => "tray-last-meeting",
+    };
     let spawned = std::thread::Builder::new()
-        .name("tray-last-meeting".into())
+        .name(name.into())
         .spawn(move || {
             let app = &lookup_app;
-            let _reset = LookupReset(app);
+            let _reset = LookupReset(app, kind);
             loop {
                 let Some(state) = app.try_state::<TrayState>() else {
                     return;
                 };
                 {
                     let mut inner = state.lock();
-                    if !std::mem::replace(&mut inner.meeting_lookup_again, false) {
-                        inner.meeting_lookup_running = false;
+                    let lookup = kind.lookup(&mut inner);
+                    if !std::mem::replace(&mut lookup.again, false) {
+                        lookup.running = false;
                         return;
                     }
                 }
-                let available = last_meeting(app).is_some();
-                state.lock().has_last_meeting = available;
+                let available = match kind {
+                    TranscriptKind::Dictation => last_dictation(app).is_some(),
+                    TranscriptKind::Meeting => last_meeting(app).is_some(),
+                };
+                kind.lookup(&mut state.lock()).available = available;
                 // No rebuild unless the answer changed: the applier diffs.
                 update_tray_menu(app);
             }
         });
     if let Err(err) = spawned {
-        error!("Failed to start the tray meeting lookup: {err}");
-        state.lock().meeting_lookup_running = false;
+        error!("Failed to start {name}: {err}");
+        kind.lookup(&mut state.lock()).running = false;
     }
 }
 
@@ -599,7 +633,7 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
 
     // Record intent and claim a sequence number in one critical section, so
     // sequence order == the order in which state changes were requested.
-    let (seq, icon_state, anim_frame, has_last_meeting) = {
+    let (seq, icon_state, anim_frame, has_last_dictation, has_last_meeting) = {
         let mut inner = state.lock();
         update(&mut inner);
         inner.next_seq += 1;
@@ -607,7 +641,8 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
             inner.next_seq,
             inner.icon_state,
             inner.anim_frame,
-            inner.has_last_meeting,
+            inner.dictation_lookup.available,
+            inner.meeting_lookup.available,
         )
     };
 
@@ -617,7 +652,13 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
         return;
     }
 
-    let desired = compute_desired(app, icon_state, anim_frame, has_last_meeting);
+    let desired = compute_desired(
+        app,
+        icon_state,
+        anim_frame,
+        has_last_dictation,
+        has_last_meeting,
+    );
     let start_clock =
         desired.menu.meeting.recording && !std::mem::replace(&mut state.lock().meeting_clock, true);
     if start_clock {
@@ -800,6 +841,7 @@ fn compute_desired(
     app: &AppHandle,
     icon_state: TrayIconState,
     anim_frame: u8,
+    has_last_dictation: bool,
     has_last_meeting: bool,
 ) -> TrayDesired {
     let settings = settings::get_settings(app);
@@ -817,7 +859,6 @@ fn compute_desired(
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
     let meeting = meeting_menu(app, &settings);
-    let has_last_dictation = last_dictation(app).is_some();
     let update_checks = UPDATER_CONFIGURED.load(Ordering::Relaxed)
         && settings::update_checks_effectively_enabled(&settings);
 
@@ -1490,7 +1531,10 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
             // situation.
             app.shell().show_main_window();
         }
-        "copy_last_dictation" => copy_last_dictation(app),
+        "copy_last_dictation" => {
+            let app = app.clone();
+            std::thread::spawn(move || copy_last_dictation(&app));
+        }
         "copy_last_meeting" => {
             // The store must not be read on the main thread.
             let app = app.clone();
@@ -1526,7 +1570,10 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
         "meeting_pause" | "meeting_resume" => {
             if let Some(manager) = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>()
             {
-                manager.set_recording_paused(id == "meeting_pause");
+                let manager = manager.inner().clone();
+                let pause = id == "meeting_pause";
+                // A start or stop may hold the recorder's operation lock.
+                std::thread::spawn(move || manager.set_recording_paused(pause));
             }
         }
         "meeting_start" | "meeting_stop" => {
