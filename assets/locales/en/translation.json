@@ -675,6 +675,7 @@
         "label": "Sound Theme",
         "description": "Choose a sound theme for recording start and stop feedback",
         "options": {
+          "mechanical": "Mechanical",
           "marimba": "Marimba",
           "pop": "Pop",
           "custom": "Custom"
