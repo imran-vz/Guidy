@@ -114,10 +114,10 @@ pub fn health_notice(health: &RecordingHealth) -> Option<HealthNotice> {
         MicLost
     } else if health.system == S::Lost {
         SystemLost
-    } else if health.low_disk {
-        LowDisk
     } else if health.system_permission_unknown {
         SystemPermissionUnknown
+    } else if health.low_disk {
+        LowDisk
     } else if health.mic == S::Reconnecting {
         MicReconnecting
     } else if health.system == S::Reconnecting {
@@ -1146,6 +1146,15 @@ mod tests {
         };
         assert_eq!(
             health_notice(&unknown),
+            Some(HealthNotice::SystemPermissionUnknown)
+        );
+        // A low disk can't hide it: the notice beside a question shows failures.
+        let both = RecordingHealth {
+            low_disk: true,
+            ..unknown.clone()
+        };
+        assert_eq!(
+            health_notice(&both),
             Some(HealthNotice::SystemPermissionUnknown)
         );
         let mut health = RecordingHealth {
