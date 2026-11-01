@@ -100,9 +100,9 @@ fn system_text_near(system: &[RawSegment], t0: i64, t1: i64) -> String {
 /// reply ("yes", "right") too easily matches words said nearby.
 pub const ECHO_MIN_TOKENS: usize = 3;
 
-/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: what spaces and joining
-/// punctuation separate (not [`tokens`], which can cut one word of some scripts
-/// into several), with
+/// How many words `text` holds, for [`ECHO_MIN_TOKENS`]: what spaces separate,
+/// and joining punctuation outside numbers ("10:30" is one), not [`tokens`],
+/// which can cut one word of some scripts into several; with
 /// each ideograph or kana counted as one and Thai at about four characters a
 /// word, as those scripts aren't written with spaces between words.
 fn word_count(text: &str) -> usize {
@@ -116,7 +116,12 @@ fn word_count(text: &str) -> usize {
         )
     };
     let thai = |c: char| matches!(c as u32, 0x0E00..=0x0E7F);
-    text.split(|c: char| c.is_whitespace() || matches!(c, ',' | '-' | ';' | ':' | '/' | '–' | '—'))
+    let joiner = |c: char| matches!(c, ',' | '-' | ';' | ':' | '/' | '–' | '—');
+    text.split_whitespace()
+        .flat_map(|w| {
+            let number = w.chars().any(|c| c.is_ascii_digit());
+            w.split(move |c: char| !number && joiner(c))
+        })
         .filter(|w| w.chars().any(char::is_alphanumeric))
         .map(|w| {
             let chars = w
@@ -298,6 +303,8 @@ mod tests {
         // One word, however a tokenizer would cut it.
         assert_eq!(word_count("स्वास्थ्य"), 1);
         assert_eq!(word_count("1.5"), 1);
+        assert_eq!(word_count("1,000,000"), 1);
+        assert_eq!(word_count("10:30 AM"), 2);
         // Marks in a kana block aren't words; words joined by punctuation are.
         assert_eq!(word_count("はい・・・"), 2);
         assert_eq!(word_count("ship,it,now"), 3);
