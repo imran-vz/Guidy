@@ -20,6 +20,7 @@ next run of values from the sound's generator, in the order listed below.
 
 import math
 import os
+import struct
 import sys
 import wave
 
@@ -29,6 +30,7 @@ SILENCE_MS = 18
 MAX_TOTAL_MS = 80
 FULL_SCALE = 32767
 LSB_TOLERANCE = 1
+HEADER_SIZE = 44
 
 RES = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "resources"
@@ -191,6 +193,18 @@ def wav_path(name):
     return os.path.join(RES, "mechanical_{}.wav".format(name))
 
 
+def canonical_header(data_size):
+    """The header `write_wav` produces for mono 16-bit PCM at RATE."""
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + data_size)
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, RATE, RATE * 2, 2, 16)
+        + b"data"
+        + struct.pack("<I", data_size)
+    )
+
+
 def write_wav(path, samples):
     with wave.open(path, "wb") as wav:
         wav.setnchannels(1)
@@ -200,14 +214,29 @@ def write_wav(path, samples):
 
 
 def read_wav(path):
-    with wave.open(path, "rb") as wav:
-        params = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
-        data = wav.readframes(wav.getnframes())
-    samples = [
-        int.from_bytes(data[i : i + 2], "little", signed=True)
-        for i in range(0, len(data), 2)
+    """Parse a canonical 44-byte PCM WAV, rejecting anything else.
+
+    `wave` tolerates bad block alignment, byte rates, encoding tags and truncated
+    payloads, so the header is compared field by field against the raw bytes.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if len(raw) < HEADER_SIZE:
+        raise ValueError("shorter than a {}-byte WAV header".format(HEADER_SIZE))
+    data_size = len(raw) - HEADER_SIZE
+    expected = canonical_header(data_size)
+    if raw[:HEADER_SIZE] != expected:
+        raise ValueError(
+            "header is {} but expected {}".format(
+                raw[:HEADER_SIZE].hex(), expected.hex()
+            )
+        )
+    if data_size % 2:
+        raise ValueError("payload has a partial 16-bit sample")
+    return [
+        int.from_bytes(raw[i : i + 2], "little", signed=True)
+        for i in range(HEADER_SIZE, len(raw), 2)
     ]
-    return params, samples
 
 
 def check_sound(name):
@@ -217,15 +246,11 @@ def check_sound(name):
     if not os.path.exists(path):
         return ["missing file {}".format(path)]
     try:
-        params, committed = read_wav(path)
-    except (wave.Error, EOFError) as err:
-        return ["unreadable WAV: {}".format(err)]
+        committed = read_wav(path)
+    except (OSError, ValueError) as err:
+        return ["invalid WAV: {}".format(err)]
 
     problems = []
-    if params != (1, 2, RATE):
-        problems.append("expected mono 16-bit {} Hz, got {}".format(RATE, params))
-        return problems
-
     audible = ms_to_samples(audible_ms)
     expected_len = audible + ms_to_samples(SILENCE_MS)
     if len(committed) != expected_len:
