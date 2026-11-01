@@ -221,11 +221,14 @@ fn split_transcript(
     let tokens: Vec<&str> = transcript.text.split_whitespace().collect();
     let aligned = tokens.len() == transcript.words.len();
     let mut shares: Vec<(Vec<Word>, Vec<&str>)> = vec![(Vec::new(), Vec::new()); pieces.len()];
+    // Never back to an earlier piece, so the words stay in the text's order.
+    let mut piece = 0;
     for (k, word) in transcript.words.iter().enumerate() {
         let midpoint = (word.t0_ms + word.t1_ms) / 2;
-        let piece = pieces
+        piece = pieces
             .partition_point(|p| p.t1_ms <= midpoint)
-            .min(pieces.len() - 1);
+            .min(pieces.len() - 1)
+            .max(piece);
         shares[piece].0.push(word.clone());
         shares[piece].1.push(if aligned {
             tokens[k]
@@ -244,10 +247,13 @@ fn split_transcript(
             // A word over a cut stays inside its own piece.
             let words = words
                 .into_iter()
-                .map(|w| Word {
-                    t0_ms: w.t0_ms.clamp(span.t0_ms, span.t1_ms),
-                    t1_ms: w.t1_ms.clamp(span.t0_ms, span.t1_ms),
-                    text: w.text,
+                .map(|w| {
+                    let t0_ms = w.t0_ms.clamp(span.t0_ms, span.t1_ms);
+                    Word {
+                        t0_ms,
+                        t1_ms: w.t1_ms.clamp(t0_ms, span.t1_ms),
+                        text: w.text,
+                    }
                 })
                 .collect();
             (*span, UnitTranscript { text, words })

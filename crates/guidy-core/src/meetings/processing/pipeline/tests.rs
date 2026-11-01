@@ -692,6 +692,20 @@ fn a_cut_shares_out_the_words_by_midpoint() {
     assert_eq!((parts[0].0, parts[1].0), (pieces[0], pieces[1]));
     assert_eq!(parts[0].1.words[1].t1_ms, 1_000, "clamped to its piece");
     assert_eq!(parts[1].1.words[0].t0_ms, 1_000, "clamped to its piece");
+    // Overlapping words stay in the text's order; a reversed one is repaired.
+    let t = transcript(
+        vec![
+            word(100, 200, "zero"),
+            word(800, 1_800, "first"),
+            word(900, 1_000, "second"),
+            word(1_300, 1_100, "third"),
+        ],
+        "zero first second third",
+    );
+    let parts = split_transcript(&t, &pieces).unwrap();
+    assert_eq!(parts[0].1.text, "zero");
+    assert_eq!(parts[1].1.text, "first second third");
+    assert_eq!(parts[1].1.words[2].t1_ms, 1_300);
     // Tokens that don't line up with the words: the words' own text.
     let t = transcript(
         vec![word(100, 200, "one"), word(1_100, 1_200, "two")],
