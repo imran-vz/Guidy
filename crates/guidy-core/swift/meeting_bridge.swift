@@ -2278,7 +2278,7 @@ public func guidyMbSpeakerLabels(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
             AXUIElementSetMessagingTimeout(element, 0.05)
             var role: CFTypeRef?
             let isText = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-                == .success && (role as? String).map(textRoles.contains) == true
+                == .success && (role as? String).map({ textRoles.contains($0) }) == true
             for attribute in attributes where !isText && Date() < deadline {
                 var value: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
