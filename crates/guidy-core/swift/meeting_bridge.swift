@@ -1517,6 +1517,9 @@ private final class SystemTapCapture {
             recovering = false
             watchOutputDevice()
             watchedOutputRate = builtForRate
+            // A change between the listeners coming off and going back on
+            // notified nobody: compare now.
+            controlQueue.async { [weak self] in self?.outputDeviceChanged() }
             if reportedFailure {
                 reportedFailure = false
                 sink?.event(GUIDY_MB_STREAM_SYSTEM, eventRestarted)

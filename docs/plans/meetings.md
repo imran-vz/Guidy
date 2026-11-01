@@ -65,7 +65,7 @@ Tests: 3-6 s voice-note bursts give no offer; 20 s unknown page offers; finding 
 - Start each stream independently; fail only when both fail; a failed stream keeps retrying.
 - Watchdog on existing timers: 3 s without callbacks or `!engine.isRunning` triggers rebuild, retry with 0.25-5 s backoff until Stop.
 - Default-input listener. `NSWorkspace` wake rebuilds both streams. `IOPMAssertion` while recording.
-- Events: `state:stalled`, `state:recovered`, `state:gap:<ms>`, `state:switched`, `state:dropping`, `state:dropped:<samples>`.
+- Events: `state:stalled`, `state:recovered`, `state:restarted`, `state:gap:<ms>`, `state:switched`, `state:dropping`, `state:dropped:<samples>`.
 - `MicPlan` honours a selected mic; otherwise keep Bluetooth-to-built-in.
 
 ## Phase 4: health and recovery
