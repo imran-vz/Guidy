@@ -673,6 +673,50 @@ fn an_outlier_line_gives_its_speaker_no_voiceprint() {
     assert!(!prints.contains(&voice(15)));
     let person = f.store.insert_person("Alice", None).unwrap().id;
     assert_eq!(naming::store_prints(&f.store, &speaker, person).unwrap(), 1);
+    // Given to Alice anyway, by an earlier version say: renaming still takes
+    // it back, though it wouldn't be enrolled today.
+    f.store
+        .add_voiceprint(person, &voice(15), Some(f.id))
+        .unwrap();
+    naming::assign(
+        &f.store,
+        speaker.id,
+        PersonRef::New {
+            display_name: "Bob".into(),
+            email: None,
+        },
+    )
+    .unwrap();
+    assert!(f.store.voiceprints_for_person(person).unwrap().is_empty());
+}
+
+#[test]
+fn a_speaker_with_no_line_like_it_gets_no_print_but_a_lost_sidecar_keeps_the_centroid() {
+    let f = fixture();
+    run(&f, None).result.unwrap();
+    let speaker = f.store.speakers(f.id).unwrap()[1].clone();
+    let lines: Vec<i64> = f
+        .store
+        .segments(f.id)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.speaker_id == Some(speaker.id))
+        .map(|s| s.id)
+        .collect();
+    let mut stored = sidecar::read_embeddings(&f.store, f.id).unwrap().unwrap();
+    for e in stored.iter_mut().filter(|e| lines.contains(&e.segment_id)) {
+        e.embedding = voice(15);
+    }
+    sidecar::write_embeddings(&f.store, f.id, &stored).unwrap();
+    assert!(naming::speaker_prints(&f.store, &speaker)
+        .unwrap()
+        .is_empty());
+    sidecar::delete_embeddings(&f.store, f.id).unwrap();
+    let centroid = f.store.speaker_embedding(speaker.id).unwrap().unwrap();
+    assert_eq!(
+        naming::speaker_prints(&f.store, &speaker).unwrap(),
+        vec![centroid]
+    );
 }
 
 /// Twelve words, one a second from `t0_ms`, each lasting 900 ms.

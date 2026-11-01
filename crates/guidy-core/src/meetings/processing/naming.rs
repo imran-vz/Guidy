@@ -322,11 +322,8 @@ fn pick_prints(mut lines: Vec<SegmentEmbedding>, centroid: Option<&[f32]>) -> Ve
         .collect()
 }
 
-/// This speaker's voiceprints, longest segments first (at most
-/// [`MAX_PRINTS_PER_MEETING`]), without lines unlike the speaker as a whole.
-/// Falls back to the cluster centroid when the
-/// per-segment sidecar is missing.
-pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result<Vec<Vec<f32>>> {
+/// The per-line voiceprints of this speaker's lines (from the sidecar).
+fn speaker_lines(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result<Vec<SegmentEmbedding>> {
     let segment_ids: HashSet<i64> = store
         .segments(speaker.meeting_id)?
         .into_iter()
@@ -343,18 +340,26 @@ pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result
             Vec::new()
         }
     };
-    let mine: Vec<SegmentEmbedding> = stored
+    Ok(stored
         .into_iter()
         .filter(|e| segment_ids.contains(&e.segment_id) && !e.embedding.is_empty())
-        .collect();
+        .collect())
+}
+
+/// This speaker's voiceprints to enroll, longest segments first (at most
+/// [`MAX_PRINTS_PER_MEETING`]), without lines unlike the speaker as a whole.
+/// Falls back to the cluster centroid when no line has a voiceprint (the
+/// per-segment sidecar is missing), not when every line was unlike it: that
+/// centroid then blends voices, or lines have since moved.
+pub fn speaker_prints(store: &MeetingsStore, speaker: &MeetingSpeaker) -> Result<Vec<Vec<f32>>> {
+    let lines = speaker_lines(store, speaker)?;
     let centroid = store
         .speaker_embedding(speaker.id)?
         .filter(|c| !c.is_empty());
-    let prints = pick_prints(mine, centroid.as_deref());
-    if !prints.is_empty() {
-        return Ok(prints);
+    if lines.is_empty() {
+        return Ok(centroid.into_iter().collect());
     }
-    Ok(centroid.into_iter().collect())
+    Ok(pick_prints(lines, centroid.as_deref()))
 }
 
 /// Store the speaker's voiceprints under `person_id`, skipping ones already
@@ -395,7 +400,12 @@ fn remove_prints_from_others(
     speaker: &MeetingSpeaker,
     keep: PersonId,
 ) -> Result<()> {
-    let prints = speaker_prints(store, speaker)?;
+    // Every print this speaker could have given, enrolled now or not.
+    let mut prints: Vec<Vec<f32>> = speaker_lines(store, speaker)?
+        .into_iter()
+        .map(|e| e.embedding)
+        .collect();
+    prints.extend(store.speaker_embedding(speaker.id)?);
     for v in store.voiceprints()? {
         if v.person_id != keep
             && v.source_meeting_id == Some(speaker.meeting_id)
