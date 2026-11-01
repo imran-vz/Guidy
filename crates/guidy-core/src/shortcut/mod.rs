@@ -9,6 +9,7 @@
 //! The active implementation is determined by the `keyboard_implementation`
 //! setting and can be changed at runtime.
 
+pub mod gesture;
 pub mod global_hotkey_impl;
 mod handler;
 pub mod native_keys;
