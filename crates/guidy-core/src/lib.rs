@@ -296,7 +296,7 @@ fn init_meetings(app_handle: &AppHandle) {
     // "Copy Last Meeting Transcript" follows transcripts and deletions.
     let tray_app = app_handle.clone();
     app_handle.listen(meetings::types::events::MEETING_CHANGED, move |_| {
-        tray::update_tray_menu(&tray_app);
+        tray::refresh_last_meeting(&tray_app);
     });
     // The `meetings.enabled` switch starts the manager the first time it is
     // turned on, starts/stops the scheduler, and shows or hides the tray
@@ -565,6 +565,7 @@ fn spawn_meetings_init(app_handle: &AppHandle, retry: bool) {
                     let _ = app.emit(MEETINGS_READY_EVENT, ());
                     manager.start_background();
                     tray::update_tray_menu(&app);
+                    tray::refresh_last_meeting(&app);
                 }
                 Err(e) => {
                     let error = format!("{e:#}");

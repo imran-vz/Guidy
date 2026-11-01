@@ -226,6 +226,14 @@ struct TrayInner {
     animating: bool,
     /// The meeting clock thread is running.
     meeting_clock: bool,
+    /// A meeting has a transcript to copy. Kept here because a store write can
+    /// hold the store's lock for a while and snapshots are computed on the
+    /// dictation path and the main thread: see [`refresh_last_meeting`].
+    has_last_meeting: bool,
+    /// The [`refresh_last_meeting`] thread is running.
+    meeting_lookup_running: bool,
+    /// Meetings changed since that thread last looked.
+    meeting_lookup_again: bool,
     /// Latest computed snapshot, waiting to be (or just) applied.
     desired: Option<TrayDesired>,
     /// Icon the native tray currently shows. Only updated when `set_icon`
@@ -257,6 +265,9 @@ impl TrayState {
             anim_frame: 0,
             animating: false,
             meeting_clock: false,
+            has_last_meeting: false,
+            meeting_lookup_running: false,
+            meeting_lookup_again: false,
             desired: None,
             applied_icon: None,
             applied_menu: None,
@@ -494,6 +505,47 @@ pub fn refresh_tray_icon(app: &AppHandle) {
     sync_tray(app);
 }
 
+/// Re-checks off-thread whether a meeting has a transcript to copy, then
+/// refreshes the menu if that changed. Safe to call from any thread, with any
+/// lock held: it never touches the store itself, and bursts share one lookup.
+pub fn refresh_last_meeting(app: &AppHandle) {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return;
+    };
+    {
+        let mut inner = state.lock();
+        inner.meeting_lookup_again = true;
+        if std::mem::replace(&mut inner.meeting_lookup_running, true) {
+            return;
+        }
+    }
+    let lookup_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-last-meeting".into())
+        .spawn(move || loop {
+            let app = &lookup_app;
+            let Some(state) = app.try_state::<TrayState>() else {
+                return;
+            };
+            {
+                let mut inner = state.lock();
+                if !std::mem::replace(&mut inner.meeting_lookup_again, false) {
+                    inner.meeting_lookup_running = false;
+                    return;
+                }
+            }
+            let available = last_meeting(app).is_some();
+            let previous = std::mem::replace(&mut state.lock().has_last_meeting, available);
+            if previous != available {
+                update_tray_menu(app);
+            }
+        });
+    if let Err(err) = spawned {
+        error!("Failed to start the tray meeting lookup: {err}");
+        state.lock().meeting_lookup_running = false;
+    }
+}
+
 /// Re-syncs the tray after something the menu depends on changed (model
 /// list/selection/loaded state, language, settings).
 pub fn update_tray_menu(app: &AppHandle) {
@@ -518,11 +570,16 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
 
     // Record intent and claim a sequence number in one critical section, so
     // sequence order == the order in which state changes were requested.
-    let (seq, icon_state, anim_frame) = {
+    let (seq, icon_state, anim_frame, has_last_meeting) = {
         let mut inner = state.lock();
         update(&mut inner);
         inner.next_seq += 1;
-        (inner.next_seq, inner.icon_state, inner.anim_frame)
+        (
+            inner.next_seq,
+            inner.icon_state,
+            inner.anim_frame,
+            inner.has_last_meeting,
+        )
     };
 
     // Tray not built yet (early secure-input monitor callbacks). The intent
@@ -531,7 +588,7 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
         return;
     }
 
-    let desired = compute_desired(app, icon_state, anim_frame);
+    let desired = compute_desired(app, icon_state, anim_frame, has_last_meeting);
     let start_clock =
         desired.menu.meeting.recording && !std::mem::replace(&mut state.lock().meeting_clock, true);
     if start_clock {
@@ -710,7 +767,12 @@ struct Bar {
     bottom: usize,
 }
 
-fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -> TrayDesired {
+fn compute_desired(
+    app: &AppHandle,
+    icon_state: TrayIconState,
+    anim_frame: u8,
+    has_last_meeting: bool,
+) -> TrayDesired {
     let settings = settings::get_settings(app);
     let theme = get_current_theme(app);
     let warning = crate::secure_input::tray_warning_active(app);
@@ -727,7 +789,6 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState, anim_frame: u8) -
 
     let meeting = meeting_menu(app, &settings);
     let has_last_dictation = last_dictation(app).is_some();
-    let has_last_meeting = last_meeting(app).is_some();
     let update_checks = settings::update_checks_effectively_enabled(&settings);
 
     desired_from(
@@ -1205,21 +1266,10 @@ fn last_transcript_text(entry: &HistoryEntry) -> &str {
         .unwrap_or(&entry.transcription_text)
 }
 
-/// How far back to look for a transcript with text: history rows can hold
-/// only whitespace.
-const LAST_DICTATION_LOOKBACK: usize = 3;
-
-/// The newest entry whose text isn't blank (`entries` is newest first).
-fn newest_with_text(entries: Vec<HistoryEntry>) -> Option<HistoryEntry> {
-    entries
-        .into_iter()
-        .find(|entry| !last_transcript_text(entry).trim().is_empty())
-}
-
 fn last_dictation(app: &AppHandle) -> Option<HistoryEntry> {
     let history = app.try_state::<Arc<HistoryManager>>()?;
-    match history.get_recent_completed_entries(LAST_DICTATION_LOOKBACK) {
-        Ok(entries) => newest_with_text(entries),
+    match history.get_latest_copyable_entry() {
+        Ok(entry) => entry,
         Err(err) => {
             error!("Failed to fetch the last transcript for the tray: {}", err);
             None
@@ -1228,7 +1278,7 @@ fn last_dictation(app: &AppHandle) -> Option<HistoryEntry> {
 }
 
 /// The newest meeting with a transcript. `None` until the meetings manager
-/// has started.
+/// has started. Reads the store: not for the main thread or the dictation path.
 fn last_meeting(app: &AppHandle) -> Option<crate::meetings::types::MeetingId> {
     let manager = app.try_state::<Arc<crate::meetings::manager::MeetingsManager>>()?;
     match manager.latest_transcribed_meeting() {
@@ -1499,9 +1549,8 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
 mod tests {
     use super::{
         build_menu, build_menu_at, desired_from, effective_icon_state, get_icon_path,
-        last_transcript_text, load_tray_icon, newest_with_text, waveform_frame, AppTheme,
-        MeetingMenu, MenuEntry, MenuInputs, MenuModel, TrayDesired, TrayIconState,
-        ANIMATION_FRAMES,
+        last_transcript_text, load_tray_icon, waveform_frame, AppTheme, MeetingMenu, MenuEntry,
+        MenuInputs, MenuModel, TrayDesired, TrayIconState, ANIMATION_FRAMES,
     };
     use crate::managers::history::HistoryEntry;
 
@@ -1785,18 +1834,6 @@ mod tests {
             .collect();
         assert_eq!(submenus.len(), 1);
         assert_eq!(submenus[0].id(), Some("model_submenu"));
-    }
-
-    #[test]
-    fn last_dictation_skips_blank_entries() {
-        let mut blank = build_entry("raw", Some("  \n"));
-        blank.id = 2;
-        assert_eq!(
-            newest_with_text(vec![blank, build_entry("older", None)]).map(|e| e.id),
-            Some(1)
-        );
-        assert!(newest_with_text(vec![build_entry(" ", None)]).is_none());
-        assert!(newest_with_text(Vec::new()).is_none());
     }
 
     #[test]
