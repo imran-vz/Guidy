@@ -920,6 +920,28 @@ pub fn change_auto_submit_key_setting(app: AppHandle, key: String) -> Result<(),
     Ok(())
 }
 pub fn change_post_process_enabled_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    // While disabled its binding held no key, so another gesture may have taken
+    // it since. Enabling would then leave a shortcut that silently does nothing.
+    let current = settings::get_settings(&app);
+    if enabled && current.keyboard_implementation == KeyboardImplementation::NativeKeys {
+        if let Some(own) = current.bindings.get("transcribe_with_post_process") {
+            let saved = current
+                .bindings
+                .iter()
+                .map(|(id, b)| (id.as_str(), b.current_binding.as_str()));
+            if let Some(other) = gesture::conflicting_binding(
+                saved,
+                "transcribe_with_post_process",
+                &own.current_binding,
+            ) {
+                return Err(format!(
+                    "'{}' overlaps another shortcut, '{other}'",
+                    own.current_binding
+                ));
+            }
+        }
+    }
+
     let binding = settings::update_settings(&app, |s| {
         s.post_process_enabled = enabled;
         s.bindings.get("transcribe_with_post_process").cloned()
