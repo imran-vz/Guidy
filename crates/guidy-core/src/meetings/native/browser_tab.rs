@@ -24,6 +24,8 @@ const QUERY_INTERVAL: Duration = Duration::from_secs(1);
 const PAGE_MEMORY: Duration = Duration::from_secs(60);
 /// After macOS refuses Automation, how long before asking it again.
 const DENIED_BACKOFF: Duration = Duration::from_secs(60);
+/// After a query fails or times out, how long before trying that browser again.
+const FAILED_BACKOFF: Duration = Duration::from_secs(3);
 
 /// How a browser's scripting dictionary names its active tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,9 +43,17 @@ pub fn dialect(app_id: &str) -> Option<Dialect> {
     Some(match app_id {
         "com.apple.Safari" => Dialect::Safari,
         "com.google.Chrome"
+        | "com.google.Chrome.beta"
+        | "com.google.Chrome.dev"
+        | "com.google.Chrome.canary"
         | "company.thebrowser.Browser"
         | "com.microsoft.edgemac"
+        | "com.microsoft.edgemac.Beta"
+        | "com.microsoft.edgemac.Dev"
+        | "com.microsoft.edgemac.Canary"
         | "com.brave.Browser"
+        | "com.brave.Browser.beta"
+        | "com.brave.Browser.nightly"
         | "com.vivaldi.Vivaldi"
         | "com.operasoftware.Opera" => Dialect::Chromium,
         "org.mozilla.firefox" => Dialect::Accessibility,
@@ -85,7 +95,11 @@ pub fn parse_page(address: &str) -> Option<PageInfo> {
     let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(end);
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = host_port.split(':').next().unwrap_or(host_port);
+    // An IPv6 host holds colons of its own: `[::1]:8443`.
+    let host = match host_port.strip_prefix('[').and_then(|h| h.split_once(']')) {
+        Some((ip, _)) => ip,
+        None => host_port.split(':').next().unwrap_or(host_port),
+    };
     if host.is_empty() {
         return None;
     }
@@ -110,15 +124,23 @@ pub type QueryResult = Result<Option<PageInfo>, QueryError>;
 struct Running {
     app_id: String,
     answer: Receiver<QueryResult>,
+    /// Its browser left the microphone: the answer says nothing now. It still
+    /// takes the slot until it ends: one query at a time.
+    stale: bool,
 }
 
 /// Reads browsers' tabs without ever waiting for one. [`Self::page`] starts a
-/// query and returns the newest finished answer.
+/// query and returns the newest finished answer. With several browsers on the
+/// microphone they take turns.
 pub struct TabReader {
     query: fn(&str) -> QueryResult,
     running: Option<Running>,
-    started: Option<Instant>,
-    denied: Vec<(String, Instant)>,
+    /// The browsers on the microphone ([`Self::retain_apps`]).
+    held: Vec<String>,
+    /// App id and when its last query started.
+    started: Vec<(String, Instant)>,
+    /// App id and when it may be queried again.
+    backoff: Vec<(String, Instant)>,
     /// App id, its page, when it was read.
     memory: Vec<(String, PageInfo, Instant)>,
 }
@@ -128,8 +150,9 @@ impl TabReader {
         Self {
             query,
             running: None,
-            started: None,
-            denied: Vec::new(),
+            held: Vec::new(),
+            started: Vec::new(),
+            backoff: Vec::new(),
             memory: Vec::new(),
         }
     }
@@ -138,14 +161,13 @@ impl TabReader {
     /// others' pages, so their next call starts fresh.
     pub fn retain_apps(&mut self, held: &[String]) {
         self.memory.retain(|(app, _, _)| held.contains(app));
-        // An answer on its way for a browser that left says nothing now.
-        if self
-            .running
-            .as_ref()
-            .is_some_and(|r| !held.contains(&r.app_id))
-        {
-            self.running = None;
+        self.started.retain(|(app, _)| held.contains(app));
+        if let Some(running) = &mut self.running {
+            if !held.contains(&running.app_id) {
+                running.stale = true;
+            }
         }
+        self.held = held.to_vec();
     }
 
     fn collect(&mut self, now: Instant) {
@@ -158,32 +180,66 @@ impl TabReader {
             Err(TryRecvError::Disconnected) => Err(QueryError::Failed),
         };
         let app_id = running.app_id.clone();
+        let stale = running.stale;
         self.running = None;
-        match answer {
+        if stale {
+            return;
+        }
+        let back_off = match answer {
             Ok(Some(page)) => {
                 self.memory.retain(|(app, _, _)| *app != app_id);
                 self.memory.push((app_id, page, now));
+                return;
             }
-            Ok(None) | Err(QueryError::Failed) => {}
+            Ok(None) => return,
+            Err(QueryError::Failed) => FAILED_BACKOFF,
             Err(QueryError::Denied) => {
                 log::info!("meetings: Automation refused for a browser; naming its calls paused");
-                self.denied.retain(|(app, _)| *app != app_id);
-                self.denied.push((app_id, now));
+                DENIED_BACKOFF
             }
+        };
+        self.backoff.retain(|(app, _)| *app != app_id);
+        self.backoff.push((app_id, now + back_off));
+    }
+
+    fn last_started(&self, app_id: &str) -> Option<Instant> {
+        self.started
+            .iter()
+            .find(|(app, _)| app == app_id)
+            .map(|(_, at)| *at)
+    }
+
+    fn backing_off(&self, app_id: &str) -> bool {
+        self.backoff.iter().any(|(app, _)| app == app_id)
+    }
+
+    /// Whether a query for `app_id` should start now: its interval has passed
+    /// and no other browser has waited longer.
+    fn due(&self, app_id: &str, now: Instant) -> bool {
+        if self.running.is_some() || self.backing_off(app_id) {
+            return false;
         }
+        if self
+            .last_started(app_id)
+            .is_some_and(|t| now.saturating_duration_since(t) < QUERY_INTERVAL)
+        {
+            return false;
+        }
+        let waited_longest = self
+            .held
+            .iter()
+            .filter(|app| !self.backing_off(app))
+            .min_by_key(|app| self.last_started(app));
+        waited_longest.is_none_or(|app| app == app_id)
     }
 
     /// The page to judge `app_id`'s call by, if any is known yet.
     pub fn page(&mut self, app_id: &str, now: Instant) -> Option<PageInfo> {
         self.collect(now);
-        self.denied
-            .retain(|(_, at)| now.saturating_duration_since(*at) < DENIED_BACKOFF);
-        let denied = self.denied.iter().any(|(app, _)| app == app_id);
-        let due = self
-            .started
-            .is_none_or(|t| now.saturating_duration_since(t) >= QUERY_INTERVAL);
-        if self.running.is_none() && due && !denied {
-            self.started = Some(now);
+        self.backoff.retain(|(_, until)| now < *until);
+        if self.due(app_id, now) {
+            self.started.retain(|(app, _)| app != app_id);
+            self.started.push((app_id.to_string(), now));
             let (tx, answer) = sync_channel(1);
             let query = self.query;
             let id = app_id.to_string();
@@ -197,6 +253,7 @@ impl TabReader {
                     self.running = Some(Running {
                         app_id: app_id.to_string(),
                         answer,
+                        stale: false,
                     });
                 }
                 Err(e) => log::warn!("meetings: could not start a browser tab query: {e}"),
@@ -333,6 +390,15 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_hosts_stay_whole() {
+        assert_eq!(parsed("https://[::1]/room"), pair("::1", "/room"));
+        assert_eq!(
+            parsed("https://[2001:db8::1]:8443/room"),
+            pair("2001:db8::1", "/room")
+        );
+    }
+
+    #[test]
     fn tricky_addresses_name_the_real_host() {
         assert_eq!(
             parsed("https://meet.google.com@evil.io/abc-defg-hij"),
@@ -421,9 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn one_query_at_a_time_and_a_refusal_backs_off() {
+    fn a_refusal_backs_off_for_a_minute_and_a_failure_for_seconds() {
         fn denied(_: &str) -> QueryResult {
             Err(QueryError::Denied)
+        }
+        fn failed(_: &str) -> QueryResult {
+            Err(QueryError::Failed)
         }
         let t0 = Instant::now();
         let mut reader = TabReader::new(denied);
@@ -431,12 +500,48 @@ mod tests {
         assert!(reader.running.is_some());
         settle(&mut reader, t0);
         // Refused: no query for a minute, for that browser.
-        assert_eq!(
-            reader.page("com.google.Chrome", t0 + Duration::from_secs(5)),
-            None
-        );
+        let soon = t0 + Duration::from_secs(5);
+        assert_eq!(reader.page("com.google.Chrome", soon), None);
         assert!(reader.running.is_none());
         reader.page("com.google.Chrome", t0 + Duration::from_secs(61));
         assert!(reader.running.is_some());
+
+        let mut reader = TabReader::new(failed);
+        reader.page("com.google.Chrome", t0);
+        settle(&mut reader, t0);
+        reader.page("com.google.Chrome", t0 + Duration::from_secs(1));
+        assert!(reader.running.is_none(), "not every second");
+        reader.page("com.google.Chrome", t0 + Duration::from_secs(3));
+        assert!(reader.running.is_some());
+    }
+
+    #[test]
+    fn browsers_take_turns_and_a_stale_query_still_holds_the_slot() {
+        fn query(_: &str) -> QueryResult {
+            Ok(None)
+        }
+        let chrome = "com.google.Chrome".to_string();
+        let safari = "com.apple.Safari".to_string();
+        let held = [chrome.clone(), safari.clone()];
+        let t0 = Instant::now();
+        let mut reader = TabReader::new(query);
+        reader.retain_apps(&held);
+        reader.page(&chrome, t0);
+        assert_eq!(reader.running.as_ref().unwrap().app_id, chrome);
+        settle(&mut reader, t0);
+        let t1 = t0 + Duration::from_secs(1);
+        // Chrome is asked first in every poll, but Safari has waited longer.
+        reader.page(&chrome, t1);
+        assert!(reader.running.is_none());
+        reader.page(&safari, t1);
+        assert_eq!(reader.running.as_ref().unwrap().app_id, safari);
+
+        // Safari leaves mid-query: Chrome waits for it, its answer dropped.
+        reader.retain_apps(std::slice::from_ref(&chrome));
+        assert!(reader.running.as_ref().unwrap().stale);
+        settle(&mut reader, t1);
+        assert!(reader.memory.is_empty());
+        reader.page(&chrome, t1 + Duration::from_secs(1));
+        assert_eq!(reader.running.as_ref().unwrap().app_id, chrome);
     }
 }

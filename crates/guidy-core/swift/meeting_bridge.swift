@@ -1708,7 +1708,12 @@ public func guidyMbFocusedWebUrl(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMut
             else { continue }
             var element = start as! AXUIElement
             var address: String?
+            // The whole walk stays well inside the tab query's 2 s limit.
+            let deadline = Date().addingTimeInterval(1.5)
             for _ in 0..<64 {
+                guard Date() < deadline else { break }
+                // A timeout belongs to one element, not to those read from it.
+                AXUIElementSetMessagingTimeout(element, 0.25)
                 var role: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
                     == .success, (role as? String) == "AXWebArea"
@@ -1750,6 +1755,8 @@ public func guidyMbWindowTitles(_ bundleID: UnsafePointer<CChar>?) -> UnsafeMuta
             == .success, let list = windows as? [AXUIElement]
         else { continue }
         for window in list {
+            // A timeout belongs to one element, not to those read from it.
+            AXUIElementSetMessagingTimeout(window, 0.25)
             var title: CFTypeRef?
             if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
                 == .success, let title = title as? String, !title.isEmpty

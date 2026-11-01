@@ -655,21 +655,24 @@ pub fn audio_input_apps(name_browser_calls: bool) -> Vec<crate::meetings::calls:
         let reader = READER.get_or_init(|| {
             parking_lot::Mutex::new(browser_tab::TabReader::new(browser_tab::query_front_tab))
         });
-        let mut reader = reader.lock();
         let browsers: Vec<String> = apps
             .iter()
             .filter(|a| a.is_browser)
             .map(|a| a.canonical.clone())
             .collect();
-        reader.retain_apps(if name_browser_calls { &browsers } else { &[] });
-        let now = std::time::Instant::now();
-        for app in apps.iter_mut().filter(|a| a.is_browser) {
+        {
+            let mut reader = reader.lock();
+            reader.retain_apps(if name_browser_calls { &browsers } else { &[] });
             if name_browser_calls {
-                app.page = reader.page(&app.canonical, now);
+                let now = std::time::Instant::now();
+                for app in apps.iter_mut().filter(|a| a.is_browser) {
+                    app.page = reader.page(&app.canonical, now);
+                }
             }
-            if app.page.is_none() {
-                app.titles = macos::window_titles(&app.canonical);
-            }
+        }
+        // Outside the lock: a busy app answers slowly.
+        for app in apps.iter_mut().filter(|a| a.is_browser && a.page.is_none()) {
+            app.titles = macos::window_titles(&app.canonical);
         }
         apps
     }

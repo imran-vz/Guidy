@@ -322,10 +322,22 @@ fn call_app_source(canonical: &str) -> Option<CallSource> {
 /// windows and tabs say which site is open. WebKit's helpers aren't listed:
 /// any app can embed WebKit ([`canonical_app`] tells Safari's by its name).
 const BROWSERS: &[(&str, &str)] = &[
+    // Variants first: each is its own app with its own tabs.
+    ("com.google.Chrome.beta", "com.google.Chrome.beta"),
+    ("com.google.Chrome.dev", "com.google.Chrome.dev"),
+    ("com.google.Chrome.canary", "com.google.Chrome.canary"),
     ("com.google.Chrome", "com.google.Chrome"),
     ("com.apple.Safari", "com.apple.Safari"),
     ("company.thebrowser.Browser", "company.thebrowser.Browser"),
+    ("com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Beta"),
+    ("com.microsoft.edgemac.Dev", "com.microsoft.edgemac.Dev"),
+    (
+        "com.microsoft.edgemac.Canary",
+        "com.microsoft.edgemac.Canary",
+    ),
     ("com.microsoft.edgemac", "com.microsoft.edgemac"),
+    ("com.brave.Browser.beta", "com.brave.Browser.beta"),
+    ("com.brave.Browser.nightly", "com.brave.Browser.nightly"),
     ("com.brave.Browser", "com.brave.Browser"),
     ("com.vivaldi.Vivaldi", "com.vivaldi.Vivaldi"),
     ("com.operasoftware.Opera", "com.operasoftware.Opera"),
@@ -808,6 +820,15 @@ mod tests {
             Some(CallSource::Zoom)
         );
         assert_eq!(title_source("us.zoom.xos"), None);
+        // A variant reads its own windows, not the stable browser's.
+        assert_eq!(
+            canonical_app("com.google.Chrome.beta.helper", "", &[]),
+            "com.google.Chrome.beta"
+        );
+        assert_eq!(
+            canonical_app("com.google.Chrome.helper", "", &[]),
+            "com.google.Chrome"
+        );
         assert_eq!(
             title_source("company.thebrowser.Browser"),
             Some("company.thebrowser.Browser")
