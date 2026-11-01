@@ -11,7 +11,7 @@ Run on macOS (it uses `say` and `afconvert`). Writes the audio, RTTM and a
 `manifest.json` into the directory given, which should be outside the repo: no
 audio or RTTM is committed. TTS is not real-call evidence.
 
-  python3 scripts/gen_diar_cases.py /tmp/diar-cases --voice Samantha
+  python3 scripts/gen_diar_cases.py /tmp/diar-cases --voice Daniel
   cargo xtask diar-eval /tmp/diar-cases/manifest.json
 
 Read `speakers=found/1`: more than one found is the voice being split.
@@ -20,12 +20,12 @@ Read `speakers=found/1`: more than one found is the voice being split.
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import wave
 
 SAMPLE_RATE = 16_000
-DEFAULT_VOICE = "Samantha"
 DEFAULT_RATE = 170
 # A pause this short sits inside one reference turn: it merges in VAD anyway.
 SAME_TURN_GAP_MS = 300
@@ -97,13 +97,27 @@ def monologue():
 CASES = {"single_monologue": monologue, "single_varied": lambda: VARIED}
 
 
+def require_voice(voice):
+    """Stop if `voice` isn't installed: `say` would quietly use another one."""
+    listing = subprocess.run(
+        ["say", "-v", "?"], check=True, capture_output=True, text=True
+    ).stdout
+    names = set()
+    for line in listing.splitlines():
+        found = re.match(r"(.+?)\s+[a-z]{2,3}_\w+\s+#", line)
+        if found:
+            names.add(found.group(1))
+            names.add(found.group(1).split(" (")[0])
+    if voice not in names:
+        raise SystemExit(f"no such voice: {voice} (see `say -v ?`)")
+
+
 def synthesize(text, voice, rate, work):
     """16 kHz mono 16-bit PCM of `text`, as bytes."""
     aiff = work / "clip.aiff"
     wav = work / "clip.wav"
-    subprocess.run(
-        ["say", "-v", voice, "-r", str(rate), "-o", str(aiff), text], check=True
-    )
+    choice = ["-v", voice] if voice else []
+    subprocess.run(["say", *choice, "-r", str(rate), "-o", str(aiff), text], check=True)
     subprocess.run(
         ["afconvert", "-f", "WAVE", "-d", f"LEI16@{SAMPLE_RATE}", "-c", "1", str(aiff), str(wav)],
         check=True,
@@ -147,8 +161,10 @@ def write_wav(path, pcm):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("out", type=pathlib.Path)
-    parser.add_argument("--voice", default=DEFAULT_VOICE)
+    parser.add_argument("--voice", help="a voice from `say -v ?` (default: the system's)")
     args = parser.parse_args()
+    if args.voice:
+        require_voice(args.voice)
     args.out.mkdir(parents=True, exist_ok=True)
     meetings = []
     with tempfile.TemporaryDirectory() as tmp:
