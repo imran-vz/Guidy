@@ -1548,6 +1548,7 @@
       "topics": "Topics",
       "linesPlaceholder": "One per line",
       "onePerLine": "Decisions and topics: one per line.",
+      "draftRestored": "Restored your unsaved edits. Save keeps them; Cancel discards them.",
       "none": "None",
       "generatedBy": "Generated with {{model}}",
       "generatedByCost": "Generated with {{model}} · {{cost}} · {{input}} in / {{output}} out tokens",

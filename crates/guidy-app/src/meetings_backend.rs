@@ -16,6 +16,7 @@
 use crate::logic::meetings::MeetingsInit;
 pub use guidy_core::llm::ModelCatalog;
 use guidy_core::meetings::calls::InputApp;
+use guidy_core::meetings::drafts::MeetingDraft;
 use guidy_core::meetings::manager::{
     MeetingsManager, NameSuggestion, PermissionReport, PersonRef, TicketResult, UserVoice,
 };
@@ -399,6 +400,17 @@ pub trait MeetingsBackend: Send + Sync + 'static {
         Err(unavailable())
     }
     fn update_summary(&self, _summary: &StoredSummary) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
+    fn meeting_draft(&self, _id: MeetingId) -> Option<MeetingDraft> {
+        None
+    }
+    fn save_meeting_draft(
+        &self,
+        _id: MeetingId,
+        _revision: u64,
+        _draft: &MeetingDraft,
+    ) -> MeetingsResult<()> {
         Err(unavailable())
     }
     fn action_items(&self, _id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
@@ -807,6 +819,19 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn update_summary(&self, summary: &StoredSummary) -> MeetingsResult<()> {
         self.m()?.update_summary(summary).map_err(err)
+    }
+    fn meeting_draft(&self, id: MeetingId) -> Option<MeetingDraft> {
+        self.manager()?.meeting_draft(id)
+    }
+    fn save_meeting_draft(
+        &self,
+        id: MeetingId,
+        revision: u64,
+        draft: &MeetingDraft,
+    ) -> MeetingsResult<()> {
+        self.m()?
+            .save_meeting_draft(id, revision, draft)
+            .map_err(err)
     }
     fn generate_title(&self, id: MeetingId, bulk: bool) -> MeetingsResult<TitleOutcome> {
         self.m()?.generate_title(id, bulk).map_err(err)
@@ -1768,6 +1793,26 @@ pub mod fake {
                 .insert(summary.meeting_id, summary.clone());
             Ok(())
         }
+        fn meeting_draft(&self, id: MeetingId) -> Option<MeetingDraft> {
+            self.data.lock().ai.drafts.get(&id).cloned()
+        }
+        fn save_meeting_draft(
+            &self,
+            id: MeetingId,
+            _revision: u64,
+            draft: &MeetingDraft,
+        ) -> MeetingsResult<()> {
+            let mut data = self.data.lock();
+            if let Some(e) = data.ai.fail_draft_save.clone() {
+                return Err(e);
+            }
+            if draft.is_empty() {
+                data.ai.drafts.remove(&id);
+            } else {
+                data.ai.drafts.insert(id, draft.clone());
+            }
+            Ok(())
+        }
         fn action_items(&self, id: MeetingId) -> MeetingsResult<Vec<ActionItem>> {
             Ok(self
                 .data
@@ -1947,6 +1992,9 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeAiData {
         pub summaries: HashMap<MeetingId, StoredSummary>,
+        pub drafts: HashMap<MeetingId, MeetingDraft>,
+        /// `save_meeting_draft` fails with this.
+        pub fail_draft_save: Option<String>,
         pub items: Vec<ActionItem>,
         pub linear_key: Option<String>,
         pub fail_summarize: Option<String>,

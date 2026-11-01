@@ -7,6 +7,7 @@
 //! - [`call_sites`]: which web pages are calls.
 //! - [`settings`]: the nested `meetings` settings object.
 //! - [`store`]: plain SQLite `meetings.db`.
+//! - [`drafts`]: autosaved drafts of typed notes (JSON files beside it).
 //! - [`audio_store`]: Opus track files + retention.
 //! - [`legacy`]: one-time conversion of data earlier versions encrypted.
 //! - [`native`]: macOS bridges (EventKit, mic, process tap, echo cancellation, notifications).
@@ -21,6 +22,7 @@
 pub mod audio_store;
 pub mod call_sites;
 pub mod calls;
+pub mod drafts;
 pub mod legacy;
 pub mod live;
 pub mod manager;
