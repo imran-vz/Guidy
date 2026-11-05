@@ -5252,9 +5252,10 @@ mod recording_widget {
 
 mod redo_transcript {
     use super::*;
+    use crate::state::AppEvent;
     use crate::testing::{meeting_fixture, segment_fixture, speaker_fixture, FakeMeetingsBackend};
     use crate::ui::pages::meetings::MeetingsPage;
-    use guidy_core::meetings::types::{CloudTranscriptionOption, MeetingStatus};
+    use guidy_core::meetings::types::{events, CloudTranscriptionOption, MeetingStatus};
 
     fn has_dialog(cx: &mut TestAppContext, w: AnyWindowHandle) -> bool {
         cx.update_window(w, |_, window, cx| {
@@ -5326,6 +5327,96 @@ mod redo_transcript {
     ) -> Entity<crate::ui::pages::meetings::detail::MeetingDetail> {
         page.read_with(cx, |p, _| p.detail().cloned())
             .expect("a meeting is open")
+    }
+
+    #[gpui_kit::test]
+    fn a_recording_is_trimmed_at_the_playhead_after_asking(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Hello everyone, let's get going with the plan."]);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open_page(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        cx.run_until_parked();
+
+        // The playhead is still at the start: there is nothing to go on.
+        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        assert!(!has_dialog(cx, w));
+        assert!(!meetings.called("trim_recording"));
+
+        let d = detail(cx, &page);
+        cx.update(|cx| {
+            let player = d.read(cx).player().clone();
+            player.update(cx, |p, cx| p.preview(60_000, false, cx));
+        });
+        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        cx.run_until_parked();
+        assert!(has_dialog(cx, w), "it deletes audio: it asks first");
+        assert!(!meetings.called("trim_recording"));
+
+        press_enter(cx, w);
+
+        assert!(
+            meetings.called("trim_recording 1 60000"),
+            "{:?}",
+            meetings.calls()
+        );
+        // Being processed: nothing more to cut until it is done.
+        assert!(!exists(cx, w, "meeting-detail-trim"));
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_trim_says_so_and_can_be_tried_again(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Hello everyone, let's get going with the plan."]);
+        setup_meetings(cx, backend, meetings.clone());
+        let (w, page) = open_page(cx, MeetingsPage::new);
+        with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
+        cx.run_until_parked();
+        meetings.data.lock().fail_process = Some("disk full".into());
+        let d = detail(cx, &page);
+        cx.update(|cx| {
+            let player = d.read(cx).player().clone();
+            player.update(cx, |p, cx| p.preview(60_000, false, cx));
+        });
+        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        cx.run_until_parked();
+        press_enter(cx, w);
+        assert!(meetings.called("trim_recording 1 60000"));
+        assert!(exists(cx, w, "meeting-detail-trim"));
+    }
+
+    #[gpui_kit::test]
+    fn a_due_summary_is_written_from_wherever_the_user_is(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Hello everyone, let's get going with the plan."]);
+        let state = setup_meetings(cx, backend, meetings.clone());
+        // No meetings page at all.
+        dispatch(cx, &state, events::SUMMARY_DUE, serde_json::json!(1));
+        cx.run_until_parked();
+        assert!(
+            meetings.called("summarize 1 default"),
+            "{:?}",
+            meetings.calls()
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_due_summary_says_so(cx: &mut TestAppContext) {
+        let (backend, meetings) = fixture(&["Hello everyone, let's get going with the plan."]);
+        meetings.data.lock().ai.fail_summarize = Some("no provider".into());
+        let state = setup_meetings(cx, backend, meetings.clone());
+        let toasts = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = toasts.clone();
+        let _sub = cx.update(|cx| {
+            cx.subscribe(&state, move |_, ev: &AppEvent, _| {
+                if let AppEvent::Toast(spec) = ev {
+                    seen.lock().push(spec.title.clone());
+                }
+            })
+        });
+        dispatch(cx, &state, events::SUMMARY_DUE, serde_json::json!(1));
+        cx.run_until_parked();
+        assert_eq!(
+            *toasts.lock(),
+            [guidy_i18n::t("meetings.trim.summaryError").to_string()]
+        );
     }
 
     #[gpui_kit::test]

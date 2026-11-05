@@ -976,6 +976,15 @@
       "confirmCloudUnpriced": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}. The transcript and speakers are replaced.",
       "menu": "Redo"
     },
+    "trim": {
+      "tooltip": "Trim the recording at the playhead, if it kept going after the call ended",
+      "needsPlayhead": "Move the playhead to where the call ended, then trim",
+      "confirmTitle": "End the recording at {{keep}}?",
+      "confirm": "This permanently deletes the last {{remove}} of audio, then transcribes what is left again. The transcript and speakers are replaced.",
+      "confirmSummary": "This permanently deletes the last {{remove}} of audio, then transcribes what is left again and writes a new summary. The transcript, speakers and summary are replaced.",
+      "error": "Couldn't trim the recording",
+      "summaryError": "Couldn't write a new summary, so the old one is still shown"
+    },
     "widget": {
       "recording": "Recording",
       "paused": "Paused",

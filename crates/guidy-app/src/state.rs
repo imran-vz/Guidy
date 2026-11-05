@@ -1136,6 +1136,31 @@ impl AppState {
         cx.emit(AppEvent::Meetings(ev));
     }
 
+    /// Write a trimmed meeting's summary again, wherever the user has gone
+    /// meanwhile. The meeting's views follow along (`is_summarizing`); a
+    /// failure leaves the old summary and says so.
+    fn resummarize(&mut self, id: guidy_core::meetings::types::MeetingId, cx: &mut Context<Self>) {
+        let meetings = self.meetings.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { meetings.summarize(id, None) })
+                .await;
+            this.update(cx, |s, cx| {
+                if let Err(e) = result {
+                    use crate::meetings_backend::{error_message, MeetingsError};
+                    if MeetingsError::parse(&e) != MeetingsError::Cancelled {
+                        let title = guidy_i18n::t("meetings.trim.summaryError");
+                        s.toast(ToastSpec::error(title, Some(error_message(&e))), cx);
+                    }
+                    // A success says so itself; this ends the spinner.
+                    cx.emit(AppEvent::Meetings(MeetingsEvent::MeetingChanged(id)));
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Start the meetings manager again after a failed start.
     pub fn retry_meetings_init(&mut self, cx: &mut Context<Self>) {
         self.meetings_init = MeetingsInit::Starting;
@@ -1394,6 +1419,7 @@ impl AppState {
                         self.set_meetings_init(MeetingsInit::DataKeyMissing(e.clone()), cx);
                         cx.emit(AppEvent::Meetings(MeetingsEvent::DataKeyMissing(e)));
                     }
+                    Some(MeetingsEvent::SummaryDue(id)) => self.resummarize(id, cx),
                     Some(ev) => cx.emit(AppEvent::Meetings(ev)),
                     None => {}
                 }

@@ -305,6 +305,12 @@ pub trait MeetingsBackend: Send + Sync + 'static {
     fn retranscribe(&self, _id: MeetingId, _engine: TranscriptionEngine) -> MeetingsResult<()> {
         Err(unavailable())
     }
+    /// Cut a recording to its first `keep_ms`, for good, and transcribe what
+    /// is left again. Progress as for `process_meeting`; a meeting with a
+    /// summary then gets `MeetingsEvent::SummaryDue`.
+    fn trim_recording(&self, _id: MeetingId, _keep_ms: i64) -> MeetingsResult<()> {
+        Err(unavailable())
+    }
     /// The cloud providers a meeting can be transcribed with, the
     /// configured (or automatic) choice first.
     fn cloud_transcription_options(&self) -> Vec<CloudTranscriptionOption> {
@@ -718,6 +724,9 @@ impl MeetingsBackend for CoreMeetingsBackend {
     }
     fn retranscribe(&self, id: MeetingId, engine: TranscriptionEngine) -> MeetingsResult<()> {
         self.m()?.retranscribe(id, engine).map_err(err)
+    }
+    fn trim_recording(&self, id: MeetingId, keep_ms: i64) -> MeetingsResult<()> {
+        self.m()?.trim_recording(id, keep_ms).map_err(err)
     }
     fn redo_speakers(&self, id: MeetingId, engine: DiarizationEngine) -> MeetingsResult<()> {
         self.m()?.redo_speakers(id, engine).map_err(err)
@@ -1564,6 +1573,16 @@ pub mod fake {
                 }
             };
             self.rec(format!("retranscribe {id} {engine}"));
+            if let Some(e) = self.data.lock().fail_process.clone() {
+                return Err(e);
+            }
+            if let Some(m) = self.data.lock().meetings.iter_mut().find(|m| m.id == id) {
+                m.status = MeetingStatus::Processing;
+            }
+            Ok(())
+        }
+        fn trim_recording(&self, id: MeetingId, keep_ms: i64) -> MeetingsResult<()> {
+            self.rec(format!("trim_recording {id} {keep_ms}"));
             if let Some(e) = self.data.lock().fail_process.clone() {
                 return Err(e);
             }

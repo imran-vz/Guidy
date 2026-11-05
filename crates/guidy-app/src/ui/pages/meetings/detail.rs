@@ -18,6 +18,7 @@ use crate::logic::meetings::{
     speaker_name, status_key, talk_time, transcript_issue, LineClick, MeetingsEvent, RedoChoice,
     RedoDiff, SpeakerBlock, SpeakerRedoChoice, SpeakerShift, TalkTime, TranscriptIssue,
 };
+use crate::logic::settings_store::ToastKind;
 use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp, Stat};
 use crate::ui::kit::{icon, t, t_args, LocalizedPlaceholder};
@@ -942,6 +943,75 @@ impl MeetingDetail {
                         }
                     }
                     Err(e) => toast_error("meetings.redo.error", &e, cx),
+                }
+            },
+        );
+    }
+
+    /// The recording can be cut: there is audio, and nothing is using it.
+    fn can_trim(&self) -> bool {
+        self.has_audio()
+            && self
+                .meeting
+                .as_ref()
+                .is_some_and(|m| m.status != MeetingStatus::Processing)
+    }
+
+    /// Ask to cut the recording at the playhead: the user finds where the
+    /// call ended by listening, or by clicking its last line.
+    pub(crate) fn request_trim(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.meeting.as_ref() else {
+            return;
+        };
+        let keep_ms = self.player.read(cx).position_ms();
+        let duration = m.duration_ms().unwrap_or(0);
+        if keep_ms <= 0 || keep_ms >= duration {
+            AppState::global(cx).update(cx, |s, cx| {
+                s.toast_kind(ToastKind::Info, t("meetings.trim.needsPlayhead"), cx)
+            });
+            return;
+        }
+        let keep = format_offset(keep_ms);
+        let remove = format_offset(duration - keep_ms);
+        let args = [("keep", keep.as_str()), ("remove", remove.as_str())];
+        let description = if m.has_summary {
+            t_args("meetings.trim.confirmSummary", &args)
+        } else {
+            t_args("meetings.trim.confirm", &args)
+        };
+        let title = t_args("meetings.trim.confirmTitle", &[("keep", keep.as_str())]);
+        let weak = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    weak.update(cx, |this, cx| this.trim(keep_ms, cx)).ok();
+                    true
+                })
+        });
+    }
+
+    fn trim(&mut self, keep_ms: i64, cx: &mut Context<Self>) {
+        let id = self.meeting_id;
+        self.player.update(cx, |p, cx| p.pause(cx));
+        self.processing_busy = true;
+        cx.notify();
+        run(
+            cx,
+            move |b| b.trim_recording(id, keep_ms),
+            |this: &mut Self, r, cx| {
+                this.processing_busy = false;
+                match r {
+                    Ok(()) => {
+                        if let Some(m) = &mut this.meeting {
+                            m.status = MeetingStatus::Processing;
+                            m.error = None;
+                        }
+                    }
+                    Err(e) => toast_error("meetings.trim.error", &e, cx),
                 }
             },
         );
@@ -2081,6 +2151,17 @@ impl MeetingDetail {
             })
             .when(self.can_redo(), |d| {
                 d.child(self.redo_button("meeting-detail-redo", false, cx))
+            })
+            .when(self.can_trim(), |d| {
+                d.child(
+                    Button::new("meeting-detail-trim")
+                        .ghost()
+                        .small()
+                        .icon(icon("scissors"))
+                        .tooltip(t("meetings.trim.tooltip"))
+                        .disabled(self.processing_busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.request_trim(window, cx))),
+                )
             })
             .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
             .child(self.export_button(cx))

@@ -51,6 +51,9 @@ struct JobState {
     engines: HashMap<MeetingId, TranscriptionEngine>,
     /// How each queued "redo speakers" tells the speakers apart.
     diarizers: HashMap<MeetingId, DiarizationEngine>,
+    /// Queued or running trims whose meeting had a summary: it is due again
+    /// once the run succeeds ([`events::SUMMARY_DUE`]).
+    summarize_after: HashSet<MeetingId>,
     /// The running job and its cancel flag. The flag is new for each run,
     /// so it also tells a run apart from a later one of the same meeting.
     current: Option<(MeetingId, Arc<AtomicBool>)>,
@@ -149,6 +152,17 @@ impl Processor {
         self.enqueue_job(id, engine, Start::Fresh)
     }
 
+    /// Cut `id`'s recording to its first `keep_ms`, for good, and queue a
+    /// fresh run of what is left with the local engine. Nothing is cut when
+    /// the run can't be queued (e.g. a model is missing). The cut is made
+    /// with the meeting marked, so retention can't touch its audio meanwhile.
+    /// A cancelled or failed run leaves the shorter meeting, with its lines
+    /// past the cut gone. A meeting with a summary emits
+    /// [`events::SUMMARY_DUE`] once the run succeeds.
+    pub fn enqueue_trim(&self, id: MeetingId, keep_ms: i64) -> Result<()> {
+        self.enqueue_job(id, TranscriptionEngine::Local, Start::Trim { keep_ms })
+    }
+
     fn enqueue_job(&self, id: MeetingId, engine: TranscriptionEngine, start: Start) -> Result<()> {
         let deadline = std::time::Instant::now() + STOP_WAIT;
         loop {
@@ -185,12 +199,17 @@ impl Processor {
         engine: &TranscriptionEngine,
         start: Start,
     ) -> Result<bool> {
-        let fresh = start == Start::Fresh;
+        let fresh = matches!(start, Start::Fresh | Start::Trim { .. });
         let Some(meeting) = self.inner.store.get_meeting(id)? else {
             bail!("meeting {id} not found");
         };
         if meeting.status == MeetingStatus::Recording {
             bail!("the meeting is still being recorded");
+        }
+        if let Start::Trim { keep_ms } = start {
+            if keep_ms <= 0 || keep_ms >= meeting.duration_ms().unwrap_or(0) {
+                bail!("the cut has to be inside the recording");
+            }
         }
         let stage = meeting
             .processing_stage
@@ -261,6 +280,10 @@ impl Processor {
             return Ok(false);
         }
         if state.queue.contains(&id) || state.is_running(id) {
+            // That run is of the whole recording: this cut wouldn't happen.
+            if matches!(start, Start::Trim { .. }) {
+                bail!("the meeting is being processed");
+            }
             return Ok(true);
         }
         // Settling: one enqueue claims it, and a cancel or finish of it
@@ -270,6 +293,9 @@ impl Processor {
             let marked = self.inner.store.mark_processing(id, needs_audio)?;
             let prepared = match start {
                 Start::Fresh if marked => self.start_over(id),
+                Start::Trim { keep_ms } if marked => self
+                    .trim(&meeting, keep_ms)
+                    .and_then(|()| self.start_over(id)),
                 Start::Speakers(_) if marked => self.prepare_speakers(id),
                 _ => Ok(()),
             };
@@ -309,6 +335,9 @@ impl Processor {
         } else {
             state.engines.insert(id, engine.clone());
         }
+        if matches!(start, Start::Trim { .. }) && meeting.has_summary {
+            state.summarize_after.insert(id);
+        }
         match start {
             Start::Speakers(d) => state.diarizers.insert(id, d),
             _ => state.diarizers.remove(&id),
@@ -332,6 +361,7 @@ impl Processor {
                     state.progress.remove(&id);
                     state.engines.remove(&id);
                     state.diarizers.remove(&id);
+                    state.summarize_after.remove(&id);
                     if let Err(e2) = self.settle(&mut state, id, || self.restore_status(id)) {
                         log::warn!("meeting {id}: {e2:#}");
                     }
@@ -356,6 +386,7 @@ impl Processor {
             state.progress.remove(&id);
             state.engines.remove(&id);
             state.diarizers.remove(&id);
+            state.summarize_after.remove(&id);
             // Settling, so an enqueue can't mark it again in between and
             // then be left queued but not `Processing`.
             let restored = self.settle(&mut state, id, || self.restore_status(id));
@@ -420,6 +451,28 @@ impl Processor {
         );
         super::sidecar::write_cache(store, id, &cache)?;
         store.set_processing_stage_if_processing(id, Some(ProcessingStage::Transcribe))?;
+        Ok(())
+    }
+
+    /// Cut a just-marked meeting's tracks to their first `keep_ms`, then
+    /// shorten its row. If a track fails, the row still has the old duration,
+    /// so trimming again cuts what is left (a cut track is a no-op).
+    fn trim(&self, meeting: &Meeting, keep_ms: i64) -> Result<()> {
+        let inner = &self.inner;
+        let audio_dir =
+            audio_store::audio_dir(inner.meetings_dir.parent().unwrap_or(&inner.meetings_dir));
+        let keep = keep_ms as u64 * audio_store::SAMPLE_RATE as u64 / 1_000;
+        for rel in [&meeting.mic_audio_path, &meeting.system_audio_path]
+            .into_iter()
+            .flatten()
+        {
+            let path = audio_store::resolve_track_path(&audio_dir, rel)?;
+            if path.exists() {
+                audio_store::truncate_track(&path, keep)?;
+            }
+        }
+        inner.store.trim_transcript(meeting.id, keep_ms)?;
+        log::info!("meeting {}: trimmed to {keep_ms} ms", meeting.id);
         Ok(())
     }
 
@@ -654,10 +707,16 @@ impl Processor {
             state.current = None;
         }
         state.progress.remove(&id);
+        let summary_due = state.summarize_after.remove(&id) && outcome.is_ok();
         // Wakes an enqueue or `cancel_and_wait` waiting for it to stop.
         self.inner.settled.notify_all();
         drop(state);
         self.emit_changed(id);
+        if summary_due {
+            if let Err(e) = self.inner.app.emit(events::SUMMARY_DUE, id) {
+                log::warn!("emit {}: {e}", events::SUMMARY_DUE);
+            }
+        }
     }
 
     /// Record `run`'s progress, unless it is no longer the live run of its
@@ -882,6 +941,8 @@ enum Start {
     Fresh,
     /// Only the speakers, from the stored transcript.
     Speakers(DiarizationEngine),
+    /// From the start, of the recording's first `keep_ms`.
+    Trim { keep_ms: i64 },
 }
 
 /// How long [`Processor::enqueue`] waits for a cancelled run of the same
@@ -1956,6 +2017,193 @@ mod tests {
 
     /// A cloud redo needs no local model (only the speaker model and the
     /// provider's key), and always starts over.
+    /// A processed 3 s meeting with a summary, its tracks on disk, in a
+    /// processor with no worker running. Returns its id and track paths.
+    fn long_meeting(
+        p: &Processor,
+        store: &MeetingsStore,
+        dir: &std::path::Path,
+    ) -> (MeetingId, Vec<PathBuf>) {
+        p.inner.state.lock().running = true;
+        let audio = audio_store::audio_dir(dir);
+        std::fs::create_dir_all(&audio).unwrap();
+        let id = store
+            .insert_meeting(&Meeting {
+                ended_at: Some(3_000),
+                mic_audio_path: Some("long-mic.gopus".into()),
+                system_audio_path: Some("long-system.gopus".into()),
+                processing_stage: Some(ProcessingStage::Done.as_str().into()),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+        let tracks = vec![
+            audio.join("long-mic.gopus"),
+            audio.join("long-system.gopus"),
+        ];
+        for path in &tracks {
+            let mut w = audio_store::TrackWriter::create(path).unwrap();
+            w.push(&vec![0.0; 3 * audio_store::SAMPLE_RATE as usize])
+                .unwrap();
+            w.finish().unwrap();
+        }
+        store
+            .put_summary(&StoredSummary {
+                meeting_id: id,
+                title: String::new(),
+                short_summary: "From the whole recording".into(),
+                decisions: Vec::new(),
+                topics: Vec::new(),
+                generated_by: "test".into(),
+                generated_at: 1,
+                usage: None,
+                notes: Vec::new(),
+                open_questions: Vec::new(),
+            })
+            .unwrap();
+        (id, tracks)
+    }
+
+    fn track_ms(path: &std::path::Path) -> u64 {
+        TrackReader::open(path).unwrap().duration_ms().unwrap()
+    }
+
+    #[test]
+    fn trimming_cuts_the_tracks_and_starts_over() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let (id, tracks) = long_meeting(&p, &store, dir.path());
+
+        p.enqueue_trim(id, 1_000).unwrap();
+
+        for path in &tracks {
+            assert_eq!(track_ms(path), 1_000);
+        }
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.duration_ms(), Some(1_000));
+        assert_eq!(
+            (m.status, m.processing_stage),
+            (MeetingStatus::Processing, None)
+        );
+        assert_eq!(p.inner.state.lock().queue, [id]);
+
+        // Queued already: a second cut would silently not happen.
+        assert!(p.enqueue_trim(id, 500).is_err());
+        assert_eq!(track_ms(&tracks[0]), 1_000);
+    }
+
+    #[test]
+    fn a_trim_outside_the_recording_cuts_nothing() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let (id, tracks) = long_meeting(&p, &store, dir.path());
+        for keep_ms in [0, -1, 3_000, 9_000] {
+            assert!(p.enqueue_trim(id, keep_ms).is_err(), "{keep_ms}");
+        }
+        assert_eq!(track_ms(&tracks[0]), 3_000);
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert!(p.inner.state.lock().queue.is_empty());
+    }
+
+    #[test]
+    fn a_trim_that_cant_run_cuts_nothing() {
+        let app = TestApp::new();
+        // A running app's model manager with nothing downloaded.
+        app.app
+            .manage(Arc::new(ModelManager::new(&app.app).unwrap()));
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let (id, tracks) = long_meeting(&p, &store, dir.path());
+
+        let e = p.enqueue_trim(id, 1_000).unwrap_err();
+
+        assert!(e.chain().any(|c| c.is::<MeetingModelMissing>()), "{e:#}");
+        assert_eq!(track_ms(&tracks[0]), 3_000);
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert_eq!(m.duration_ms(), Some(3_000));
+    }
+
+    #[test]
+    fn a_track_that_cant_be_cut_restores_the_meeting() {
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let (id, tracks) = long_meeting(&p, &store, dir.path());
+        std::fs::write(&tracks[1], b"not a track").unwrap();
+
+        assert!(p.enqueue_trim(id, 1_000).is_err());
+
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert_eq!(m.processing_stage.as_deref(), Some("done"));
+        assert_eq!(m.duration_ms(), Some(3_000), "so it can be trimmed again");
+        assert!(p.inner.state.lock().queue.is_empty());
+        assert!(p.inner.state.lock().summarize_after.is_empty());
+    }
+
+    /// Only a run that succeeded makes the summary due, and only for a
+    /// meeting that had one.
+    #[test]
+    fn a_trimmed_meetings_summary_is_due_once_its_run_succeeds() {
+        let due = |app: &TestApp| {
+            app.event_names()
+                .iter()
+                .filter(|n| *n == events::SUMMARY_DUE)
+                .count()
+        };
+        let app = TestApp::new();
+        let store = Arc::new(MeetingsStore::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let p = Processor::new(&app.app, store.clone(), dir.path().join("meetings"));
+        let (id, _) = long_meeting(&p, &store, dir.path());
+
+        // Cancelled while queued: the short meeting stays, nothing is due.
+        p.enqueue_trim(id, 2_000).unwrap();
+        p.cancel(id).unwrap();
+        let m = store.get_meeting(id).unwrap().unwrap();
+        assert_eq!(m.status, MeetingStatus::Processed);
+        assert_eq!(m.duration_ms(), Some(2_000));
+        assert!(p.inner.state.lock().summarize_after.is_empty());
+
+        // Failed.
+        p.enqueue_trim(id, 1_500).unwrap();
+        take_job(&p, id);
+        p.finish(id, Err(anyhow::anyhow!("boom")));
+        assert_eq!(due(&app), 0);
+
+        // Succeeded.
+        p.enqueue_trim(id, 1_000).unwrap();
+        take_job(&p, id);
+        p.finish(id, Ok(()));
+        assert_eq!(due(&app), 1);
+        assert!(p.inner.state.lock().summarize_after.is_empty());
+
+        // An ordinary run after it isn't a trim.
+        p.enqueue(id).unwrap();
+        take_job(&p, id);
+        p.finish(id, Ok(()));
+        assert_eq!(due(&app), 1);
+
+        // No summary: nothing to redo.
+        let plain = store
+            .insert_meeting(&Meeting {
+                ended_at: Some(3_000),
+                ..meeting(MeetingStatus::Processed)
+            })
+            .unwrap();
+        p.enqueue_trim(plain, 1_000).unwrap();
+        take_job(&p, plain);
+        p.finish(plain, Ok(()));
+        assert_eq!(due(&app), 1);
+    }
+
     #[test]
     fn a_cloud_redo_needs_no_local_model_and_starts_over() {
         let app = TestApp::new();

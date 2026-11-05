@@ -795,6 +795,34 @@ impl MeetingsManager {
         self.processing.enqueue_with(id, engine)
     }
 
+    /// Cut a recording that ran past the end of the call to its first
+    /// `keep_ms` (deleting the rest of its audio for good) and transcribe what
+    /// is left again, as [`crate::meetings::processing::Processor::enqueue_trim`]
+    /// says. Only for a `Processed`, `Failed` or `Recorded` meeting whose
+    /// audio is still there, and not while its summary is being written from
+    /// the old transcript.
+    pub fn trim_recording(&self, id: MeetingId, keep_ms: i64) -> Result<()> {
+        let Some(meeting) = self.store.get_meeting(id)? else {
+            anyhow::bail!("meeting {id} not found");
+        };
+        if !matches!(
+            meeting.status,
+            MeetingStatus::Processed | MeetingStatus::Failed | MeetingStatus::Recorded
+        ) {
+            anyhow::bail!(
+                "the recording can't be trimmed while the meeting is {}",
+                meeting.status.as_str()
+            );
+        }
+        if !crate::meetings::processing::jobs::has_audio(&meeting) {
+            anyhow::bail!(crate::meetings::processing::jobs::AUDIO_DELETED);
+        }
+        if self.is_summarizing(id) {
+            anyhow::bail!("the recording can't be trimmed while its summary is being written");
+        }
+        self.processing.enqueue_trim(id, keep_ms)
+    }
+
     /// Redo only a processed meeting's speakers with `engine`, keeping its
     /// transcript (see [`crate::meetings::processing::Processor::enqueue_speakers`]).
     /// Lines tagged by hand keep their person; every other line whose own

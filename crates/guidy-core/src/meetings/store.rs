@@ -1185,6 +1185,39 @@ impl MeetingsStore {
 
     // ----- transcript: speakers + segments ---------------------------------
 
+    /// End a meeting `keep_ms` into its recording (its tracks were just cut
+    /// there): it gets the shorter duration, and loses the lines that begin
+    /// after the cut, their pins and voiceprints, and any speaker left with
+    /// no line. A line running over the cut stays until the next run.
+    pub fn trim_transcript(&self, meeting_id: MeetingId, keep_ms: i64) -> Result<()> {
+        self.with_tx(|tx| {
+            let n = tx.execute(
+                "UPDATE meetings SET ended_at = started_at + ?2 WHERE id = ?1",
+                params![meeting_id, keep_ms],
+            )?;
+            expect_one(n, "meeting", meeting_id)?;
+            tx.execute(
+                "DELETE FROM segment_embeddings WHERE meeting_id = ?1 AND segment_id IN
+                    (SELECT id FROM meeting_segments WHERE meeting_id = ?1 AND t0_ms >= ?2)",
+                params![meeting_id, keep_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM meeting_segments WHERE meeting_id = ?1 AND t0_ms >= ?2",
+                params![meeting_id, keep_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM segment_pins WHERE meeting_id = ?1 AND t0_ms >= ?2",
+                params![meeting_id, keep_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM meeting_speakers WHERE meeting_id = ?1 AND NOT EXISTS
+                    (SELECT 1 FROM meeting_segments g WHERE g.speaker_id = meeting_speakers.id)",
+                [meeting_id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Replace a meeting's speakers and segments in one transaction.
     ///
     /// `speakers[i].id` is a caller-chosen local id (e.g. the index) and each
@@ -2338,6 +2371,70 @@ pub(crate) mod tests {
             title_source: Default::default(),
             has_summary: false,
         }
+    }
+
+    #[test]
+    fn trimming_drops_what_begins_past_the_cut() {
+        let s = store();
+        let id = s.insert_meeting(&meeting("Long", 1_000)).unwrap();
+        let segment = |id, speaker, t0_ms, t1_ms| Segment {
+            id,
+            meeting_id: 0,
+            track: Track::System,
+            t0_ms,
+            t1_ms,
+            text: format!("at {t0_ms}"),
+            words: Vec::new(),
+            speaker_id: Some(speaker),
+        };
+        let (_, segments) = s
+            .replace_transcript(
+                id,
+                &[speaker(1, "Stays", None), speaker(2, "Goes", None)],
+                &[
+                    segment(0, 1, 0, 1_000),
+                    segment(0, 1, 9_000, 11_000),
+                    segment(0, 2, 10_000, 12_000),
+                ],
+            )
+            .unwrap();
+        let print = |segment_id| SegmentEmbedding {
+            segment_id,
+            duration_ms: 1_000,
+            embedding: vec![1.0],
+        };
+        s.replace_segment_embeddings(id, &[print(segments[0].id), print(segments[2].id)])
+            .unwrap();
+        let person = s.insert_person("Ada", None).unwrap().id;
+        let pin = |t0_ms, t1_ms| SegmentPin {
+            track: Track::System,
+            t0_ms,
+            t1_ms,
+            person_id: person,
+            by_hand: true,
+        };
+        s.replace_segment_pins(id, &[pin(0, 1_000), pin(10_000, 12_000)])
+            .unwrap();
+
+        s.trim_transcript(id, 10_000).unwrap();
+
+        assert_eq!(
+            s.get_meeting(id).unwrap().unwrap().duration_ms(),
+            Some(10_000)
+        );
+        let kept: Vec<_> = s.segments(id).unwrap().iter().map(|g| g.t0_ms).collect();
+        assert_eq!(kept, [0, 9_000], "a line over the cut stays until the redo");
+        let speakers = s.speakers(id).unwrap();
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(speakers[0].cluster_label, "Stays");
+        let prints = s.segment_embeddings(id).unwrap();
+        assert_eq!(prints.len(), 1);
+        assert_eq!(prints[0].segment_id, segments[0].id);
+        let pins = s.segment_pins(id).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].t0_ms, 0);
+
+        assert!(s.trim_transcript(id + 1, 1_000).is_err(), "no such meeting");
     }
 
     fn speaker(local: i64, label: &str, person: Option<PersonId>) -> MeetingSpeaker {

@@ -791,6 +791,9 @@ pub mod events {
     pub const MEETING_CHANGED: &str = "meetings://meeting-changed";
     /// Payload: (). The People list changed.
     pub const PEOPLE_CHANGED: &str = "meetings://people-changed";
+    /// Payload: meeting id. A trimmed meeting's new transcript is in: its
+    /// summary, written from the old one, is due again.
+    pub const SUMMARY_DUE: &str = "meetings://summary-due";
 }
 
 #[cfg(test)]

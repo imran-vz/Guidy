@@ -445,10 +445,19 @@ fn sync_recording_widget(cx: &mut App) {
             Ok(handle) => {
                 let any: AnyWindowHandle = handle.into();
                 let frame = (screen.x, screen.y, screen.width, screen.height);
-                let _ = cx.update_window(any, |_, window, _| {
-                    configure_overlay_panel(window);
-                    place_panel(window, frame, MENU_BAR_LEVEL);
-                });
+                let _ = cx.update_window(any, |_, window, _| configure_overlay_panel(window));
+                // Moved only once the app is free: a window arriving on a
+                // display of another scale tells GPUI at once, and GPUI drops
+                // that while the app is borrowed, which would leave it drawing
+                // at the old scale (too big, and off from where clicks land).
+                cx.spawn(async move |cx| {
+                    if let Ok(Some(native)) =
+                        cx.update_window(any, |_, window, _| native_window(window))
+                    {
+                        place_panel(native, frame, MENU_BAR_LEVEL);
+                    }
+                })
+                .detach();
                 windows(cx).recording_widget.push(any);
             }
             Err(e) => log::error!("Failed to open the recording widget: {e}"),
@@ -657,41 +666,32 @@ fn macos_screens() -> Vec<ScreenInfo> {
     out
 }
 
-/// Move the panel to `frame` (Cocoa coordinates) at window `level`, on
-/// every Space and over full-screen apps.
-fn place_panel(window: &Window, frame: Rect, level: isize) {
+/// Move the native window (from [`native_window`]) to `frame` (Cocoa
+/// coordinates) at window `level`, on every Space and over full-screen apps.
+/// Call it outside GPUI's updates, as for [`set_ignores_mouse`].
+fn place_panel(ns_window: usize, frame: Rect, level: isize) {
     #[cfg(target_os = "macos")]
     {
         use cocoa::{CGPoint, CGRect, CGSize};
         use objc2::msg_send;
         use objc2::runtime::{AnyObject, Bool};
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let Ok(handle) = HasWindowHandle::window_handle(window) else {
-            return;
-        };
-        if let RawWindowHandle::AppKit(h) = handle.as_raw() {
-            let view = h.ns_view.as_ptr() as *mut AnyObject;
-            // SAFETY: a live NSView owned by this window, on the main thread.
-            unsafe {
-                let ns_window: *mut AnyObject = msg_send![view, window];
-                if ns_window.is_null() {
-                    return;
-                }
-                let _: () = msg_send![ns_window, setLevel: level];
-                // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
-                let behavior: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
-                let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
-                let (x, y, width, height) = frame;
-                let rect = CGRect {
-                    origin: CGPoint { x, y },
-                    size: CGSize { width, height },
-                };
-                let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES];
-            }
+        let ns_window = ns_window as *mut AnyObject;
+        // SAFETY: an NSWindow the caller holds open, on the main thread.
+        unsafe {
+            let _: () = msg_send![ns_window, setLevel: level];
+            // canJoinAllSpaces | stationary | ignoresCycle | fullScreenAuxiliary
+            let behavior: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
+            let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+            let (x, y, width, height) = frame;
+            let rect = CGRect {
+                origin: CGPoint { x, y },
+                size: CGSize { width, height },
+            };
+            let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES];
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, frame, level);
+    let _ = (ns_window, frame, level);
 }
 
 /// Displays in logical points (GPUI exposes no scale factor; placement math

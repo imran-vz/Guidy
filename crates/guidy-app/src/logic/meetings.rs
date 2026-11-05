@@ -31,6 +31,8 @@ pub enum MeetingsEvent {
     /// A transcript line from a run that has not merged yet.
     ProvisionalLine(ProvisionalLine),
     MeetingChanged(MeetingId),
+    /// A trimmed meeting's new transcript is in: its summary is out of date.
+    SummaryDue(MeetingId),
     PeopleChanged,
     /// The meetings manager is registered (startup or retry finished).
     Ready,
@@ -80,6 +82,7 @@ pub fn decode_event(name: &str, payload: &Value) -> Option<MeetingsEvent> {
             .ok()
             .map(MeetingsEvent::ProvisionalLine),
         events::MEETING_CHANGED => payload.as_i64().map(MeetingsEvent::MeetingChanged),
+        events::SUMMARY_DUE => payload.as_i64().map(MeetingsEvent::SummaryDue),
         events::PEOPLE_CHANGED => Some(MeetingsEvent::PeopleChanged),
         guidy_core::MEETINGS_READY_EVENT => Some(MeetingsEvent::Ready),
         guidy_core::MEETINGS_INIT_FAILED_EVENT => {

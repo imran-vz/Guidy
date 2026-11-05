@@ -424,6 +424,10 @@ impl SummaryView {
                 total,
             } if *meeting_id == self.meeting_id => {
                 self.progress = Some((*done, *total));
+                // A job started elsewhere (a trim's new summary).
+                if !self.generating {
+                    self.reload(cx);
+                }
                 cx.notify();
             }
             _ => {}
