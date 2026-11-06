@@ -28,7 +28,7 @@ use crate::ui::kit::{icon, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{h_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{h_flex, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::downloads::{format_bytes, DownloadItem, DownloadKind, DownloadState};
@@ -249,9 +249,18 @@ pub fn progress_text(view: &DownloadView) -> (Option<f32>, SharedString) {
 /// A progress bar with "34% · 2 min" and a cancel button: what every busy
 /// download looks like.
 pub fn progress_line(id: &str, view: &DownloadView, width: Pixels, cx: &App) -> AnyElement {
+    h_flex()
+        .flex_none()
+        .gap(dp(8.))
+        .child(progress_status(id, view, width, cx))
+        .children(cancel_button(id, view))
+        .into_any_element()
+}
+
+/// The status half of [`progress_line`]: the bar and "34% · 2 min".
+pub fn progress_status(id: &str, view: &DownloadView, width: Pixels, cx: &App) -> AnyElement {
     let tone = design::tone(cx);
     let (fraction, text) = progress_text(view);
-    let cancel_id = id.to_string();
     h_flex()
         .flex_none()
         .gap(dp(8.))
@@ -266,32 +275,53 @@ pub fn progress_line(id: &str, view: &DownloadView, width: Pixels, cx: &App) -> 
                 .text_size(design::TEXT_SECONDARY)
                 .text_color(tone.text_muted),
         )
-        .when(!matches!(view, DownloadView::Verifying), |d| {
-            d.child(
-                Button::new(SharedString::from(format!("dl-cancel-{id}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(icon("x"))
-                    .tooltip(t("models.actions.cancel"))
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        cancel(&cancel_id, cx)
-                    }),
-            )
-        })
         .into_any_element()
 }
 
-impl RenderOnce for DownloadControl {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+/// The action half of [`progress_line`]: a 24 × 24 pt cancel button
+/// (`dl-cancel-<id>`), none while verifying.
+pub fn cancel_button(id: &str, view: &DownloadView) -> Option<AnyElement> {
+    if matches!(view, DownloadView::Verifying) {
+        return None;
+    }
+    let cancel_id = id.to_string();
+    Some(
+        crate::ui::model_card::cancel_icon_button(
+            SharedString::from(format!("dl-cancel-{id}")),
+            t("models.actions.cancel"),
+            move |_, cx| cancel(&cancel_id, cx),
+        )
+        .into_any_element(),
+    )
+}
+
+impl DownloadControl {
+    /// Why the last download failed, when it did and the tracker kept a
+    /// reason: the one-line caption a row shows under its detail
+    /// ([`crate::ui::model_card::ModelRow::error`]). The status keeps it in
+    /// its tooltip too.
+    pub fn failure_reason(&self, cx: &App) -> Option<SharedString> {
+        let item = AppState::global(cx)
+            .read(cx)
+            .models
+            .download(&self.id)
+            .cloned();
+        match DownloadView::of(item.as_ref(), self.installed, self.size, self.partial) {
+            DownloadView::Failed { error: Some(e) } if !e.trim().is_empty() => Some(e.into()),
+            _ => None,
+        }
+    }
+
+    /// The control as a status (progress, "Failed", "Paused at 30%") and an
+    /// action (Cancel, Retry, Resume, Download), for rows that lay them out
+    /// in fixed slots. Same ids and behavior as rendering it whole.
+    pub fn into_parts(self, cx: &App) -> (Option<AnyElement>, Option<AnyElement>) {
         let item = AppState::global(cx)
             .read(cx)
             .models
             .download(&self.id)
             .cloned();
         let view = DownloadView::of(item.as_ref(), self.installed, self.size, self.partial);
-        let tone = design::tone(cx);
-        let danger = cx.theme().danger;
         let id = self.id.clone();
         let on_start = self.on_start.clone();
         let begin = move |cx: &mut App| {
@@ -299,85 +329,87 @@ impl RenderOnce for DownloadControl {
                 f(cx);
             }
         };
-        let el: AnyElement = match &view {
-            DownloadView::Queued | DownloadView::Downloading { .. } | DownloadView::Verifying => {
-                progress_line(&id, &view, dp(72.), cx)
-            }
-            DownloadView::Installed if !self.show_installed => div().into_any_element(),
-            DownloadView::Installed => h_flex()
-                .gap(dp(4.))
-                .text_size(design::TEXT_SECONDARY)
-                .text_color(tone.text_muted)
-                .child(icon("check").small().text_color(cx.theme().success))
-                .child(t("models.state.downloaded"))
-                .into_any_element(),
+        match &view {
+            DownloadView::Queued | DownloadView::Downloading { .. } | DownloadView::Verifying => (
+                Some(progress_status(&id, &view, dp(72.), cx)),
+                cancel_button(&id, &view),
+            ),
+            DownloadView::Installed if !self.show_installed => (None, None),
+            DownloadView::Installed => (
+                Some(
+                    crate::ui::model_card::status_word(
+                        "circle-check",
+                        t("models.state.downloaded"),
+                        design::Status::Ok,
+                        cx,
+                    )
+                    .into_any_element(),
+                ),
+                None,
+            ),
             DownloadView::Failed { error } => {
                 let tip: SharedString = error
                     .clone()
                     .unwrap_or_else(|| guidy_i18n::t("models.state.failed"))
                     .into();
-                h_flex()
-                    .gap(dp(6.))
-                    .child(
-                        h_flex()
-                            .id(SharedString::from(format!("dl-error-{id}")))
-                            .gap(dp(4.))
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(danger)
-                            .child(icon("circle-alert").small())
-                            .child(t("models.state.failed"))
-                            .tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                    .build(window, cx)
-                            }),
-                    )
-                    .child(
+                (
+                    Some(
+                        crate::ui::model_card::status_word(
+                            "circle-alert",
+                            t("models.state.failed"),
+                            design::Status::Error,
+                            cx,
+                        )
+                        .id(SharedString::from(format!("dl-error-{id}")))
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                .build(window, cx)
+                        })
+                        .into_any_element(),
+                    ),
+                    Some(
                         Button::new(SharedString::from(format!("dl-retry-{id}")))
-                            .secondary()
-                            .small()
+                            .outline()
                             .icon(icon("rotate-ccw"))
                             .label(t("models.actions.retry"))
                             .disabled(self.disabled)
-                            .on_click({
-                                let begin = begin.clone();
-                                move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    begin(cx);
-                                    retry(&id, cx)
-                                }
-                            }),
-                    )
-                    .into_any_element()
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                begin(cx);
+                                retry(&id, cx)
+                            })
+                            .into_any_element(),
+                    ),
+                )
             }
             DownloadView::Paused { percent } => {
                 let label = percent
                     .map(|p| t_args("models.state.pausedAt", &[("percent", &p.to_string())]))
                     .unwrap_or_else(|| t("models.state.paused"));
-                h_flex()
-                    .gap(dp(6.))
-                    .child(
-                        div()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text_muted)
-                            .child(label),
-                    )
-                    .child(
+                (
+                    Some(
+                        crate::ui::model_card::status_word(
+                            "circle-pause",
+                            label,
+                            design::Status::Neutral,
+                            cx,
+                        )
+                        .into_any_element(),
+                    ),
+                    Some(
                         Button::new(SharedString::from(format!("dl-resume-{id}")))
-                            .secondary()
-                            .small()
+                            .outline()
                             .icon(icon("download"))
                             .label(t("models.actions.resume"))
                             .disabled(self.disabled)
-                            .on_click({
-                                let begin = begin.clone();
-                                move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    begin(cx);
-                                    retry(&id, cx)
-                                }
-                            }),
-                    )
-                    .into_any_element()
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                begin(cx);
+                                retry(&id, cx)
+                            })
+                            .into_any_element(),
+                    ),
+                )
             }
             DownloadView::Missing => {
                 let label = if self.size > 0 && self.label_size {
@@ -388,24 +420,41 @@ impl RenderOnce for DownloadControl {
                 } else {
                     t("models.actions.download")
                 };
-                Button::new(SharedString::from(format!("dl-download-{id}")))
-                    .secondary()
-                    .small()
-                    .icon(icon("download"))
-                    .label(label)
-                    .disabled(self.disabled)
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        begin(cx);
-                        start(&id, cx)
-                    })
-                    .into_any_element()
+                (
+                    None,
+                    Some(
+                        Button::new(SharedString::from(format!("dl-download-{id}")))
+                            .outline()
+                            .icon(icon("download"))
+                            .label(label)
+                            .disabled(self.disabled)
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                begin(cx);
+                                start(&id, cx)
+                            })
+                            .into_any_element(),
+                    ),
+                )
             }
-        };
+        }
+    }
+}
+
+impl RenderOnce for DownloadControl {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let id = SharedString::from(format!("dl-control-{}", self.id));
+        let (status, action) = self.into_parts(cx);
         div()
-            .id(SharedString::from(format!("dl-control-{}", self.id)))
+            .id(id)
             .flex_none()
-            .child(el)
+            .child(
+                h_flex()
+                    .gap(dp(8.))
+                    .items_center()
+                    .children(status)
+                    .children(action),
+            )
             .test_support()
     }
 }

@@ -75,14 +75,55 @@ pub fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/{name}.svg")))
 }
 
-/// A spinning loader icon. `id` must be unique
-/// among siblings that animate.
-pub fn spinner(id: impl Into<ElementId>, icon: Icon) -> AnimationElement<Icon> {
-    icon.with_animation(
-        id,
-        Animation::new(std::time::Duration::from_millis(800)).repeat(),
-        |el, delta| el.transform(Transformation::rotate(percentage(delta))),
-    )
+/// A spinning loader icon; static when the system asks for reduced
+/// motion. `id` must be unique among siblings that animate.
+pub fn spinner(id: impl Into<ElementId>, icon: Icon) -> Spinner {
+    Spinner {
+        id: id.into(),
+        icon,
+    }
+}
+
+/// See [`spinner`].
+#[derive(IntoElement)]
+pub struct Spinner {
+    id: ElementId,
+    icon: Icon,
+}
+
+impl RenderOnce for Spinner {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if cx.reduce_motion() {
+            return self.icon.into_any_element();
+        }
+        self.icon
+            .with_animation(
+                self.id,
+                Animation::new(std::time::Duration::from_millis(800)).repeat(),
+                |el, delta| el.transform(Transformation::rotate(percentage(delta))),
+            )
+            .into_any_element()
+    }
+}
+
+/// The trailing control of a settings row in the shared control column:
+/// the control right-aligned in [`design::CONTROL_COLUMN_W`], an optional
+/// reset button in a fixed slot just before it. Every reset then sits at
+/// the same x, touching its control (pop-ups fill the column; see
+/// `docs/ui-review/PLAN.md`, "Decisions made during the loop").
+pub fn trailing(reset: Option<AnyElement>, control: impl IntoElement) -> Div {
+    h_flex()
+        .flex_none()
+        .gap(dp(4.))
+        .when_some(reset, |d, r| {
+            d.child(crate::ui::shortcut_input::reset_slot(r))
+        })
+        .child(
+            h_flex()
+                .w(design::CONTROL_COLUMN_W)
+                .justify_end()
+                .child(control),
+        )
 }
 
 pub fn muted(cx: &App) -> Hsla {
@@ -96,9 +137,9 @@ pub fn group(title: Option<SharedString>, rows: Vec<AnyElement>, cx: &App) -> Di
     let count = rows.len();
     v_flex()
         .w_full()
-        .gap(dp(6.))
+        .gap(design::HEADER_GAP)
         .when_some(title, |this, title| {
-            this.child(div().px(dp(2.)).child(design::section_header(title, cx)))
+            this.child(div().px(dp(2.)).child(design::group_header(title, cx)))
         })
         .child(
             design::panel(cx).children(rows.into_iter().enumerate().map(move |(i, row)| {
@@ -128,7 +169,7 @@ pub fn foldable_heading(
         .px(dp(2.))
         .py(dp(2.))
         .rounded(design::RADIUS_CHIP)
-        .border_1()
+        .border_2()
         .border_color(transparent_black())
         .focus_visible(move |s| s.border_color(ring))
         .text_color(design::tone(cx).text_muted)
@@ -144,7 +185,7 @@ pub fn foldable_heading(
         .child(
             // A section header that takes the row's (hover) color.
             div()
-                .text_size(design::TEXT_SECONDARY)
+                .text_size(design::TEXT_BODY)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(format!("{title} ({count})")),
         )
@@ -237,20 +278,21 @@ impl RenderOnce for SettingRow {
         let danger = cx.theme().danger;
         let rtl = rtl();
         let label = v_flex()
-            .gap(px(1.))
+            .gap(dp(2.))
             .min_w_0()
             .flex_1()
             .child(
                 div()
                     .text_size(design::TEXT_BODY)
-                    .line_height(dp(16.))
+                    .line_height(design::LINE_BODY)
                     .child(self.title.clone()),
             )
             .when_some(self.description.clone(), |this, d| {
                 this.child(
                     div()
+                        .max_w(design::PROSE_MAX_W)
                         .text_size(design::TEXT_SECONDARY)
-                        .line_height(dp(14.))
+                        .line_height(design::LINE_SECONDARY)
                         .text_color(muted)
                         .child(d),
                 )
@@ -260,7 +302,7 @@ impl RenderOnce for SettingRow {
                     div()
                         .id("setting-error")
                         .text_size(design::TEXT_SECONDARY)
-                        .line_height(dp(14.))
+                        .line_height(design::LINE_SECONDARY)
                         .text_color(danger)
                         .child(e)
                         .test_support(),
@@ -276,12 +318,19 @@ impl RenderOnce for SettingRow {
                 .child(label)
                 .child(div().w_full().child(control))
         } else {
+            // The control wraps under the label once the label would get
+            // less than 220 pt (narrow windows), instead of squeezing it.
             h_flex()
-                .gap(dp(16.))
+                .flex_wrap()
+                .gap_x(dp(20.))
+                .gap_y(dp(8.))
                 .justify_between()
                 .when(rtl, |d| d.flex_row_reverse())
-                .child(label)
-                .child(div().flex_none().child(control))
+                // 180 pt (a readable name and a short helper line) before the
+                // control wraps; when it does, it stays in the trailing
+                // column (right-aligned), so resets and pop-ups keep their x.
+                .child(label.min_w(dp(180.)))
+                .child(div().flex_none().ml_auto().child(control))
         };
         div()
             .id(self.id.clone())
@@ -356,7 +405,7 @@ impl Dropdown {
             placeholder: "Select an option...".into(),
             disabled: false,
             loading: false,
-            min_width: dp(200.),
+            min_width: design::CONTROL_COLUMN_W,
             menu_width: None,
             on_select: None,
             on_open: None,
@@ -433,7 +482,13 @@ impl RenderOnce for Dropdown {
             .dropdown_caret(true)
             .loading(self.loading)
             .disabled(self.disabled)
+            // One rule: a settings pop-up is exactly the 200 pt control
+            // column (long values truncate; the menu shows them in full),
+            // so resets beside it always touch it. `min_width` sets
+            // another fixed width for toolbars.
             .w(trigger_width)
+            // The same height as text and shortcut fields in a row.
+            .h(design::CONTROL_H)
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.min_w(menu_width).max_h(dp(240.)).scrollable(true);
                 if empty {
@@ -480,17 +535,38 @@ impl RenderOnce for Dropdown {
     }
 }
 
-/// A switch bound to a boolean setting.
+/// A switch bound to a boolean setting. Its on-state track is a darker
+/// amber than the button accent so the white knob and the track both stay
+/// ≥ 3:1 (WCAG 1.4.11) in either theme.
 pub fn toggle(
     id: impl Into<ElementId>,
     checked: bool,
     disabled: bool,
     on_change: impl Fn(bool, &mut Window, &mut App) + 'static,
-) -> Switch {
-    Switch::new(id)
-        .checked(checked)
-        .disabled(disabled)
-        .on_click(move |v: &bool, window, cx| on_change(*v, window, cx))
+) -> Toggle {
+    Toggle {
+        switch: Switch::new(id)
+            .checked(checked)
+            .disabled(disabled)
+            .on_click(move |v: &bool, window, cx| on_change(*v, window, cx)),
+    }
+}
+
+/// See [`toggle`].
+#[derive(IntoElement)]
+pub struct Toggle {
+    switch: Switch,
+}
+
+impl RenderOnce for Toggle {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let on = if design::tone(cx).dark {
+            rgba(0xc08a00ff)
+        } else {
+            rgba(0xa87500ff)
+        };
+        self.switch.color(on)
+    }
 }
 
 /// Small ghost button that restores a default. Put it before the control
@@ -500,12 +576,47 @@ pub fn reset_button(
     disabled: bool,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
+    // A 24 pt hit target (WCAG 2.5.8) around a small glyph.
     Button::new(id)
         .ghost()
         .xsmall()
+        .w(design::ICON_BUTTON)
+        .h(design::ICON_BUTTON)
         .icon(icon("rotate-ccw"))
         .disabled(disabled)
         .on_click(move |_, window, cx| on_click(window, cx))
+}
+
+/// The icon of an alert, like NSAlert: the app's mark on a 48 pt tile, with
+/// a caution badge at its corner when the action destroys something.
+fn alert_icon(destructive: bool, cx: &App) -> impl IntoElement {
+    let t = design::tone(cx);
+    let caution = design::status_color(design::Status::Error, cx);
+    div()
+        .relative()
+        .flex_none()
+        .size(dp(48.))
+        .rounded(design::RADIUS_DIALOG)
+        .bg(t.raised)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon("audio-lines").size(dp(28.)).text_color(t.accent_text))
+        .when(destructive, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .right(dp(-4.))
+                    .bottom(dp(-4.))
+                    .size(dp(22.))
+                    .rounded_full()
+                    .bg(t.surface)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("triangle-alert").size(dp(16.)).text_color(caution)),
+            )
+        })
 }
 
 /// Ask before a destructive action: an alert with `title`, `description`,
@@ -527,13 +638,17 @@ pub fn confirm(
     use gpui_kit::component::WindowExt;
     let on_ok = Rc::new(on_ok);
     let on_cancel = Rc::new(on_cancel);
-    window.open_alert_dialog(cx, move |alert, _, _| {
+    window.open_alert_dialog(cx, move |alert, window, cx| {
         let confirmed = Rc::new(std::cell::Cell::new(false));
         let (ok, done) = (on_ok.clone(), confirmed.clone());
         let (cancel, closed) = (on_cancel.clone(), confirmed.clone());
+        // Like an NSAlert: 400 pt wide, in the upper part of the window
+        // (not pinned to its top edge), a caution mark when it destroys.
+        let top = (window.viewport_size().height * 0.22).max(design::TOOLBAR_H + dp(24.));
         alert
-            // Like a sheet: just under the title bar, never over it.
-            .margin_top(design::TOOLBAR_H + dp(12.))
+            .width(dp(400.))
+            .margin_top(top)
+            .icon(alert_icon(destructive, cx))
             .title(title.clone())
             .description(description.clone())
             .show_cancel(true)
@@ -567,8 +682,9 @@ pub fn confirm(
 //
 // A scroll region inside another one uses `ScrollTrap::scroll_trap`.
 
-/// The content column of a form page: left-aligned groups, at most
-/// `design::FORM_MAX_W` wide, `design::GROUP_GAP` apart. Put it in a
+/// The content column of a form page: groups at most
+/// `design::FORM_MAX_W` wide, anchored at the page inset like every other
+/// page (lists, Meetings, Meeting settings), `design::GROUP_GAP` apart. Put it in a
 /// [`scroll_page`].
 pub fn page() -> Div {
     v_flex()
@@ -633,7 +749,7 @@ pub fn lede(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .max_w(design::PROSE_MAX_W)
         .text_size(design::TEXT_SECONDARY)
-        .line_height(dp(15.))
+        .line_height(design::LINE_SECONDARY)
         .text_color(design::tone(cx).text_muted)
         .child(text.into())
 }
@@ -767,34 +883,37 @@ impl Render for SliderRow {
                     .map(|e| t_args("settings.saveFailed", &[("error", e)])),
             )
             .disabled(disabled)
-            .control(
+            .control(trailing(
+                self.with_reset.then(|| {
+                    reset_button(
+                        SharedString::from(format!("slider-reset-{key}")),
+                        updating || disabled,
+                        move |_, cx| {
+                            crate::state::AppState::global(cx)
+                                .update(cx, |s, cx| s.reset_setting(key, cx))
+                        },
+                    )
+                    .into_any_element()
+                }),
+                // Slider and value fill the shared control column, so the
+                // reset lines up with the pop-up resets above and below.
                 h_flex()
+                    .w(design::CONTROL_COLUMN_W)
                     .gap_2()
-                    .w(dp(240.))
-                    // Before the control, so controls line up at the row's
-                    // right edge with or without one.
-                    .when(self.with_reset, |d| {
-                        d.child(reset_button(
-                            SharedString::from(format!("slider-reset-{key}")),
-                            updating || disabled,
-                            move |_, cx| {
-                                crate::state::AppState::global(cx)
-                                    .update(cx, |s, cx| s.reset_setting(key, cx))
-                            },
-                        ))
-                    })
                     .child(
                         tracked_slider(Slider::new(&self.slider).disabled(disabled), cx).flex_1(),
                     )
                     .child(
                         div()
-                            .w(dp(48.))
+                            .flex_none()
+                            .w(dp(56.))
+                            .whitespace_nowrap()
                             .text_right()
-                            .text_size(design::TEXT_MONO)
-                            .font_family(crate::theme::MONO_FONT)
+                            .text_size(design::TEXT_BODY)
+                            .font_features(design::tabular_figures())
                             .child((self.format)(value)),
                     ),
-            )
+            ))
     }
 }
 
@@ -803,7 +922,14 @@ impl Render for SliderRow {
 /// apart from the fill), which nearly vanishes on white with the yellow
 /// accent; a neutral bar drawn behind it gives the track its contrast.
 pub fn tracked_slider(slider: gpui_kit::component::slider::Slider, cx: &App) -> Div {
-    let track = cx.theme().border;
+    // gpui-component paints its own 20% fill tint over this backing, so the
+    // backing is chosen for the blend: the visible remainder stays ≥ 3:1
+    // from the fill and from the panel in both themes.
+    let track: Hsla = if design::tone(cx).dark {
+        rgba(0x5a5a5aff).into()
+    } else {
+        rgba(0xa0a09bff).into()
+    };
     div()
         .relative()
         .min_w_0()

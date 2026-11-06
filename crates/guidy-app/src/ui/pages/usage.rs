@@ -148,9 +148,11 @@ fn cell(c: Column, text: SharedString, cx: &App) -> Div {
         .when_some(c.width, |d, w| d.w(dp(w)).flex_none())
         .when(c.width.is_none(), |d| d.flex_1());
     if c.numeric {
+        // Quantities: right-aligned, tabular figures in the UI font.
         d.text_right()
-            .font_family(crate::theme::MONO_FONT)
-            .text_size(design::TEXT_MONO)
+            .font_features(design::tabular_figures())
+            .text_size(design::TEXT_BODY)
+            .text_color(design::tone(cx).text)
             .child(text)
     } else {
         d.text_size(design::TEXT_BODY)
@@ -178,9 +180,8 @@ fn table(
         .when(rtl, |d| d.flex_row_reverse())
         .children(columns.iter().map(|c| {
             cell(*c, t(c.title), cx)
-                .font_family(crate::theme::UI_FONT)
                 .text_size(design::TEXT_SECONDARY)
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(tone.text_muted)
         }));
     let count = rows.len();
@@ -208,12 +209,15 @@ fn table(
                     d.border_b_1().border_color(tone.hairline)
                 })
                 .when(rtl, |d| d.flex_row_reverse())
-                .children(
-                    columns
-                        .iter()
-                        .zip(cells)
-                        .map(|(c, text)| cell(*c, text, cx)),
-                )
+                .children(columns.iter().zip(cells).map(|(c, text)| {
+                    // Model IDs are identifiers: monospaced, like
+                    // every model ID and path in the app.
+                    let model = c.title == "usage.col.model";
+                    cell(*c, text, cx).when(model, |d| {
+                        d.font_family(crate::theme::MONO_FONT)
+                            .text_size(design::TEXT_MONO)
+                    })
+                }))
                 .test_support()
         }))
 }
@@ -239,9 +243,8 @@ fn skeleton_table(id: &'static str, columns: &[Column], cx: &App) -> Stateful<Di
                 .bg(tone.raised.opacity(0.5))
                 .children(columns.iter().map(|c| {
                     cell(*c, t(c.title), cx)
-                        .font_family(crate::theme::UI_FONT)
                         .text_size(design::TEXT_SECONDARY)
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(tone.text_muted)
                 })),
         )
@@ -282,10 +285,10 @@ fn local_columns(wide: bool) -> Vec<Column> {
         c.push(col("usage.col.kind", Some(110.), false));
     }
     c.push(col("usage.col.runs", Some(52.), true));
-    c.push(col("usage.col.work", Some(96.), true));
+    c.push(col("usage.col.work", Some(100.), true));
     c.push(col("usage.col.speed", Some(84.), true));
     if wide {
-        c.push(col("usage.col.load", Some(72.), true));
+        c.push(col("usage.col.load", Some(80.), true));
     }
     c
 }
@@ -371,7 +374,10 @@ fn local_row(m: &LocalModelUsage, wide: bool) -> (SharedString, Vec<SharedString
 
 impl Render for UsagePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::ui::kit::scroll_page("usage-scroll", self.render_body(window, cx))
+        if matches!(self.report, Some(Err(_))) {
+            return self.render_body(window, cx).into_any_element();
+        }
+        crate::ui::kit::scroll_page("usage-scroll", self.render_body(window, cx)).into_any_element()
     }
 }
 
@@ -379,26 +385,30 @@ impl crate::ui::pages::Page for UsagePage {
     fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         // Only a loaded, non-empty report can be cleared.
         let empty = !matches!(&self.report, Some(Ok(r)) if r.calls > 0 || r.local.runs > 0);
-        let danger = cx.theme().danger;
+        // While the page shows its load error, its Try Again is the one
+        // retry control.
+        let failed = matches!(self.report, Some(Err(_)));
         Some(
             h_flex()
                 .gap(dp(4.))
                 .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
-                .child(
-                    Button::new("usage-refresh")
-                        .ghost()
-                        .small()
-                        .icon(icon("refresh-cw"))
-                        .tooltip(t("usage.refresh"))
-                        .loading(self.loading)
-                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                )
+                .when(!failed, |d| {
+                    d.child(
+                        Button::new("usage-refresh")
+                            .ghost()
+                            .small()
+                            .w(crate::ui::design::ICON_BUTTON)
+                            .h(crate::ui::design::ICON_BUTTON)
+                            .icon(icon("refresh-cw"))
+                            .tooltip(t("usage.refresh"))
+                            .loading(self.loading)
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                    )
+                })
                 .child(
                     Button::new("usage-clear")
-                        .ghost()
-                        .small()
+                        .outline()
                         .label(t("usage.clearEllipsis"))
-                        .text_color(danger)
                         .loading(self.clearing)
                         .disabled(empty || self.clearing)
                         .on_click(
@@ -413,17 +423,20 @@ impl crate::ui::pages::Page for UsagePage {
 impl UsagePage {
     fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
-        let wide = window.viewport_size().width - design::SIDEBAR_W >= WIDE_MIN_W;
+        let wide = window.viewport_size().width - crate::ui::main_window::sidebar_width(window)
+            >= WIDE_MIN_W;
+        // Four totals in a row when there is room; 2 × 2 when narrow, so
+        // no label is cut ("Audio transcribed").
+        let stat_columns = if wide { 4 } else { 2 };
         let note = |text: SharedString| {
             div()
                 .max_w(design::PROSE_MAX_W)
                 .text_size(design::TEXT_SECONDARY)
-                .line_height(dp(15.))
+                .line_height(design::LINE_SECONDARY)
                 .text_color(tone.text_muted)
                 .child(text)
         };
-        let header =
-            |title: SharedString| div().px(dp(2.)).child(design::section_header(title, cx));
+        let header = |title: SharedString| div().px(dp(2.)).child(design::group_header(title, cx));
         let clear_error = self.clear_error.clone().map(|e| {
             div()
                 .id("usage-clear-error")
@@ -436,7 +449,7 @@ impl UsagePage {
             None => {
                 return page()
                     .id("page-usage")
-                    .max_w_full()
+                    .max_w(design::LIST_MAX_W)
                     .child(design::panel(cx).child(design::stat_grid(
                         vec![
                             design::Stat::new(t("usage.total"), "—"),
@@ -444,7 +457,7 @@ impl UsagePage {
                             design::Stat::new(t("usage.callsTitle"), "—"),
                             design::Stat::new(t("usage.localAudio"), "—"),
                         ],
-                        4,
+                        stat_columns,
                         cx,
                     )))
                     .child(header(t("usage.cloudByModel")))
@@ -453,31 +466,19 @@ impl UsagePage {
                     .into_any_element();
             }
             Some(Err(e)) => {
-                return page()
-                    .id("page-usage")
-                    .child(
-                        design::notice(cx.theme().danger)
-                            .id("usage-error")
-                            .flex()
-                            .items_center()
-                            .gap(dp(10.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(design::TEXT_BODY)
-                                    .child(t_args("usage.loadFailed", &[("error", e)])),
-                            )
-                            .child(
-                                Button::new("usage-retry")
-                                    .outline()
-                                    .small()
-                                    .label(t("common.tryAgain"))
-                                    .loading(self.loading)
-                                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                            )
-                            .test_support(),
-                    )
+                // Nothing to show: a centred error with one Try Again.
+                return crate::ui::kit::fill_page("page-usage")
+                    .child(super::error_state(
+                        "usage-error",
+                        t("usage.unavailable"),
+                        super::cause_sentence(e),
+                        Button::new("usage-retry")
+                            .outline()
+                            .label(t("common.tryAgain"))
+                            .loading(self.loading)
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                        cx,
+                    ))
                     .test_support()
                     .into_any_element();
             }
@@ -489,7 +490,7 @@ impl UsagePage {
             .any(|m| m.estimated_calls > 0 || m.unpriced_calls > 0);
         let totals = design::panel(cx).child(design::stat_grid(
             vec![
-                design::Stat::new(t("usage.total"), format_usd(report.total_usd)).accent(true),
+                design::Stat::new(t("usage.total"), format_usd(report.total_usd)),
                 design::Stat::new(t("usage.last30Days"), format_usd(report.last_30_days_usd)),
                 design::Stat::new(t("usage.callsTitle"), report.calls.to_string()),
                 design::Stat::new(
@@ -497,7 +498,7 @@ impl UsagePage {
                     format_duration(report.local.audio_ms),
                 ),
             ],
-            4,
+            stat_columns,
             cx,
         ));
         let settings = AppState::global(cx).read(cx).app_settings().cloned();
@@ -542,7 +543,7 @@ impl UsagePage {
         });
         page()
             .id("page-usage")
-            .max_w_full()
+            .max_w(design::LIST_MAX_W)
             .children(clear_error)
             .child(totals)
             .child(

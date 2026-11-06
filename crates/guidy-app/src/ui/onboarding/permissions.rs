@@ -3,16 +3,19 @@
 //! be skipped ("Continue Without"): the text is then copied for the user to
 //! paste. Meeting permissions are asked when the first meeting is recorded.
 
-use super::assistant::{back_button, continue_button, row, row_icon, rows, Assistant};
+use super::assistant::{
+    back_button, continue_button, row, row_icon, rows, secondary_button, Assistant,
+};
 use crate::logic::keyboard::OsType;
 use crate::state::AppState;
 use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, t};
 use crate::ui::main_window::MainWindow;
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::h_flex;
 use gpui_kit::component::notification::NotificationType;
-use gpui_kit::component::{Sizable, WindowExt};
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::commands::audio::PermissionAccess;
@@ -299,6 +302,7 @@ impl PermissionsOnboarding {
     }
 
     /// One permission: what it's for, and its state or the grant button.
+    /// `primary`: the grant button is the pane's recommended action.
     #[allow(clippy::too_many_arguments)]
     fn card(
         &self,
@@ -308,27 +312,37 @@ impl PermissionsOnboarding {
         description: SharedString,
         status: PermissionStatus,
         button_label: SharedString,
+        primary: bool,
         cx: &mut Context<Self>,
         on_grant: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> AnyElement {
+        let tone = design::tone(cx);
         let action: AnyElement = match status {
-            PermissionStatus::Granted => design::chip("", true, cx)
-                .child(icon("check").size(dp(11.)))
-                .child(t("onboarding.permissions.granted"))
-                .into_any_element(),
-            PermissionStatus::Waiting => design::chip("", true, cx)
-                .child(design::shimmer_text(
-                    SharedString::from(format!("{id}-waiting")),
-                    t("onboarding.permissions.waiting"),
-                    cx,
+            PermissionStatus::Granted => crate::ui::pages::meetings::settings::status_label(
+                SharedString::from(format!("{id}-granted")),
+                design::Status::Ok,
+                t("onboarding.permissions.granted"),
+                cx,
+            )
+            .into_any_element(),
+            // Working: a spinner and secondary text.
+            PermissionStatus::Waiting => h_flex()
+                .gap(dp(4.))
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(tone.text_muted)
+                .child(crate::ui::kit::spinner(
+                    SharedString::from(format!("{id}-spinner")),
+                    icon("loader-circle").size(dp(13.)),
                 ))
+                .child(t("onboarding.permissions.waiting"))
                 .into_any_element(),
-            PermissionStatus::Checking => design::chip("", false, cx)
+            PermissionStatus::Checking => div()
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(tone.text_muted)
                 .child(t("onboarding.permissions.checking"))
                 .into_any_element(),
             PermissionStatus::Needed => Button::new(SharedString::from(format!("grant-{id}")))
-                .outline()
-                .small()
+                .map(|b| if primary { b.primary() } else { b.outline() })
                 .label(button_label)
                 .on_click(cx.listener(move |this, _, window, cx| on_grant(this, window, cx)))
                 .into_any_element(),
@@ -364,7 +378,15 @@ impl Render for PermissionsOnboarding {
             t("onboarding.permissions.grant")
         };
         let mut items = Vec::new();
-        if matches!(self.os, OsType::MacOs | OsType::Windows) {
+        // The first grant still needed is the pane's primary action (one per
+        // pane); the footer button is then secondary. Enter still does what
+        // the footer button does.
+        let asks_microphone = matches!(self.os, OsType::MacOs | OsType::Windows);
+        let mic_primary = asks_microphone && self.microphone == PermissionStatus::Needed;
+        let accessibility_primary =
+            accessibility && !mic_primary && self.accessibility == PermissionStatus::Needed;
+        let grant_primary = mic_primary || accessibility_primary;
+        if asks_microphone {
             items.push(self.card(
                 "microphone-permission",
                 "mic",
@@ -372,6 +394,7 @@ impl Render for PermissionsOnboarding {
                 t("onboarding.permissions.microphone.description"),
                 self.microphone,
                 mic_button,
+                mic_primary,
                 cx,
                 Self::grant_microphone,
             ));
@@ -391,6 +414,7 @@ impl Render for PermissionsOnboarding {
                 description,
                 self.accessibility,
                 t("onboarding.permissions.grant"),
+                accessibility_primary,
                 cx,
                 Self::grant_accessibility,
             ));
@@ -412,7 +436,7 @@ impl Render for PermissionsOnboarding {
                             .id("permissions-meetings-note")
                             .px(dp(2.))
                             .text_size(design::TEXT_SECONDARY)
-                            .line_height(dp(15.))
+                            .line_height(design::LINE_SECONDARY)
                             .text_color(tone.text_muted)
                             .child(t("onboarding.permissions.meetingsLater")),
                     )
@@ -434,11 +458,20 @@ impl Render for PermissionsOnboarding {
                     this.next(cx);
                 }
             }))
-            .child(assistant.action(continue_button(
-                "permissions-continue",
-                label,
-                can_continue,
-                cx.listener(|this, _, _, cx| this.next(cx)),
-            )))
+            .child(assistant.action(if grant_primary {
+                secondary_button(
+                    "permissions-continue",
+                    label,
+                    can_continue,
+                    cx.listener(|this, _, _, cx| this.next(cx)),
+                )
+            } else {
+                continue_button(
+                    "permissions-continue",
+                    label,
+                    can_continue,
+                    cx.listener(|this, _, _, cx| this.next(cx)),
+                )
+            }))
     }
 }

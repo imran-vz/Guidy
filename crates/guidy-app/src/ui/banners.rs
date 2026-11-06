@@ -19,7 +19,7 @@ fn banner(color: Hsla) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .gap(dp(10.))
+        .gap(dp(12.))
         .mx(design::PAGE_X)
         .mt(dp(12.))
         .w_auto()
@@ -139,7 +139,6 @@ impl Render for AccessibilityBanner {
                 Button::new("accessibility-open-settings")
                     .flex_shrink_0()
                     .primary()
-                    .small()
                     .label(label)
                     .on_click(cx.listener(|this, _, _, cx| this.on_click(cx))),
             )
@@ -204,8 +203,7 @@ impl Render for SecureInputBanner {
             .child(
                 Button::new("secure-input-learn-more")
                     .flex_shrink_0()
-                    .ghost()
-                    .small()
+                    .outline()
                     .label(t("secureInput.learnMore"))
                     .icon(icon("external-link"))
                     .on_click(|_, _, cx| cx.open_url(SECURE_INPUT_HELP_URL)),
@@ -214,7 +212,9 @@ impl Render for SecureInputBanner {
                 Button::new("secure-input-dismiss")
                     .flex_shrink_0()
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .w(crate::ui::design::ICON_BUTTON)
+                    .h(crate::ui::design::ICON_BUTTON)
                     .icon(icon("x"))
                     .tooltip(t("secureInput.dismiss"))
                     .on_click(cx.listener(|this, _, _, cx| {

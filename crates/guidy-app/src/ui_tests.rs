@@ -83,6 +83,81 @@ pub fn open_page<P: crate::ui::pages::Page>(
     (handle, page)
 }
 
+/// [`open_page`] in a 1200 pt wide window: wide enough for the meeting
+/// settings to keep their category list beside the pane (they collapse it
+/// to a popup button while the pane would be narrower than 520 pt).
+pub fn open_page_wide<P: crate::ui::pages::Page>(
+    cx: &mut TestAppContext,
+    build: impl FnOnce(&mut Window, &mut Context<P>) -> P + 'static,
+) -> (AnyWindowHandle, Entity<P>) {
+    let (handle, host) = cx.update(|cx| {
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(1200.), px(2400.)),
+                })),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| PageHost {
+                    page: cx.new(|cx| build(window, cx)),
+                })
+            },
+        )
+        .expect("open test window")
+    });
+    cx.run_until_parked();
+    let page = host.read_with(cx, |h, _| h.page.clone());
+    (handle, page)
+}
+
+/// Show a Meetings view (what the sidebar's Meetings, People and Meeting
+/// settings rows do) in a window that hosts only the Meetings page.
+pub fn show_meetings_tab(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    tab: crate::ui::pages::meetings::MeetingsTab,
+) {
+    cx.update_window(handle, |root, _, cx| {
+        let view = root
+            .clone()
+            .downcast::<gpui_kit::base::Root>()
+            .map(|r| r.read(cx).view().clone())
+            .unwrap_or(root);
+        let host = view
+            .downcast::<PageHost<crate::ui::pages::meetings::MeetingsPage>>()
+            .expect("a Meetings page window");
+        let page = host.read(cx).page.clone();
+        page.update(cx, |p, cx| p.set_tab(tab, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// In a [`PageHost`] Meetings window, show Meeting settings at the category
+/// `id`, as its sidebar row does (the categories are rows of the main
+/// window's sidebar, which a page host has not got).
+pub fn show_settings_category(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &str) {
+    use crate::ui::pages::meetings::settings::SettingsCategory;
+    let category = SettingsCategory::from_id(id).expect("a settings category");
+    cx.update_window(handle, |root, _, cx| {
+        let view = root
+            .clone()
+            .downcast::<gpui_kit::base::Root>()
+            .map(|r| r.read(cx).view().clone())
+            .unwrap_or(root);
+        let host = view
+            .downcast::<PageHost<crate::ui::pages::meetings::MeetingsPage>>()
+            .expect("a Meetings page window");
+        let page = host.read(cx).page.clone();
+        page.update(cx, |p, cx| p.show_settings(category, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 /// Render, run `f` against the window, then settle background work.
 pub fn with_window(
     cx: &mut TestAppContext,
@@ -110,6 +185,29 @@ pub fn exists(
         window.try_find(id).is_some()
     })
     .unwrap()
+}
+
+/// Click a command in the meeting header's More (…) menu (redo, trim,
+/// titles, delete). A menu still open from an earlier click (on a disabled
+/// command) is closed first, so the command shows the current state.
+pub fn click_more(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) {
+    if exists(cx, handle, id) {
+        with_window(cx, handle, |window, cx| window.press("escape", cx));
+    }
+    with_window(cx, handle, |window, cx| {
+        window.click("meeting-detail-more", cx)
+    });
+    with_window(cx, handle, |window, cx| window.click(id, cx));
+}
+
+/// Whether the More (…) menu lists `id`; the menu is closed again after.
+pub fn in_more(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) -> bool {
+    with_window(cx, handle, |window, cx| {
+        window.click("meeting-detail-more", cx)
+    });
+    let found = exists(cx, handle, id);
+    with_window(cx, handle, |window, cx| window.press("escape", cx));
+    found
 }
 
 mod general {
@@ -768,6 +866,10 @@ mod models_page {
         let backend = backend_with_models();
         setup(cx, backend.clone());
         let (w, _) = open(cx, ModelsPage::new);
+        // Delete is the last item of the row's More menu.
+        with_window(cx, w, |window, cx| {
+            window.click("model-card-other-menu", cx)
+        });
         with_window(cx, w, |window, cx| window.click("delete-other", cx));
         let open_dialog = cx
             .update_window(w, |_, window, cx| {
@@ -812,11 +914,15 @@ mod history_page {
         assert!(exists(cx, w, "history-entry-2"));
         assert!(exists(cx, w, "history-entry-1"));
         // The newest entry is selected: its actions are in the detail pane.
+        // Save, re-transcribe and delete are in the detail's More menu.
+        with_window(cx, w, |window, cx| window.click("history-more-2", cx));
         with_window(cx, w, |window, cx| window.click("star-2", cx));
         assert!(backend.called("toggle_history_entry_saved 2"));
+        with_window(cx, w, |window, cx| window.click("history-more-2", cx));
         with_window(cx, w, |window, cx| window.click("retry-2", cx));
         assert!(backend.called("retry_history_entry_transcription 2"));
         with_window(cx, w, |window, cx| window.click("history-entry-1", cx));
+        with_window(cx, w, |window, cx| window.click("history-more-1", cx));
         with_window(cx, w, |window, cx| window.click("delete-1", cx));
         // Gone from the list at once, deleted for real after the undo period.
         assert!(!exists(cx, w, "history-entry-1"));
@@ -928,7 +1034,7 @@ mod debug_and_about {
     fn debug_rows(cx: &mut TestAppContext) {
         let backend = FakeBackend::new();
         setup(cx, backend.clone());
-        let (w, _) = open(cx, DebugPage::new);
+        let (w, _) = open_page(cx, DebugPage::new);
         for id in [
             "log-level",
             "update-checks",
@@ -939,7 +1045,6 @@ mod debug_and_about {
             "slider-hold_threshold_ms",
             "slider-extra_recording_buffer_ms",
             "always-on-microphone",
-            "live-logs-row",
         ] {
             assert!(exists(cx, w, id), "{id}");
         }
@@ -947,6 +1052,11 @@ mod debug_and_about {
         assert!(backend.called("play_test_sound start"));
         assert!(backend.called("play_test_sound stop"));
         assert!(backend.called("play_test_sound error"));
+        // The logs are the page's other view (Settings | Logs).
+        assert!(!exists(cx, w, "live-logs-row"));
+        with_window(cx, w, |window, cx| window.click("debug-tab-logs", cx));
+        assert!(exists(cx, w, "live-logs-row"));
+        assert!(!exists(cx, w, "log-level"));
     }
 
     /// PARITY D-08, E-15
@@ -965,6 +1075,7 @@ mod debug_and_about {
             .advance_clock(std::time::Duration::from_millis(300));
         cx.run_until_parked();
         assert_eq!(state.read_with(cx, |s, _| s.log_lines.len()), 1);
+        with_window(cx, w, |window, cx| window.click("debug-tab-logs", cx));
         with_window(cx, w, |window, cx| window.click("logs-clear", cx));
         assert_eq!(state.read_with(cx, |s, _| s.log_lines.len()), 0);
     }
@@ -2827,7 +2938,7 @@ mod meetings_page {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::People);
         assert!(exists(cx, w, "person-7"));
         assert!(exists(cx, w, "person-8"));
         // You first; a person's detail opens from the list.
@@ -2877,7 +2988,7 @@ mod meetings_page {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::People);
         assert!(exists(cx, w, "people-voice-record"));
 
         // Cancel discards the recording.
@@ -2937,7 +3048,7 @@ mod meetings_page {
         }
         setup_meetings(cx, backend, meetings.clone());
         let (w, page) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::People);
         with_window(cx, w, |window, cx| window.click("person-8", cx));
         assert!(meetings.called("voice_samples 8"));
         assert!(exists(cx, w, "voice-sample-80"));
@@ -2986,24 +3097,16 @@ mod meetings_page {
         backend.with_settings(|s| s.meetings.enabled = false);
         meetings.data.lock().permissions.calendar_granted = true;
         setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-setup", cx)
-        });
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "setup");
         assert!(exists(cx, w, "meetings-settings"));
         // Grants are loaded (without prompting) as soon as settings open.
         assert!(exists(cx, w, "meetings-permissions"));
         assert!(exists(cx, w, "meetings-permission-microphone"));
         assert!(!meetings.called("request_permissions"));
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-general", cx)
-        });
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "general");
         with_window(cx, w, |window, cx| {
             window.click("meetings-enabled-toggle", cx)
         });
@@ -3011,24 +3114,16 @@ mod meetings_page {
         assert!(backend.settings().meetings.enabled);
         assert!(meetings.called("request_permissions"));
 
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-recording", cx)
-        });
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "recording");
         with_window(cx, w, |window, cx| {
             window.click("meetings-calendar-notifications-toggle", cx)
         });
         assert!(!backend.settings().meetings.calendar_notifications);
 
         // The thresholds show directly in Speakers.
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-speakers", cx)
-        });
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "speakers");
         assert!(exists(cx, w, "meetings-match-threshold"));
         assert!(exists(cx, w, "meetings-suggest-threshold"));
     }
@@ -3046,6 +3141,129 @@ mod meetings_page {
             crate::ui::main_window::Section::Meetings
         );
         assert!(exists(cx, w, "page-meetings"));
+    }
+
+    /// People and Meeting settings are sidebar rows under Meetings: they
+    /// show the Meetings page's views, the title names the view, and ↑/↓
+    /// move through them in visual order.
+    #[gpui_kit::test]
+    fn sidebar_lists_the_meetings_views(cx: &mut TestAppContext) {
+        use crate::ui::main_window::Section;
+        use crate::ui::pages::meetings::MeetingsTab;
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings);
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        let shown = |cx: &mut TestAppContext| {
+            main.read_with(cx, |m, cx| {
+                (m.section, m.meetings_page().map(|p| p.read(cx).tab))
+            })
+        };
+        with_window(cx, w, |window, cx| window.click("nav-meetings-people", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::People)));
+        assert!(exists(cx, w, "people-list"));
+        with_window(cx, w, |window, cx| {
+            window.click("nav-meetings-settings", cx)
+        });
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::Settings)));
+        assert!(exists(cx, w, "meetings-settings"));
+        // The Meetings row shows the meetings again.
+        with_window(cx, w, |window, cx| window.click("nav-meetings", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::Meetings)));
+        // ↑/↓ in visual order: History, Meetings, People, Models, Advanced
+        // (…), Meeting settings' categories (Setup … Integrations, listed
+        // under it while it is shown: it closes the settings cluster), Usage.
+        use crate::ui::pages::meetings::settings::SettingsCategory;
+        let category = |cx: &mut TestAppContext| {
+            main.read_with(cx, |m, cx| {
+                m.meetings_page()
+                    .map(|p| p.read(cx).settings_view().read(cx).category())
+            })
+        };
+        let last = SettingsCategory::ALL.len() - 1;
+        with_window(cx, w, |window, cx| window.press("down", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::People)));
+        with_window(cx, w, |window, cx| window.press("down", cx));
+        assert_eq!(shown(cx).0, Section::Models);
+        // Down through the rest of the settings cluster to the categories.
+        let mut steps = 0;
+        while shown(cx) != (Section::Meetings, Some(MeetingsTab::Settings)) {
+            with_window(cx, w, |window, cx| window.press("down", cx));
+            steps += 1;
+            assert!(steps <= 3, "Meeting settings closes the settings cluster");
+        }
+        assert_eq!(category(cx), Some(SettingsCategory::ALL[0]));
+        for c in &SettingsCategory::ALL[1..] {
+            with_window(cx, w, |window, cx| window.press("down", cx));
+            assert_eq!(category(cx), Some(*c));
+        }
+        with_window(cx, w, |window, cx| window.press("down", cx));
+        assert_eq!(shown(cx).0, Section::Usage);
+        with_window(cx, w, |window, cx| window.press("up", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::Settings)));
+        assert_eq!(category(cx), Some(SettingsCategory::ALL[last]));
+        for c in SettingsCategory::ALL[..last].iter().rev() {
+            with_window(cx, w, |window, cx| window.press("up", cx));
+            assert_eq!(category(cx), Some(*c));
+        }
+        // Up past the cluster back to Models, People, Meetings, History.
+        for _ in 0..steps {
+            with_window(cx, w, |window, cx| window.press("up", cx));
+        }
+        assert_eq!(shown(cx).0, Section::Models);
+        with_window(cx, w, |window, cx| window.press("up", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::People)));
+        with_window(cx, w, |window, cx| window.press("up", cx));
+        assert_eq!(shown(cx), (Section::Meetings, Some(MeetingsTab::Meetings)));
+        with_window(cx, w, |window, cx| window.press("up", cx));
+        assert_eq!(shown(cx).0, Section::History);
+    }
+
+    /// Meeting settings' categories are sidebar rows under it, listed
+    /// while it is shown: a row shows its pane, the Setup row counts what
+    /// needs attention, and a deep link lands on (and selects) its row.
+    #[gpui_kit::test]
+    fn sidebar_lists_the_meeting_settings_categories(cx: &mut TestAppContext) {
+        use crate::ui::pages::meetings::settings::SettingsCategory;
+        let (backend, meetings) = fixture();
+        setup_meetings(cx, backend, meetings);
+        let (w, main) = open(cx, MainWindow::new);
+        cx.run_until_parked();
+        let category = |cx: &mut TestAppContext| {
+            main.read_with(cx, |m, cx| {
+                m.meetings_page()
+                    .map(|p| p.read(cx).settings_view().read(cx).category())
+            })
+        };
+        with_window(cx, w, |window, cx| window.click("nav-meetings-people", cx));
+        assert!(!exists(cx, w, "meetings-settings-category-ai"));
+        with_window(cx, w, |window, cx| {
+            window.click("nav-meetings-settings", cx)
+        });
+        for c in SettingsCategory::ALL {
+            let id = gpui_kit::SharedString::from(format!("meetings-settings-category-{}", c.id()));
+            assert!(exists(cx, w, id), "{c:?} row");
+        }
+        // Nothing granted in the fake: Setup has a count.
+        assert!(exists(cx, w, "meetings-settings-setup-badge"));
+        assert!(!exists(cx, w, "meetings-settings-categories"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-settings-category-speakers", cx)
+        });
+        assert_eq!(category(cx), Some(SettingsCategory::Speakers));
+        assert!(exists(cx, w, "meetings-match-threshold"));
+        with_window(cx, w, |window, cx| {
+            window.click("meetings-settings-category-setup", cx)
+        });
+        assert!(exists(cx, w, "meetings-permission-microphone"));
+        // Another section hides them; the deep link brings them back at AI.
+        with_window(cx, w, |window, cx| window.click("nav-general", cx));
+        assert!(!exists(cx, w, "meetings-settings-category-ai"));
+        main.update(cx, |m, cx| m.open_meetings_settings(cx));
+        cx.run_until_parked();
+        assert_eq!(category(cx), Some(SettingsCategory::Ai));
+        assert!(exists(cx, w, "meetings-settings-category-ai"));
+        assert!(exists(cx, w, "meetings-llm-active"));
     }
 
     #[gpui_kit::test]
@@ -3201,16 +3419,12 @@ mod meetings_page {
         let (w, _) = open_page(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
         // No summary yet: disabled.
-        with_window(cx, w, |window, cx| {
-            window.click("meeting-detail-generate-title", cx)
-        });
+        click_more(cx, w, "meeting-detail-generate-title");
         assert!(!meetings.called("generate_title"));
         assert!(!exists(cx, w, "meeting-detail-description"));
         summarized(&meetings, 1);
         dispatch(cx, &state, events::MEETING_CHANGED, serde_json::json!(1));
-        with_window(cx, w, |window, cx| {
-            window.click("meeting-detail-generate-title", cx)
-        });
+        click_more(cx, w, "meeting-detail-generate-title");
         assert!(meetings.called("generate_title 1 bulk=false"));
         assert!(exists(cx, w, "meeting-detail-description"));
     }
@@ -3332,14 +3546,13 @@ mod meetings_page {
         };
         let meetings_w = width(cx, "meetings-list");
         assert_eq!(meetings_w, crate::ui::pages::meetings::LIST_W);
-        with_window(cx, w, |window, cx| window.click("meetings-tab-people", cx));
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::People);
         let people_w = width(cx, "people-list");
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        let settings_w = width(cx, "meetings-settings-categories");
         assert_eq!(people_w, meetings_w);
-        assert_eq!(settings_w, meetings_w);
+        // Meeting settings has no list column: its categories are rows of
+        // the window's sidebar.
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        assert!(!exists(cx, w, "meetings-settings-categories"));
     }
 
     fn focus_list(cx: &mut TestAppContext, w: AnyWindowHandle, page: &Entity<MeetingsPage>) {
@@ -3441,9 +3654,7 @@ mod meetings_page {
         assert!(meetings.called("rename_meeting 1 Planning"));
         assert!(!exists(cx, w, "meeting-title-edit"));
 
-        with_window(cx, w, |window, cx| {
-            window.click("meeting-detail-delete", cx)
-        });
+        click_more(cx, w, "meeting-detail-delete");
         assert!(has_dialog(cx, w));
         press_enter(cx, w);
         assert!(
@@ -3599,16 +3810,13 @@ mod meetings_fixes {
     }
 
     fn settings_tab(cx: &mut TestAppContext, w: AnyWindowHandle) {
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
     }
 
     /// Open the Settings tab, then one of its categories.
     fn settings_category(cx: &mut TestAppContext, w: AnyWindowHandle, id: &str) {
         settings_tab(cx, w);
-        let id = gpui_kit::SharedString::from(format!("meetings-settings-category-{id}"));
-        with_window(cx, w, |window, cx| window.click(id, cx));
+        show_settings_category(cx, w, id);
     }
 
     fn meetings_updates(backend: &FakeBackend) -> Vec<String> {
@@ -3676,7 +3884,7 @@ mod meetings_fixes {
             s.meetings.meeting_model = None;
         });
         setup_meetings(cx, backend.clone(), meetings);
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         settings_category(cx, w, "transcription");
         // Parakeet isn't downloaded, but the dictation model is: no banner.
         assert!(!exists(cx, w, "meeting-model-missing-settings"));
@@ -3713,7 +3921,7 @@ mod meetings_fixes {
         });
         meetings.data.lock().speaker_model = SpeakerModelStatus::Missing;
         let state = setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         settings_category(cx, w, "general");
         with_window(cx, w, |window, cx| {
             window.click("meetings-enabled-toggle", cx)
@@ -3782,7 +3990,7 @@ mod meetings_fixes {
     fn your_voice_opens_people_at_you(cx: &mut TestAppContext) {
         let (backend, meetings) = fixture();
         setup_meetings(cx, backend, meetings);
-        let (w, page) = open_page(cx, MeetingsPage::new);
+        let (w, page) = open_page_wide(cx, MeetingsPage::new);
         settings_category(cx, w, "you");
         with_window(cx, w, |window, cx| {
             window.click("meetings-user-voice-open", cx)
@@ -3801,7 +4009,7 @@ mod meetings_fixes {
         backend.with_settings(|s| s.meetings.enabled = false);
         meetings.data.lock().permissions.calendar_granted = true;
         setup_meetings(cx, backend, meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         settings_category(cx, w, "setup");
         assert!(exists(cx, w, "meetings-permissions"));
         assert!(!exists(cx, w, "meetings-permission-open-calendar"));
@@ -3855,7 +4063,7 @@ mod meetings_fixes {
         let (backend, meetings) = fixture();
         meetings.data.lock().turn_models_installed = false;
         setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         assert!(exists(cx, w, "speaker-turn-consent"));
         with_window(cx, w, |window, cx| window.click("speaker-turn-not-now", cx));
         cx.run_until_parked();
@@ -3866,7 +4074,7 @@ mod meetings_fixes {
 
         // A later visit does not ask again. Settings can still start it.
         meetings.data.lock().turn_models_installed = false;
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         assert!(!exists(cx, w, "speaker-turn-consent"));
         settings_category(cx, w, "setup");
         assert!(exists(cx, w, "meetings-turn-models"));
@@ -3914,7 +4122,7 @@ mod meetings_fixes {
         let (backend, meetings) = fixture();
         meetings.data.lock().speaker_model = SpeakerModelStatus::Missing;
         let state = setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
         settings_category(cx, w, "setup");
         assert!(exists(cx, w, "meetings-speaker-model"));
         with_window(cx, w, |window, cx| {
@@ -4030,7 +4238,7 @@ mod meetings_fixes {
         backend.data.lock().models =
             vec![crate::logic::models::test_model(DEFAULT_MEETING_MODEL_ID)];
         let state = setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, page) = open_page(cx, MeetingsPage::new);
+        let (w, page) = open_page_wide(cx, MeetingsPage::new);
         // The toolbar's one Set Up… chip says setup is incomplete; the list
         // has no banner of its own.
         assert!(exists(cx, w, "meetings-setup"));
@@ -5338,7 +5546,7 @@ mod redo_transcript {
         cx.run_until_parked();
 
         // The playhead is still at the start: there is nothing to go on.
-        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        click_more(cx, w, "meeting-detail-trim");
         assert!(!has_dialog(cx, w));
         assert!(!meetings.called("trim_recording"));
 
@@ -5347,7 +5555,7 @@ mod redo_transcript {
             let player = d.read(cx).player().clone();
             player.update(cx, |p, cx| p.preview(60_000, false, cx));
         });
-        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        click_more(cx, w, "meeting-detail-trim");
         cx.run_until_parked();
         assert!(has_dialog(cx, w), "it deletes audio: it asks first");
         assert!(!meetings.called("trim_recording"));
@@ -5360,7 +5568,7 @@ mod redo_transcript {
             meetings.calls()
         );
         // Being processed: nothing more to cut until it is done.
-        assert!(!exists(cx, w, "meeting-detail-trim"));
+        assert!(!in_more(cx, w, "meeting-detail-trim"));
     }
 
     #[gpui_kit::test]
@@ -5376,11 +5584,11 @@ mod redo_transcript {
             let player = d.read(cx).player().clone();
             player.update(cx, |p, cx| p.preview(60_000, false, cx));
         });
-        with_window(cx, w, |window, cx| window.click("meeting-detail-trim", cx));
+        click_more(cx, w, "meeting-detail-trim");
         cx.run_until_parked();
         press_enter(cx, w);
         assert!(meetings.called("trim_recording 1 60000"));
-        assert!(exists(cx, w, "meeting-detail-trim"));
+        assert!(in_more(cx, w, "meeting-detail-trim"));
     }
 
     #[gpui_kit::test]
@@ -5427,7 +5635,7 @@ mod redo_transcript {
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
         assert!(!exists(cx, w, "transcript-quality"), "a good transcript");
         // One click: the model meetings use now, no questions.
-        with_window(cx, w, |window, cx| window.click("meeting-detail-redo", cx));
+        click_more(cx, w, "meeting-detail-redo");
         assert!(!has_dialog(cx, w));
         assert!(
             meetings.called("retranscribe 1 local qwen"),
@@ -5641,13 +5849,9 @@ mod line_tagging {
         let (backend, meetings) = fixture();
         meetings.data.lock().diarization = separation_options();
         setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, page) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-speakers", cx)
-        });
+        let (w, page) = open_page_wide(cx, MeetingsPage::new);
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "speakers");
         assert!(exists(cx, w, "meetings-separation-model"));
         assert!(!exists(cx, w, "meetings-separation-delete"));
         let view = page.read_with(cx, |p, _| p.settings_view().clone());
@@ -5692,13 +5896,9 @@ mod line_tagging {
         let (backend, meetings) = fixture();
         backend.with_settings(|s| s.meetings.live_transcription = false);
         setup_meetings(cx, backend.clone(), meetings.clone());
-        let (w, _) = open_page(cx, MeetingsPage::new);
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-tab-settings", cx)
-        });
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-transcription", cx)
-        });
+        let (w, _) = open_page_wide(cx, MeetingsPage::new);
+        show_meetings_tab(cx, w, crate::ui::pages::meetings::MeetingsTab::Settings);
+        show_settings_category(cx, w, "transcription");
         assert!(!exists(cx, w, "meetings-live-model"));
         with_window(cx, w, |window, cx| {
             window.click("meetings-live-transcription-toggle", cx)
@@ -5912,6 +6112,8 @@ mod line_tagging {
         let (w, page) = open_page(cx, MeetingsPage::new);
         with_window(cx, w, |window, cx| window.click("meeting-open-1", cx));
         show_transcript(cx, &page);
+        // The line's speaker-edit glyph shows on hover.
+        with_window(cx, w, |window, cx| window.hover("segment-4", cx));
         with_window(cx, w, |window, cx| window.click("segment-4-tag", cx));
         assert!(meetings.called("segment_suggestions 4"));
         assert!(

@@ -1,12 +1,14 @@
-//! Meeting settings, laid out like macOS System Settings: a category list
-//! on the left ([`SettingsCategory`]) and one pane on the right. Each pane
-//! is a single scroll region, except AI Summaries, whose model list is the
-//! pane's only flexible scroll region under a pinned provider form (see
-//! `ai_settings.rs`). Below ~860 pt the list collapses to a popup button
-//! above the pane.
+//! Meeting settings, laid out like macOS System Settings: the categories
+//! ([`SettingsCategory`]) are rows of the window's sidebar, under "Meeting
+//! settings" while it is shown (`main_window.rs`), and this view is the
+//! one pane on the right. Each pane is a single scroll region (AI
+//! Summaries keeps its catalogue's search pinned over the list, see
+//! `ai_settings.rs`) headed by the category's name, its form left-anchored
+//! at the page inset. Rows whose label would get narrower than
+//! [`LABEL_MIN_W`] put their control under the label.
 //!
-//! Setup is the one place for permissions and required downloads; the
-//! category list shows how many of them still need attention.
+//! Setup is the one place for permissions and required downloads; its
+//! sidebar row shows how many of them still need attention.
 //!
 //! Every change writes only the changed fields through
 //! `update_setting("meetings", {"field": value})`; the backend merges the
@@ -64,6 +66,13 @@ const REMINDER_CHOICES: [u32; 5] = [5, 10, 15, 20, 30];
 /// left edges line up row to row.
 const CONTROL_W: Pixels = dp(200.);
 
+/// A row whose label would get narrower than this stacks its control
+/// under the label.
+const LABEL_MIN_W: Pixels = dp(220.);
+
+/// The gap between a row's label and its control (`SettingRow`).
+const ROW_GAP: Pixels = dp(20.);
+
 /// A pane of the meeting settings, in list order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingsCategory {
@@ -119,14 +128,17 @@ impl SettingsCategory {
         Self::ALL.into_iter().find(|c| c.id() == id)
     }
 
-    fn label(self) -> SharedString {
+    /// The category's name (its sidebar row, its pane's heading).
+    pub fn label(self) -> SharedString {
         t(&format!("meetings.settings.categories.{}", self.id()))
     }
 
-    fn icon(self) -> &'static str {
+    /// The category's sidebar glyph.
+    pub fn icon(self) -> &'static str {
         match self {
             Self::Setup => "list-checks",
-            Self::General => "settings",
+            // Not the gear: "General" is the app's own top-level page.
+            Self::General => "notebook-text",
             Self::You => "circle-user",
             Self::Recording => "mic",
             Self::Transcription => "captions",
@@ -135,12 +147,6 @@ impl SettingsCategory {
             Self::Linear => "square-kanban",
             Self::Integrations => "plug",
         }
-    }
-
-    /// The category `delta` rows away, clamped to the list.
-    fn step(self, delta: isize) -> Self {
-        let i = Self::ALL.iter().position(|c| *c == self).unwrap_or(0) as isize;
-        Self::ALL[(i + delta).clamp(0, Self::ALL.len() as isize - 1) as usize]
     }
 }
 
@@ -165,8 +171,9 @@ pub fn update_meetings(cx: &mut App, f: impl FnOnce(&mut MeetingSettings)) {
 }
 
 /// The rows of the Detected calls group: naming browser calls, then the choice
-/// for each service and for each site one was made for.
-fn detected_call_rows(m: &MeetingSettings, updating: bool) -> Vec<AnyElement> {
+/// for each service and for each site one was made for. `stack` puts the
+/// pop-ups under their labels (a narrow pane).
+fn detected_call_rows(m: &MeetingSettings, updating: bool, stack: bool) -> Vec<AnyElement> {
     let naming = m.name_browser_calls;
     let mut rows = vec![SettingRow::new(
         "meetings-name-browser-calls",
@@ -176,7 +183,6 @@ fn detected_call_rows(m: &MeetingSettings, updating: bool) -> Vec<AnyElement> {
     .control(
         Button::new("meetings-name-browser-calls-button")
             .outline()
-            .small()
             .label(if naming {
                 t("meetings.settings.nameBrowserCalls.turnOff")
             } else {
@@ -234,30 +240,32 @@ fn detected_call_rows(m: &MeetingSettings, updating: bool) -> Vec<AnyElement> {
             "never",
             t("meetings.settings.callPolicy.never"),
         ));
+        let dropdown = Dropdown::new(SharedString::from(format!("meetings-call-{key}-dropdown")))
+            .options(options)
+            .selected(Some(match policy {
+                CallPolicy::Ask => "ask",
+                CallPolicy::Always => "always",
+                CallPolicy::Never => "never",
+            }))
+            .on_select(move |v, _, cx| {
+                let policy = match v {
+                    "always" => CallPolicy::Always,
+                    "never" => CallPolicy::Never,
+                    _ => CallPolicy::Ask,
+                };
+                update_meetings(cx, |m| {
+                    set_policy(&mut m.call_providers, &on_key, &on_label, policy)
+                });
+            });
+        let row = SettingRow::new(SharedString::from(format!("meetings-call-{key}")), label)
+            .description(t("meetings.settings.callPolicy.description"));
         rows.push(
-            SettingRow::new(SharedString::from(format!("meetings-call-{key}")), label)
-                .description(t("meetings.settings.callPolicy.description"))
-                .control(
-                    Dropdown::new(SharedString::from(format!("meetings-call-{key}-dropdown")))
-                        .options(options)
-                        .selected(Some(match policy {
-                            CallPolicy::Ask => "ask",
-                            CallPolicy::Always => "always",
-                            CallPolicy::Never => "never",
-                        }))
-                        .min_width(CONTROL_W)
-                        .on_select(move |v, _, cx| {
-                            let policy = match v {
-                                "always" => CallPolicy::Always,
-                                "never" => CallPolicy::Never,
-                                _ => CallPolicy::Ask,
-                            };
-                            update_meetings(cx, |m| {
-                                set_policy(&mut m.call_providers, &on_key, &on_label, policy)
-                            });
-                        }),
-                )
-                .into_any_element(),
+            if stack {
+                row.stacked().control(dropdown)
+            } else {
+                row.control(crate::ui::kit::trailing(None, dropdown))
+            }
+            .into_any_element(),
         );
     }
     rows
@@ -322,9 +330,6 @@ enum Threshold {
 const LIVE_SAME_MODEL: &str = "__same__";
 
 pub struct MeetingSettingsView {
-    /// The list | detail split the Meetings page shares with this tab
-    /// (its own when shown alone).
-    split: Option<Entity<ResizableState>>,
     name_input: Entity<InputState>,
     emails: Entity<UserEmailsView>,
     match_slider: Entity<SliderState>,
@@ -344,24 +349,25 @@ pub struct MeetingSettingsView {
     voice_recorded: Option<bool>,
     ai: Entity<AiSettingsView>,
     category: SettingsCategory,
-    /// The category list (↑/↓ while focused).
-    list_focus: FocusHandle,
     /// The shown pane's scroll; back to the top on another category.
     pane_scroll: ScrollHandle,
+    /// The width of the pane's form column, measured from the window as it
+    /// renders (rows decide from it whether to stack their control).
+    form_w: Pixels,
+    /// Shown inside the app window: the toolbar title names the category
+    /// (its sidebar row is selected), so the pane drops its own heading
+    /// instead of stacking a second 17 pt title under the toolbar's.
+    in_shell: bool,
     _subs: Vec<Subscription>,
 }
 
 impl MeetingSettingsView {
-    /// Share the Meetings page's list | detail split.
-    pub fn with_split(mut self, split: Entity<ResizableState>) -> Self {
-        self.split = Some(split);
+    /// The Meetings page shares its list | detail split with its tabs (the
+    /// settings have no list, so it is unused); being on that page means
+    /// the view is in the app window, where the toolbar names the category.
+    pub fn with_split(mut self, _split: Entity<ResizableState>) -> Self {
+        self.in_shell = true;
         self
-    }
-
-    fn split(&mut self, cx: &mut Context<Self>) -> Entity<ResizableState> {
-        self.split
-            .get_or_insert_with(|| cx.new(|_| ResizableState::default()))
-            .clone()
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -433,7 +439,6 @@ impl MeetingSettingsView {
             }),
         ];
         let mut this = Self {
-            split: None,
             name_input,
             emails: cx.new(|cx| UserEmailsView::new(window, cx)),
             match_slider,
@@ -449,8 +454,9 @@ impl MeetingSettingsView {
             voice_recorded: None,
             ai,
             category: SettingsCategory::General,
-            list_focus: cx.focus_handle().tab_stop(true),
             pane_scroll: ScrollHandle::new(),
+            form_w: design::FORM_MAX_W,
+            in_shell: false,
             _subs: subs,
         };
         this.reload_status(cx);
@@ -463,7 +469,7 @@ impl MeetingSettingsView {
         self.category
     }
 
-    /// Show `category`'s pane (deep links, the category list, ↑/↓).
+    /// Show `category`'s pane (deep links, its sidebar row, ↑/↓ there).
     pub fn show_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
         if self.category != category {
             self.category = category;
@@ -484,6 +490,32 @@ impl MeetingSettingsView {
     /// The AI + Linear settings (shown in the AI Summaries and Linear panes).
     pub fn ai(&self) -> &Entity<AiSettingsView> {
         &self.ai
+    }
+
+    /// Whether a row with a control about `control_w` wide would leave its
+    /// label less than [`LABEL_MIN_W`]: then the control goes under it.
+    fn stacks(&self, control_w: Pixels) -> bool {
+        self.form_w - design::SECTION_X * 2. - ROW_GAP - control_w < LABEL_MIN_W
+    }
+
+    /// `row`, stacked when its `control_w` wide control would squeeze the
+    /// label (see [`Self::stacks`]).
+    fn fit(&self, row: SettingRow, control_w: Pixels) -> SettingRow {
+        if self.stacks(control_w) {
+            row.stacked()
+        } else {
+            row
+        }
+    }
+
+    /// `row` with a pop-up: in the shared 200 pt trailing column beside the
+    /// label, or under it when it would squeeze the label.
+    fn popup(&self, row: SettingRow, control: impl IntoElement) -> SettingRow {
+        if self.stacks(CONTROL_W) {
+            row.stacked().control(control)
+        } else {
+            row.control(crate::ui::kit::trailing(None, control))
+        }
     }
 
     fn reload_voice(&mut self, cx: &mut Context<Self>) {
@@ -557,7 +589,6 @@ impl MeetingSettingsView {
     }
 
     fn render_deepgram_key(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
         SettingRow::new(
             "meetings-deepgram-key",
             t("meetings.settings.deepgram.title"),
@@ -572,21 +603,18 @@ impl MeetingSettingsView {
                 .child(
                     div()
                         .flex_1()
-                        .child(Input::new(&self.deepgram_key).small().mask_toggle()),
+                        .child(Input::new(&self.deepgram_key).mask_toggle()),
                 )
                 .when(self.has_deepgram_key, |d| {
-                    d.child(
-                        h_flex()
-                            .gap_1()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(theme.muted_foreground)
-                            .child(icon("check").xsmall().text_color(theme.success))
-                            .child(t("meetings.settings.deepgram.saved")),
-                    )
+                    d.child(status_label(
+                        "meetings-deepgram-saved",
+                        design::Status::Ok,
+                        t("meetings.settings.deepgram.saved"),
+                        cx,
+                    ))
                     .child(
                         Button::new("meetings-deepgram-remove")
-                            .ghost()
-                            .small()
+                            .outline()
                             .label(t("meetings.settings.deepgram.remove"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_deepgram_key(String::new(), window, cx)
@@ -689,7 +717,6 @@ impl MeetingSettingsView {
         let Some(p) = self.permissions.clone() else {
             return vec![loading_row("meetings-permissions-loading", cx)];
         };
-        let theme = cx.theme().clone();
         [
             Permission::Microphone,
             Permission::SystemAudio,
@@ -719,13 +746,13 @@ impl MeetingSettingsView {
             } else {
                 h_flex()
                     .gap_1()
+                    .flex_wrap()
                     .child(
                         Button::new(SharedString::from(format!(
                             "meetings-permission-request-{}",
                             perm.id()
                         )))
                         .outline()
-                        .small()
                         .label(t("meetings.settings.permissions.requestAgain"))
                         .disabled(self.requesting)
                         .on_click(cx.listener(|this, _, _, cx| this.request_permissions(cx))),
@@ -736,8 +763,7 @@ impl MeetingSettingsView {
                                 "meetings-permission-open-{}",
                                 perm.id()
                             )))
-                            .ghost()
-                            .small()
+                            .outline()
                             .icon(icon("external-link"))
                             .label(t("meetings.settings.permissions.openSettings"))
                             .on_click(cx.listener(move |this, _, _, cx| this.open_pane(url, cx))),
@@ -745,22 +771,36 @@ impl MeetingSettingsView {
                     })
                     .into_any_element()
             };
+            // A missing required grant needs attention; an optional one is
+            // only information.
             let needed = !granted && perm.required();
-            SettingRow::new(
-                SharedString::from(format!("meetings-permission-{}", perm.id())),
-                t(perm.key()),
+            let missing = (!granted).then(|| {
+                status_label(
+                    SharedString::from(format!("meetings-permission-state-{}", perm.id())),
+                    if needed {
+                        design::Status::Attention
+                    } else {
+                        design::Status::Neutral
+                    },
+                    state.clone(),
+                    cx,
+                )
+            });
+            // Request Again and Open System Settings beside the state.
+            let control_w = if granted { dp(80.) } else { dp(330.) };
+            self.fit(
+                SettingRow::new(
+                    SharedString::from(format!("meetings-permission-{}", perm.id())),
+                    t(perm.key()),
+                )
+                .description(need),
+                control_w,
             )
-            .description(if granted {
-                need
-            } else {
-                format!("{need} · {state}").into()
-            })
             .control(
                 h_flex()
-                    .gap_2()
-                    .when(needed, |d| {
-                        d.child(div().size(dp(6.)).rounded_full().bg(theme.warning))
-                    })
+                    .gap_3()
+                    .flex_wrap()
+                    .children(missing)
                     .child(control),
             )
             .into_any_element()
@@ -854,6 +894,8 @@ impl MeetingSettingsView {
         let downloading = self.downloading_separation;
         let deletable =
             current.filter(|m| m.installed && !m.id.is_standard() && downloading.is_none());
+        let status_w =
+            downloading.is_some() || current.is_some_and(|m| !m.installed && !m.id.is_standard());
         let status: Option<AnyElement> = match (downloading, current) {
             (Some(_), _) => Some(
                 h_flex()
@@ -872,7 +914,6 @@ impl MeetingSettingsView {
             (None, Some(m)) if !m.installed && !m.id.is_standard() => Some(
                 Button::new("meetings-separation-download")
                     .outline()
-                    .small()
                     .icon(icon("download"))
                     .label(t_args(
                         "meetings.settings.speakerModel.download",
@@ -886,21 +927,29 @@ impl MeetingSettingsView {
             _ => None,
         };
         Some(
-            SettingRow::new(
-                "meetings-separation-model",
-                t("meetings.settings.separation.title"),
+            self.fit(
+                SettingRow::new(
+                    "meetings-separation-model",
+                    t("meetings.settings.separation.title"),
+                )
+                .description(t("meetings.settings.separation.description")),
+                // The pop-up, and a download or delete button beside it.
+                CONTROL_W + if status_w { dp(140.) } else { dp(32.) },
             )
-            .description(t("meetings.settings.separation.description"))
             .control(
+                // The delete button in the trailing column's fixed slot (where
+                // other rows keep their reset), the pop-up in the column.
                 h_flex()
                     .gap_2()
                     .children(status)
-                    .when_some(deletable, |d, m| {
-                        let id = m.id;
-                        d.child(
+                    .child(crate::ui::kit::trailing(
+                        deletable.map(|m| {
+                            let id = m.id;
                             Button::new("meetings-separation-delete")
                                 .ghost()
                                 .xsmall()
+                                .w(design::ICON_BUTTON)
+                                .h(design::ICON_BUTTON)
                                 .icon(icon("trash"))
                                 .tooltip(t_args(
                                     "meetings.settings.separation.delete",
@@ -908,14 +957,12 @@ impl MeetingSettingsView {
                                 ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_separation_model(id, cx)
-                                })),
-                        )
-                    })
-                    .child(
+                                }))
+                                .into_any_element()
+                        }),
                         Dropdown::new("meetings-separation-dropdown")
                             .options(items)
                             .selected(Some(chosen.as_str()))
-                            .min_width(CONTROL_W)
                             .menu_width(dp(340.))
                             .disabled(downloading.is_some())
                             .on_select({
@@ -928,7 +975,7 @@ impl MeetingSettingsView {
                                     .ok();
                                 }
                             }),
-                    ),
+                    )),
             )
             .into_any_element(),
         )
@@ -1002,7 +1049,7 @@ impl MeetingSettingsView {
                 .children(lines)
                 .into_any_element()
         };
-        SettingRow::new(
+        let row = SettingRow::new(
             "meetings-turn-models",
             t("meetings.settings.turnModels.title"),
         )
@@ -1014,9 +1061,11 @@ impl MeetingSettingsView {
                 "meetings.settings.turnModels.description",
                 &[("size", &size)],
             )
-        })
-        .control(control)
-        .into_any_element()
+        });
+        // A name and a download button per model still missing.
+        self.fit(row, if all_installed { dp(100.) } else { dp(280.) })
+            .control(control)
+            .into_any_element()
     }
 
     /// The standard speaker model (required): its download goes through
@@ -1066,23 +1115,24 @@ impl MeetingSettingsView {
         cx: &App,
     ) -> AnyElement {
         let value = slider.read(cx).value().start();
-        SettingRow::new(id, t(&format!("{key}.title")))
-            .description(t(&format!("{key}.description")))
-            .control(
-                h_flex()
-                    .gap_2()
-                    .w(CONTROL_W)
-                    .child(crate::ui::kit::tracked_slider(Slider::new(slider), cx).flex_1())
-                    .child(
-                        div()
-                            .w(dp(36.))
-                            .text_right()
-                            .text_size(design::TEXT_SECONDARY)
-                            .font_family(crate::theme::MONO_FONT)
-                            .child(format!("{value:.2}")),
-                    ),
-            )
-            .into_any_element()
+        self.fit(
+            SettingRow::new(id, t(&format!("{key}.title")))
+                .description(t(&format!("{key}.description"))),
+            CONTROL_W,
+        )
+        .control(
+            h_flex()
+                .gap_2()
+                .w(CONTROL_W)
+                .child(crate::ui::kit::tracked_slider(Slider::new(slider), cx).flex_1())
+                .child(
+                    design::mono(format!("{value:.2}"))
+                        .w(dp(36.))
+                        .text_right()
+                        .text_size(design::TEXT_BODY),
+                ),
+        )
+        .into_any_element()
     }
 }
 
@@ -1155,14 +1205,18 @@ impl MeetingSettingsView {
         .description(summary_title)
         .control(
             h_flex()
-                .gap_2()
+                .gap_3()
+                // The description says what is missing; the glyph marks it.
                 .when(!ready, |d| {
-                    d.child(div().size(dp(6.)).rounded_full().bg(cx.theme().warning))
+                    d.child(
+                        icon("circle-alert")
+                            .size(dp(13.))
+                            .text_color(design::status_color(design::Status::Attention, cx)),
+                    )
                 })
                 .child(
                     Button::new("meetings-setup-summaries-open")
                         .outline()
-                        .small()
                         .label(t(if ready {
                             "meetings.settings.setup.change"
                         } else {
@@ -1236,19 +1290,18 @@ impl MeetingSettingsView {
                             )),
                     )
                     .into_any_element(),
-                SettingRow::new("meetings-retention", t("meetings.settings.retention.title"))
-                    .description(t("meetings.settings.retention.description"))
-                    .control(
-                        Dropdown::new("meetings-retention-dropdown")
-                            .options(retention_options)
-                            .selected(Some(retention_value(m.audio_retention_days)))
-                            .min_width(CONTROL_W)
-                            .on_select(|v, _, cx| {
-                                let days = parse_retention(v);
-                                update_meetings(cx, |m| m.audio_retention_days = days);
-                            }),
-                    )
-                    .into_any_element(),
+                self.popup(
+                    SettingRow::new("meetings-retention", t("meetings.settings.retention.title"))
+                        .description(t("meetings.settings.retention.description")),
+                    Dropdown::new("meetings-retention-dropdown")
+                        .options(retention_options)
+                        .selected(Some(retention_value(m.audio_retention_days)))
+                        .on_select(|v, _, cx| {
+                            let days = parse_retention(v);
+                            update_meetings(cx, |m| m.audio_retention_days = days);
+                        }),
+                )
+                .into_any_element(),
             ],
             cx,
         )
@@ -1267,7 +1320,7 @@ impl MeetingSettingsView {
                 SettingRow::new("meetings-user-name", t("meetings.settings.userName.title"))
                     .description(t("meetings.settings.userName.description"))
                     .stacked()
-                    .control(div().w_full().child(Input::new(&self.name_input).small()))
+                    .control(div().w_full().child(Input::new(&self.name_input)))
                     .into_any_element(),
                 SettingRow::new(
                     "meetings-user-email",
@@ -1282,7 +1335,6 @@ impl MeetingSettingsView {
                     .control(
                         Button::new("meetings-user-voice-open")
                             .outline()
-                            .small()
                             .label(t("meetings.settings.voice.open"))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 cx.emit(MeetingSettingsEvent::OpenYourVoice)
@@ -1323,19 +1375,18 @@ impl MeetingSettingsView {
             DropdownOption::new("notch", t("meetings.settings.recordingControls.notch")),
         ];
         let while_recording = vec![
-            SettingRow::new(
-                "meetings-recording-controls",
-                t("meetings.settings.recordingControls.title"),
-            )
-            .description(t("meetings.settings.recordingControls.description"))
-            .control(
+            self.popup(
+                SettingRow::new(
+                    "meetings-recording-controls",
+                    t("meetings.settings.recordingControls.title"),
+                )
+                .description(t("meetings.settings.recordingControls.description")),
                 Dropdown::new("meetings-recording-controls-dropdown")
                     .options(controls_options)
                     .selected(Some(match m.recording_controls {
                         RecordingControls::Floating => "floating",
                         RecordingControls::Notch => "notch",
                     }))
-                    .min_width(CONTROL_W)
                     .on_select(|v, _, cx| {
                         let controls = if v == "notch" {
                             RecordingControls::Notch
@@ -1348,16 +1399,15 @@ impl MeetingSettingsView {
                     }),
             )
             .into_any_element(),
-            SettingRow::new(
-                "meetings-reminder-interval",
-                t("meetings.settings.reminderInterval.title"),
-            )
-            .description(t("meetings.settings.reminderInterval.description"))
-            .control(
+            self.popup(
+                SettingRow::new(
+                    "meetings-reminder-interval",
+                    t("meetings.settings.reminderInterval.title"),
+                )
+                .description(t("meetings.settings.reminderInterval.description")),
                 Dropdown::new("meetings-reminder-dropdown")
                     .options(reminder_options)
                     .selected(Some(m.reminder_interval_minutes.to_string()))
-                    .min_width(CONTROL_W)
                     .on_select(|v, _, cx| {
                         if let Ok(n) = v.parse::<u32>() {
                             update_meetings(cx, |m| m.reminder_interval_minutes = n);
@@ -1409,7 +1459,7 @@ impl MeetingSettingsView {
             group(Some(t("meetings.settings.calendarGroup")), calendar, cx).into_any_element(),
             group(
                 Some(t("meetings.settings.detectedCallsGroup")),
-                detected_call_rows(&m, updating),
+                detected_call_rows(&m, updating, self.stacks(CONTROL_W)),
                 cx,
             )
             .into_any_element(),
@@ -1518,16 +1568,15 @@ impl MeetingSettingsView {
             ];
         if separate {
             meeting.push(
-                SettingRow::new(
-                    "meetings-model-choice",
-                    t("meetings.settings.meetingModel.choice"),
-                )
-                .description(t("meetings.settings.meetingModel.choiceDescription"))
-                .control(
+                self.popup(
+                    SettingRow::new(
+                        "meetings-model-choice",
+                        t("meetings.settings.meetingModel.choice"),
+                    )
+                    .description(t("meetings.settings.meetingModel.choiceDescription")),
                     Dropdown::new("meetings-model-dropdown")
                         .options(model_options)
                         .selected(Some(selected_model))
-                        .min_width(CONTROL_W)
                         .on_select(|v, _, cx| {
                             let v = non_empty(v);
                             if v.is_some() {
@@ -1572,12 +1621,12 @@ impl MeetingSettingsView {
                     .map(|mi| DropdownOption::new(mi.id.clone(), model_name(mi))),
             );
             live.push(
-                SettingRow::new(
-                    "meetings-live-model",
-                    t("meetings.settings.liveTranscription.model"),
-                )
-                .description(t("meetings.settings.liveTranscription.modelDescription"))
-                .control(
+                self.popup(
+                    SettingRow::new(
+                        "meetings-live-model",
+                        t("meetings.settings.liveTranscription.model"),
+                    )
+                    .description(t("meetings.settings.liveTranscription.modelDescription")),
                     Dropdown::new("meetings-live-model-dropdown")
                         .options(live_options)
                         .selected(Some(
@@ -1585,7 +1634,6 @@ impl MeetingSettingsView {
                                 .clone()
                                 .unwrap_or_else(|| LIVE_SAME_MODEL.to_string()),
                         ))
-                        .min_width(CONTROL_W)
                         .on_select(|v, _, cx| {
                             let v = (v != LIVE_SAME_MODEL).then(|| v.to_string());
                             update_meetings(cx, |m| m.live_model = v);
@@ -1676,8 +1724,8 @@ impl MeetingSettingsView {
                         .px(design::SECTION_X)
                         .py(design::ROW_Y)
                         .text_size(design::TEXT_SECONDARY)
-                        .text_color(cx.theme().danger)
-                        .child(icon("circle-alert").xsmall())
+                        .text_color(design::status_color(design::Status::Error, cx))
+                        .child(icon("triangle-alert").size(dp(13.)))
                         .child(t_args(
                             "meetings.settings.mcp.failed",
                             &[("port", &m.mcp_port.to_string())],
@@ -1697,125 +1745,17 @@ impl MeetingSettingsView {
             .is_updating("meetings")
     }
 
-    /// The source list of categories; ↑/↓ move the selection while it has
-    /// focus, like the window sidebar.
-    fn render_categories(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tone = design::tone(cx);
-        let warning = cx.theme().warning;
-        let focused = self.list_focus.is_focused(window);
-        let selection = if focused {
-            tone.selection_focused
-        } else {
-            tone.selection
-        };
-        let issues = self.setup_issues(cx);
-        v_flex()
-            .id("meetings-settings-categories")
-            .track_focus(&self.list_focus)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
-                let delta = match ev.keystroke.key.as_str() {
-                    "up" => -1,
-                    "down" => 1,
-                    _ => return,
-                };
-                cx.stop_propagation();
-                let next = this.category.step(delta);
-                this.show_category(next, cx);
-            }))
-            // Sized by the split the Meetings tabs share.
-            .size_full()
-            .min_h_0()
-            .px(dp(8.))
-            .py(dp(8.))
-            .gap(px(1.))
-            .overflow_y_scroll()
-            .children(SettingsCategory::ALL.into_iter().map(|c| {
-                let active = c == self.category;
-                h_flex()
-                    .id(SharedString::from(format!(
-                        "meetings-settings-category-{}",
-                        c.id()
-                    )))
-                    .aria_label(c.label())
-                    .flex_none()
-                    .gap(dp(8.))
-                    .px(dp(8.))
-                    .h(design::SIDEBAR_ITEM_H)
-                    .rounded(design::RADIUS_CHIP)
-                    .text_size(design::TEXT_BODY)
-                    .text_color(tone.text)
-                    .when(active, |d| d.bg(selection))
-                    .child(icon(c.icon()).small().text_color(if active {
-                        tone.accent_text
-                    } else {
-                        tone.text_muted
-                    }))
-                    .child(div().flex_1().min_w_0().truncate().child(c.label()))
-                    .when(c == SettingsCategory::Setup && issues > 0, |d| {
-                        d.child(
-                            h_flex()
-                                .id("meetings-settings-setup-badge")
-                                .flex_none()
-                                .gap(dp(4.))
-                                .child(div().size(dp(6.)).rounded_full().bg(warning))
-                                .child(
-                                    design::mono(issues.to_string())
-                                        .text_size(design::TEXT_SECONDARY)
-                                        .text_color(tone.text_muted),
-                                )
-                                .test_support(),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        window.focus(&this.list_focus, cx);
-                        this.show_category(c, cx)
-                    }))
-                    .test_support()
-            }))
-            .test_support()
-    }
-
-    /// The category list as a popup button, for narrow windows.
-    fn render_category_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let issues = self.setup_issues(cx);
-        let options = SettingsCategory::ALL
-            .into_iter()
-            .map(|c| {
-                let label = if c == SettingsCategory::Setup && issues > 0 {
-                    format!("{} · {issues}", c.label()).into()
-                } else {
-                    c.label()
-                };
-                DropdownOption::new(c.id(), label)
-            })
-            .collect();
-        let weak = cx.entity().downgrade();
-        h_flex()
-            .flex_none()
-            .w_full()
-            .px(design::PAGE_X)
-            .pt(dp(10.))
-            .pb(dp(10.))
-            .border_b_1()
-            .border_color(design::tone(cx).hairline)
-            .child(
-                Dropdown::new("meetings-settings-category-menu")
-                    .options(options)
-                    .selected(Some(self.category.id()))
-                    .min_width(dp(220.))
-                    .on_select(move |v, _, cx| {
-                        if let Some(c) = SettingsCategory::from_id(v) {
-                            weak.update(cx, |this, cx| this.show_category(c, cx)).ok();
-                        }
-                    }),
-            )
-    }
-
+    /// The shown category's pane: headed by the category's name (its
+    /// sidebar row is the navigation), the form left-anchored at the page
+    /// inset.
     fn render_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let heading = (!self.in_shell).then(|| self.category.label());
         let groups = match self.category {
             // The AI and Linear settings own their pane layout.
             SettingsCategory::Ai | SettingsCategory::Linear => {
-                return self.ai.clone().into_any_element()
+                let ai = self.ai.clone();
+                ai.update(cx, |ai, cx| ai.set_frame(heading, true, cx));
+                return ai.into_any_element();
             }
             SettingsCategory::Setup => self.render_setup(cx),
             SettingsCategory::General => self.render_general(cx),
@@ -1827,7 +1767,9 @@ impl MeetingSettingsView {
         };
         scroll_page(
             SharedString::from(format!("meetings-settings-pane-{}", self.category.id())),
-            page().children(groups),
+            pane_column(true)
+                .children(heading.map(|h| pane_heading(h, cx)))
+                .children(groups),
         )
         .track_scroll(&self.pane_scroll)
         .test_support()
@@ -1837,42 +1779,50 @@ impl MeetingSettingsView {
 
 impl Render for MeetingSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Narrow: the category list becomes a popup button above the pane.
-        let compact = super::is_narrow(window);
-        let pane = div()
-            .flex_1()
-            .min_w_0()
+        // The pane has the whole content area: the categories are rows of
+        // the window's sidebar.
+        let content_w =
+            window.viewport_size().width - crate::ui::main_window::sidebar_width(window);
+        self.form_w = (content_w - design::PAGE_X * 2.).min(design::FORM_MAX_W);
+        let pane = self.render_pane(cx);
+        div()
+            .id("meetings-settings")
+            .size_full()
             .min_h_0()
-            .child(self.render_pane(cx));
-        if compact {
-            v_flex()
-                .id("meetings-settings")
-                .size_full()
-                .min_h_0()
-                .min_w_0()
-                .child(self.render_category_menu(cx))
-                .child(pane)
-                .test_support()
-                .into_any_element()
-        } else {
-            let split = self.split(cx);
-            h_flex()
-                .id("meetings-settings")
-                .size_full()
-                .min_h_0()
-                .min_w_0()
-                .items_stretch()
-                .child(super::split_view(
-                    "meetings-settings-split",
-                    &split,
-                    self.render_categories(window, cx),
-                    pane.size_full(),
-                    cx,
-                ))
-                .test_support()
-                .into_any_element()
-        }
+            .min_w_0()
+            .child(pane)
+            .test_support()
     }
+}
+
+/// The form column of a pane: [`page`]'s 680 pt measure, left-anchored at
+/// the page inset (`anchored` or not: both read the same now that the
+/// categories live in the window's sidebar).
+pub fn pane_column(anchored: bool) -> Div {
+    if anchored {
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .max_w(design::FORM_MAX_W)
+            .gap(design::GROUP_GAP)
+    } else {
+        page()
+    }
+}
+
+/// The category's name at the top of its pane, 17 pt semibold.
+pub fn pane_heading(text: SharedString, cx: &App) -> AnyElement {
+    div()
+        .id("meetings-settings-heading")
+        .flex_none()
+        .px(dp(2.))
+        .text_size(design::TEXT_HEADLINE)
+        .line_height(dp(22.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(design::tone(cx).text)
+        .child(text)
+        .test_support()
+        .into_any_element()
 }
 
 /// A row stand-in while a status loads.
@@ -1891,20 +1841,40 @@ fn loading_row(id: &'static str, cx: &App) -> AnyElement {
 
 /// "✓ Granted" / "✓ Downloaded": a quiet ready state for a row's control.
 fn status_mark(id: impl Into<ElementId>, label: SharedString, ok: bool, cx: &App) -> AnyElement {
-    let theme = cx.theme();
+    let status = if ok {
+        design::Status::Ok
+    } else {
+        design::Status::Error
+    };
+    status_label(id, status, label, cx).into_any_element()
+}
+
+/// A status as an icon and a word in its semantic color ([`design::Status`]):
+/// ok (granted, ready, downloaded) green, attention (missing) orange,
+/// error red, neutral muted. Never color alone.
+pub fn status_label(
+    id: impl Into<ElementId>,
+    status: design::Status,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
+    let color = design::status_color(status, cx);
+    let glyph = match status {
+        design::Status::Ok => "circle-check",
+        design::Status::Attention => "circle-alert",
+        design::Status::Live | design::Status::Error => "triangle-alert",
+        design::Status::Neutral => "circle-dashed",
+    };
     h_flex()
         .id(id)
-        .gap_1()
+        .flex_none()
+        .gap(dp(4.))
         .text_size(design::TEXT_SECONDARY)
-        .text_color(theme.muted_foreground)
-        .child(
-            icon(if ok { "check" } else { "x" })
-                .xsmall()
-                .text_color(if ok { theme.success } else { theme.danger }),
-        )
-        .child(label)
+        .line_height(design::LINE_SECONDARY)
+        .text_color(color)
+        .child(icon(glyph).size(dp(13.)).text_color(color))
+        .child(label.into())
         .test_support()
-        .into_any_element()
 }
 
 /// A labelled value in mono with a Copy button (the MCP connection details).
@@ -1917,21 +1887,17 @@ fn copy_row(id: &'static str, title: SharedString, value: String, cx: &App) -> A
                 .w_full()
                 .gap_2()
                 .child(
-                    div()
+                    design::code(value.clone())
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
-                        .font_family(crate::theme::MONO_FONT)
-                        .text_size(dp(12.))
-                        .text_color(muted)
-                        .child(value.clone()),
+                        .text_color(muted),
                 )
                 .child(
                     Button::new(SharedString::from(format!("{id}-copy")))
-                        .secondary()
-                        .xsmall()
+                        .outline()
                         .label(t("common.copy"))
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
@@ -1947,11 +1913,38 @@ mod ui {
     use super::{MeetingSettingsView, SettingsCategory};
     use crate::meetings_backend::fake::FakeMeetingsBackend;
     use crate::ui::pages::meetings::tickets::ui::setup;
-    use crate::ui_tests::{exists, open, with_window};
+    use crate::ui_tests::{exists, with_window};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         px, size, AppContext as _, Bounds, Point, TestAppContext, WindowBounds, WindowOptions,
     };
+
+    /// Open the settings on their own in a wide window (the categories are
+    /// rows of the main window's sidebar: `ui_tests` clicks those).
+    fn open_wide(
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::AnyWindowHandle,
+        gpui_kit::Entity<MeetingSettingsView>,
+    ) {
+        let opened = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1200.), px(2400.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| cx.new(|cx| MeetingSettingsView::new(window, cx)),
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
+        opened
+    }
 
     fn category(
         cx: &mut TestAppContext,
@@ -1961,10 +1954,9 @@ mod ui {
     }
 
     #[gpui_kit::test]
-    fn categories_switch_panes_by_click_deep_link_and_keyboard(cx: &mut TestAppContext) {
+    fn categories_switch_panes(cx: &mut TestAppContext) {
         setup(cx, FakeMeetingsBackend::new());
-        let (w, view) = open(cx, MeetingSettingsView::new);
-        assert!(exists(cx, w, "meetings-settings-categories"));
+        let (w, view) = open_wide(cx);
         assert!(exists(cx, w, "meetings-settings-pane-general"));
         assert!(exists(cx, w, "meetings-enabled"));
         assert!(!exists(cx, w, "meetings-linear-key"));
@@ -1975,19 +1967,14 @@ mod ui {
         assert!(exists(cx, w, "meetings-linear-key"));
         assert!(!exists(cx, w, "meetings-enabled"));
 
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-ai", cx)
-        });
+        view.update(cx, |v, cx| v.show_category(SettingsCategory::Ai, cx));
+        cx.run_until_parked();
         assert_eq!(category(cx, &view), SettingsCategory::Ai);
         assert!(exists(cx, w, "meetings-llm-active"));
         assert!(!exists(cx, w, "meetings-linear-key"));
 
-        // The clicked list has focus: ↑/↓ move through it.
-        with_window(cx, w, |window, cx| window.press("down", cx));
-        assert_eq!(category(cx, &view), SettingsCategory::Linear);
-        with_window(cx, w, |window, cx| window.press("up", cx));
-        with_window(cx, w, |window, cx| window.press("up", cx));
-        assert_eq!(category(cx, &view), SettingsCategory::Speakers);
+        view.update(cx, |v, cx| v.show_category(SettingsCategory::Speakers, cx));
+        cx.run_until_parked();
         assert!(exists(cx, w, "meetings-match-threshold"));
     }
 
@@ -1996,13 +1983,11 @@ mod ui {
         let mb = FakeMeetingsBackend::new();
         // Nothing granted (the fake's default).
         setup(cx, mb.clone());
-        let (w, view) = open(cx, MeetingSettingsView::new);
+        let (w, view) = open_wide(cx);
         let issues = view.read_with(cx, |v, cx| v.setup_issues(cx));
         assert!(issues >= 2, "microphone and system audio: {issues}");
-        assert!(exists(cx, w, "meetings-settings-setup-badge"));
-        with_window(cx, w, |window, cx| {
-            window.click("meetings-settings-category-setup", cx)
-        });
+        view.update(cx, |v, cx| v.show_category(SettingsCategory::Setup, cx));
+        cx.run_until_parked();
         assert!(exists(cx, w, "meetings-permission-microphone"));
         assert!(exists(cx, w, "meetings-setup-summaries"));
         // Summaries' "Set Up…" goes to the AI pane.
@@ -2023,9 +2008,10 @@ mod ui {
         assert_eq!(after, issues - 2);
     }
 
-    /// In a narrow window the category list is a popup button.
+    /// In a narrow window the pane still names its category (no list or
+    /// popup button of its own: the sidebar lists the categories).
     #[gpui_kit::test]
-    fn narrow_windows_get_a_category_menu(cx: &mut TestAppContext) {
+    fn narrow_windows_keep_the_heading(cx: &mut TestAppContext) {
         setup(cx, FakeMeetingsBackend::new());
         let (w, _) = cx
             .update(|cx| {
@@ -2043,7 +2029,8 @@ mod ui {
             })
             .unwrap();
         cx.run_until_parked();
-        assert!(exists(cx, w, "meetings-settings-category-menu"));
+        assert!(exists(cx, w, "meetings-settings-heading"));
+        assert!(!exists(cx, w, "meetings-settings-category-menu"));
         assert!(!exists(cx, w, "meetings-settings-categories"));
     }
 }

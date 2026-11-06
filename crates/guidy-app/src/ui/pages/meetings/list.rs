@@ -239,6 +239,17 @@ impl MeetingList {
         self.loading
     }
 
+    /// A search is typed (the list shows results, not meetings).
+    pub fn is_searching_now(&self) -> bool {
+        self.is_searching()
+    }
+
+    /// The speaker-turn models offer, for the page to show when the list
+    /// itself is not shown (no meetings yet).
+    pub(crate) fn turn_consent(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.render_turn_consent(cx)
+    }
+
     fn is_searching(&self) -> bool {
         !self.query.trim().is_empty()
     }
@@ -545,7 +556,7 @@ impl MeetingList {
                 .id("speaker-turn-consent")
                 .flex()
                 .flex_col()
-                .gap(dp(6.))
+                .gap(dp(8.))
                 .child(
                     v_flex()
                         .flex_1()
@@ -572,8 +583,7 @@ impl MeetingList {
                         .justify_end()
                         .child(
                             Button::new("speaker-turn-not-now")
-                                .ghost()
-                                .xsmall()
+                                .outline()
                                 .label(t("meetings.turnConsent.notNow"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.turn_prompt_dismissed = true;
@@ -586,7 +596,6 @@ impl MeetingList {
                         .child(
                             Button::new("speaker-turn-download")
                                 .primary()
-                                .xsmall()
                                 .icon(icon("download"))
                                 .label(t("meetings.turnConsent.download"))
                                 .on_click(
@@ -784,10 +793,33 @@ impl MeetingList {
     }
 
     /// The second line of a row: duration and status, or the processing
-    /// stage with its progress.
-    fn render_status(&self, m: &Meeting, cx: &App) -> AnyElement {
-        let theme = cx.theme();
+    /// stage with its progress. `in_detail`: the detail beside the list
+    /// shows this meeting's progress, so the row says only Processing (one
+    /// progress per meeting on screen).
+    fn render_status(&self, m: &Meeting, in_detail: bool, cx: &App) -> AnyElement {
         let tone = design::tone(cx);
+        if m.status == MeetingStatus::Processing && in_detail {
+            return h_flex()
+                .id(SharedString::from(format!("meeting-progress-{}", m.id)))
+                .w_full()
+                .gap(dp(4.))
+                .child(
+                    icon("hourglass")
+                        .xsmall()
+                        .flex_none()
+                        .text_color(tone.text_muted),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(design::TEXT_SECONDARY)
+                        .text_color(tone.text_muted)
+                        .child(t("meetings.status.processing")),
+                )
+                .test_support()
+                .into_any_element();
+        }
         if m.status == MeetingStatus::Processing {
             let p = self.progress.get(&m.id);
             let fraction = p.map(|p| p.fraction).unwrap_or(0.0).clamp(0.0, 1.0);
@@ -797,12 +829,20 @@ impl MeetingList {
             return h_flex()
                 .id(SharedString::from(format!("meeting-progress-{}", m.id)))
                 .w_full()
-                .gap(dp(6.))
+                .gap(dp(4.))
+                // Static: the stage name and the bar already show the work.
+                .child(
+                    icon("hourglass")
+                        .xsmall()
+                        .flex_none()
+                        .text_color(tone.text_muted),
+                )
                 .child(
                     div()
                         .flex_none()
                         .max_w(relative(0.6))
                         .truncate()
+                        .font_features(design::tabular_figures())
                         .text_size(design::TEXT_SECONDARY)
                         .text_color(tone.text_muted)
                         .child(design::shimmer_text(
@@ -811,11 +851,17 @@ impl MeetingList {
                             cx,
                         )),
                 )
-                .child(div().flex_1().min_w(dp(24.)).child(design::track(
-                    SharedString::from(format!("meeting-progress-track-{}", m.id)),
-                    Some(fraction),
-                    cx,
-                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(dp(24.))
+                        .ml(dp(4.))
+                        .child(design::track(
+                            SharedString::from(format!("meeting-progress-track-{}", m.id)),
+                            Some(fraction),
+                            cx,
+                        )),
+                )
                 .test_support()
                 .into_any_element();
         }
@@ -826,33 +872,52 @@ impl MeetingList {
         }
         let failed = m.status == MeetingStatus::Failed;
         let live = m.status == MeetingStatus::Recording;
-        let status = (m.status != MeetingStatus::Processed).then(|| t(status_key(m.status)));
+        // Status is a mark and a word: a red dot for Recording, a warning
+        // glyph for Failed, a hollow dot for Not processed.
+        let status = (m.status != MeetingStatus::Processed).then(|| {
+            let word = t(status_key(m.status));
+            let mark: AnyElement = if live {
+                div()
+                    .flex_none()
+                    .size(dp(6.))
+                    .rounded_full()
+                    .bg(design::status_color(design::Status::Live, cx))
+                    .into_any_element()
+            } else if failed {
+                icon("triangle-alert")
+                    .xsmall()
+                    .text_color(design::status_color(design::Status::Error, cx))
+                    .into_any_element()
+            } else {
+                div()
+                    .flex_none()
+                    .size(dp(6.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(tone.text_muted)
+                    .into_any_element()
+            };
+            h_flex().flex_none().gap(dp(4.)).child(mark).child(
+                div()
+                    .when(failed, |d| {
+                        d.text_color(design::status_color(design::Status::Error, cx))
+                    })
+                    .when(live, |d| d.text_color(tone.text))
+                    .child(word),
+            )
+        });
         h_flex()
             .w_full()
             .min_w_0()
             .gap(dp(4.))
             .text_size(design::TEXT_SECONDARY)
+            .font_features(design::tabular_figures())
             .text_color(tone.text_muted)
-            .when(live, |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .size(dp(6.))
-                        .rounded_full()
-                        .bg(theme.danger),
-                )
-            })
             .when(!parts.is_empty(), |d| {
                 d.child(div().flex_none().child(parts.join(" · ")))
             })
             .when_some(status, |d, status| {
-                d.when(!parts.is_empty(), |d| d.child("·")).child(
-                    div()
-                        .flex_none()
-                        .when(failed, |d| d.text_color(theme.danger))
-                        .when(live, |d| d.text_color(tone.text))
-                        .child(status),
-                )
+                d.when(!parts.is_empty(), |d| d.child("·")).child(status)
             })
             .when_some(
                 m.description.clone().filter(|_| !failed && !live),
@@ -862,7 +927,7 @@ impl MeetingList {
                             .id(SharedString::from(format!("meeting-description-{}", m.id)))
                             .min_w_0()
                             .truncate()
-                            .text_color(tone.text_faint)
+                            .text_color(tone.text_muted)
                             .child(format!("— {text}"))
                             .test_support(),
                     )
@@ -873,7 +938,7 @@ impl MeetingList {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_color(tone.text_faint)
+                        .text_color(tone.text_muted)
                         .child(format!("— {e}")),
                 )
             })
@@ -887,21 +952,15 @@ impl MeetingList {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match self.rows.get(ix).copied() {
-            Some(ListRow::Header(group)) => {
-                let tone = design::tone(cx);
-                div()
-                    .id(SharedString::from(format!("meetings-group-{}", group.id())))
-                    .w_full()
-                    .px(dp(14.))
-                    .pt(if ix == 0 { dp(6.) } else { dp(12.) })
-                    .pb(dp(4.))
-                    .text_size(design::TEXT_SECONDARY)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(tone.text_muted)
-                    .child(t(group.key()))
-                    .test_support()
-                    .into_any_element()
-            }
+            Some(ListRow::Header(group)) => div()
+                .id(SharedString::from(format!("meetings-group-{}", group.id())))
+                .w_full()
+                .px(dp(16.))
+                .pt(if ix == 0 { dp(4.) } else { dp(14.) })
+                .pb(dp(4.))
+                .child(design::section_header(t(group.key()), cx))
+                .test_support()
+                .into_any_element(),
             Some(ListRow::Meeting(i)) => match self.meetings.get(i).cloned() {
                 Some(m) => self.render_row(&m, window, cx),
                 None => div().into_any_element(),
@@ -920,7 +979,7 @@ impl MeetingList {
             div()
                 .flex_1()
                 .min_w_0()
-                .child(Input::new(&self.rename_input).xsmall())
+                .child(Input::new(&self.rename_input))
                 .on_action(
                     cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
                         this.cancel_rename(cx)
@@ -944,7 +1003,8 @@ impl MeetingList {
         let menu_weak = weak.clone();
         let more = Button::new(SharedString::from(format!("meeting-menu-{id}")))
             .ghost()
-            .xsmall()
+            .small()
+            .size(design::ICON_BUTTON)
             .icon(icon("ellipsis"))
             .tooltip(t("meetings.list.more"))
             .dropdown_menu(move |menu, _, cx| {
@@ -969,27 +1029,28 @@ impl MeetingList {
         div()
             .id(SharedString::from(format!("meeting-{id}")))
             .w_full()
-            .px(dp(6.))
+            .px(dp(8.))
             .child(
                 v_flex()
                     .id(SharedString::from(format!("meeting-open-{id}")))
                     .group(group_id.clone())
                     .w_full()
-                    // ~44 pt: a 13 pt title line over an 11 pt status line.
+                    // 50 pt: an 18 pt title line over a 16 pt status line,
+                    // 8 pt inside the fill all round.
                     .px(dp(8.))
-                    .py(dp(5.))
-                    .gap(dp(1.))
+                    .py(dp(8.))
                     .rounded(design::RADIUS_CHIP)
                     .when_some(bg, |d, bg| d.bg(bg))
+                    // Hover: the sidebar's half-strength selection fill.
                     .when(!selected, |d| {
-                        d.hover(move |s| s.bg(tone.raised.opacity(0.5)))
+                        d.hover(move |s| s.bg(tone.selection.opacity(0.5)))
                     })
                     .child(
                         h_flex()
                             .w_full()
                             .h(dp(18.))
                             .line_height(dp(18.))
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .child(title)
                             .when(!renaming, |d| {
                                 d.child(
@@ -998,7 +1059,7 @@ impl MeetingList {
                                         .flex_none()
                                         .child(
                                             design::mono(super::clock_time(m.started_at))
-                                                .text_size(dp(11.))
+                                                .text_size(design::TEXT_SECONDARY)
                                                 .text_color(tone.text_muted)
                                                 .group_hover(group_id.clone(), |s| s.opacity(0.)),
                                         )
@@ -1017,9 +1078,13 @@ impl MeetingList {
                     .child(
                         div()
                             .w_full()
-                            .h(dp(15.))
-                            .line_height(dp(15.))
-                            .child(self.render_status(m, cx)),
+                            .h(design::LINE_SECONDARY)
+                            .line_height(design::LINE_SECONDARY)
+                            .child(self.render_status(
+                                m,
+                                selected && !super::is_narrow(window),
+                                cx,
+                            )),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1077,8 +1142,7 @@ impl MeetingList {
                     )
                     .child(
                         Button::new("meetings-titles-cancel")
-                            .ghost()
-                            .xsmall()
+                            .outline()
                             .label(t("meetings.list.cancel"))
                             .disabled(bulk.cancelled)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel_titles(cx))),
@@ -1090,8 +1154,7 @@ impl MeetingList {
             (self.title_candidates > 0).then(|| {
                 let n = self.title_candidates.to_string();
                 Button::new("meetings-titles-generate")
-                    .ghost()
-                    .xsmall()
+                    .outline()
                     .icon(icon("sparkles"))
                     .label(t_args("meetings.titles.generateAll", &[("count", &n)]))
                     .tooltip(t("meetings.titles.generateAllHint"))
@@ -1103,7 +1166,8 @@ impl MeetingList {
             .id("meetings-list-footer")
             .flex_none()
             .w_full()
-            .h(dp(28.))
+            // Room for a 26 pt button, level with the 36 pt column headers.
+            .h(dp(36.))
             .px(dp(10.))
             .gap_2()
             .justify_between()
@@ -1239,12 +1303,12 @@ impl MeetingList {
             v_flex()
                 .id(SharedString::from(format!("search-hit-{id}")))
                 .w_full()
-                .gap(dp(6.))
+                .gap(dp(4.))
                 .px(design::SECTION_X)
                 .py(dp(10.))
                 .when(self.selected == Some(id), |d| d.bg(tone.selection))
                 .when(self.selected != Some(id), |d| {
-                    d.hover(|s| s.bg(tone.raised))
+                    d.hover(move |s| s.bg(tone.selection.opacity(0.5)))
                 })
                 .child(
                     div()
@@ -1258,7 +1322,7 @@ impl MeetingList {
                     |d, text| {
                         d.child(
                             div()
-                                .text_size(dp(12.5))
+                                .text_size(design::TEXT_SECONDARY)
                                 .text_color(tone.text_muted)
                                 .truncate()
                                 .child(text),
@@ -1301,13 +1365,14 @@ impl MeetingList {
                 div()
                     .flex_none()
                     .min_w(dp(44.))
-                    .child(design::chip(label, line.is_some(), cx)),
+                    .child(design::chip(label, false, cx)),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(dp(12.5))
+                    .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
                     .text_color(tone.text_muted)
                     .line_clamp(2)
                     .child(highlighted(&sn.text, &sn.highlights, cx)),
@@ -1340,18 +1405,29 @@ pub(crate) fn highlighted_with(
     cx: &App,
 ) -> StyledText {
     let tone = design::tone(cx);
-    // Like the macOS find highlight: text stays readable on the tint, and
-    // the current match is dark text on the accent yellow in both themes.
+    // Like the macOS find highlight: a soft yellow behind dark text in
+    // light, a muted amber behind light text in dark; the current match is
+    // a stronger fill with an underline so it is found without color alone.
+    let (fill, current_fill, ink) = if tone.dark {
+        (rgba(0x7a5c1466), rgba(0x9a7418d9), tone.text)
+    } else {
+        (rgba(0xffe28a99), rgba(0xffcf40ff), rgba(0x1d1d1bff).into())
+    };
     let style = HighlightStyle {
-        color: Some(tone.text),
-        background_color: Some(tone.accent_soft),
-        font_weight: Some(FontWeight::SEMIBOLD),
+        color: Some(ink),
+        background_color: Some(fill.into()),
+        font_weight: Some(FontWeight::MEDIUM),
         ..Default::default()
     };
     let strong = HighlightStyle {
-        color: Some(black()),
-        background_color: Some(tone.accent),
+        color: Some(ink),
+        background_color: Some(current_fill.into()),
         font_weight: Some(FontWeight::SEMIBOLD),
+        underline: Some(UnderlineStyle {
+            thickness: px(2.),
+            color: Some(ink),
+            wavy: false,
+        }),
         ..Default::default()
     };
     let ranges: Vec<(Range<usize>, HighlightStyle)> = ranges
@@ -1411,7 +1487,7 @@ impl Render for MeetingList {
             })
             .flex_1()
             .min_h_0()
-            .pb(dp(6.))
+            .pb(dp(8.))
             .into_any_element()
         };
         v_flex()
@@ -1421,16 +1497,15 @@ impl Render for MeetingList {
             .size_full()
             .min_h_0()
             .child(
-                div().flex_none().px(dp(10.)).pt(dp(8.)).pb(dp(6.)).child(
+                div().flex_none().px(dp(10.)).pt(dp(8.)).pb(dp(8.)).child(
                     Input::new(&self.search_input)
-                        .small()
                         .prefix(icon("search").small().text_color(tone.text_muted))
                         .cleanable(true),
                 ),
             )
             .children(
                 self.render_turn_consent(cx)
-                    .map(|c| div().flex_none().px(dp(10.)).pb(dp(6.)).child(c)),
+                    .map(|c| div().flex_none().px(dp(10.)).pb(dp(8.)).child(c)),
             )
             .child(content)
             .child(self.render_footer(cx))

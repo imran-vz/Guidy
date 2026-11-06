@@ -4,12 +4,11 @@
 
 use crate::logic::languages::{available_languages, effective_language, language_label};
 use crate::state::AppState;
-use crate::ui::design::dp;
+use crate::ui::design::{self, dp};
 use crate::ui::kit::{reset_button, t, SettingRow};
 use gpui_kit::component::combobox::{Combobox, ComboboxEvent, ComboboxState};
-use gpui_kit::component::h_flex;
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
-use gpui_kit::component::{IndexPath, Sizable};
+use gpui_kit::component::IndexPath;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -168,30 +167,29 @@ impl Render for LanguageSelector {
         SettingRow::new("language-selector", t("settings.general.language.title"))
             .description(t("settings.general.language.descriptionShort"))
             .error(error)
-            .control(
-                h_flex()
-                    .gap_1()
-                    .child(reset_button("language-reset", false, |_, cx| {
+            .control(crate::ui::kit::trailing(
+                Some(
+                    reset_button("language-reset", false, |_, cx| {
                         AppState::global(cx)
                             .update(cx, |s, cx| s.reset_setting("selected_language", cx))
-                    }))
+                    })
+                    .into_any_element(),
+                ),
+                div()
+                    .id("language-combobox")
+                    .w(design::CONTROL_COLUMN_W)
                     .child(
-                        div().id("language-combobox").w(dp(200.)).child(
-                            Combobox::new(&self.combo)
-                                .small()
-                                .menu_width(dp(240.))
-                                .menu_max_h(dp(260.))
-                                .search_placeholder(t(
-                                    "settings.general.language.searchPlaceholder",
-                                ))
-                                .empty(|_, _| {
-                                    div()
-                                        .p_2()
-                                        .text_sm()
-                                        .child(t("settings.general.language.noResults"))
-                                }),
-                        ),
+                        Combobox::new(&self.combo)
+                            .menu_width(dp(240.))
+                            .menu_max_h(dp(260.))
+                            .search_placeholder(t("settings.general.language.searchPlaceholder"))
+                            .empty(|_, _| {
+                                div()
+                                    .p_2()
+                                    .text_sm()
+                                    .child(t("settings.general.language.noResults"))
+                            }),
                     ),
-            )
+            ))
     }
 }

@@ -1,6 +1,8 @@
-//! Meetings page: a full-height destination. The title bar holds the
-//! Meetings | People | Settings switch and the recorder (record, timer,
-//! pause, stop, the next calendar event). Meetings is a split view: the
+//! Meetings page: a full-height destination. The sidebar lists its three
+//! views (Meetings, and under it People and Meeting settings, whose
+//! categories it lists one level deeper while they are shown); the title
+//! bar holds the view's title and the recorder (record, timer, pause,
+//! stop, the next calendar event). Meetings is a split view: the
 //! list (search, day groups) and the open meeting's detail, each with its
 //! own scroll regions; below ~640 pt of content they stack.
 //!
@@ -223,11 +225,20 @@ pub enum MeetingsTab {
 }
 
 impl MeetingsTab {
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Meetings => "meetings",
             Self::People => "people",
             Self::Settings => "settings",
+        }
+    }
+
+    /// The translation key of the tab's name (sidebar row, toolbar title).
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Meetings => "meetings.title",
+            Self::People => "meetings.tabs.people",
+            Self::Settings => "meetings.tabs.meetingSettings",
         }
     }
 }
@@ -281,22 +292,34 @@ pub fn init(cx: &mut App) {
 /// The list's default width and its limits: one for the Meetings, People
 /// and Settings tabs, which share the split ([`split_view`]).
 pub(crate) const LIST_W: Pixels = dp(240.);
+/// The list's default width in a window wider than [`LIST_WIDE_FROM`]:
+/// longer titles fit, and the extra room isn't all given to the detail.
+const LIST_W_WIDE: Pixels = dp(280.);
+const LIST_WIDE_FROM: Pixels = dp(1280.);
 pub(crate) const LIST_MIN_W: Pixels = dp(220.);
 pub(crate) const LIST_MAX_W: Pixels = dp(400.);
 /// Below this content width the list and the detail stack (Meetings), the
-/// people list narrows and the settings categories become a popup button.
+/// people list narrows.
 pub(crate) const STACK_BELOW: Pixels = dp(640.);
 /// From this detail width, notes and transcript sit side by side.
 const SIDE_BY_SIDE_FROM: Pixels = dp(880.);
 /// Below this detail width, the actions get their own row.
 const COMPACT_BELOW: Pixels = dp(640.);
+/// Under this transcript width the speaker and time go above each turn.
+const NARROW_TRANSCRIPT_BELOW: Pixels = dp(560.);
+/// Under this detail width the player gets its own row in the header.
+const PLAYER_ROW_BELOW: Pixels = dp(560.);
 
 /// What the Meetings page remembers while the app runs (the window can be
 /// closed and opened again): the list width and the meeting shown.
 #[derive(Default)]
 struct MeetingsMemory {
     selected: Option<MeetingId>,
+    /// The width the user dragged the list to (`None`: never dragged).
     list_width: Option<Pixels>,
+    /// The list's default width for the window last shown
+    /// ([`default_list_width`]).
+    default_width: Option<Pixels>,
 }
 impl Global for MeetingsMemory {}
 
@@ -307,7 +330,24 @@ fn remember(cx: &mut App, f: impl FnOnce(&mut MeetingsMemory)) {
 /// Whether the content area (the window less its sidebar) is narrow enough
 /// to stack the list and the detail.
 pub(crate) fn is_narrow(window: &Window) -> bool {
-    window.viewport_size().width - design::SIDEBAR_W < STACK_BELOW
+    window.viewport_size().width - crate::ui::main_window::sidebar_width(window) < STACK_BELOW
+}
+
+/// The list's default width for this window: wider above
+/// [`LIST_WIDE_FROM`].
+fn default_list_width(window: &Window) -> Pixels {
+    if window.viewport_size().width > LIST_WIDE_FROM {
+        LIST_W_WIDE
+    } else {
+        LIST_W
+    }
+}
+
+/// The remembered width, else the default for the window last shown.
+fn remembered_list_width(cx: &App) -> Pixels {
+    cx.try_global::<MeetingsMemory>()
+        .and_then(|m| m.list_width.or(m.default_width))
+        .unwrap_or(LIST_W)
 }
 
 /// The list's width in `split` now, else the remembered or default one.
@@ -317,8 +357,7 @@ pub(crate) fn list_width(split: &Entity<ResizableState>, cx: &App) -> Pixels {
         .sizes()
         .first()
         .copied()
-        .or_else(|| cx.try_global::<MeetingsMemory>().and_then(|m| m.list_width))
-        .unwrap_or(LIST_W)
+        .unwrap_or_else(|| remembered_list_width(cx))
         .clamp(LIST_MIN_W, LIST_MAX_W)
 }
 
@@ -333,10 +372,7 @@ pub(crate) fn split_view(
     detail: impl IntoElement,
     cx: &App,
 ) -> AnyElement {
-    let remembered = cx
-        .try_global::<MeetingsMemory>()
-        .and_then(|m| m.list_width)
-        .unwrap_or(LIST_W);
+    let remembered = remembered_list_width(cx);
     h_resizable(id)
         .with_state(split)
         .on_resize(|state, _, cx| {
@@ -363,6 +399,9 @@ pub struct MeetingsPage {
     settings: Entity<MeetingSettingsView>,
     /// The list | detail split, shared with People and Settings.
     split: Entity<ResizableState>,
+    /// The default list width last applied to the split
+    /// ([`Self::fit_list_to_window`]).
+    list_fitted_to: Option<Pixels>,
     focus: FocusHandle,
     /// Stack layout (narrow): the detail is shown over the list.
     stack_detail: bool,
@@ -443,6 +482,7 @@ impl MeetingsPage {
             people,
             settings,
             split,
+            list_fitted_to: None,
             focus: cx.focus_handle(),
             stack_detail: false,
             restore,
@@ -547,11 +587,7 @@ impl MeetingsPage {
         cx: &mut Context<Self>,
     ) {
         match ev {
-            DetailEvent::Back => {
-                self.stack_detail = false;
-                let focus = self.list.read(cx).focus_handle().clone();
-                window.focus(&focus, cx);
-            }
+            DetailEvent::Back => self.go_back(window, cx),
             DetailEvent::OpenSettings => self.show_settings(SettingsCategory::Linear, cx),
             DetailEvent::Delete(id) => {
                 let id = *id;
@@ -665,8 +701,7 @@ impl MeetingsPage {
                     .gap_2()
                     .child(
                         Button::new("meetings-init-retry")
-                            .secondary()
-                            .small()
+                            .outline()
                             .icon(icon("rotate-ccw"))
                             .label(t("meetings.init.retry"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -676,8 +711,7 @@ impl MeetingsPage {
                     .when(resettable, |row| {
                         row.child(
                             Button::new("meetings-init-reset")
-                                .secondary()
-                                .small()
+                                .outline()
                                 .icon(icon("archive"))
                                 .label(t("meetings.init.reset.action"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -703,6 +737,14 @@ impl MeetingsPage {
                     true
                 })
         });
+    }
+
+    /// Back from a meeting shown over the list (stack layout).
+    fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stack_detail = false;
+        let focus = self.list.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        cx.notify();
     }
 
     pub fn set_tab(&mut self, tab: MeetingsTab, cx: &mut Context<Self>) {
@@ -756,7 +798,7 @@ impl MeetingsPage {
         &self.people
     }
 
-    #[cfg(test)]
+    /// The meeting settings (the window's sidebar lists their categories).
     pub fn settings_view(&self) -> &Entity<MeetingSettingsView> {
         &self.settings
     }
@@ -887,22 +929,31 @@ impl MeetingsPage {
         }
     }
 
-    fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = [
-            (MeetingsTab::Meetings, "meetings.tabs.meetings"),
-            (MeetingsTab::People, "meetings.tabs.people"),
-            (MeetingsTab::Settings, "meetings.tabs.settings"),
-        ];
-        design::segmented(cx).children(tabs.into_iter().map(|(tab, key)| {
-            design::segment(
-                SharedString::from(format!("meetings-tab-{}", tab.id())),
-                t(key),
-                self.tab == tab,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| this.set_tab(tab, cx)))
-            .test_support()
-        }))
+    /// Until the user drags it, the list keeps the default width for the
+    /// window's size: [`LIST_W`], or [`LIST_W_WIDE`] in a wide window (the
+    /// split shared by Meetings, People and Settings follows a resize).
+    fn fit_list_to_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = default_list_width(window);
+        remember(cx, |m| m.default_width = Some(target));
+        let dragged = cx
+            .try_global::<MeetingsMemory>()
+            .is_some_and(|m| m.list_width.is_some());
+        if dragged || is_narrow(window) {
+            return;
+        }
+        // Once per target (the split clamps to its container, so its width
+        // may never equal the target exactly).
+        let Some(current) = self.split.read(cx).sizes().first().copied() else {
+            return;
+        };
+        if self.list_fitted_to == Some(target) {
+            return;
+        }
+        self.list_fitted_to = Some(target);
+        if (current - target).abs() > px(0.5) {
+            self.split
+                .update(cx, |s, cx| s.resize_panel(0, target, window, cx));
+        }
     }
 
     /// Where the detail goes when no meeting is selected: what to do next.
@@ -917,7 +968,6 @@ impl MeetingsPage {
                 Some(
                     Button::new("meetings-empty-enable")
                         .primary()
-                        .small()
                         .label(t("meetings.recorder.turnOn"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.settings.update(cx, |s, cx| s.set_enabled(true, cx))
@@ -926,37 +976,31 @@ impl MeetingsPage {
                 ),
             )
         } else if list.is_empty() {
-            (
-                t("meetings.empty.title"),
-                t("meetings.empty.body"),
-                Some(
-                    Button::new("meetings-empty-record")
-                        .primary()
-                        .small()
-                        .icon(icon("circle"))
-                        .label(t("meetings.recorder.record"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.recorder.update(cx, |r, cx| r.toggle(cx))
-                        }))
-                        .into_any_element(),
-                ),
-            )
+            // Text only: the toolbar's Record is the one Record.
+            (t("meetings.empty.title"), t("meetings.empty.body"), None)
         } else {
             (t("meetings.empty.select"), SharedString::default(), None)
         };
+        let glyph = (!body.is_empty()).then(|| {
+            icon(if enabled { "notebook-text" } else { "mic-off" })
+                .size(dp(32.))
+                .text_color(tone.text_muted)
+        });
         v_flex()
             .id("meetings-placeholder")
             .size_full()
             .items_center()
             .justify_center()
-            .gap(dp(6.))
-            .px(dp(24.))
+            .gap(dp(8.))
+            .px(design::PAGE_X)
+            .children(glyph.map(|g| div().pb(dp(4.)).child(g)))
             .child(
                 div()
                     .text_size(design::TEXT_HEADLINE)
+                    .line_height(dp(22.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(if body.is_empty() {
-                        tone.text_faint
+                        tone.text_muted
                     } else {
                         tone.text
                     })
@@ -968,27 +1012,50 @@ impl MeetingsPage {
                         .max_w(dp(320.))
                         .text_center()
                         .text_size(design::TEXT_BODY)
+                        .line_height(design::LINE_BODY)
                         .text_color(tone.text_muted)
                         .child(body),
                 )
             })
-            .children(action.map(|a| div().pt(dp(6.)).child(a)))
+            .children(action.map(|a| div().pt(dp(8.)).child(a)))
             .test_support()
             .into_any_element()
     }
 
     fn render_meetings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let content_w = window.viewport_size().width - design::SIDEBAR_W;
+        let content_w =
+            window.viewport_size().width - crate::ui::main_window::sidebar_width(window);
         let stack = content_w < STACK_BELOW;
         let list_w = list_width(&self.split, cx);
         let detail_w = if stack { content_w } else { content_w - list_w };
+        let side_by_side = !stack && detail_w >= SIDE_BY_SIDE_FROM;
+        let transcript_w = if side_by_side {
+            detail_w / 2.
+        } else {
+            detail_w
+        };
         let layout = DetailLayout {
-            side_by_side: !stack && detail_w >= SIDE_BY_SIDE_FROM,
-            show_back: stack,
+            side_by_side,
+            stacked: stack,
+            player_row: detail_w < PLAYER_ROW_BELOW,
             compact: detail_w < COMPACT_BELOW,
+            narrow_transcript: transcript_w < NARROW_TRANSCRIPT_BELOW,
         };
         if let Some(d) = &self.detail {
             d.update(cx, |d, cx| d.set_layout(layout, cx));
+        }
+        // No meetings at all: one message across the content, not an empty
+        // list beside an empty detail (it still has the list's notices).
+        if self.detail.is_none()
+            && self.list.read(cx).is_empty()
+            && !self.list.read(cx).is_searching_now()
+        {
+            let notice = self.list.update(cx, |l, cx| l.turn_consent(cx));
+            return v_flex()
+                .size_full()
+                .children(notice.map(|n| div().flex_none().px(dp(16.)).pt(dp(12.)).child(n)))
+                .child(div().flex_1().min_h_0().child(self.render_placeholder(cx)))
+                .into_any_element();
         }
         let detail_pane = match &self.detail {
             Some(d) => d.clone().into_any_element(),
@@ -1013,6 +1080,7 @@ impl MeetingsPage {
 
 impl Render for MeetingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.fit_list_to_window(window, cx);
         let tone = design::tone(cx);
         let body: AnyElement = if let Some(init) = self.render_init(cx) {
             div()
@@ -1076,19 +1144,80 @@ impl Render for MeetingsPage {
 }
 
 impl crate::ui::pages::Page for MeetingsPage {
-    /// Meetings | People | Settings in the title's place: it stays put
-    /// while the recorder (right) grows and shrinks.
-    fn leading(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.render_init(cx).is_some() {
-            return None;
+    /// The shown view's name: the sidebar lists Meetings, People and
+    /// Meeting settings, and the title says which one this is.
+    fn title(&self, cx: &App) -> Option<SharedString> {
+        // Meeting settings: the shown category names the page (its sidebar
+        // row sits under "Meeting settings"), like a System Settings pane.
+        if self.tab == MeetingsTab::Settings {
+            return Some(self.settings.read(cx).category().label());
         }
-        Some(self.render_tabs(cx).into_any_element())
+        Some(t(self.tab.label_key()))
     }
 
-    fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// A meeting or a person shown over the list (stack layout): Back and
+    /// the title, at the toolbar's leading edge, so the detail below keeps
+    /// the page's edge for its title, tabs and body. The one Back style of
+    /// every list → detail stack.
+    fn leading(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.render_init(cx).is_some() {
             return None;
         }
+        let back = match self.tab {
+            MeetingsTab::Meetings if Self::is_stack(window) && self.is_stacked_detail() => {
+                Button::new("meeting-back")
+                    .tooltip(t("meetings.detail.back"))
+                    .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx)))
+            }
+            MeetingsTab::People if self.people.read(cx).is_stacked_detail(window, cx) => {
+                let people = self.people.clone();
+                Button::new("people-back")
+                    .tooltip(t("common.back"))
+                    .on_click(move |_, window, cx| people.update(cx, |p, cx| p.go_back(window, cx)))
+            }
+            _ => return None,
+        };
+        let tone = design::tone(cx);
+        Some(
+            h_flex()
+                .id("meetings-back-title")
+                .gap(dp(4.))
+                // The glyph, not the button's edge, sits on the page edge.
+                .ml(dp(-6.))
+                .child(back.ghost().small().icon(icon("chevron-left")))
+                .child(
+                    div()
+                        .id("toolbar-title")
+                        .min_w_0()
+                        .truncate()
+                        .text_size(design::TEXT_TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(tone.text)
+                        .child(t(self.tab.label_key()))
+                        .test_support(),
+                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    fn toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.render_init(cx).is_some() {
+            return None;
+        }
+        // The recording's title is on screen when its meeting is the one
+        // shown in the detail; elsewhere (People, settings, another
+        // meeting) the toolbar keeps it.
+        let recording = self.recorder.read(cx).recording_id();
+        let shown = self.tab == MeetingsTab::Meetings
+            && recording.is_some()
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|d| Some(d.read(cx).meeting_id) == recording)
+            && (!Self::is_stack(window) || self.stack_detail);
+        self.recorder
+            .update(cx, |r, cx| r.set_title_shown(shown, cx));
         Some(self.recorder.clone().into_any_element())
     }
 }

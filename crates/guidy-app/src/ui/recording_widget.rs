@@ -31,10 +31,11 @@ use crate::logic::floater::{
 use crate::logic::notch::bar_height;
 use crate::logic::recording_widget::{rows, CallCommand, CallPoll, HealthNotice, Row, WidgetModel};
 use crate::state::AppState;
+use crate::ui::brand;
 use crate::ui::design::{self, hud, Tone};
 use crate::ui::kit::{icon, t, t_args};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::{h_flex, v_flex, Sizable};
+use gpui_kit::component::{h_flex, v_flex, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::meetings::calls::{set_policy, Call, CallDetector, CallPolicy};
@@ -51,8 +52,12 @@ const CALL_POLL: Duration = Duration::from_secs(1);
 const POINTER_POLL: Duration = Duration::from_millis(16);
 const WAVE_MAX: f32 = 16.;
 const RED: u32 = 0xff453a;
-/// Bars in the floater's and the leaf's waveform (the newest).
+/// Attention (a source reconnecting or silent) on the black chrome.
+const ORANGE: u32 = 0xff9f0a;
+/// Bars in the leaf's waveform, and the stopped floater's (the newest).
 const BLOB_BARS: usize = 5;
+/// Bars in the recording floater's level meter, beside its timer.
+const PILL_BARS: usize = 3;
 /// Bars in the wings' waveform: it is a pause button, so the rest of the
 /// wing is left to grab.
 const WING_BARS: usize = 7;
@@ -751,23 +756,31 @@ fn place(r: R) -> Div {
         .h(px(r.h))
 }
 
-/// The recording dot: red and breathing while recording, amber and still
-/// while paused.
-fn live_dot(paused: bool, tone: Tone, cx: &App) -> AnyElement {
-    let dot = div().size(hud(8.)).rounded_full();
-    if paused {
-        return dot.bg(tone.accent).into_any_element();
+/// A status color for text and marks drawn in `tone`: the shared status
+/// colors on the themed panel, their dark variants on the black chrome
+/// (which is black whatever the mode).
+fn status_in(tone: Tone, status: design::Status, cx: &App) -> Hsla {
+    if tone.dark == design::tone(cx).dark {
+        return design::status_color(status, cx);
     }
-    let dot = dot.bg(rgb(RED));
-    if cx.reduce_motion() {
-        return dot.into_any_element();
+    match status {
+        design::Status::Live | design::Status::Error => rgb(RED).into(),
+        design::Status::Attention => rgb(ORANGE).into(),
+        _ => tone.text_muted,
     }
-    dot.with_animation(
-        "recording-widget-dot",
-        Animation::new(Duration::from_millis(1600)).repeat(),
-        |el, delta| el.opacity(0.45 + 0.55 * (delta * std::f32::consts::TAU).cos().abs()),
-    )
-    .into_any_element()
+}
+
+/// The recording dot: steady red while recording, grey while paused.
+fn live_dot(paused: bool, tone: Tone, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .size(hud(8.))
+        .rounded_full()
+        .bg(if paused {
+            tone.text_muted
+        } else {
+            status_in(tone, design::Status::Live, cx)
+        })
 }
 
 /// The newest `bars` levels as bars up to `max` tall.
@@ -800,6 +813,7 @@ fn stop_button(id: &'static str, r: R) -> Stateful<Div> {
         .cursor_pointer()
         .bg(hsla(0., 0., 1., 0.14))
         .hover(|s| s.bg(hsla(0., 0., 1., 0.26)))
+        .active(|s| s.bg(pressed_on_black()))
         .child(
             div()
                 .size(px(r.w * 0.36))
@@ -834,6 +848,7 @@ fn start_button(id: &'static str, r: R, starting: bool) -> Stateful<Div> {
         .when(!starting, |d| {
             d.cursor_pointer()
                 .hover(|s| s.bg(hsla(0., 0., 1., 0.26)))
+                .active(|s| s.bg(pressed_on_black()))
                 .on_click(|_, _, cx| start(cx))
         })
 }
@@ -867,49 +882,145 @@ fn blob_columns(b: R, stage: &Stage) -> (f32, f32) {
     (b.x + gap + wave / 2., b.x + 2. * gap + wave + stop / 2.)
 }
 
-/// The free floater's controls in the pill `b`: the waveform's area at the
-/// left, then the pause and stop buttons at the right.
-fn pill_layout(b: R, stage: &Stage) -> (R, R, R) {
-    let s = stage.d(26.).min(b.h * 0.8);
-    let stop = R::centered(P::new(b.right() - stage.d(20.), b.center().y), s, s);
-    let pause = R::centered(P::new(stop.center().x - stage.d(28.), b.center().y), s, s);
-    let x = b.x + stage.d(13.);
+/// The free floater's controls in the pill `b`.
+struct PillLayout {
+    /// The level meter while recording, at the left.
+    meter: R,
+    /// The recording dot, before the time.
+    dot: R,
+    /// The elapsed time.
+    timer: R,
+    /// The time's size: a little smaller from an hour on, to fit.
+    timer_size: f32,
+    /// The waveform while stopped: the whole left of the pill.
+    wave: R,
+    pause: R,
+    stop: R,
+}
+
+/// Bars of the recording pill's meter: thinner and dimmer than the pause
+/// sign beside them, so the two never read alike.
+const METER_BAR: f32 = 2.;
+const METER_GAP: f32 = 2.;
+
+/// Recording, the pill reads "ıIı ● 12:34  ‖ ■" (`long`: the time has
+/// hours, so the left is packed tighter); stopped (a call's hint), a
+/// waveform and the record button.
+fn pill_layout(b: R, stage: &Stage, long: bool) -> PillLayout {
+    let s = stage.d(24.).min(b.h * 0.8);
+    let cy = b.center().y;
+    let stop = R::centered(P::new(b.right() - stage.d(18.), cy), s, s);
+    // 4 pt between the two targets.
+    let pause = R::centered(P::new(stop.center().x - s - stage.d(4.), cy), s, s);
+    let x = b.x + stage.d(12.);
     let wave = R {
         x,
         y: b.y,
         w: (pause.x - stage.d(4.) - x).max(0.),
         h: b.h,
     };
-    (wave, pause, stop)
+    let bars = PILL_BARS as f32;
+    let meter_w = stage.d(METER_BAR * bars + METER_GAP * (bars - 1.));
+    let meter = R {
+        x,
+        y: b.y,
+        w: meter_w,
+        h: b.h,
+    };
+    let (gap, timer_size) = if long { (4., 10.5) } else { (6., 11.) };
+    let dot_x = meter.right() + stage.d(gap + 1.);
+    let dot = R::centered(P::new(dot_x + stage.d(3.), cy), stage.d(6.), stage.d(6.));
+    let timer_x = dot.right() + stage.d(gap - 1.);
+    let timer = R {
+        x: timer_x,
+        y: b.y,
+        w: (pause.x - timer_x).max(0.),
+        h: b.h,
+    };
+    PillLayout {
+        meter,
+        dot,
+        timer,
+        timer_size,
+        wave,
+        pause,
+        stop,
+    }
 }
 
-/// The pill's waveform: the newest levels as dots that rise into bars,
-/// fading at both ends.
-fn dot_wave(model: &WidgetModel, r: R) -> Stateful<Div> {
+/// The pill's waveform: the newest `bars` levels as dots that rise into
+/// bars. The stopped pill's wider waveform fades at both ends; the meter
+/// beside the timer is even.
+fn dot_wave(model: &WidgetModel, r: R, bars: usize) -> Stateful<Div> {
     let levels: Vec<f32> = model.wave().collect();
-    let from = levels.len().saturating_sub(BLOB_BARS);
+    let from = levels.len().saturating_sub(bars);
     let n = levels.len() - from;
-    let fade = move |i: usize| match i.min(n.saturating_sub(1) - i) {
-        0 => 0.35,
-        1 => 0.7,
+    let wide = bars > PILL_BARS;
+    let fade = move |i: usize| match (wide, i.min(n.saturating_sub(1) - i)) {
+        (false, _) => 0.72,
+        (true, 0) => 0.35,
+        (true, 1) => 0.7,
         _ => 0.92,
+    };
+    let (w, gap, max) = if wide {
+        (3., 4.5, 14.)
+    } else {
+        (METER_BAR, METER_GAP, 12.)
     };
     place(r).id("blob-wave").flex().items_center().child(
         h_flex()
-            .gap(hud(4.5))
+            .gap(hud(gap))
             .items_center()
             .when(model.paused() || model.hinting(), |d| d.opacity(0.35))
             .children(levels[from..].iter().enumerate().map(move |(i, v)| {
                 div()
-                    .w(hud(3.))
-                    .h(hud(bar_height(*v, 14.)))
-                    .rounded(hud(1.5))
+                    .w(hud(w))
+                    .h(hud(bar_height(*v, max)))
+                    .rounded(hud(w / 2.))
                     .bg(hsla(0., 0., 1., fade(i)))
             })),
     )
 }
 
-/// A bare round button of the pill at `r`: no background until hovered.
+/// The recording pill's dot and elapsed time: the stable "this records"
+/// signal (grey while paused).
+fn pill_status(m: &WidgetModel, l: &PillLayout, content: f32) -> [AnyElement; 2] {
+    let paused = m.paused();
+    [
+        place(l.dot)
+            .id("recording-widget-dot-blob")
+            .rounded_full()
+            .bg(if paused {
+                hsla(0., 0., 1., 0.45)
+            } else {
+                rgb(RED).into()
+            })
+            .opacity(content)
+            .test_support()
+            .into_any_element(),
+        place(l.timer)
+            .id("recording-widget-timer-blob")
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .font_features(design::tabular_figures())
+            .text_size(hud(l.timer_size))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if paused {
+                hsla(0., 0., 1., 0.58)
+            } else {
+                white()
+            })
+            .child(m.timer(now_ms()))
+            .opacity(content)
+            .test_support()
+            .into_any_element(),
+    ]
+}
+
+/// A bare round button of the pill at `r`: no background until hovered,
+/// a stronger fill while pressed.
 fn pill_button(id: &'static str, r: R, label: SharedString) -> Stateful<Div> {
     place(r)
         .id(id)
@@ -920,24 +1031,33 @@ fn pill_button(id: &'static str, r: R, label: SharedString) -> Stateful<Div> {
         .justify_center()
         .cursor_pointer()
         .hover(|s| s.bg(hsla(0., 0., 1., 0.14)))
+        .active(|s| s.bg(pressed_on_black()))
 }
 
-/// The pill's pause button: two white bars, or the play sign while paused.
+/// The pressed fill of a button on the HUD's black chrome: a step past
+/// its hover, so a click shows before it lands (same footprint).
+fn pressed_on_black() -> Hsla {
+    hsla(0., 0., 1., 0.34)
+}
+
+/// The pressed fill of a button on a HUD panel in `tone`: a step past its
+/// hover fill (`raised`), toward the text colour, in either theme.
+fn pressed_on_panel(tone: Tone) -> Hsla {
+    tone.raised.blend(tone.text.opacity(0.14))
+}
+
+/// The pill's pause button: the shared filled pause glyph in white, or the
+/// filled play sign while paused.
 fn pill_pause_button(m: &WidgetModel, r: R) -> Stateful<Div> {
     let paused = m.paused();
-    let bar = || div().w(hud(3.5)).h(hud(12.)).rounded(hud(1.)).bg(white());
     let label = if paused {
         t("notch.resume")
     } else {
         t("notch.pause")
     };
     pill_button("recording-widget-pause-blob", r, label)
-        .when(paused, |d| {
-            d.text_color(white()).child(icon("play").small())
-        })
-        .when(!paused, |d| {
-            d.child(h_flex().gap(hud(3.)).child(bar()).child(bar()))
-        })
+        .text_color(white())
+        .child(brand::pause_icon(paused).with_size(hud(16.)))
         .on_click(move |_, _, cx| set_paused(!paused, cx))
 }
 
@@ -1075,7 +1195,7 @@ fn panel_status(m: &WidgetModel, tone: Tone, cx: &App) -> Div {
         )
         .child(
             div()
-                .font_family(crate::theme::MONO_FONT)
+                .font_features(design::tabular_figures())
                 .text_size(design::HUD_TEXT_MONO)
                 .text_color(tone.text_muted)
                 .child(m.timer(now_ms())),
@@ -1096,10 +1216,10 @@ fn collapse_button(tone: Tone) -> impl IntoElement {
 /// The pause (or resume) sign shown over a waveform: while the pointer is
 /// over `group` (the waveform's area), always while paused.
 fn pause_sign(id: &'static str, size: f32, paused: bool, group: &'static str) -> Stateful<Div> {
-    let (name, label) = if paused {
-        ("play", t("notch.resume"))
+    let label = if paused {
+        t("notch.resume")
     } else {
-        ("pause", t("notch.pause"))
+        t("notch.pause")
     };
     div()
         .id(id)
@@ -1113,7 +1233,7 @@ fn pause_sign(id: &'static str, size: f32, paused: bool, group: &'static str) ->
         .bg(hsla(0., 0., 1., 0.18))
         .group_hover(group, |s| s.bg(hsla(0., 0., 1., 0.3)))
         .text_color(hsla(0., 0., 1., 0.95))
-        .child(icon(name).xsmall())
+        .child(brand::pause_icon(paused).xsmall())
         .when(!paused, |d| {
             d.opacity(0.).group_hover(group, |s| s.opacity(1.))
         })
@@ -1174,6 +1294,7 @@ fn icon_button(id: &'static str, name: &str, label: SharedString, tone: Tone) ->
         .cursor_pointer()
         .text_color(tone.text_muted)
         .hover(move |s| s.bg(tone.raised).text_color(tone.text))
+        .active(move |s| s.bg(pressed_on_panel(tone)).text_color(tone.text))
         .child(icon(name).small())
 }
 
@@ -1197,20 +1318,21 @@ fn hint_action(
         .bg(hsla(0., 0., 1., 0.92))
         .cursor_pointer()
         .hover(|s| s.bg(hsla(0., 0., 1., 1.)))
+        .active(|s| s.bg(hsla(0., 0., 0.82, 1.)))
         .child(label)
         .on_click(move |_, _, cx| on_click(cx))
         .test_support()
         .into_any_element()
 }
 
-/// A labelled pill button.
-fn pill(id: &'static str, name: &str, label: SharedString, tone: Tone) -> Stateful<Div> {
+/// A labelled pill button with the icon `glyph`.
+fn pill(id: &'static str, glyph: Icon, label: SharedString, tone: Tone) -> Stateful<Div> {
     h_flex()
         .id(id)
         .aria_label(label.clone())
         .h(hud(30.))
         .px(hud(12.))
-        .gap(hud(6.))
+        .gap(hud(4.))
         .items_center()
         .rounded_full()
         .cursor_pointer()
@@ -1218,18 +1340,25 @@ fn pill(id: &'static str, name: &str, label: SharedString, tone: Tone) -> Statef
         .bg(tone.raised)
         .text_color(tone.text)
         .hover(move |s| s.bg(tone.raised.opacity(0.7)))
-        .child(icon(name).xsmall())
+        // Pressed: a step darker (light) or lighter (dark) than at rest.
+        .active(move |s| s.bg(pressed_on_panel(tone)))
+        .child(glyph.xsmall())
         .child(label)
 }
 
 /// One audio source: its icon, name and a three-bar activity meter.
-fn source_chip(model: &WidgetModel, track: Track, tone: Tone) -> AnyElement {
+fn source_chip(model: &WidgetModel, track: Track, tone: Tone, cx: &App) -> AnyElement {
     let (id, name, label) = match track {
         Track::Mic => ("source-mic", "mic", t("meetings.widget.mic")),
         Track::System => ("source-system", "volume-2", t("meetings.widget.system")),
     };
     let level = model.source_level(track);
     let active = model.source_active(track);
+    // Lit bars use the accent ink: yellow on dark, the dark gold on light
+    // (≥ 4.5:1 on white, where the yellow fill is 1.6:1). Unlit bars stay
+    // visible but clearly secondary, ≥ 3:1 apart from the lit ones.
+    let lit_bar = tone.accent_text;
+    let unlit_bar = tone.line_art.opacity(0.5);
     let meter = h_flex()
         .gap(hud(2.))
         .h(hud(10.))
@@ -1240,13 +1369,13 @@ fn source_chip(model: &WidgetModel, track: Track, tone: Tone) -> AnyElement {
                 .w(hud(2.5))
                 .h(hud(4. + step * 12.))
                 .rounded(hud(1.))
-                .bg(if lit { tone.accent } else { tone.hairline })
+                .bg(if lit { lit_bar } else { unlit_bar })
         }));
     h_flex()
         .id(id)
-        .gap(hud(6.))
+        .gap(hud(4.))
         .px(hud(10.))
-        .py(hud(5.))
+        .py(hud(4.))
         .items_center()
         .rounded_full()
         .border_1()
@@ -1254,8 +1383,10 @@ fn source_chip(model: &WidgetModel, track: Track, tone: Tone) -> AnyElement {
         .bg(tone.surface)
         .text_size(hud(12.))
         .text_color(match model.source_health(track) {
-            SourceHealth::Lost => Hsla::from(rgb(RED)),
-            SourceHealth::Reconnecting | SourceHealth::Silent => tone.accent,
+            SourceHealth::Lost => status_in(tone, design::Status::Error, cx),
+            SourceHealth::Reconnecting | SourceHealth::Silent => {
+                status_in(tone, design::Status::Attention, cx)
+            }
             SourceHealth::Healthy if active => tone.text,
             SourceHealth::Healthy => tone.text_muted,
         })
@@ -1300,11 +1431,7 @@ fn transcript_row(i: usize, row: &Row, tone: Tone, window: &Window, cx: &App) ->
     v_flex()
         .id(SharedString::from(format!("live-row-{i}")))
         .gap(hud(4.))
-        .child(design::hud_label(label, cx).text_color(if you {
-            tone.accent_text
-        } else {
-            tone.text_muted
-        }))
+        .child(design::hud_label(label, cx).text_color(tone.text_muted))
         .child(
             div()
                 .text_size(design::HUD_TEXT_BODY)
@@ -1368,7 +1495,9 @@ impl RecordingWidgetView {
         let stage = desk.stage(self.screen);
         let b = local(f.blob(desk)?, desk.origin(self.screen));
         let content = f.blob_content();
-        let (wave_rect, pause_rect, stop_rect) = pill_layout(b, stage);
+        // From an hour on the time needs more room.
+        let layout = pill_layout(b, stage, m.timer(now_ms()).len() > 5);
+        let (pause_rect, stop_rect) = (layout.pause, layout.stop);
         // Stopped, there is nothing to pause.
         let pausable = !m.hinting();
         let blob = place(b)
@@ -1410,7 +1539,20 @@ impl RecordingWidgetView {
                 .absolute()
                 .inset_0()
                 .child(blob)
-                .child(dot_wave(m, wave_rect).opacity(content).test_support())
+                .when(pausable, |d| {
+                    d.children(pill_status(m, &layout, content)).child(
+                        dot_wave(m, layout.meter, PILL_BARS)
+                            .opacity(content)
+                            .test_support(),
+                    )
+                })
+                .when(!pausable, |d| {
+                    d.child(
+                        dot_wave(m, layout.wave, BLOB_BARS)
+                            .opacity(content)
+                            .test_support(),
+                    )
+                })
                 .when(pausable, |d| {
                     d.child(
                         pill_pause_button(m, pause_rect)
@@ -1532,7 +1674,8 @@ impl RecordingWidgetView {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .font_family(crate::theme::MONO_FONT)
+                    .whitespace_nowrap()
+                    .font_features(design::tabular_figures())
                     .text_size(hud(11.))
                     .text_color(if m.paused() {
                         tone.text_muted
@@ -1784,6 +1927,7 @@ impl RecordingWidgetView {
                     d.bg(hsla(0., 0., 1., 0.92))
                         .cursor_pointer()
                         .hover(|s| s.bg(hsla(0., 0., 1., 1.)))
+                        .active(|s| s.bg(hsla(0., 0., 0.82, 1.)))
                         .on_click(|_, _, cx| start(cx))
                 }
             })
@@ -1849,8 +1993,8 @@ impl RecordingWidgetView {
                 h_flex()
                     .id(id)
                     .size_full()
-                    .pl(hud(14.))
-                    .pr(hud(6.))
+                    .pl(hud(16.))
+                    .pr(hud(8.))
                     .gap(hud(8.))
                     .items_center()
                     .rounded(px(r.h / 2.))
@@ -1908,29 +2052,30 @@ impl RecordingWidgetView {
         }
         let r = local(f.free_panel(desk)?, desk.origin(self.screen));
         let tone = design::tone(cx);
-        Some(
-            place(r)
-                .child(
-                    v_flex()
-                        .id("recording-widget-panel-frame")
-                        .relative()
-                        .size_full()
-                        .rounded(design::HUD_RADIUS_PANEL)
-                        .border_1()
-                        .border_color(tone.hairline)
-                        .bg(tone.surface.opacity(0.98))
-                        .overflow_hidden()
-                        .child(design::rim_light(cx))
-                        .child(self.render_panel(m, tone, true, window, cx))
-                        .with_animation(
-                            "recording-widget-open",
-                            Animation::new(Duration::from_millis(220))
-                                .with_easing(ease_out_quint()),
-                            |el, delta| el.opacity(delta),
-                        ),
+        let frame = v_flex()
+            .id("recording-widget-panel-frame")
+            .relative()
+            .size_full()
+            .rounded(design::HUD_RADIUS_PANEL)
+            .border_1()
+            .border_color(tone.hairline)
+            .bg(tone.surface.opacity(0.98))
+            .overflow_hidden()
+            .child(design::rim_light(cx))
+            .child(self.render_panel(m, tone, true, window, cx));
+        // A one-shot fade in; with Reduce Motion it simply appears.
+        let frame = if cx.reduce_motion() {
+            frame.into_any_element()
+        } else {
+            frame
+                .with_animation(
+                    "recording-widget-open",
+                    Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                    |el, delta| el.opacity(delta),
                 )
-                .into_any_element(),
-        )
+                .into_any_element()
+        };
+        Some(place(r).child(frame).into_any_element())
     }
 
     /// What is being recorded, its sources, the live transcript and the
@@ -1977,20 +2122,20 @@ impl RecordingWidgetView {
             .w_full()
             .px(hud(16.))
             .pt(hud(10.))
-            .pb(hud(14.))
+            .pb(hud(12.))
             .gap(hud(8.))
             .border_b_1()
             .border_color(tone.hairline)
-            .child(source_chip(m, Track::Mic, tone))
-            .child(source_chip(m, Track::System, tone));
+            .child(source_chip(m, Track::Mic, tone, cx))
+            .child(source_chip(m, Track::System, tone, cx));
         // Beside the floater this has no room while the panel is open.
         let health_line = m.health_notice().map(|notice| {
             div()
                 .id("recording-widget-panel-health")
-                .px(hud(14.))
+                .px(hud(16.))
                 .pb(hud(8.))
                 .text_size(hud(12.))
-                .text_color(tone.accent)
+                .text_color(status_in(tone, design::Status::Attention, cx))
                 .child(t(notice.key()))
                 .test_support()
         });
@@ -2020,16 +2165,16 @@ impl RecordingWidgetView {
                 v_flex()
                     .w_full()
                     .px(hud(16.))
-                    .py(hud(14.))
-                    .gap(hud(14.))
+                    .py(hud(16.))
+                    .gap(hud(12.))
                     .children(body),
             )
             .test_support();
 
-        let (pause_icon, pause_label) = if paused {
-            ("play", t("meetings.widget.resume"))
+        let pause_label = if paused {
+            t("meetings.widget.resume")
         } else {
-            ("pause", t("meetings.widget.pause"))
+            t("meetings.widget.pause")
         };
         let footer = h_flex()
             .w_full()
@@ -2040,18 +2185,23 @@ impl RecordingWidgetView {
             .border_t_1()
             .border_color(tone.hairline)
             .child(
-                pill("recording-widget-pause", pause_icon, pause_label, tone)
-                    .on_click(move |_, _, cx| set_paused(!paused, cx))
-                    .test_support(),
+                pill(
+                    "recording-widget-pause",
+                    brand::pause_icon(paused),
+                    pause_label,
+                    tone,
+                )
+                .on_click(move |_, _, cx| set_paused(!paused, cx))
+                .test_support(),
             )
             .child(
                 pill(
                     "recording-widget-stop",
-                    "square",
+                    icon(crate::ui::brand::STOP_ICON),
                     t("meetings.widget.stop"),
                     tone,
                 )
-                .text_color(rgb(RED))
+                .text_color(status_in(tone, design::Status::Live, cx))
                 .on_click(|_, _, cx| stop(cx))
                 .test_support(),
             )
@@ -2060,12 +2210,10 @@ impl RecordingWidgetView {
                 d.child(
                     pill(
                         "recording-widget-open",
-                        "arrow-up-right",
+                        icon("arrow-up-right"),
                         t("meetings.widget.openNotes"),
                         tone,
                     )
-                    .bg(gpui_kit::transparent_black())
-                    .text_color(tone.text_muted)
                     .on_click(move |_, _, cx| open_notes(id, cx))
                     .test_support(),
                 )

@@ -9,7 +9,7 @@ use crate::ui::kit::{group, icon, page, t, t_args, toggle, SettingRow};
 use crate::ui::pages::advanced::save_error;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{h_flex, v_flex, Disableable, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::json;
@@ -112,6 +112,9 @@ impl AboutPage {
         h_flex()
             .id("about-header")
             .w_full()
+            // On the panel rows' inset: the icon lines up with their text,
+            // the button with their controls.
+            .px(design::SECTION_X)
             .gap(dp(12.))
             .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
             .child(app_icon_tile(cx))
@@ -140,7 +143,6 @@ impl AboutPage {
             .child(
                 Button::new("check-for-updates")
                     .outline()
-                    .small()
                     .label(t("settings.about.checkForUpdates"))
                     .disabled(!can_check)
                     .on_click(move |_, _, cx| {
@@ -152,37 +154,86 @@ impl AboutPage {
 }
 
 /// A folder row: the path (or why it can't be shown) with Show in Finder.
+/// Laid out like a [`SettingRow`], but the path under the title is
+/// monospaced ([`design::code`]): paths are identifiers.
 fn folder_row(
     id: &'static str,
     button_id: &'static str,
     title: SharedString,
     dir: &Option<Result<String, String>>,
     open: fn(&dyn crate::backend::Backend) -> Result<(), String>,
+    cx: &App,
 ) -> AnyElement {
-    let (path, error): (SharedString, bool) = match dir {
-        None => (t("common.loading"), false),
-        Some(Ok(p)) => (p.clone().into(), false),
-        Some(Err(e)) => (t_args("errors.loadDirectory", &[("error", e)]), true),
+    let tone = design::tone(cx);
+    let danger = cx.theme().danger;
+    let rtl = crate::ui::kit::rtl();
+    let detail: AnyElement = match dir {
+        None => div()
+            .text_size(design::TEXT_SECONDARY)
+            .line_height(design::LINE_SECONDARY)
+            .text_color(tone.text_muted)
+            .child(t("common.loading"))
+            .into_any_element(),
+        Some(Ok(p)) => design::code(p.clone())
+            .line_height(design::LINE_SECONDARY)
+            .text_color(tone.text_muted)
+            .into_any_element(),
+        Some(Err(e)) => div()
+            .id("setting-error")
+            .text_size(design::TEXT_SECONDARY)
+            .line_height(design::LINE_SECONDARY)
+            .text_color(danger)
+            .child(t_args("errors.loadDirectory", &[("error", e)]))
+            .test_support()
+            .into_any_element(),
     };
-    SettingRow::new(id, title)
-        .description(path.clone())
-        .control(
-            Button::new(button_id)
-                .outline()
-                .small()
-                .label(t("settings.about.showInFinder"))
-                .disabled(!matches!(dir, Some(Ok(_))))
-                .on_click(move |_, _, cx| {
-                    let b = AppState::global(cx).read(cx).backend.clone();
-                    cx.background_spawn(async move {
-                        if let Err(e) = open(&*b) {
-                            log::error!("Failed to open folder: {e}");
-                        }
-                    })
-                    .detach();
-                }),
+    let label = v_flex()
+        .gap(dp(2.))
+        .min_w_0()
+        .flex_1()
+        .min_w(dp(220.))
+        .child(
+            div()
+                .text_size(design::TEXT_BODY)
+                .line_height(design::LINE_BODY)
+                .child(title.clone()),
         )
-        .when(error, |r| r.error(Some(path)))
+        .child(div().max_w(design::PROSE_MAX_W).child(detail))
+        .when(rtl, |d| d.items_end().text_right());
+    let button = Button::new(button_id)
+        .outline()
+        .label(t("settings.about.showInFinder"))
+        .disabled(!matches!(dir, Some(Ok(_))))
+        .on_click(move |_, _, cx| {
+            let b = AppState::global(cx).read(cx).backend.clone();
+            cx.background_spawn(async move {
+                if let Err(e) = open(&*b) {
+                    log::error!("Failed to open folder: {e}");
+                }
+            })
+            .detach();
+        });
+    div()
+        .id(id)
+        .aria_label(title)
+        .w_full()
+        .min_h(design::ROW_MIN_H)
+        .px(design::SECTION_X)
+        .py(design::ROW_Y)
+        .flex()
+        .items_center()
+        .child(
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .gap_x(dp(20.))
+                .gap_y(dp(8.))
+                .justify_between()
+                .when(rtl, |d| d.flex_row_reverse())
+                .child(label)
+                .child(div().flex_none().child(button)),
+        )
+        .test_support()
         .into_any_element()
 }
 
@@ -211,7 +262,6 @@ impl AboutPage {
                         .child(
                             Button::new("author-site")
                                 .ghost()
-                                .small()
                                 .icon(icon("globe"))
                                 .label("imran.codes")
                                 .on_click(|_, _, cx| cx.open_url(AUTHOR_SITE)),
@@ -219,7 +269,6 @@ impl AboutPage {
                         .child(
                             Button::new("author-github")
                                 .ghost()
-                                .small()
                                 .icon(icon("github"))
                                 .label("GitHub")
                                 .on_click(|_, _, cx| cx.open_url(AUTHOR_GITHUB)),
@@ -249,6 +298,7 @@ impl AboutPage {
                 t("settings.about.appDataDirectory.title"),
                 &self.app_dir,
                 |b| b.open_app_data_dir(),
+                cx,
             ),
             folder_row(
                 "log-dir",
@@ -256,6 +306,7 @@ impl AboutPage {
                 t("settings.debug.logDirectory.title"),
                 &self.log_dir,
                 |b| b.open_log_dir(),
+                cx,
             ),
         ];
         let ack = vec![
@@ -266,7 +317,7 @@ impl AboutPage {
                     div()
                         .max_w(design::PROSE_MAX_W)
                         .text_size(design::TEXT_SECONDARY)
-                        .line_height(dp(15.))
+                        .line_height(design::LINE_SECONDARY)
                         .text_color(tone.text_muted)
                         .child(t("settings.about.acknowledgments.ggml.details")),
                 )

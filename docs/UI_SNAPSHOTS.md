@@ -57,6 +57,12 @@ Images are at 2x scale (a 900x600 window gives a 1800x1200 PNG).
 | `onboarding-migration` | Retired-model migration (Parakeet V2 to V3), with Later |
 | `startup-app`, `startup-new` | The skeleton while the core starts: the app's shell (returning user), the assistant frame (new user) |
 | `startup-error` | The core couldn't start: Show Logs / Quit |
+| `meetings-played`, `meetings-tab-focus` | The player at the end of a meeting; a content tab with keyboard focus |
+| `meetings-people-min`, `-wide`, `meetings-people-person-min` | People in the real window shell (the compact back in the toolbar) |
+| `msettings-ai-local` (+ `-min`) | AI summaries on "On this Mac" |
+| `debug-logs` | Debug's Logs view |
+| `focus-1` … `focus-12` | General after N Tab presses: keyboard focus on the sidebar, pop-ups, shortcut fields, resets, switches |
+| `hover-sidebar`, `hover-list-row`, `hover-button` | Pointer hover on a sidebar row, a meeting row, a push button |
 
 Every onboarding and startup snapshot also has a `-min` variant (720x480).
 | `overlay-live` | Dictation overlay, live style, mid-sentence |

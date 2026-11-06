@@ -39,6 +39,9 @@ pub struct RecorderBar {
     permissions: Option<PermissionReport>,
     speaker_model: Option<SpeakerModelStatus>,
     ticking: bool,
+    /// The recording's title is already on screen (its meeting is shown
+    /// in the detail), so the toolbar leaves it out.
+    title_shown: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -72,6 +75,7 @@ impl RecorderBar {
             permissions: None,
             speaker_model: None,
             ticking: false,
+            title_shown: false,
             _subs: subs,
         };
         this.reload(cx);
@@ -93,8 +97,30 @@ impl RecorderBar {
         );
     }
 
+    /// A start or stop is in flight.
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
     pub fn recorder(&self) -> &RecorderState {
         &self.recorder
+    }
+
+    /// The meeting being recorded, if any.
+    pub fn recording_id(&self) -> Option<MeetingId> {
+        match &self.recorder {
+            RecorderState::Recording { meeting_id, .. } => Some(*meeting_id),
+            _ => None,
+        }
+    }
+
+    /// Whether the recording's meeting is shown in the detail (its title
+    /// is then visible there and the toolbar doesn't repeat it).
+    pub fn set_title_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.title_shown != shown {
+            self.title_shown = shown;
+            cx.notify();
+        }
     }
 
     fn set_recorder(&mut self, rs: RecorderState, cx: &mut Context<Self>) {
@@ -246,56 +272,59 @@ impl RecorderBar {
         let paused = self.recorder.is_paused();
         let elapsed = format_elapsed(self.recorder.elapsed_ms(now_ms()).unwrap_or(0));
         let meeting_id = *meeting_id;
-        let dot = if paused {
-            div()
-                .flex_none()
-                .size(dp(8.))
-                .rounded_full()
-                .bg(tone.text_faint)
-                .into_any_element()
-        } else {
-            div()
-                .flex_none()
-                .size(dp(8.))
-                .rounded_full()
-                .bg(cx.theme().danger)
-                .with_animation(
-                    "meeting-rec-pulse",
-                    Animation::new(Duration::from_millis(1600)).repeat(),
-                    |el, delta| el.opacity(1.0 - 0.55 * (delta * std::f32::consts::PI).sin()),
-                )
-                .into_any_element()
-        };
+        // Steady: a live dot never pulses (grey while paused). A soft
+        // static halo gives it presence without motion.
+        let live = design::status_color(design::Status::Live, cx);
+        let dot = div()
+            .flex_none()
+            .size(dp(12.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .when(!paused, |d| d.bg(live.opacity(0.18)))
+            .child(div().size(dp(8.)).rounded_full().bg(if paused {
+                tone.text_faint
+            } else {
+                live
+            }))
+            .into_any_element();
         h_flex()
             .id("meeting-recorder")
-            .gap(dp(6.))
+            .gap(dp(8.))
             .child(
                 h_flex()
                     .id("meeting-recording-title")
                     .h(design::CONTROL_H)
-                    .px(dp(6.))
-                    .gap(dp(6.))
+                    .px(dp(8.))
+                    .gap(dp(4.))
                     .rounded(design::RADIUS_CONTROL)
                     .hover(move |s| s.bg(tone.raised))
                     .child(dot)
                     .child(
                         design::mono(elapsed)
                             .id("meeting-recorder-time")
+                            .text_size(design::TEXT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(if paused { tone.text_muted } else { tone.text })
                             .test_support(),
                     )
-                    .child(
-                        div()
-                            .max_w(if narrow { dp(72.) } else { dp(160.) })
-                            .truncate()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text_muted)
-                            .child(if paused {
-                                t("meetings.recorder.paused")
-                            } else {
-                                SharedString::from(title.clone())
-                            }),
-                    )
+                    // The title only where the detail doesn't show it;
+                    // "Paused" always (it's the state, not the title).
+                    .when(paused || !self.title_shown, |d| {
+                        d.child(
+                            div()
+                                .max_w(if narrow { dp(72.) } else { dp(160.) })
+                                .truncate()
+                                .text_size(design::TEXT_SECONDARY)
+                                .text_color(tone.text_muted)
+                                .child(if paused {
+                                    t("meetings.recorder.paused")
+                                } else {
+                                    SharedString::from(title.clone())
+                                }),
+                        )
+                    })
                     .tooltip({
                         let tip = t_args("meetings.recorder.show", &[("title", title)]);
                         move |window, cx| {
@@ -312,7 +341,8 @@ impl RecorderBar {
                 Button::new("meeting-record-pause")
                     .ghost()
                     .small()
-                    .icon(icon(if paused { "play" } else { "pause" }))
+                    .size(design::CONTROL_H)
+                    .icon(crate::ui::brand::pause_icon(paused))
                     .tooltip(if paused {
                         t("meetings.recorder.resume")
                     } else {
@@ -322,13 +352,14 @@ impl RecorderBar {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))),
             )
             .child(
+                // Stop: a bordered push button with a filled stop glyph
+                // (red is the live dot's job).
                 Button::new("meeting-record-toggle")
-                    .danger()
-                    .small()
-                    .icon(icon("square"))
-                    .label(t("meetings.recorder.stopShort"))
+                    .outline()
+                    .accessibility_label(t("meetings.recorder.stopShort"))
+                    .child(glyph(self.busy, false, cx))
+                    .child(t("meetings.recorder.stopShort"))
                     .tooltip(t("meetings.recorder.stop"))
-                    .loading(self.busy)
                     .disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle(cx))),
             )
@@ -343,8 +374,7 @@ impl RecorderBar {
                 .id("meeting-recorder")
                 .child(
                     Button::new("meeting-notes-enable")
-                        .secondary()
-                        .small()
+                        .outline()
                         .icon(icon("mic"))
                         .label(t("meetings.recorder.turnOn"))
                         .tooltip(t("meetings.recorder.disabled"))
@@ -358,7 +388,7 @@ impl RecorderBar {
         let next = next_event(&self.upcoming, super::now(cx)).filter(|_| !narrow);
         h_flex()
             .id("meeting-recorder")
-            .gap(dp(6.))
+            .gap(dp(8.))
             .when_some(next, |d, ev| {
                 let label = format!("{} · {}", ev.title, super::clock_time(ev.start_at));
                 let event_id = ev.id.clone();
@@ -370,8 +400,8 @@ impl RecorderBar {
                                 .id("upcoming-start-0")
                                 .h(design::CONTROL_H)
                                 .max_w(dp(220.))
-                                .px(dp(6.))
-                                .gap(dp(5.))
+                                .px(dp(8.))
+                                .gap(dp(4.))
                                 .rounded(design::RADIUS_CONTROL)
                                 .text_size(design::TEXT_SECONDARY)
                                 .text_color(tone.text_muted)
@@ -399,13 +429,14 @@ impl RecorderBar {
                 )
             })
             .child(
+                // Record: a bordered push button with a red dot; the yellow
+                // fill is for a region's primary action.
                 Button::new("meeting-record-toggle")
-                    .primary()
-                    .small()
-                    .icon(icon("circle"))
-                    .label(t("meetings.recorder.record"))
+                    .outline()
+                    .accessibility_label(t("meetings.recorder.record"))
+                    .child(glyph(self.busy, true, cx))
+                    .child(t("meetings.recorder.record"))
                     .tooltip(t("meetings.recorder.start"))
-                    .loading(self.busy)
                     .disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle(cx))),
             )
@@ -443,6 +474,43 @@ impl RecorderBar {
                 .into_any_element(),
         )
     }
+}
+
+/// The Record (red dot) or Stop (filled stop) glyph, or a spinner while
+/// busy.
+pub(crate) fn glyph(busy: bool, record: bool, cx: &App) -> AnyElement {
+    let tone = design::tone(cx);
+    if busy {
+        return crate::ui::kit::spinner(
+            if record {
+                "meeting-record-busy"
+            } else {
+                "meeting-stop-busy"
+            },
+            icon("loader-circle").xsmall().text_color(tone.text_muted),
+        )
+        .into_any_element();
+    }
+    let mark = if record {
+        div()
+            .size(dp(8.))
+            .rounded_full()
+            .bg(design::status_color(design::Status::Live, cx))
+            .into_any_element()
+    } else {
+        icon(crate::ui::brand::STOP_ICON)
+            .xsmall()
+            .text_color(tone.text)
+            .into_any_element()
+    };
+    div()
+        .flex_none()
+        .size(dp(12.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(mark)
+        .into_any_element()
 }
 
 impl Render for RecorderBar {

@@ -13,41 +13,42 @@ themes). Every change to a visible surface is checked there.
 
 ## 1. Tokens (`ui/design.rs`, `assets/themes/guidy.json`)
 
+Refreshed by the UI review loop (`docs/ui-review/`, November 2026); the
+binding implementation rules are `docs/ui-review/DESIGN_RULES.md`.
+
 | Token | Value | Notes |
 |---|---|---|
 | `SCALE` | `1.0` | Sizes are macOS points. |
 | `HUD_SCALE` | `1.2` | Recording widget, overlay and notch geometry keep today's size. |
-| theme `font.size` / `mono_font.size` | 13 / 12 | rem = 13, so stock components match macOS. |
-| `TEXT_BODY` | 13 | Body, row titles, controls. |
-| `TEXT_SECONDARY` | 11 | Descriptions, metadata, captions. |
-| `TEXT_TITLE` | 13 semibold | Toolbar titles, group headers that need weight. |
-| `TEXT_HEADLINE` | 17 semibold | Empty states, onboarding headings, About. |
-| `TEXT_DISPLAY` | 24–26 | Onboarding hero only. |
-| `TEXT_MONO` | 11.5–12 | Numbers, sizes, times, ids only. |
-| `RADIUS_CHIP` | 3 | Chips, key caps, list/sidebar selection. |
-| `RADIUS_CONTROL` | 4 | Buttons, inputs, selects, segmented controls. Theme `radius` = 4. |
-| `RADIUS_PANEL` | 5 | Groups, panels, banners, popovers, dialogs. Theme `radius.lg` = 5. |
-| capsule | HUD only | `rounded_full` stays only for dots, switch knobs, avatars, HUD capsules. |
+| UI font | system (SF Pro) | `theme::UI_FONT` = `.SystemUIFont`; numbers use tabular figures (`design::mono`). Geist Mono only for IDs, paths, code (`design::code`). |
+| theme `font.size` | 13 | rem = 13, so stock components match macOS. |
+| `TEXT_TITLE` | 17 semibold | Toolbar page title. |
+| `TEXT_HEADLINE` | 17 semibold | Object titles (a meeting), empty states, alerts. |
+| `TEXT_GROUP` | 15 semibold | Group headers (`design::group_header`), note section titles. |
+| `TEXT_READING` | 14 / 21 | Summaries, transcripts, history text. |
+| `TEXT_BODY` | 13 / 18 | Rows, controls. |
+| `TEXT_SECONDARY` | 12 / 16 | Descriptions, metadata. |
+| `TEXT_CAPTION` | 11 / 14 | Badges, counts. |
+| `RADIUS_CHIP` / `CONTROL` / `PANEL` / `DIALOG` | 4 / 5 / 8 / 10 | Capsule only for HUD, switches, dots, avatars. |
+| `CONTROL_H` | 26 | Every row and toolbar control (stock default size). |
+| `CONTROL_COLUMN_W` | 200 | The trailing column for pop-ups and shortcut fields (`kit::trailing`). |
 
 HUD surfaces (recording widget, overlay) use `design::hud()`, the `HUD_*`
 type tokens, `HUD_RADIUS_PANEL`, and set the window rem to `HUD_REM`
 (16.8) each frame, so stock icons and spacing keep their size too.
 
-Spacing: 4-pt grid. Page padding 20 horizontal / 16 top. Group gap 20.
-Group header → panel gap 6. Setting row padding 6×12, min height 32 (one
-line) / ~44 (with description).
+Spacing: 4-pt grid (2, 4, 8, 12, 16, 20, 24, 32). Page padding 24 × 20,
+forms left-anchored, max 680; lists max 960. Group gap 24, header → panel
+8. Setting rows 16 × 8 (min 36); the control wraps under the label below a
+180 pt label.
 
-Control heights: small 20, regular 24 (default), large 28 (onboarding CTA
-only).
+Colour: neutral greys (dark content `#181818`, sidebar `#202020`, panel
+`#222222`); one accent (`#ffc72c`) for the primary button, focus ring,
+on-state controls and links; light-mode accent ink `#8a6000`, fill
+`#523800`. Status: `design::Status` (green / orange / red / neutral) with
+an icon and a word. Control edges and tracks ≥ 3:1 (`tone.track`).
 
-No `.pill()`, no rim lights or sheens on ordinary surfaces, no blueprint
-grids on ordinary pages (onboarding/About hero may keep one illustration),
-no uppercase letter-spaced mono "eyebrows": section headers are sentence
-case, 11–12 pt semibold, muted. Default arrow cursor on controls (macOS
-does not use the hand cursor except on links).
-
-Contrast: `text_faint` must reach ≥ 4.5:1 for text it renders; light
-`accent_text` darkened to pass on white.
+Motion: no decorative loops; `kit::spinner` is static under Reduce Motion.
 
 ## 2. Window shell (`ui/main_window.rs`, `windows.rs`)
 
@@ -61,8 +62,10 @@ Contrast: `text_faint` must reach ≥ 4.5:1 for text it renders; light
 ├─────────────┴─ status bar 22pt: model · downloads · update ───────────┤
 ```
 
-- Full-height source-list sidebar (traffic lights sit over it), 200 wide,
-  items 28 high, `RADIUS_CHIP` selection with visible contrast in both
+- Full-height source-list sidebar (traffic lights sit over it), 200 wide
+  (172 below a 760 pt window), items 26 high in four clusters; People
+  under Meetings, Meeting settings closing the settings cluster with its
+  categories under it while shown, `RADIUS_CHIP` selection with visible contrast in both
   themes, accent-tinted icon, keyboard focusable, ↑/↓, ⌘1…⌘9.
 - Unified title bar/toolbar over the content: page title (no "Guidy /"
   prefix) left, page actions right. Window drag and double-click zoom kept.

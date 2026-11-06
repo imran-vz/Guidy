@@ -14,7 +14,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::storage::{BucketUsage, Category, StorageReport};
 
-const ROW_H: Pixels = dp(32.);
+const ROW_H: Pixels = design::ROW_MIN_H;
+/// The size column of the rows (right-aligned, so sizes line up).
+const SIZE_W: Pixels = dp(72.);
 const BAR_H: Pixels = dp(8.);
 /// Guidy's segment never draws narrower than this while it holds anything.
 const MIN_SEGMENT_W: Pixels = dp(2.);
@@ -23,17 +25,90 @@ pub struct StoragePage {
     /// The latest good report: a failed refresh leaves it on screen.
     report: Option<StorageReport>,
     error: Option<String>,
+    /// Where the data folder is expected, read when a measurement fails
+    /// (shown under the cause in the error state).
+    data_path: Option<String>,
     open_error: Option<String>,
     loading: bool,
+    /// Per row: holds its folder button, so the hover-only button stays
+    /// visible while it has keyboard focus.
+    folder_focus: std::collections::HashMap<Category, FocusHandle>,
 }
 
 impl StoragePage {
+    /// The page's load error (nothing measured yet): the shared error
+    /// state's headline and cause, then the folder Guidy expected in the
+    /// code font, so the reader knows where to look. One Try Again.
+    fn render_error_state(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let e = self.error.clone().unwrap_or_default();
+        let tone = design::tone(cx);
+        crate::ui::kit::fill_page("page-storage")
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(design::PAGE_X)
+                    .child(
+                        v_flex()
+                            .id("storage-error")
+                            .max_w(dp(400.))
+                            .items_center()
+                            .gap(dp(8.))
+                            .text_center()
+                            .child(
+                                icon("circle-alert")
+                                    .size(dp(32.))
+                                    .text_color(tone.text_muted),
+                            )
+                            .child(
+                                div()
+                                    .pt(dp(4.))
+                                    .text_size(design::TEXT_HEADLINE)
+                                    .line_height(dp(22.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(tone.text)
+                                    .child(t("storage.unavailable")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(design::TEXT_BODY)
+                                    .line_height(design::LINE_BODY)
+                                    .text_color(tone.text_muted)
+                                    .child(super::cause_sentence(&e)),
+                            )
+                            .children(self.data_path.clone().map(|path| {
+                                design::code(path)
+                                    .id("storage-error-path")
+                                    .max_w_full()
+                                    .text_color(tone.text_muted)
+                                    .test_support()
+                            }))
+                            .child(
+                                div().pt(dp(8.)).child(
+                                    Button::new("storage-retry")
+                                        .outline()
+                                        .label(t("common.tryAgain"))
+                                        .loading(self.loading)
+                                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                                ),
+                            )
+                            .test_support(),
+                    ),
+            )
+            .test_support()
+            .into_any_element()
+    }
+
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             report: None,
             error: None,
+            data_path: None,
             open_error: None,
             loading: false,
+            folder_focus: Default::default(),
         };
         this.reload(cx);
         this
@@ -49,8 +124,15 @@ impl StoragePage {
         cx.notify();
         let backend = AppState::global(cx).read(cx).backend.clone();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { backend.storage_report() })
+            let (result, data_path) = cx
+                .background_spawn(async move {
+                    let result = backend.storage_report();
+                    let path = result
+                        .is_err()
+                        .then(|| backend.get_app_dir_path().ok())
+                        .flatten();
+                    (result, path)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.loading = false;
@@ -58,8 +140,12 @@ impl StoragePage {
                     Ok(report) => {
                         this.report = Some(report);
                         this.error = None;
+                        this.data_path = None;
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(e) => {
+                        this.error = Some(e);
+                        this.data_path = data_path.filter(|p| !p.trim().is_empty());
+                    }
                 }
                 cx.notify();
             })
@@ -121,9 +207,19 @@ fn label_key(category: Category) -> &'static str {
     }
 }
 
+/// The bar's colors: Guidy, other used space, free space. Free space is
+/// the panel itself inside a `tone.track` outline (see [`disk_bar`]), so
+/// its extent reads at ≥ 3:1 without competing with the used segments.
+fn bar_colors(cx: &App) -> (Hsla, Hsla, Hsla) {
+    let tone = design::tone(cx);
+    // Guidy in the fill colour, other used space in the track grey (≥ 3:1
+    // from Guidy's fill and from the free panel in both themes).
+    (cx.theme().progress_bar, tone.track, tone.surface)
+}
+
 /// Guidy, then everything else in use, over a track that reads as free space.
 fn disk_bar(fractions: BarFractions, label: SharedString, cx: &App) -> impl IntoElement {
-    let tone = design::tone(cx);
+    let (guidy, other, free) = bar_colors(cx);
     h_flex()
         .id("storage-bar")
         .aria_label(label)
@@ -131,7 +227,9 @@ fn disk_bar(fractions: BarFractions, label: SharedString, cx: &App) -> impl Into
         .h(BAR_H)
         .rounded(design::RADIUS_TRACK)
         .overflow_hidden()
-        .bg(tone.grid)
+        .bg(free)
+        .border_1()
+        .border_color(design::tone(cx).track)
         .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
         .when(fractions.guidy > 0., |d| {
             d.child(
@@ -140,7 +238,7 @@ fn disk_bar(fractions: BarFractions, label: SharedString, cx: &App) -> impl Into
                     .w(relative(fractions.guidy))
                     .min_w(MIN_SEGMENT_W)
                     .flex_none()
-                    .bg(tone.accent),
+                    .bg(guidy),
             )
         })
         .child(
@@ -148,23 +246,66 @@ fn disk_bar(fractions: BarFractions, label: SharedString, cx: &App) -> impl Into
                 .h_full()
                 .w(relative(fractions.other_used))
                 .min_w_0()
-                .bg(tone.text_faint),
+                .bg(other),
         )
         .test_support()
 }
 
+/// What the bar's segments are: a swatch and a name for each.
+fn bar_legend(cx: &App) -> impl IntoElement {
+    let tone = design::tone(cx);
+    let (guidy, other, free) = bar_colors(cx);
+    // Every swatch has an edge; the free one is drawn like the bar's
+    // free space (an outline in `tone.track`).
+    let item = |color: Hsla, edge: Hsla, label: SharedString| {
+        h_flex()
+            .gap(dp(8.))
+            .child(
+                div()
+                    .size(dp(8.))
+                    .rounded(dp(2.))
+                    .bg(color)
+                    .border_1()
+                    .border_color(edge),
+            )
+            .child(label)
+    };
+    h_flex()
+        .id("storage-legend")
+        .gap(dp(16.))
+        .text_size(design::TEXT_SECONDARY)
+        .line_height(design::LINE_SECONDARY)
+        .text_color(tone.text_muted)
+        .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+        .child(item(guidy, tone.hairline, t("storage.guidy")))
+        .child(item(other, tone.hairline, t("storage.category.other")))
+        .child(item(free, tone.track, t("storage.free")))
+}
+
 impl Render for StoragePage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::ui::kit::scroll_page("storage-scroll", self.render_body(cx))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.report.is_none() && self.error.is_some() {
+            // Nothing measured: a centred error with one Try Again.
+            return self.render_error_state(cx);
+        }
+        crate::ui::kit::scroll_page("storage-scroll", self.render_body(window, cx))
+            .into_any_element()
     }
 }
 
 impl crate::ui::pages::Page for StoragePage {
     fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // While the page is only its load error, its Try Again is the one
+        // retry control.
+        if self.report.is_none() && self.error.is_some() {
+            return None;
+        }
         Some(
             Button::new("storage-refresh")
                 .ghost()
                 .small()
+                .w(design::ICON_BUTTON)
+                .h(design::ICON_BUTTON)
                 .icon(icon("refresh-cw"))
                 .tooltip(t("storage.refresh"))
                 .accessibility_label(t("storage.refresh"))
@@ -215,33 +356,49 @@ impl StoragePage {
         };
         design::panel(cx)
             .child(
-                div()
-                    .px(dp(12.))
-                    .py(dp(12.))
+                v_flex()
+                    .gap(dp(8.))
+                    .px(design::SECTION_X)
+                    .py(design::SECTION_Y)
                     .border_b_1()
                     .border_color(tone.hairline)
-                    .child(disk_bar(fractions, bar_label, cx)),
+                    .child(disk_bar(fractions, bar_label, cx))
+                    .child(bar_legend(cx)),
             )
             .child(design::stat_grid(
                 vec![
                     design::Stat::new(t("storage.capacity"), capacity),
                     design::Stat::new(t("storage.occupied"), occupied),
                     design::Stat::new(t("storage.free"), free),
-                    design::Stat::new(t("storage.guidy"), guidy).accent(true),
+                    design::Stat::new(t("storage.guidy"), guidy),
                 ],
                 4,
                 cx,
             ))
     }
 
-    fn render_row(&self, row: BucketUsage, last: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(
+        &mut self,
+        row: BucketUsage,
+        last: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let tone = design::tone(cx);
         let category = row.category;
         let slug = slug(category);
+        let folder_focus = self
+            .folder_focus
+            .entry(category)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let folder_focused = folder_focus.contains_focused(window, cx);
+        let group = SharedString::from(format!("storage-row-{slug}"));
         h_flex()
-            .id(SharedString::from(format!("storage-row-{slug}")))
+            .id(group.clone())
+            .group(group.clone())
             .h(ROW_H)
-            .px(dp(12.))
+            .px(design::SECTION_X)
             .gap(dp(8.))
             .when(!last, |d| d.border_b_1().border_color(tone.hairline))
             .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
@@ -254,22 +411,10 @@ impl StoragePage {
                     .text_color(tone.text)
                     .child(t(label_key(category))),
             )
-            .when(category == Category::SharedModels, |d| {
-                d.child(design::chip(t("storage.shared"), false, cx))
-            })
-            .child(
-                div()
-                    .flex_none()
-                    .font_family(crate::theme::MONO_FONT)
-                    .text_size(design::TEXT_MONO)
-                    .text_color(tone.text_muted)
-                    .child(SharedString::from(format_size(row.bytes))),
-            )
             .when(category == Category::Models, |d| {
                 d.child(
                     Button::new("storage-manage-models")
-                        .ghost()
-                        .small()
+                        .outline()
                         .label(t("storage.manageModels"))
                         .on_click(|_, _, cx| {
                             // This window is being updated: reach it once that ends.
@@ -278,23 +423,47 @@ impl StoragePage {
                 )
             })
             .child(
-                Button::new(SharedString::from(format!("storage-open-{slug}")))
-                    .ghost()
-                    .small()
-                    .icon(icon("folder-open"))
-                    .tooltip(t("storage.openFolder"))
-                    .accessibility_label(t_args(
-                        "storage.openFolderFor",
-                        &[("category", &t(label_key(category)))],
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_folder(category, cx);
-                    })),
+                div()
+                    .flex_none()
+                    .w(SIZE_W)
+                    .text_right()
+                    .font_features(design::tabular_figures())
+                    .text_size(design::TEXT_BODY)
+                    .text_color(tone.text_muted)
+                    .child(SharedString::from(format_size(row.bytes))),
+            )
+            .child(
+                // Shown on row hover, or while the button has keyboard
+                // focus (it stays in the Tab order), so ten folder glyphs
+                // don't line the list at rest.
+                div()
+                    .id(SharedString::from(format!("storage-open-slot-{slug}")))
+                    .track_focus(&folder_focus)
+                    .flex_none()
+                    .when(!folder_focused, |d| {
+                        d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("storage-open-{slug}")))
+                            .ghost()
+                            .xsmall()
+                            .w(design::ICON_BUTTON)
+                            .h(design::ICON_BUTTON)
+                            .icon(icon("folder-open"))
+                            .tooltip(t("storage.openFolder"))
+                            .accessibility_label(t_args(
+                                "storage.openFolderFor",
+                                &[("category", &t(label_key(category)))],
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_folder(category, cx);
+                            })),
+                    ),
             )
             .test_support()
     }
 
-    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tone = design::tone(cx);
         let danger = cx.theme().danger;
         let error = self.error.clone().map(|e| {
@@ -302,7 +471,12 @@ impl StoragePage {
                 .id("storage-error")
                 .flex()
                 .items_center()
-                .gap(dp(10.))
+                .gap(dp(12.))
+                .child(
+                    icon("circle-alert")
+                        .small()
+                        .text_color(design::status_color(design::Status::Error, cx)),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -313,7 +487,6 @@ impl StoragePage {
                 .child(
                     Button::new("storage-retry")
                         .outline()
-                        .small()
                         .label(t("common.tryAgain"))
                         .loading(self.loading)
                         .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
@@ -357,13 +530,13 @@ impl StoragePage {
         let row_elements: Vec<_> = rows
             .into_iter()
             .enumerate()
-            .map(|(i, row)| self.render_row(row, i + 1 == count, cx))
+            .map(|(i, row)| self.render_row(row, i + 1 == count, window, cx))
             .collect();
         let caption = |text: SharedString| {
             div()
                 .max_w(design::PROSE_MAX_W)
                 .text_size(design::TEXT_SECONDARY)
-                .line_height(dp(15.))
+                .line_height(design::LINE_SECONDARY)
                 .text_color(tone.text_muted)
                 .child(text)
         };
@@ -379,7 +552,7 @@ impl StoragePage {
                     .child(
                         div()
                             .px(dp(2.))
-                            .child(design::section_header(t("storage.whatGuidyKeeps"), cx)),
+                            .child(design::group_header(t("storage.whatGuidyKeeps"), cx)),
                     )
                     .when(count > 0, |d| {
                         d.child(design::panel(cx).id("storage-rows").children(row_elements))

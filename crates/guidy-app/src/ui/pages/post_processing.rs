@@ -20,14 +20,13 @@ use crate::ui::shortcut_input::ShortcutInput;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable};
 use std::collections::HashMap;
 
-/// Width of the provider form's fields.
+/// Width of the provider form's text fields (key, URL, model).
 const FIELD_W: Pixels = dp(320.);
-/// The model row's picker and refresh button (inside `FIELD_W`).
+/// The model row's "Choose" picker beside a typed model name.
 const MODEL_PICKER_W: Pixels = dp(96.);
-const MODEL_REFRESH_W: Pixels = dp(24.);
 const MODEL_GAP: Pixels = dp(4.);
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -96,23 +95,27 @@ fn provider_of(s: &AppSettings) -> (String, Option<ProviderRef<'_>>) {
 /// BYOK "Test connection" outcome as a small chip beside the button: a
 /// check or an alert; the full message is its tooltip.
 fn test_result_chip(r: &Result<String, String>, cx: &App) -> AnyElement {
-    let theme = cx.theme();
-    let (name, color, text) = match r {
-        Ok(m) => ("check", theme.success, m.clone()),
-        Err(e) => ("circle-alert", theme.danger, e.clone()),
+    // Status as icon + word: the icon in the status color; the text muted
+    // when it worked, red when it failed. No tinted badge.
+    let (name, status, text) = match r {
+        Ok(m) => ("circle-check", design::Status::Ok, m.clone()),
+        Err(e) => ("circle-alert", design::Status::Error, e.clone()),
+    };
+    let color = design::status_color(status, cx);
+    let text_color = if status == design::Status::Error {
+        color
+    } else {
+        design::tone(cx).text_muted
     };
     let tip: SharedString = text.clone().into();
     h_flex()
         .id("pp-test-result")
         .max_w(dp(220.))
         .h(dp(20.))
-        .px(dp(6.))
         .gap(dp(4.))
-        .rounded(design::RADIUS_CHIP)
-        .bg(color.opacity(0.1))
         .text_size(design::TEXT_SECONDARY)
-        .text_color(color)
-        .child(icon(name).xsmall())
+        .text_color(text_color)
+        .child(icon(name).xsmall().text_color(color))
         .child(div().min_w_0().truncate().child(text))
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
@@ -952,7 +955,8 @@ impl PostProcessingPage {
             st,
             "post_process_provider_id",
         ))
-        .control(
+        .control(crate::ui::kit::trailing(
+            None,
             Dropdown::new("pp-provider-dropdown")
                 .options(
                     std::iter::once(
@@ -970,7 +974,6 @@ impl PostProcessingPage {
                     .collect(),
                 )
                 .selected(Some(pid.clone()))
-                .min_width(FIELD_W)
                 .on_select({
                     let weak = cx.entity().downgrade();
                     move |v, _, cx| {
@@ -978,7 +981,7 @@ impl PostProcessingPage {
                         weak.update(cx, |this, cx| this.select_provider(v, cx)).ok();
                     }
                 }),
-        )
+        ))
         .into_any_element()];
 
         if is_apple {
@@ -1013,7 +1016,8 @@ impl PostProcessingPage {
                     t("settings.postProcessing.api.apiFormat.title"),
                 )
                 .error(self.field_error("api_format", &pid, cx))
-                .control(
+                .control(crate::ui::kit::trailing(
+                    None,
                     Dropdown::new("pp-api-format-dropdown")
                         .options(vec![
                             DropdownOption::new(
@@ -1026,7 +1030,6 @@ impl PostProcessingPage {
                             ),
                         ])
                         .selected(Some(fmt_str))
-                        .min_width(FIELD_W)
                         .menu_width(dp(300.))
                         .on_select(move |v, _, cx| {
                             if v != fmt_str {
@@ -1036,7 +1039,7 @@ impl PostProcessingPage {
                                 });
                             }
                         }),
-                )
+                ))
                 .into_any_element(),
             );
         }
@@ -1048,8 +1051,8 @@ impl PostProcessingPage {
                     .control(
                         Button::new("pp-builtin-manage")
                             .outline()
-                            .small()
                             .label(t("settings.postProcessing.api.builtin.manage"))
+                            .selected(self.show_local_models)
                             .toggled(self.show_local_models)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_local_models(cx))),
                     )
@@ -1067,7 +1070,7 @@ impl PostProcessingPage {
                     div()
                         .id("pp-base-url-input")
                         .w(FIELD_W)
-                        .child(Input::new(&self.base_url).small()),
+                        .child(Input::new(&self.base_url)),
                 )
                 .into_any_element(),
             );
@@ -1079,7 +1082,7 @@ impl PostProcessingPage {
                     div()
                         .id("pp-api-key-input")
                         .w(FIELD_W)
-                        .child(Input::new(&self.api_key).small().mask_toggle()),
+                        .child(Input::new(&self.api_key).mask_toggle()),
                 )
                 .into_any_element()
         }));
@@ -1103,11 +1106,7 @@ impl PostProcessingPage {
             } else {
                 t("settings.postProcessing.api.model.placeholderNoOptions")
             })
-            .min_width(if is_builtin {
-                FIELD_W - MODEL_REFRESH_W - MODEL_GAP
-            } else {
-                MODEL_PICKER_W
-            })
+            .when(!is_builtin, |d| d.min_width(MODEL_PICKER_W))
             .menu_width(dp(320.))
             .loading(fetching)
             .on_select(move |v, _, cx| {
@@ -1126,11 +1125,19 @@ impl PostProcessingPage {
                     self.field_error("model", &pid, cx)
                         .or_else(|| self.field_error("models_fetch", &pid, cx)),
                 )
-                .control(
-                    // The same column as the fields above: the name, the
-                    // picker and refresh together are FIELD_W wide.
+                .control(crate::ui::shortcut_input::trailing_with_accessory(
+                    None,
+                    // A built-in model is a plain 200 pt pop-up; a typed
+                    // name and its picker start at the fields' left edge.
+                    // Refresh is the row's accessory, after the column.
+                    if is_builtin {
+                        design::CONTROL_COLUMN_W
+                    } else {
+                        FIELD_W - design::ICON_BUTTON - MODEL_GAP
+                    },
                     h_flex()
-                        .w(FIELD_W)
+                        .w_full()
+                        .justify_end()
                         .gap(MODEL_GAP)
                         .when(!is_builtin, |d| {
                             d.child(
@@ -1138,25 +1145,25 @@ impl PostProcessingPage {
                                     .id("pp-model-input")
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&self.model).small()),
+                                    .child(Input::new(&self.model)),
                             )
                         })
-                        .child(picker)
-                        .child(
-                            Button::new("pp-refresh-models")
-                                .ghost()
-                                .small()
-                                .icon(icon("refresh-cw"))
-                                .tooltip(t("settings.postProcessing.api.model.refreshModels"))
-                                .loading(fetching)
-                                .disabled(fetching)
-                                .on_click(move |_, _, cx| {
-                                    let pid = pid_ref.clone();
-                                    AppState::global(cx)
-                                        .update(cx, |s, cx| s.fetch_post_process_models(&pid, cx));
-                                }),
-                        ),
-                )
+                        .child(picker),
+                    Button::new("pp-refresh-models")
+                        .ghost()
+                        .xsmall()
+                        .w(design::ICON_BUTTON)
+                        .h(design::ICON_BUTTON)
+                        .icon(icon("refresh-cw"))
+                        .tooltip(t("settings.postProcessing.api.model.refreshModels"))
+                        .loading(fetching)
+                        .disabled(fetching)
+                        .on_click(move |_, _, cx| {
+                            let pid = pid_ref.clone();
+                            AppState::global(cx)
+                                .update(cx, |s, cx| s.fetch_post_process_models(&pid, cx));
+                        }),
+                ))
                 .into_any_element(),
         );
         rows
@@ -1245,86 +1252,102 @@ impl PostProcessingPage {
                 true,
             ));
         }
-        let left =
-            v_flex()
-                .w(dp(180.))
-                .flex_none()
-                .border_r_1()
-                .border_color(tone.hairline)
-                .child(
-                    div()
-                        .id("pp-prompt-list-focus")
-                        .track_focus(&self.prompt_list_focus)
-                        .key_context("PromptList")
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .border_1()
-                        .border_color(transparent_black())
-                        .focus_visible(move |s| s.border_color(ring))
-                        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                            let key = ev.keystroke.key.as_str();
-                            if !matches!(key, "up" | "down") {
-                                return;
+        let left = v_flex()
+            .w(dp(180.))
+            .flex_none()
+            .border_r_1()
+            .border_color(tone.hairline)
+            .child(
+                div()
+                    .id("pp-prompt-list-focus")
+                    .track_focus(&self.prompt_list_focus)
+                    .key_context("PromptList")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .border_1()
+                    .border_color(transparent_black())
+                    .focus_visible(move |s| s.border_color(ring))
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                        let key = ev.keystroke.key.as_str();
+                        if !matches!(key, "up" | "down") {
+                            return;
+                        }
+                        let Some(s) = this.state.read(cx).app_settings().cloned() else {
+                            return;
+                        };
+                        let ids: Vec<String> = s
+                            .post_process_prompts
+                            .iter()
+                            .map(|p| p.id.clone())
+                            .collect();
+                        let at = s
+                            .post_process_selected_prompt_id
+                            .as_ref()
+                            .and_then(|id| ids.iter().position(|i| i == id));
+                        let next = match (key, at) {
+                            ("up", Some(i)) => i.checked_sub(1),
+                            ("down", Some(i)) => Some((i + 1).min(ids.len().saturating_sub(1))),
+                            (_, None) => (!ids.is_empty()).then_some(0),
+                            _ => None,
+                        };
+                        if let Some(id) = next.and_then(|i| ids.get(i)).cloned() {
+                            if at.and_then(|i| ids.get(i)) != Some(&id) {
+                                this.select_prompt(id, window, cx);
                             }
-                            let Some(s) = this.state.read(cx).app_settings().cloned() else {
-                                return;
-                            };
-                            let ids: Vec<String> = s
-                                .post_process_prompts
-                                .iter()
-                                .map(|p| p.id.clone())
-                                .collect();
-                            let at = s
-                                .post_process_selected_prompt_id
-                                .as_ref()
-                                .and_then(|id| ids.iter().position(|i| i == id));
-                            let next = match (key, at) {
-                                ("up", Some(i)) => i.checked_sub(1),
-                                ("down", Some(i)) => Some((i + 1).min(ids.len().saturating_sub(1))),
-                                (_, None) => (!ids.is_empty()).then_some(0),
-                                _ => None,
-                            };
-                            if let Some(id) = next.and_then(|i| ids.get(i)).cloned() {
-                                if at.and_then(|i| ids.get(i)) != Some(&id) {
-                                    this.select_prompt(id, window, cx);
-                                }
-                            }
-                            cx.stop_propagation();
-                        }))
-                        .child(list),
-                )
-                .child(
-                    h_flex()
-                        .flex_none()
-                        .h(dp(24.))
-                        .px(dp(2.))
-                        .border_t_1()
-                        .border_color(tone.hairline)
-                        .child(
-                            Button::new("pp-create-new")
-                                .ghost()
-                                .xsmall()
-                                .icon(icon("plus"))
-                                .tooltip(t("settings.postProcessing.prompts.createNew"))
-                                .disabled(self.creating)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.start_new_prompt(window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("pp-delete-prompt")
-                                .ghost()
-                                .xsmall()
-                                .icon(icon("minus"))
-                                .tooltip(t("settings.postProcessing.prompts.deletePrompt"))
-                                .disabled(self.creating || !has_selection || prompts.len() <= 1)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.confirm_delete_prompt(window, cx)
-                                })),
-                        ),
-                );
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .child(list),
+            )
+            .child(
+                // The list foot: a bordered add/remove pair, as in macOS
+                // list editors (24 × 24 pt segments, 14 pt glyphs).
+                h_flex()
+                    .flex_none()
+                    .p(dp(4.))
+                    .border_t_1()
+                    .border_color(tone.hairline)
+                    .child(
+                        h_flex()
+                            .id("pp-prompt-add-remove")
+                            .rounded(design::RADIUS_CONTROL)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .overflow_hidden()
+                            .child(
+                                Button::new("pp-create-new")
+                                    .ghost()
+                                    .xsmall()
+                                    .rounded_none()
+                                    .w(design::ICON_BUTTON)
+                                    .h(design::ICON_BUTTON)
+                                    .icon(icon("plus").size(dp(14.)))
+                                    .tooltip(t("settings.postProcessing.prompts.createNew"))
+                                    .disabled(self.creating)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_new_prompt(window, cx)
+                                    })),
+                            )
+                            .child(div().w(px(1.)).h(design::ICON_BUTTON).bg(cx.theme().border))
+                            .child(
+                                Button::new("pp-delete-prompt")
+                                    .ghost()
+                                    .xsmall()
+                                    .rounded_none()
+                                    .w(design::ICON_BUTTON)
+                                    .h(design::ICON_BUTTON)
+                                    .icon(icon("minus").size(dp(14.)))
+                                    .tooltip(t("settings.postProcessing.prompts.deletePrompt"))
+                                    .disabled(self.creating || !has_selection || prompts.len() <= 1)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_delete_prompt(window, cx)
+                                    })),
+                            ),
+                    ),
+            );
         let editing = self.creating || has_selection;
         let right: AnyElement =
             if !editing {
@@ -1357,7 +1380,6 @@ impl PostProcessingPage {
                     .child(
                         div().id("pp-prompt-name").child(
                             Input::new(&self.prompt_name)
-                                .small()
                                 .aria_label(t("settings.postProcessing.prompts.promptLabel")),
                         ),
                     )
@@ -1377,7 +1399,7 @@ impl PostProcessingPage {
                     )
                     .child(
                         h_flex()
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .child(
                                 div()
                                     .id("pp-prompt-error")
@@ -1389,8 +1411,7 @@ impl PostProcessingPage {
                             )
                             .child(
                                 Button::new("pp-revert-prompt")
-                                    .ghost()
-                                    .small()
+                                    .outline()
                                     .label(t("settings.postProcessing.prompts.revert"))
                                     .disabled(!dirty)
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1400,7 +1421,6 @@ impl PostProcessingPage {
                             .child(
                                 Button::new("pp-save-prompt")
                                     .primary()
-                                    .small()
                                     .label(t("settings.postProcessing.prompts.save"))
                                     .tooltip(t("settings.postProcessing.prompts.saveShortcut"))
                                     .disabled(!dirty || !complete)
@@ -1443,13 +1463,12 @@ impl crate::ui::pages::Page for PostProcessingPage {
             .map(|(_, r)| test_result_chip(r, cx));
         Some(
             h_flex()
-                .gap(dp(6.))
+                .gap(dp(8.))
                 .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
                 .children(result)
                 .child(
                     Button::new("pp-test-connection-button")
                         .outline()
-                        .small()
                         .label(t("settings.postProcessing.api.testConnection"))
                         .tooltip(t("meetingsAi.byok.testDescription"))
                         .loading(self.testing)
@@ -1491,7 +1510,7 @@ impl PostProcessingPage {
             .child(
                 v_flex()
                     .gap(design::HEADER_GAP)
-                    .child(div().px(dp(2.)).child(design::section_header(
+                    .child(div().px(dp(2.)).child(design::group_header(
                         t("settings.postProcessing.prompts.listTitle"),
                         cx,
                     )))

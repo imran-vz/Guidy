@@ -1301,8 +1301,7 @@ impl SummaryView {
                 )))
                 .child(
                     Button::new("summary-cancel-generate")
-                        .ghost()
-                        .xsmall()
+                        .outline()
                         .icon(icon("circle-x"))
                         .label(t("meetingsAi.common.cancel"))
                         .loading(self.cancelling)
@@ -1363,34 +1362,23 @@ impl SummaryView {
         );
     }
 
-    /// "Generate summary", the empty state before a summary exists.
-    /// Regenerate lives on the meeting header's Redo menu.
-    fn header(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (self.summary.is_none()).then(|| {
-            h_flex()
-                .w_full()
-                .justify_end()
-                .child(self.generate_button(cx))
-                .into_any_element()
-        })
-    }
-
     /// The summary panel's heading row: the section header, and Edit on the
     /// right while a summary is shown and not being edited.
     fn summary_heading(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .w_full()
-            .px(dp(2.))
             .justify_between()
             .items_center()
-            .child(design::section_header(t("meetingsAi.summary.heading"), cx))
+            .child(note_title(t("meetingsAi.summary.heading"), cx))
             .when(self.summary.is_some() && !self.editing, |d| {
                 d.child(
                     Button::new("summary-edit")
                         .ghost()
-                        .xsmall()
+                        .small()
+                        .size(super::detail::HEADER_ICON_BUTTON)
                         .icon(icon("pencil"))
-                        .label(t("meetingsAi.summary.edit"))
+                        .tooltip(t("meetingsAi.summary.edit"))
+                        .accessibility_label(t("meetingsAi.summary.edit"))
                         .disabled(self.generating)
                         .on_click(cx.listener(|this, _, window, cx| this.start_edit(window, cx))),
                 )
@@ -1404,8 +1392,6 @@ impl SummaryView {
         let current = self.choices.iter().find(|c| c.current);
         let main = Button::new("summary-generate")
             .primary()
-            .when(self.generating, |b| b.secondary())
-            .small()
             .icon(icon("sparkles"))
             .label(t("meetingsAi.summary.generate"))
             .when_some(current, |b, c| {
@@ -1507,7 +1493,7 @@ impl SummaryView {
                     .child(
                         div()
                             .w(dp(200.))
-                            .child(Input::new(&self.picker_model_input).small()),
+                            .child(Input::new(&self.picker_model_input)),
                     )
                     .child(
                         Dropdown::new("summary-picker-model")
@@ -1519,7 +1505,6 @@ impl SummaryView {
                             )
                             .selected(Some(current.clone()))
                             .placeholder(t("meetingsAi.llm.pickModel"))
-                            .min_width(dp(160.))
                             .on_select(move |v, window, cx| {
                                 let v = v.to_string();
                                 weak2
@@ -1535,8 +1520,6 @@ impl SummaryView {
                     .child(
                         Button::new("summary-picker-run")
                             .primary()
-                            .when(!can_run || self.generating, |b| b.secondary())
-                            .small()
                             .label(t("meetingsAi.summary.run"))
                             .disabled(!can_run || self.generating)
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1556,7 +1539,12 @@ impl SummaryView {
             let field = |label: SharedString, el: AnyElement| {
                 v_flex()
                     .gap_1()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(label))
+                    .child(
+                        div()
+                            .text_size(design::TEXT_BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(label),
+                    )
                     .child(el)
             };
             return vec![div()
@@ -1567,7 +1555,7 @@ impl SummaryView {
                         .gap_3()
                         .child(field(
                             t("meetingsAi.summary.title"),
-                            Input::new(&self.title).small().into_any_element(),
+                            Input::new(&self.title).into_any_element(),
                         ))
                         .child(field(
                             t("meetingsAi.summary.shortSummary"),
@@ -1603,7 +1591,6 @@ impl SummaryView {
                                 .child(
                                     Button::new("summary-save")
                                         .primary()
-                                        .small()
                                         .label(t("meetingsAi.common.save"))
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.save_summary(cx)),
@@ -1611,8 +1598,7 @@ impl SummaryView {
                                 )
                                 .child(
                                     Button::new("summary-cancel")
-                                        .secondary()
-                                        .small()
+                                        .outline()
                                         .label(t("meetingsAi.common.cancel"))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.editing = false;
@@ -1635,12 +1621,20 @@ impl SummaryView {
             } else {
                 t("meetingsAi.summary.empty")
             };
-            return vec![div()
+            // The empty block: its sentence, then Generate Summary under
+            // it (the block's one action).
+            return vec![v_flex()
                 .id("summary-empty")
-                .p_3()
-                .text_sm()
-                .text_color(muted)
-                .child(text)
+                .items_start()
+                .gap(dp(12.))
+                .child(
+                    div()
+                        .text_size(design::TEXT_READING)
+                        .line_height(design::LINE_READING)
+                        .text_color(muted)
+                        .child(text),
+                )
+                .child(self.generate_button(cx))
                 .test_support()
                 .into_any_element()];
         };
@@ -1652,7 +1646,8 @@ impl SummaryView {
                 .when(items.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_size(design::TEXT_BODY)
+                            .text_size(design::TEXT_READING)
+                            .line_height(design::LINE_READING)
                             .text_color(muted)
                             .child(t("meetingsAi.summary.none")),
                     )
@@ -1665,6 +1660,9 @@ impl SummaryView {
                 crate::logic::usage::format_tokens(u.output_tokens),
             )
         };
+        // The model ID is set in the code face ([`model_footer`]): put a
+        // marker where it goes, then swap it in.
+        let model: &str = MODEL_MARK;
         let generated = match s.usage.as_ref().filter(|u| u.calls > 0) {
             Some(u) => match crate::logic::usage::format_cost(u) {
                 Some(cost) => {
@@ -1672,7 +1670,7 @@ impl SummaryView {
                     t_args(
                         "meetingsAi.summary.generatedByCost",
                         &[
-                            ("model", &s.generated_by),
+                            ("model", model),
                             ("cost", &cost),
                             ("input", &input),
                             ("output", &output),
@@ -1684,34 +1682,24 @@ impl SummaryView {
                     let (input, output) = tokens(u);
                     t_args(
                         "meetingsAi.summary.generatedByTokens",
-                        &[
-                            ("model", &s.generated_by),
-                            ("input", &input),
-                            ("output", &output),
-                        ],
+                        &[("model", model), ("input", &input), ("output", &output)],
                     )
                 }
-                None => t_args(
-                    "meetingsAi.summary.generatedBy",
-                    &[("model", &s.generated_by)],
-                ),
+                None => t_args("meetingsAi.summary.generatedBy", &[("model", model)]),
             },
-            None => t_args(
-                "meetingsAi.summary.generatedBy",
-                &[("model", &s.generated_by)],
-            ),
+            None => t_args("meetingsAi.summary.generatedBy", &[("model", model)]),
         };
         // The meeting's title is the detail header; the summary's own
         // title (which usually became it) would only repeat it.
         vec![v_flex()
             .id("summary-view")
-            .px(design::SECTION_X)
-            .py(dp(10.))
-            .gap(dp(10.))
+            .w_full()
+            .gap(dp(16.))
             .when(!s.short_summary.is_empty(), |d| {
                 d.child(
                     div()
-                        .text_size(design::TEXT_BODY)
+                        .text_size(design::TEXT_READING)
+                        .line_height(design::LINE_READING)
                         .text_color(cx.theme().foreground)
                         .child(s.short_summary.clone()),
                 )
@@ -1729,9 +1717,10 @@ impl SummaryView {
             .when(!s.generated_by.is_empty(), |d| {
                 d.child(
                     div()
-                        .text_size(crate::ui::design::TEXT_SECONDARY)
+                        .text_size(design::TEXT_SECONDARY)
+                        .line_height(design::LINE_SECONDARY)
                         .text_color(muted)
-                        .child(generated),
+                        .child(model_footer(&generated, &s.generated_by, muted)),
                 )
             })
             .test_support()
@@ -1756,14 +1745,16 @@ impl SummaryView {
                 .map(|section| {
                     let key = minute_key(section);
                     let seek = section.start_ms.map(|t_ms| {
+                        // A timestamp that seeks: muted tabular figures, not
+                        // an accent link.
                         Button::new(SharedString::from(format!("minute-seek-{key}")))
-                            .link()
+                            .ghost()
                             .xsmall()
-                            .label(SharedString::from(if section.start.is_empty() {
-                                format_timestamp(t_ms)
-                            } else {
-                                section.start.clone()
-                            }))
+                            .font_features(design::tabular_figures())
+                            .text_color(design::tone(cx).text_muted)
+                            // One timecode format everywhere (m:ss), not
+                            // whatever the model wrote ("00:00").
+                            .label(SharedString::from(format_timestamp(t_ms)))
                             .tooltip(t("meetingsAi.summary.jumpToMoment"))
                             .on_click(
                                 cx.listener(move |this, _, window, cx| this.seek(t_ms, window, cx)),
@@ -1773,8 +1764,6 @@ impl SummaryView {
                         .id(SharedString::from(format!("minute-{key}")))
                         .w_full()
                         .gap(dp(4.))
-                        .px(design::SECTION_X)
-                        .py(dp(10.))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -1791,7 +1780,8 @@ impl SummaryView {
                         .when_some(section.outcome.clone(), |d, outcome| {
                             d.child(
                                 div()
-                                    .text_size(design::TEXT_BODY)
+                                    .text_size(design::TEXT_READING)
+                                    .line_height(design::LINE_READING)
                                     .text_color(tone.text_muted)
                                     .child(format!(
                                         "{}: {outcome}",
@@ -1807,9 +1797,9 @@ impl SummaryView {
                 v_flex()
                     .id("meeting-minutes")
                     .w_full()
-                    .gap(dp(8.))
-                    .child(design::section_header(t("meetingsAi.summary.minutes"), cx))
-                    .child(group(None, sections, cx))
+                    .gap(dp(16.))
+                    .child(note_title(t("meetingsAi.summary.minutes"), cx))
+                    .children(sections)
                     .test_support()
                     .into_any_element(),
             );
@@ -1820,12 +1810,8 @@ impl SummaryView {
                 .iter()
                 .enumerate()
                 .map(|(i, q)| {
-                    div()
+                    note_bullet(q.clone(), cx)
                         .id(SharedString::from(format!("open-question-{i}")))
-                        .px(design::SECTION_X)
-                        .py(dp(8.))
-                        .text_size(design::TEXT_BODY)
-                        .child(q.clone())
                         .test_support()
                         .into_any_element()
                 })
@@ -1834,12 +1820,13 @@ impl SummaryView {
                 v_flex()
                     .id("meeting-open-questions")
                     .w_full()
-                    .gap(dp(8.))
-                    .child(design::section_header(
-                        t("meetingsAi.summary.openQuestions"),
-                        cx,
-                    ))
-                    .child(group(None, questions, cx))
+                    .gap(dp(4.))
+                    .child(
+                        div()
+                            .pb(dp(4.))
+                            .child(note_title(t("meetingsAi.summary.openQuestions"), cx)),
+                    )
+                    .children(questions)
                     .test_support()
                     .into_any_element(),
             );
@@ -1872,8 +1859,10 @@ impl SummaryView {
                     .when_some(item.source_t_ms, |d, t_ms| {
                         d.child(
                             Button::new(SharedString::from(format!("item-seek-{id}")))
-                                .link()
+                                .ghost()
                                 .xsmall()
+                                .font_features(design::tabular_figures())
+                                .text_color(muted)
                                 .label(format_timestamp(t_ms))
                                 .tooltip(t("meetingsAi.summary.jumpToMoment"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1902,12 +1891,13 @@ impl SummaryView {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&inputs.text).small().disabled(locked)),
+                                    .child(Input::new(&inputs.text).disabled(locked)),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("item-delete-{id}")))
                                     .ghost()
                                     .small()
+                                    .size(design::ICON_BUTTON)
                                     .icon(icon("trash"))
                                     .tooltip(t("meetingsAi.summary.deleteItem"))
                                     .disabled(locked)
@@ -1947,10 +1937,10 @@ impl SummaryView {
                             .child(
                                 div()
                                     .w(dp(140.))
-                                    .child(Input::new(&inputs.due).small().disabled(locked)),
+                                    .child(Input::new(&inputs.due).disabled(locked)),
                             )
                             .when_some(item.linear_issue_identifier.clone(), |d, ident| {
-                                d.child(design::chip(ident, true, cx))
+                                d.child(design::chip(ident, false, cx))
                             }),
                     )
                     .children(quote)
@@ -1963,7 +1953,7 @@ impl SummaryView {
                 div()
                     .id("action-items-empty")
                     .p_3()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .text_color(muted)
                     .child(t("meetingsAi.summary.noItems"))
                     .test_support()
@@ -1976,11 +1966,10 @@ impl SummaryView {
                 .id("action-item-add-row")
                 .p_3()
                 .gap_2()
-                .child(div().flex_1().child(Input::new(&self.new_item).small()))
+                .child(div().flex_1().child(Input::new(&self.new_item)))
                 .child(
                     Button::new("action-item-add")
-                        .secondary()
-                        .small()
+                        .outline()
                         .icon(icon("plus"))
                         .label(t("meetingsAi.summary.addItem"))
                         .disabled(!can_add)
@@ -1997,8 +1986,20 @@ impl SummaryView {
 /// minutes topic): one style for both.
 fn note_heading(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(design::TEXT_BODY)
+        .text_size(design::TEXT_READING)
+        .line_height(design::LINE_READING)
         .font_weight(FontWeight::SEMIBOLD)
+        .child(text.into())
+}
+
+/// A top-level heading in the notes (Summary, Minutes, Open questions).
+fn note_title(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .text_size(design::TEXT_GROUP)
+        .line_height(dp(20.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(design::tone(cx).text)
         .child(text.into())
 }
 
@@ -2008,9 +2009,10 @@ fn note_bullet(text: impl Into<SharedString>, cx: &App) -> Div {
     let tone = design::tone(cx);
     h_flex()
         .w_full()
-        .gap(dp(6.))
+        .gap(dp(8.))
         .items_start()
-        .text_size(design::TEXT_BODY)
+        .text_size(design::TEXT_READING)
+        .line_height(design::LINE_READING)
         .text_color(tone.text)
         .child(div().flex_none().text_color(tone.text_muted).child("•"))
         .child(div().flex_1().min_w_0().child(text.into()))
@@ -2089,7 +2091,6 @@ impl Render for SummaryView {
                 .child(group(None, item_rows, cx))
                 .test_support();
         }
-        let header = self.header(cx);
         let heading = self.summary_heading(cx);
         let progress = self.progress_row(cx);
         let picker = self.picker(cx);
@@ -2098,18 +2099,21 @@ impl Render for SummaryView {
         v_flex()
             .id("meeting-summary")
             .w_full()
-            .gap_4()
-            .children(header)
+            .gap(dp(24.))
             .children(progress)
             .children(picker.map(|p| group(None, vec![p], cx)))
             .when_some(self.error.clone(), |d, e| {
                 d.child(error_box("summary-error", e, cx).m_0().test_support())
             })
-            .child(v_flex().w_full().gap(dp(8.)).child(heading).child(group(
-                None,
-                summary_rows,
-                cx,
-            )))
+            // The summary is the pane's subject: it sits on the pane, not
+            // in a box (the editor is a form, so it keeps its panel).
+            .child(v_flex().w_full().gap(dp(8.)).child(heading).map(|d| {
+                if self.editing {
+                    d.child(group(None, summary_rows, cx))
+                } else {
+                    d.children(summary_rows)
+                }
+            }))
             .when_some(item_rows, |d, item_rows| {
                 d.child(foldable_group(
                     "action-items-fold",
@@ -2653,4 +2657,43 @@ mod ui {
         with_window(cx, w, |window, cx| window.click("summary-generate", cx));
         assert!(mb.called("summarize 1 default"), "{:?}", mb.calls());
     }
+}
+
+/// Where the model ID goes in the "Generated with …" line until
+/// [`model_footer`] swaps it in (a translation won't contain it).
+const MODEL_MARK: &str = "\u{E000}";
+
+/// The "Generated with …" line: `line` with the model ID `model` (at
+/// [`MODEL_MARK`]) in the code face, as every model ID is, and the rest
+/// in the UI font with tabular figures.
+fn model_footer(line: &str, model: &str, color: Hsla) -> StyledText {
+    let ui = Font {
+        features: design::tabular_figures(),
+        ..font(crate::theme::UI_FONT)
+    };
+    let code = font(crate::theme::MONO_FONT);
+    let run = |len: usize, font: &Font| TextRun {
+        len,
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let Some(at) = line.find(MODEL_MARK) else {
+        let text = line.to_string();
+        return StyledText::new(text.clone()).with_runs(vec![run(text.len(), &ui)]);
+    };
+    let before = &line[..at];
+    let after = &line[at + MODEL_MARK.len()..];
+    let runs: Vec<TextRun> = [
+        (before.len(), &ui),
+        (model.len(), &code),
+        (after.len(), &ui),
+    ]
+    .into_iter()
+    .filter(|(len, _)| *len > 0)
+    .map(|(len, f)| run(len, f))
+    .collect();
+    StyledText::new(format!("{before}{model}{after}")).with_runs(runs)
 }

@@ -1,14 +1,16 @@
 //! History page: a master–detail view of transcriptions.
 //!
-//! The title bar holds Search (⌘F), the Saved filter and Show in Finder.
+//! The title bar holds Search (⌘F), the Saved filter and Show in Finder
+//! (the recordings folder, not one entry's).
 //! The list (virtualized, newest first, loads pages as it scrolls) sits on
 //! the left; the selected transcription's date, actions, selectable text and
-//! its one audio player fill the right. In a narrow window the detail
-//! expands inline under the selected row instead.
+//! its one audio player fill the right. In a narrow window the list fills
+//! the page and opening an entry pushes its detail, with a toolbar back
+//! button (chevron + title) like Meetings.
 //!
 //! Keyboard (list focused): ↑/↓ select, Space plays/pauses, ←/→ skip 5 s,
 //! ⌘C copies, ⌫ deletes (undo with ⌘Z or the Undo button for a few
-//! seconds), ⌘F searches.
+//! seconds), ⌘F searches. Narrow: Return opens the selection, Esc goes back.
 
 use crate::logic::flows::format_history_date;
 use crate::logic::history::{list_splice, matches_filter, preview_line, HistoryList, PAGE_SIZE};
@@ -20,7 +22,8 @@ use crate::ui::kit::{icon, t, t_args, LocalizedPlaceholder};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::managers::history::HistoryEntry;
@@ -29,6 +32,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+
+/// A More-menu command with an id tests can click.
+fn menu_item(id: impl Into<SharedString>, label: SharedString) -> PopupMenuItem {
+    let id: SharedString = id.into();
+    PopupMenuItem::element(move |_, _| div().id(id.clone()).child(label.clone()).test_support())
+}
+
+/// The player's seek control: hit region height, and its knob.
+const SEEK_H: Pixels = dp(24.);
+const KNOB: Pixels = dp(10.);
 
 /// Below this content width the list and detail stop sitting side by side.
 const SPLIT_MIN_W: Pixels = dp(600.);
@@ -66,6 +79,8 @@ pub struct HistoryPage {
     weak_self: WeakEntity<Self>,
     player: Entity<HistoryPlayer>,
     pending_delete: Option<PendingDelete>,
+    /// Narrow window: the selected entry's detail is pushed over the list.
+    stack_detail: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -135,6 +150,7 @@ impl HistoryPage {
             weak_self: cx.entity().downgrade(),
             player,
             pending_delete: None,
+            stack_detail: false,
             focus: cx.focus_handle().tab_stop(true),
             _subs: subs,
         };
@@ -247,21 +263,45 @@ impl HistoryPage {
         if self.selected == Some(id) {
             return;
         }
-        let old = self
-            .selected
-            .and_then(|o| self.visible.iter().position(|v| *v == o));
         self.selected = Some(id);
         self.action_error = None;
         if let Some(ix) = self.visible.iter().position(|v| *v == id) {
             self.list_state.scroll_to_reveal_item(ix);
-            // The inline (narrow) layout grows the selected row.
-            self.list_state.remeasure_items(ix..ix + 1);
-        }
-        if let Some(ix) = old {
-            self.list_state.remeasure_items(ix..ix + 1);
         }
         self.sync_detail(cx);
         cx.notify();
+    }
+
+    /// Whether list and detail sit side by side (else the detail is
+    /// pushed over the list).
+    fn is_split(window: &Window) -> bool {
+        window.viewport_size().width - crate::ui::main_window::sidebar_width(window) >= SPLIT_MIN_W
+    }
+
+    /// Narrow window: show the selected entry's detail over the list.
+    fn open_detail(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_some() && !self.stack_detail {
+            self.stack_detail = true;
+            cx.notify();
+        }
+    }
+
+    /// Back from the pushed detail to the list (keeps the selection).
+    fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stack_detail = false;
+        if let Some(ix) = self
+            .selected
+            .and_then(|id| self.visible.iter().position(|v| *v == id))
+        {
+            self.list_state.scroll_to_reveal_item(ix);
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// The pushed detail is showing (narrow window, an entry open).
+    fn is_stacked_detail(&self, window: &Window) -> bool {
+        self.stack_detail && !Self::is_split(window) && self.selected_entry().is_some()
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -526,8 +566,22 @@ impl HistoryPage {
                 true
             }
             "f" if cmd => {
+                // The pushed detail hides the list's search: ⌘F returns
+                // to the list, where the field is, and focuses it.
+                if self.is_stacked_detail(window) {
+                    self.stack_detail = false;
+                    cx.notify();
+                }
                 let h = self.search.focus_handle(cx);
                 window.focus(&h, cx);
+                true
+            }
+            "enter" if plain && !Self::is_split(window) && !self.stack_detail => {
+                self.open_detail(cx);
+                true
+            }
+            "escape" if plain && self.is_stacked_detail(window) => {
+                self.go_back(window, cx);
                 true
             }
             _ => false,
@@ -539,51 +593,97 @@ impl HistoryPage {
 }
 
 impl crate::ui::pages::Page for HistoryPage {
-    fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let search = self.search.clone();
+    /// Narrow window with an entry open: back (chevron + title) at the
+    /// toolbar's leading edge, like Meetings.
+    fn leading(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_stacked_detail(window) {
+            return None;
+        }
+        let tone = design::tone(cx);
         Some(
             h_flex()
-                .gap(dp(6.))
-                .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+                .id("history-back-title")
+                .gap(dp(4.))
+                // The glyph, not the button's edge, sits on the page edge.
+                .ml(dp(-6.))
+                .child(
+                    Button::new("history-back")
+                        .ghost()
+                        .small()
+                        .icon(icon("chevron-left"))
+                        .tooltip(t("meetings.detail.back"))
+                        .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
+                )
                 .child(
                     div()
-                        .id("history-search")
-                        .test_support()
-                        .w(dp(180.))
-                        // Esc in search clears it and goes back to the list.
-                        .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
-                            if ev.keystroke.key == "escape" {
-                                search.update(cx, |s, cx| s.set_value("", window, cx));
-                                window.focus(&this.focus, cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .child(
-                            Input::new(&self.search)
-                                .small()
-                                .cleanable(true)
-                                .prefix(
-                                    icon("search")
-                                        .xsmall()
-                                        .text_color(design::tone(cx).text_muted),
-                                )
-                                .aria_label(t("settings.history.search")),
-                        ),
+                        .id("toolbar-title")
+                        .min_w_0()
+                        .truncate()
+                        .text_size(design::TEXT_TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(tone.text)
+                        .child(t("sidebar.history"))
+                        .test_support(),
                 )
-                .child(
-                    Button::new("history-saved-filter")
-                        .ghost()
-                        .small()
-                        .icon(icon(if self.saved_only { "star-fill" } else { "star" }))
-                        .toggled(self.saved_only)
-                        .tooltip(t("settings.history.savedOnly"))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_saved_filter(cx))),
-                )
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    fn toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let search = self.search.clone();
+        // Search and Saved filter the list: while the narrow window shows
+        // the pushed detail instead, they step aside and come back with it.
+        let list_shown = !self.is_stacked_detail(window);
+        Some(
+            h_flex()
+                .gap(dp(8.))
+                .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+                .when(list_shown, |d| {
+                    d.child(
+                        div()
+                            .id("history-search")
+                            .test_support()
+                            .w(dp(180.))
+                            // Esc in search clears it and goes back to the list.
+                            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    search.update(cx, |s, cx| s.set_value("", window, cx));
+                                    window.focus(&this.focus, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .child(
+                                Input::new(&self.search)
+                                    .cleanable(true)
+                                    .prefix(
+                                        icon("search")
+                                            .xsmall()
+                                            .text_color(design::tone(cx).text_muted),
+                                    )
+                                    .aria_label(t("settings.history.search")),
+                            ),
+                    )
+                })
+                .when(list_shown, |d| {
+                    d.child(
+                        // A labeled toggle: a bare star beside search reads as
+                        // "save this" as much as "show saved".
+                        Button::new("history-saved-filter")
+                            .outline()
+                            .icon(icon(if self.saved_only { "star-fill" } else { "star" }))
+                            .label(t("settings.history.savedFilter"))
+                            .selected(self.saved_only)
+                            .toggled(self.saved_only)
+                            .tooltip(t("settings.history.savedOnly"))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_saved_filter(cx))),
+                    )
+                })
                 .child(
                     Button::new("open-recordings")
-                        .ghost()
-                        .small()
+                        .outline()
                         .icon(icon("folder-open"))
+                        .label(t("settings.about.showInFinder"))
                         .tooltip(t("settings.history.showInFinder"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_recordings_folder(cx))),
                 )
@@ -598,7 +698,8 @@ impl Render for HistoryPage {
             self.transcript
                 .update(cx, |st, cx| st.set_value(text, window, cx));
         }
-        let content_w = window.viewport_size().width - design::SIDEBAR_W;
+        let content_w =
+            window.viewport_size().width - crate::ui::main_window::sidebar_width(window);
         let split = content_w >= SPLIT_MIN_W;
         let tone = design::tone(cx);
         let rtl = crate::ui::kit::rtl();
@@ -630,6 +731,23 @@ impl Render for HistoryPage {
                         .h_full()
                         .child(self.render_detail(window, cx)),
                 )
+                .into_any_element()
+        } else if self.is_stacked_detail(window) {
+            // Narrow, an entry open: its detail replaces the list; the list's
+            // keys (Space, arrows, ⌘C, ⌫, Esc back) keep working here.
+            div()
+                .id("history-stacked-detail")
+                .key_context("HistoryList")
+                .track_focus(&self.focus)
+                .size_full()
+                .on_key_down(cx.listener(Self::on_key_down))
+                .on_action(
+                    cx.listener(|this, _: &gpui_kit::component::input::Undo, _, cx| {
+                        this.undo_delete(cx)
+                    }),
+                )
+                .child(self.render_detail(window, cx))
+                .test_support()
                 .into_any_element()
         } else {
             self.render_list(true, window, cx).into_any_element()
@@ -705,7 +823,7 @@ impl HistoryPage {
                     d.child(
                         h_flex()
                             .flex_none()
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .px(dp(10.))
                             .py(dp(6.))
                             .border_t_1()
@@ -722,7 +840,6 @@ impl HistoryPage {
                             .child(
                                 Button::new("history-retry-more")
                                     .ghost()
-                                    .xsmall()
                                     .label(t("common.tryAgain"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.list.error = None;
@@ -732,36 +849,56 @@ impl HistoryPage {
                     )
                 },
             )
-            .when(self.pending_delete.is_some(), |d| {
-                d.child(
+            .when(inline, |d| {
+                d.relative().children(self.render_undo_toast(cx))
+            })
+    }
+
+    /// After a delete: a floating toast at the bottom of the pane with a
+    /// bordered Undo, for as long as the entry can be brought back.
+    fn render_undo_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.pending_delete.as_ref()?;
+        let tone = design::tone(cx);
+        Some(
+            h_flex()
+                .absolute()
+                .bottom(dp(16.))
+                .left_0()
+                .right_0()
+                .justify_center()
+                .px(dp(16.))
+                .child(
                     h_flex()
                         .id("history-undo-bar")
-                        .flex_none()
-                        .gap(dp(6.))
-                        .px(dp(10.))
-                        .py(dp(4.))
-                        .border_t_1()
+                        .occlude()
+                        .max_w_full()
+                        .gap(dp(12.))
+                        .pl(dp(14.))
+                        .pr(dp(6.))
+                        .py(dp(6.))
+                        .rounded(design::RADIUS_PANEL)
+                        .border_1()
                         .border_color(tone.hairline)
-                        .bg(tone.surface)
+                        .bg(tone.raised)
+                        .shadow_md()
                         .child(
                             div()
-                                .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(design::TEXT_SECONDARY)
-                                .text_color(tone.text_muted)
+                                .text_size(design::TEXT_BODY)
+                                .line_height(design::LINE_BODY)
                                 .child(t("settings.history.deleted")),
                         )
                         .child(
                             Button::new("history-undo")
-                                .ghost()
-                                .xsmall()
+                                .outline()
                                 .label(t("settings.history.undo"))
                                 .on_click(cx.listener(|this, _, _, cx| this.undo_delete(cx))),
                         )
                         .test_support(),
                 )
-            })
+                .into_any_element(),
+        )
     }
 
     fn render_row(
@@ -769,7 +906,7 @@ impl HistoryPage {
         ix: usize,
         inline: bool,
         focused: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(entry) = self.visible.get(ix).and_then(|id| self.entry(*id)).cloned() else {
@@ -808,14 +945,15 @@ impl HistoryPage {
             .bg(bg)
             .child(
                 h_flex()
-                    .gap(dp(6.))
+                    .gap(dp(8.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_size(design::TEXT_BODY)
-                            .line_height(dp(17.))
+                            .line_height(design::LINE_BODY)
+                            .font_weight(FontWeight::MEDIUM)
                             .when(empty || retrying, |d| d.text_color(tone.text_muted))
                             .child(preview),
                     )
@@ -824,19 +962,23 @@ impl HistoryPage {
                             icon("star-fill")
                                 .xsmall()
                                 .flex_none()
-                                .text_color(tone.accent_text),
+                                .text_color(tone.text_muted),
                         )
                     }),
             )
             .child(
                 div()
+                    .font_features(design::tabular_figures())
                     .text_size(design::TEXT_SECONDARY)
-                    .line_height(dp(14.))
+                    .line_height(design::LINE_SECONDARY)
                     .text_color(tone.text_muted)
                     .child(format_history_date(entry.timestamp, &lang)),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select(id, cx);
+                if !Self::is_split(window) {
+                    this.open_detail(cx);
+                }
                 window.focus(&this.focus, cx);
             }))
             .test_support();
@@ -847,125 +989,139 @@ impl HistoryPage {
         } else {
             dp(6.)
         };
-        if inline && selected {
-            // Narrow window: the selected row opens into its detail.
-            div()
-                .w_full()
-                .px(inset)
-                .py(dp(2.))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("history-entry-{id}")))
-                        .w_full()
-                        .rounded(design::RADIUS_PANEL)
-                        .border_1()
-                        .border_color(if focused { tone.accent } else { tone.hairline })
-                        .bg(tone.surface)
-                        .h(dp(200.))
-                        .overflow_hidden()
-                        .child(self.render_detail(window, cx))
-                        .test_support(),
-                )
-                .into_any_element()
-        } else {
-            div().w_full().px(inset).child(row).into_any_element()
-        }
+        div().w_full().px(inset).child(row).into_any_element()
     }
 
     /// Header (date, actions), selectable text, player.
     fn render_detail(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let tone = design::tone(cx);
+        // The undo toast floats at the bottom of the detail (above the
+        // player); with the list alone on screen, the list pane has it.
+        let toast = self.render_undo_toast(cx);
         let Some(entry) = self.selected_entry().cloned() else {
             return div()
                 .size_full()
+                .relative()
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_size(design::TEXT_BODY)
                 .text_color(tone.text_muted)
                 .child(t("settings.history.noSelection"))
+                .children(toast)
                 .into_any_element();
         };
         let id = entry.id;
         let lang = guidy_i18n::language();
         let retrying = self.retrying.contains(&id);
         let has_text = !entry.transcription_text.trim().is_empty();
-        let icon_btn = |name: &'static str, label: SharedString, prefix: &str| {
-            Button::new(SharedString::from(format!("{prefix}-{id}")))
-                .ghost()
-                .small()
-                .icon(icon(name))
-                .tooltip(label)
-        };
         let error = self
             .action_error
             .as_ref()
             .filter(|(e, _)| *e == id)
             .map(|(_, m)| m.clone());
+        let copied = self.copied == Some(id);
+        let saved = entry.saved;
+        let weak = cx.entity().downgrade();
+        let more = Button::new(SharedString::from(format!("history-more-{id}")))
+            .ghost()
+            .small()
+            .w(design::ICON_BUTTON)
+            .h(design::ICON_BUTTON)
+            .icon(icon("ellipsis"))
+            .tooltip(t("meetings.list.more"))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                let (w_save, w_retry, w_delete) = (weak.clone(), weak.clone(), weak.clone());
+                menu.item(
+                    menu_item(
+                        format!("star-{id}"),
+                        if saved {
+                            t("settings.history.unsave")
+                        } else {
+                            t("settings.history.save")
+                        },
+                    )
+                    .icon(icon(if saved { "star-fill" } else { "star" }))
+                    .disabled(retrying)
+                    .on_click(move |_, _, cx| {
+                        w_save.update(cx, |this, cx| this.toggle_saved(id, cx)).ok();
+                    }),
+                )
+                .item(
+                    menu_item(format!("retry-{id}"), t("settings.history.retranscribe"))
+                        .icon(icon("rotate-ccw"))
+                        .disabled(retrying)
+                        .on_click(move |_, _, cx| {
+                            w_retry
+                                .update(cx, |this, cx| this.retranscribe(id, cx))
+                                .ok();
+                        }),
+                )
+                .separator()
+                .item(
+                    menu_item(format!("delete-{id}"), t("settings.history.delete"))
+                        .icon(icon("trash"))
+                        .disabled(retrying)
+                        .on_click(move |_, _, cx| {
+                            w_delete.update(cx, |this, cx| this.delete(id, cx)).ok();
+                        }),
+                )
+            });
+        // No title: the text below is the content (a title would only
+        // repeat its first sentence). The date leads as metadata, on one
+        // line with the entry's actions.
         let header = h_flex()
             .flex_none()
-            .gap(dp(8.))
+            .items_center()
+            .gap(dp(12.))
             .px(dp(16.))
-            .pt(dp(10.))
-            .pb(dp(6.))
+            .pt(dp(12.))
+            .pb(dp(4.))
             .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+            // Saved entries keep their star beside the date (the list row
+            // shows it too; pushed over the list, this is the only place).
+            .when(saved, |d| {
+                d.child(
+                    icon("star-fill")
+                        .xsmall()
+                        .flex_none()
+                        .text_color(tone.text_muted),
+                )
+            })
             .child(
                 div()
+                    .id("history-detail-date")
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(design::TEXT_TITLE)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(format_history_date(entry.timestamp, &lang)),
+                    .font_features(design::tabular_figures())
+                    .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(format_history_date(entry.timestamp, &lang))
+                    .test_support(),
             )
             .child(
                 h_flex()
-                    .gap(dp(2.))
+                    .flex_none()
+                    .gap(dp(4.))
                     .child(
-                        icon_btn(
-                            if self.copied == Some(id) {
-                                "check"
-                            } else {
-                                "copy"
-                            },
-                            t("settings.history.copyToClipboard"),
-                            "copy",
-                        )
-                        .disabled(!has_text || retrying)
-                        .on_click(cx.listener(move |this, _, _, cx| this.copy(id, cx))),
+                        Button::new(SharedString::from(format!("copy-{id}")))
+                            .outline()
+                            .icon(icon(if copied { "check" } else { "copy" }))
+                            .label(t("common.copy"))
+                            .tooltip(t("settings.history.copyToClipboard"))
+                            .disabled(!has_text || retrying)
+                            .on_click(cx.listener(move |this, _, _, cx| this.copy(id, cx))),
                     )
-                    .child(
-                        icon_btn(
-                            if entry.saved { "star-fill" } else { "star" },
-                            if entry.saved {
-                                t("settings.history.unsave")
-                            } else {
-                                t("settings.history.save")
-                            },
-                            "star",
-                        )
-                        .disabled(retrying)
-                        .when(entry.saved, |b| b.text_color(tone.accent_text))
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_saved(id, cx))),
-                    )
-                    .child(
-                        icon_btn("rotate-ccw", t("settings.history.retranscribe"), "retry")
-                            .loading(retrying)
-                            .disabled(retrying)
-                            .on_click(cx.listener(move |this, _, _, cx| this.retranscribe(id, cx))),
-                    )
-                    .child(
-                        icon_btn("trash", t("settings.history.delete"), "delete")
-                            .disabled(retrying)
-                            .on_click(cx.listener(move |this, _, _, cx| this.delete(id, cx))),
-                    ),
+                    .child(more),
             );
         let text: AnyElement = if retrying {
             div()
                 .px(dp(16.))
                 .py(dp(6.))
                 .child(
-                    h_flex().child(design::chip("", true, cx).child(design::shimmer_text(
+                    h_flex().child(design::chip("", false, cx).child(design::shimmer_text(
                         ("transcribing", id as usize),
                         t("settings.history.transcribing"),
                         cx,
@@ -981,6 +1137,8 @@ impl HistoryPage {
                     Textarea::new(&self.transcript)
                         .readonly(true)
                         .appearance(false)
+                        .text_size(design::TEXT_READING)
+                        .line_height(design::LINE_READING)
                         .h(relative(1.))
                         .aria_label(t("settings.history.transcript")),
                 )
@@ -989,7 +1147,8 @@ impl HistoryPage {
             div()
                 .px(dp(16.))
                 .py(dp(6.))
-                .text_size(design::TEXT_BODY)
+                .text_size(design::TEXT_READING)
+                .line_height(design::LINE_READING)
                 .text_color(tone.text_muted)
                 .child(t("settings.history.transcriptionFailed"))
                 .into_any_element()
@@ -1010,7 +1169,14 @@ impl HistoryPage {
                         .child(e),
                 )
             })
-            .child(div().flex_1().min_h_0().child(text))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(text)
+                    .children(toast),
+            )
             .child(
                 div()
                     .flex_none()
@@ -1047,7 +1213,7 @@ impl HistoryPage {
                             .mx(dp(6.))
                             .px(dp(8.))
                             .py(dp(8.))
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .child(bar(w, 10.))
                             .child(bar(0.3, 8.))
                     }),
@@ -1074,7 +1240,6 @@ impl HistoryPage {
             .child(
                 Button::new("history-retry-load")
                     .outline()
-                    .small()
                     .label(t("common.tryAgain"))
                     .on_click(cx.listener(|this, _, _, cx| this.load_page(None, cx))),
             )
@@ -1096,7 +1261,7 @@ impl HistoryPage {
             .size_full()
             .items_center()
             .justify_center()
-            .gap(dp(10.))
+            .gap(dp(12.))
             .px(dp(24.))
             .child(
                 div()
@@ -1113,7 +1278,6 @@ impl HistoryPage {
                 d.child(
                     Button::new("history-empty-shortcut")
                         .outline()
-                        .small()
                         .label(t("settings.history.shortcutSettings"))
                         .on_click(|_, _, cx| {
                             if let Some(main) = crate::windows::main_window_entity(cx) {
@@ -1330,27 +1494,43 @@ impl Render for HistoryPlayer {
                 .min_w(dp(34.))
                 .text_color(tone.text_muted)
         };
-        let scrubber: AnyElement = match &self.error {
-            Some(e) => h_flex()
-                .id("history-audio-missing")
-                .flex_1()
-                .gap(dp(6.))
-                .text_size(design::TEXT_SECONDARY)
-                .text_color(tone.text_muted)
-                .child(icon("circle-alert").xsmall())
-                .child(e.clone())
+        // No recording: one quiet line in place of the player.
+        if let Some(e) = &self.error {
+            return h_flex()
+                .id("history-player")
+                .w_full()
+                .h(dp(28.))
+                .px(dp(16.))
+                .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
+                .child(
+                    h_flex()
+                        .id("history-audio-missing")
+                        .gap(dp(8.))
+                        .text_size(design::TEXT_SECONDARY)
+                        .line_height(design::LINE_SECONDARY)
+                        .text_color(tone.text_muted)
+                        .child(icon("audio-lines").xsmall().text_color(tone.text_faint))
+                        .child(e.clone())
+                        .test_support(),
+                )
                 .test_support()
-                .into_any_element(),
+                .into_any_element();
+        }
+        let scrubber: AnyElement = match &self.error {
+            Some(_) => div().into_any_element(),
             None => div()
                 .id("history-seek")
                 .track_focus(&focus)
                 .flex_1()
-                .h(dp(16.))
+                // A 24 pt hit region around the 4 pt track, inside a 2 pt
+                // focus ring reserved at rest.
+                .h(SEEK_H)
                 .relative()
                 .flex()
                 .items_center()
+                .px(dp(2.))
                 .rounded(design::RADIUS_CHIP)
-                .border_1()
+                .border_2()
                 .border_color(transparent_black())
                 .focus_visible(move |s| s.border_color(ring))
                 .aria_label(t("settings.history.position"))
@@ -1360,7 +1540,7 @@ impl Render for HistoryPlayer {
                         .w_full()
                         .h(dp(4.))
                         .rounded(design::RADIUS_TRACK)
-                        .bg(tone.raised)
+                        .bg(tone.track)
                         .child(
                             div()
                                 .h_full()
@@ -1373,10 +1553,11 @@ impl Render for HistoryPlayer {
                     d.child(
                         div()
                             .absolute()
-                            .top(dp(2.))
+                            // Centred in the area inside the ring.
+                            .top((SEEK_H - dp(4.) - KNOB) / 2.)
                             .left(relative(fraction))
-                            .ml(dp(-5.))
-                            .size(dp(10.))
+                            .ml(KNOB / -2.)
+                            .size(KNOB)
                             .rounded_full()
                             .bg(tone.surface)
                             .border_1()
@@ -1428,7 +1609,9 @@ impl Render for HistoryPlayer {
                 Button::new("history-play")
                     .ghost()
                     .small()
-                    .icon(icon(if playing { "pause" } else { "play" }))
+                    .w(design::ICON_BUTTON)
+                    .h(design::ICON_BUTTON)
+                    .icon(crate::ui::brand::pause_icon(!playing))
                     .tooltip(if playing {
                         t("settings.history.pause")
                     } else {
@@ -1443,6 +1626,7 @@ impl Render for HistoryPlayer {
                 duration.map(format_time).unwrap_or_else(|| "--:--".into()),
             ))
             .test_support()
+            .into_any_element()
     }
 }
 

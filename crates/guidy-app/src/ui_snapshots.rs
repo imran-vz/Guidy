@@ -1151,6 +1151,68 @@ fn meeting_playing(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
     w
 }
 
+/// The player at the end of the meeting (the scrubber full).
+fn meeting_played(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+    let (w, detail) = detail_and_view(h, size);
+    let player = h.cx.read_entity(&detail, |d, _| d.player().clone());
+    h.cx.update(|cx| player.update(cx, |p, cx| p.preview(i64::MAX, false, cx)));
+    h.settle();
+    w
+}
+
+/// A content tab with keyboard focus: Tab from Notes to Action Items.
+fn meeting_tab_focus(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+    let w = meeting_detail(h, size);
+    h.with_window(w, |window, cx| {
+        window.click("meeting-detail-tab-notes", cx);
+        window.press("tab", cx);
+    });
+    h.settle();
+    w
+}
+
+/// General with keyboard focus moved `tabs` stops in from the window
+/// (the sidebar first, then the page's controls): shows the focus
+/// treatment of the sidebar, pop-ups, shortcut fields, buttons and switches.
+fn general_focus(h: &mut Harness, size: Size<Pixels>, tabs: usize) -> AnyWindowHandle {
+    let w = main_at(h, size, Section::General);
+    h.with_window(w, |window, cx| {
+        for _ in 0..tabs {
+            window.press("tab", cx);
+        }
+    });
+    h.settle();
+    w
+}
+
+macro_rules! focus_build {
+    ($tabs:expr) => {
+        (|h, size| general_focus(h, size, $tabs)) as Build
+    };
+}
+
+/// Pointer hover on `id` after `build` (rest vs hover states).
+fn hovered(h: &mut Harness, w: AnyWindowHandle, id: &'static str) -> AnyWindowHandle {
+    h.with_window(w, |window, cx| window.hover(id, cx));
+    h.settle();
+    w
+}
+
+fn hover_sidebar(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+    let w = main_at(h, size, Section::General);
+    hovered(h, w, "nav-models")
+}
+
+fn hover_meeting_row(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+    let w = meeting_detail(h, size);
+    hovered(h, w, "meeting-5")
+}
+
+fn hover_button(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+    let w = main_at(h, size, Section::About);
+    hovered(h, w, "check-for-updates")
+}
+
 /// No meetings yet.
 fn meetings_empty(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
     populate(h);
@@ -1473,7 +1535,7 @@ mod settings_panes {
     use super::*;
     use crate::ui::design;
     use crate::ui::pages::meetings::people::PeopleView;
-    use crate::ui::pages::meetings::settings::{MeetingSettingsView, SettingsCategory};
+    use crate::ui::pages::meetings::settings::SettingsCategory;
     use gpui_kit::component::{h_flex, v_flex};
     use gpui_kit::prelude::*;
     use gpui_kit::{div, Context, Entity, Render, Window};
@@ -1489,7 +1551,7 @@ mod settings_panes {
                 .size_full()
                 .items_stretch()
                 .bg(tone.frame)
-                .child(div().flex_none().w(design::SIDEBAR_W).h_full())
+                .child(div().flex_none().w(design::SIDEBAR_W).h_full()) // stand-in frame at default width
                 .child(
                     v_flex()
                         .flex_1()
@@ -1607,11 +1669,60 @@ mod settings_panes {
         });
     }
 
+    /// The AI pane on "On this Mac": the built-in runtime with one model
+    /// downloaded (the default) and a larger one this Mac could fetch.
+    fn local_models(h: &mut Harness) {
+        let model = |id: &str, name: &str, size_mb, default, ram, downloaded| {
+            crate::meetings_backend::LocalLlmModel {
+                id: id.into(),
+                name: name.into(),
+                // The production catalogue's wording (guidy-core
+                // `llm::local_models::CATALOG`).
+                description: if default {
+                    "Fast, good summaries. Works on any Apple silicon Mac.".into()
+                } else {
+                    "Better action items and owners. Recommended with 16 GB of memory or more."
+                        .into()
+                },
+                size_mb,
+                is_default: default,
+                recommended_ram_gb: ram,
+                fits_this_mac: true,
+                downloaded,
+                download_progress: None,
+            }
+        };
+        h.meetings.data.lock().ai.local_models = vec![
+            // Sizes as the backend reports them: the catalogue's bytes in MiB.
+            model("qwen3-4b", "Qwen3 4B Instruct", 2_381, true, None, true),
+            model("qwen3-8b", "Qwen3 8B", 4_794, false, Some(16), false),
+        ];
+        h.backend.with_settings(|s| {
+            s.meetings.llm_provider_id =
+                guidy_core::meetings::settings::BUILTIN_LLM_PROVIDER_ID.into();
+        });
+    }
+
+    fn pane_local(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+        pane_with(h, size, SettingsCategory::Ai, local_models)
+    }
+
     fn pane(h: &mut Harness, size: Size<Pixels>, category: SettingsCategory) -> AnyWindowHandle {
+        pane_with(h, size, category, |_| {})
+    }
+
+    /// A meeting settings pane; `tweak` adjusts the fakes last.
+    fn pane_with(
+        h: &mut Harness,
+        size: Size<Pixels>,
+        category: SettingsCategory,
+        tweak: fn(&mut Harness),
+    ) -> AnyWindowHandle {
         populate(h);
         if category == SettingsCategory::Ai {
             cloud_models(h);
         }
+        tweak(h);
         if category == SettingsCategory::Setup {
             // Something to set up: no system audio, no speaker model.
             let mut d = h.meetings.data.lock();
@@ -1620,11 +1731,13 @@ mod settings_panes {
             d.speaker_model = guidy_core::meetings::processing::SpeakerModelStatus::Missing;
         }
         h.install();
-        let (w, frame) = h.open(size, true, |window, cx| Frame {
-            view: cx.new(|cx| MeetingSettingsView::new(window, cx)),
-        });
-        let view = h.cx.update(|cx| frame.read(cx).view.clone());
-        h.cx.update(|cx| view.update(cx, |v, cx| v.show_category(category, cx)));
+        // The real window: the categories are rows of its sidebar.
+        let (w, main) = h.open_main(size);
+        h.cx.update(|cx| main.update(cx, |m, cx| m.select_section(Section::Meetings, cx)));
+        h.settle();
+        let page =
+            h.cx.update(|cx| main.read(cx).meetings_page().expect("Meetings shown"));
+        h.cx.update(|cx| page.update(cx, |p, cx| p.show_settings(category, cx)));
         h.settle();
         w
     }
@@ -1680,6 +1793,8 @@ mod settings_panes {
             wide_size(),
             pane_build!(SettingsCategory::Ai),
         );
+        add("msettings-ai-local", default_size(), pane_local);
+        add("msettings-ai-local-min", min_size(), pane_local);
         add(
             "msettings-setup-min",
             min_size(),
@@ -1719,6 +1834,7 @@ mod settings_pages {
     /// Right after a delete: the row is gone and Undo is offered.
     fn history_undo(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
         let w = main_at(h, size, Section::History);
+        h.with_window(w, |window, cx| window.click("history-more-100", cx));
         h.with_window(w, |window, cx| window.click("delete-100", cx));
         w
     }
@@ -1782,9 +1898,18 @@ mod settings_pages {
         add("history-undo", default_size(), history_undo);
         // Tall: the History group is below the fold at 600 pt.
         add("advanced-limit-confirm", tall_size(), limit_confirm);
-        add("postprocessing-discard", default_size(), prompt_discard);
+        add("postprocessing-discard", tall_size(), prompt_discard);
         add("usage-error", default_size(), usage_error);
         add("storage-error", default_size(), storage_error);
+        add("debug-logs", default_size(), debug_logs);
+    }
+
+    /// Debug's second view: the live logs.
+    fn debug_logs(h: &mut Harness, size: Size<Pixels>) -> AnyWindowHandle {
+        let w = main_at(h, size, Section::Debug);
+        h.with_window(w, |window, cx| window.click("debug-tab-logs", cx));
+        h.settle();
+        w
     }
 }
 // ---- end settings pages redesign -------------------------------------------------
@@ -1822,10 +1947,20 @@ fn shots() -> Vec<Shot> {
     );
     add("main-models-wide", wide_size(), models_downloads as Build);
 
-    let people: Build = |h, s| meetings_tab(h, s, "meetings-tab-people");
-    let settings: Build = |h, s| meetings_tab(h, s, "meetings-tab-settings");
+    let people: Build = |h, s| meetings_tab(h, s, "nav-meetings-people");
+    let settings: Build = |h, s| meetings_tab(h, s, "nav-meetings-settings");
     add("meetings-people", default_size(), people);
     add("meetings-people-full", tall_size(), people);
+    add("meetings-people-min", min_size(), people);
+    add("meetings-people-wide", wide_size(), people);
+    // A person shown over the list (stacked): Back is the toolbar's
+    // leading chevron + title, as in Meetings.
+    add("meetings-people-person-min", min_size(), |h, s| {
+        let w = meetings_tab(h, s, "nav-meetings-people");
+        h.with_window(w, |window, cx| window.click("person-8", cx));
+        h.settle();
+        w
+    });
     add("meetings-settings", default_size(), settings);
     add("meetings-settings-full", tall_size(), settings);
     // Meeting settings panes and People (settings agent).
@@ -1844,6 +1979,29 @@ fn shots() -> Vec<Shot> {
     add("meetings-find", default_size(), meeting_find);
     add("meetings-find-wide", wide_size(), meeting_find);
     add("meetings-playing", default_size(), meeting_playing);
+    add("meetings-played", default_size(), meeting_played);
+    add("meetings-tab-focus", default_size(), meeting_tab_focus);
+    // Pointer hover on a sidebar row, a list row and a push button.
+    add("hover-sidebar", default_size(), hover_sidebar);
+    add("hover-list-row", default_size(), hover_meeting_row);
+    add("hover-button", default_size(), hover_button);
+    // Keyboard focus on successive General controls (focus-N = N Tab presses).
+    for (n, build) in [
+        (1, focus_build!(1)),
+        (2, focus_build!(2)),
+        (3, focus_build!(3)),
+        (4, focus_build!(4)),
+        (5, focus_build!(5)),
+        (6, focus_build!(6)),
+        (7, focus_build!(7)),
+        (8, focus_build!(8)),
+        (9, focus_build!(9)),
+        (10, focus_build!(10)),
+        (11, focus_build!(11)),
+        (12, focus_build!(12)),
+    ] {
+        add(&format!("focus-{n}"), default_size(), build);
+    }
     add("meetings-empty", default_size(), meetings_empty);
 
     // Onboarding and startup, at the default and the minimum size.

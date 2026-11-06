@@ -50,6 +50,10 @@ const SAMPLE_RATE: u32 = 16_000;
 /// Meetings tabs share).
 const LIST_W_NARROW: Pixels = dp(184.);
 
+/// Below this detail width the list and the detail stack (like compact
+/// Meetings): the list, or the person shown over it with Back.
+const DETAIL_MIN_W: Pixels = dp(400.);
+
 /// What the detail shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeopleSelection {
@@ -82,6 +86,8 @@ pub struct PeopleView {
     detail_scroll: ScrollHandle,
     /// The person and the stored name/email last put into the inputs.
     inputs_for: Option<(PersonId, String, Option<String>)>,
+    /// Stacked (narrow): the detail is shown over the list.
+    stack_detail: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -96,6 +102,35 @@ impl PeopleView {
         self.split
             .get_or_insert_with(|| cx.new(|_| ResizableState::default()))
             .clone()
+    }
+
+    /// Whether the list and the detail stack at this window size: the
+    /// detail would be narrower than [`DETAIL_MIN_W`] beside the list.
+    fn is_stack(&self, window: &Window, cx: &App) -> bool {
+        let content_w =
+            window.viewport_size().width - crate::ui::main_window::sidebar_width(window);
+        let list_w = if super::is_narrow(window) {
+            LIST_W_NARROW
+        } else {
+            match &self.split {
+                Some(split) => super::list_width(split, cx),
+                None => super::LIST_W,
+            }
+        };
+        content_w - list_w < DETAIL_MIN_W
+    }
+
+    /// Stacked, with the detail shown over the list (the toolbar shows
+    /// Back).
+    pub fn is_stacked_detail(&self, window: &Window, cx: &App) -> bool {
+        self.stack_detail && self.is_stack(window, cx)
+    }
+
+    /// Back from the detail shown over the list.
+    pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stack_detail = false;
+        window.focus(&self.list_focus, cx);
+        cx.notify();
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -151,6 +186,7 @@ impl PeopleView {
             list_focus: cx.focus_handle().tab_stop(true),
             detail_scroll: ScrollHandle::new(),
             inputs_for: None,
+            stack_detail: false,
             _subs: subs,
         };
         this.reload(cx);
@@ -293,26 +329,37 @@ impl PeopleView {
     fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let recorded = self.voice.recorded_at.is_some();
-        let text_col = |title: SharedString, line: SharedString| {
+        // A title and, when it adds something, one secondary line (what a
+        // voice recording is for is said once, above the panel).
+        let text_col = |title: SharedString, line: Option<SharedString>| {
             v_flex()
                 .min_w_0()
                 .flex_1()
                 .gap(dp(2.))
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                 .child(
                     div()
-                        .text_size(crate::ui::design::TEXT_SECONDARY)
-                        .line_height(relative(1.5))
-                        .text_color(theme.muted_foreground)
-                        .child(line),
+                        .text_size(design::TEXT_BODY)
+                        .line_height(design::LINE_BODY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title),
                 )
+                .when_some(line, |d, line| {
+                    d.child(
+                        div()
+                            .text_size(design::TEXT_SECONDARY)
+                            .line_height(design::LINE_SECONDARY)
+                            .text_color(theme.muted_foreground)
+                            .child(line),
+                    )
+                })
         };
         let row = h_flex()
             .id("people-voice")
             .w_full()
+            .min_h(design::ROW_MIN_H)
             .gap_3()
-            .px_3()
-            .py_2()
+            .px(design::SECTION_X)
+            .py(design::ROW_Y)
             .justify_between();
         let row = match self.recording {
             VoiceRecording::Recording { since } => {
@@ -322,8 +369,8 @@ impl PeopleView {
                     .id("people-voice")
                     .w_full()
                     .gap_2()
-                    .px_3()
-                    .py_2()
+                    .px(design::SECTION_X)
+                    .py(design::ROW_Y)
                     .child(
                         h_flex()
                             .w_full()
@@ -331,15 +378,22 @@ impl PeopleView {
                             .justify_between()
                             .child(text_col(
                                 t("meetings.people.voice.recording"),
-                                t("meetings.people.voice.readAloud"),
+                                Some(t("meetings.people.voice.readAloud")),
                             ))
                             .child(
-                                div()
+                                h_flex()
                                     .flex_none()
-                                    .font_family(crate::theme::MONO_FONT)
-                                    .text_sm()
-                                    .text_color(theme.danger)
-                                    .child(timer),
+                                    .gap(dp(4.))
+                                    // The red dot says "recording"; the
+                                    // time is a value, in the text colour.
+                                    .text_color(design::tone(cx).text)
+                                    .child(
+                                        div()
+                                            .size(dp(8.))
+                                            .rounded_full()
+                                            .bg(design::status_color(design::Status::Live, cx)),
+                                    )
+                                    .child(design::mono(timer).text_size(design::TEXT_BODY)),
                             ),
                     )
                     .child(
@@ -360,8 +414,7 @@ impl PeopleView {
                             .justify_end()
                             .child(
                                 Button::new("people-voice-cancel")
-                                    .ghost()
-                                    .small()
+                                    .outline()
                                     .label(t("meetings.people.cancel"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.cancel_voice_recording(cx)
@@ -370,7 +423,6 @@ impl PeopleView {
                             .child(
                                 Button::new("people-voice-done")
                                     .primary()
-                                    .small()
                                     .label(t("meetings.people.voice.done"))
                                     .disabled(elapsed < MIN_RECORDING)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -388,23 +440,22 @@ impl PeopleView {
                     } else {
                         "meetings.people.voice.notRecorded"
                     }),
-                    t(if self.recording == VoiceRecording::Saving {
+                    Some(t(if self.recording == VoiceRecording::Saving {
                         "meetings.people.voice.saving"
                     } else {
                         "meetings.people.voice.starting"
-                    }),
+                    })),
                 ))
                 .child(
                     Button::new("people-voice-record")
                         .primary()
-                        .small()
                         .loading(true)
                         .label(t("meetings.people.voice.record")),
                 ),
             VoiceRecording::Idle if recorded => row
                 .child(text_col(
                     t("meetings.people.voice.recordedTitle"),
-                    t("meetings.people.voice.recorded"),
+                    Some(t("meetings.people.voice.recorded")),
                 ))
                 .child(
                     h_flex()
@@ -412,8 +463,7 @@ impl PeopleView {
                         .gap_1()
                         .child(
                             Button::new("people-voice-record")
-                                .ghost()
-                                .small()
+                                .outline()
                                 .label(t("meetings.people.voice.recordAgain"))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.start_voice_recording(cx)),
@@ -423,6 +473,8 @@ impl PeopleView {
                             Button::new("people-voice-delete")
                                 .ghost()
                                 .xsmall()
+                                .w(design::ICON_BUTTON)
+                                .h(design::ICON_BUTTON)
                                 .icon(icon("trash"))
                                 .tooltip(t("meetings.people.delete"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -431,14 +483,10 @@ impl PeopleView {
                         ),
                 ),
             VoiceRecording::Idle => row
-                .child(text_col(
-                    t("meetings.people.voice.notRecorded"),
-                    t("meetings.people.voice.description"),
-                ))
+                .child(text_col(t("meetings.people.voice.notRecorded"), None))
                 .child(
                     Button::new("people-voice-record")
                         .primary()
-                        .small()
                         .icon(icon("mic"))
                         .label(t("meetings.people.voice.record"))
                         .on_click(cx.listener(|this, _, _, cx| this.start_voice_recording(cx))),
@@ -458,6 +506,7 @@ impl PeopleView {
 
     /// Show the user's own voice.
     pub fn select_you(&mut self, cx: &mut Context<Self>) {
+        self.stack_detail = true;
         if self.selected != PeopleSelection::You {
             self.reset_detail();
             self.selected = PeopleSelection::You;
@@ -469,6 +518,7 @@ impl PeopleView {
     /// Show `id`: their name and email in the form, their voiceprints
     /// loading. Pending edits of the person shown before are saved first.
     pub fn select_person(&mut self, id: PersonId, window: &mut Window, cx: &mut Context<Self>) {
+        self.stack_detail = true;
         if self.selected == PeopleSelection::Person(id) {
             return;
         }
@@ -519,12 +569,21 @@ impl PeopleView {
             }
             return;
         }
+        if key == "enter" && !self.stack_detail {
+            // Stacked: Enter opens the selected row, as a click does.
+            cx.stop_propagation();
+            self.stack_detail = true;
+            cx.notify();
+            return;
+        }
         let delta: isize = match key {
             "up" => -1,
             "down" => 1,
             _ => return,
         };
         cx.stop_propagation();
+        // Moving through the list keeps it shown when stacked.
+        let stacked = self.stack_detail;
         let mut order = vec![PeopleSelection::You];
         order.extend(
             self.shown_people(cx)
@@ -534,6 +593,7 @@ impl PeopleView {
         let i = order.iter().position(|s| *s == self.selected).unwrap_or(0) as isize;
         let next = order[(i + delta).clamp(0, order.len() as isize - 1) as usize];
         self.select(next, window, cx);
+        self.stack_detail = stacked;
     }
 
     fn on_edit_event(
@@ -944,6 +1004,7 @@ impl PeopleView {
                     sample.voiceprint_id
                 )))
                 .w_full()
+                .items_start()
                 .gap_2()
                 .child(
                     Button::new(SharedString::from(format!(
@@ -952,7 +1013,13 @@ impl PeopleView {
                     )))
                     .ghost()
                     .xsmall()
-                    .icon(icon(if playing { "pause" } else { "play" }))
+                    .w(design::ICON_BUTTON)
+                    .h(design::ICON_BUTTON)
+                    .icon(icon(if playing {
+                        crate::ui::brand::PAUSE_ICON
+                    } else {
+                        crate::ui::brand::PLAY_ICON
+                    }))
                     .tooltip(t(if playing {
                         "meetings.people.samples.pause"
                     } else {
@@ -965,7 +1032,14 @@ impl PeopleView {
                     v_flex()
                         .min_w_0()
                         .flex_1()
-                        .child(div().text_size(design::TEXT_BODY).truncate().child(line))
+                        // The quote wraps to two lines before it is cut.
+                        .child(
+                            div()
+                                .text_size(design::TEXT_BODY)
+                                .line_height(design::LINE_BODY)
+                                .line_clamp(2)
+                                .child(line),
+                        )
                         .child(
                             div()
                                 .text_size(design::TEXT_SECONDARY)
@@ -1006,7 +1080,6 @@ impl PeopleView {
                 .options(options)
                 .selected(into.map(|p| p.to_string()))
                 .placeholder(t("meetings.people.choosePerson"))
-                .min_width(dp(180.))
                 .on_select(move |value, _, cx| {
                     let Ok(into) = value.parse::<PersonId>() else {
                         return;
@@ -1029,7 +1102,6 @@ impl PeopleView {
                 .child(
                     Button::new(SharedString::from(format!("person-merge-confirm-{id}")))
                         .outline()
-                        .small()
                         .icon(icon("merge"))
                         .label(match into {
                             Some(into) => t_args(
@@ -1091,7 +1163,7 @@ impl PeopleView {
                         .text_size(design::TEXT_BODY)
                         .child(title),
                 )
-                .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+                .child(div().flex_1().min_w_0().child(Input::new(input)))
                 .test_support()
                 .into_any_element()
         };
@@ -1117,7 +1189,9 @@ impl PeopleView {
                 div()
                     .px(design::SECTION_X)
                     .pt(design::ROW_Y)
+                    .pb(dp(4.))
                     .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
                     .text_color(tone.text_muted)
                     .child(t("meetings.people.samples.hint"))
                     .into_any_element(),
@@ -1132,7 +1206,6 @@ impl PeopleView {
             .child(
                 Button::new(SharedString::from(format!("person-delete-{id}")))
                     .outline()
-                    .small()
                     .icon(icon("trash"))
                     .label(t("meetings.people.deleteButton"))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1148,7 +1221,8 @@ impl PeopleView {
         out
     }
 
-    /// A row of the list: icon or nothing, title, a secondary line.
+    /// A row of the list: a 16 pt avatar glyph, title, a secondary line.
+    /// Every row has the glyph, so You and the people share a text edge.
     #[allow(clippy::too_many_arguments)]
     fn list_row(
         &self,
@@ -1156,7 +1230,7 @@ impl PeopleView {
         sel: PeopleSelection,
         title: SharedString,
         line: SharedString,
-        lead: Option<&'static str>,
+        lead: &'static str,
         focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1167,6 +1241,8 @@ impl PeopleView {
         } else {
             tone.selection
         };
+        // The Meetings list's row: 13 pt medium title over a 12 pt muted
+        // line, neutral selection, a quiet hover.
         h_flex()
             .id(id)
             .aria_label(title.clone())
@@ -1177,20 +1253,32 @@ impl PeopleView {
             .py(dp(4.))
             .rounded(design::RADIUS_CHIP)
             .when(active, |d| d.bg(selection))
-            .when_some(lead, |d, name| {
-                d.child(icon(name).small().text_color(if active {
-                    tone.accent_text
-                } else {
-                    tone.text_muted
-                }))
+            .when(!active, |d| {
+                d.hover(move |s| s.bg(tone.selection.opacity(0.5)))
             })
+            .child(
+                div()
+                    .flex_none()
+                    .size(dp(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(lead).size(dp(16.)).text_color(if active {
+                        tone.accent_text
+                    } else {
+                        tone.text_muted
+                    })),
+            )
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .gap(dp(1.))
                     .child(
                         div()
                             .text_size(design::TEXT_BODY)
+                            .line_height(design::LINE_BODY)
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(tone.text)
                             .truncate()
                             .child(title),
@@ -1198,6 +1286,7 @@ impl PeopleView {
                     .child(
                         div()
                             .text_size(design::TEXT_SECONDARY)
+                            .line_height(design::LINE_SECONDARY)
                             .text_color(tone.text_muted)
                             .truncate()
                             .child(line),
@@ -1211,11 +1300,14 @@ impl PeopleView {
             .into_any_element()
     }
 
-    fn render_list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The list of You and the people. `full`: stacked, it fills the
+    /// content area; otherwise it is the narrow fixed column or the shared
+    /// split's panel.
+    fn render_list(&self, full: bool, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tone = design::tone(cx);
         let focused = self.list_focus.is_focused(window);
         // In the shared split the panel sizes the list.
-        let narrow = super::is_narrow(window);
+        let narrow = super::is_narrow(window) && !full;
         let you = self.list_row(
             "people-you".into(),
             PeopleSelection::You,
@@ -1225,7 +1317,7 @@ impl PeopleView {
             } else {
                 "meetings.people.voice.notRecorded"
             }),
-            Some("circle-user"),
+            "circle-user",
             focused,
             cx,
         );
@@ -1233,7 +1325,7 @@ impl PeopleView {
             div()
                 .id(id)
                 .px(dp(8.))
-                .py(dp(6.))
+                .py(dp(8.))
                 .text_size(design::TEXT_SECONDARY)
                 .text_color(tone.text_muted)
                 .child(text)
@@ -1253,8 +1345,10 @@ impl PeopleView {
                 .map(|p| {
                     let count = p.voiceprint_count.to_string();
                     let prints = t_args("meetings.people.voiceprints", &[("count", &count)]);
+                    // The count first: it's short and always fits; a long
+                    // email truncates after it instead of hiding it.
                     let line: SharedString = match &p.email {
-                        Some(e) => format!("{e} · {prints}").into(),
+                        Some(e) => format!("{prints} · {e}").into(),
                         None => prints,
                     };
                     self.list_row(
@@ -1262,7 +1356,7 @@ impl PeopleView {
                         PeopleSelection::Person(p.id),
                         p.display_name.clone().into(),
                         line,
-                        None,
+                        "user-round",
                         focused,
                         cx,
                     )
@@ -1283,9 +1377,8 @@ impl PeopleView {
                 }
             })
             .child(
-                div().flex_none().p(dp(8.)).child(
+                div().flex_none().px(dp(10.)).pt(dp(8.)).pb(dp(8.)).child(
                     Input::new(&self.search)
-                        .small()
                         .cleanable(true)
                         .prefix(icon("search").xsmall().text_color(tone.text_muted)),
                 ),
@@ -1307,7 +1400,7 @@ impl PeopleView {
                             .px(dp(8.))
                             .pt(dp(10.))
                             .pb(dp(4.))
-                            .child(design::section_header(t("meetings.people.title"), cx)),
+                            .child(design::section_header(t("meetings.people.known"), cx)),
                     )
                     .children(rows)
                     .test_support(),
@@ -1340,11 +1433,18 @@ impl Render for PeopleView {
                 None => Vec::new(),
             },
         };
-        let list = self.render_list(window, cx);
-        let detail = div().size_full().min_w_0().min_h_0().child(
-            scroll_page("people-detail", page().children(detail)).track_scroll(&self.detail_scroll),
-        );
         let narrow = super::is_narrow(window);
+        let split = self.split(cx);
+        let stack = self.is_stack(window, cx);
+        let show_detail = stack && self.stack_detail;
+        // Back (stacked) is the toolbar's leading chevron + title, as in
+        // Meetings ([`Self::go_back`]); the detail keeps the page's edge.
+        let detail = v_flex().size_full().min_w_0().min_h_0().child(
+            div().flex_1().min_h_0().child(
+                scroll_page("people-detail", page().children(detail))
+                    .track_scroll(&self.detail_scroll),
+            ),
+        );
         h_flex()
             .id("meetings-people")
             .size_full()
@@ -1352,10 +1452,22 @@ impl Render for PeopleView {
             .min_w_0()
             .items_stretch()
             .map(|d| {
-                if narrow {
-                    d.child(list).child(div().flex_1().min_w_0().child(detail))
+                if stack {
+                    if show_detail {
+                        d.child(div().flex_1().min_w_0().child(detail))
+                    } else {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.render_list(true, window, cx)),
+                        )
+                    }
+                } else if narrow {
+                    d.child(self.render_list(false, window, cx))
+                        .child(div().flex_1().min_w_0().child(detail))
                 } else {
-                    let split = self.split(cx);
+                    let list = self.render_list(false, window, cx);
                     d.child(super::split_view("people-split", &split, list, detail, cx))
                 }
             })

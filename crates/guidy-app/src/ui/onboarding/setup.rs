@@ -10,7 +10,7 @@ use super::assistant::{
     back_button, continue_button, row, row_icon, rows, trailing_text, Assistant,
 };
 use super::model_picker::ModelPicker;
-use crate::logic::languages::{language_label, recognition_language, unique_capability_languages};
+use crate::logic::languages::recognition_language;
 use crate::logic::onboarding::{plan_language, Plan, Summaries};
 use crate::logic::requirements::Choice;
 use crate::state::AppState;
@@ -18,10 +18,9 @@ use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, t, t_args, Dropdown, DropdownOption};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::skeleton::Skeleton;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{h_flex, v_flex, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::downloads::format_bytes;
@@ -40,8 +39,30 @@ pub struct SetupStep {
     test_result: Option<Result<String, String>>,
     /// "Choose Another…" is open.
     picker: Option<Entity<ModelPicker>>,
+    /// A short window (set as it renders): rows already decided show as
+    /// one line, and the summaries choice stacks its control and the cloud
+    /// form under its title so the key field is in the first viewport.
+    compact: bool,
     _subs: Vec<Subscription>,
 }
+
+/// "✓ Downloaded" at the end of a row (the ok status).
+fn ready_label(id: &'static str, cx: &App) -> AnyElement {
+    crate::ui::pages::meetings::settings::status_label(
+        id,
+        design::Status::Ok,
+        t("onboarding.setup.downloaded"),
+        cx,
+    )
+    .into_any_element()
+}
+
+/// Below this window height the setup uses its compact layout.
+const COMPACT_BELOW_H: Pixels = super::assistant::COMPACT_BELOW_H;
+
+/// Where a row's text starts: the cloud form and the summaries
+/// explanation line up with the row titles.
+const FORM_INSET: Pixels = super::assistant::TEXT_INSET;
 
 /// Cloud providers summaries can use (Apple Intelligence and a custom
 /// endpoint are set up in Settings).
@@ -95,6 +116,7 @@ impl SetupStep {
             testing: false,
             test_result: None,
             picker: None,
+            compact: false,
             _subs: subs,
         }
     }
@@ -250,9 +272,7 @@ impl SetupStep {
     /// Size to download, or a "Downloaded" / "Included" chip.
     fn size_cell(&self, c: Option<&Choice>, plus: bool, cx: &App) -> AnyElement {
         match c {
-            Some(c) if c.ready => {
-                design::chip(t("onboarding.setup.downloaded"), false, cx).into_any_element()
-            }
+            Some(c) if c.ready => ready_label("setup-ready", cx),
             Some(c) => {
                 let size = format_bytes(c.download_bytes);
                 trailing_text(if plus { format!("+{size}") } else { size }, cx)
@@ -261,38 +281,15 @@ impl SetupStep {
         }
     }
 
+    /// The chosen model's one capability statement (the same line as the
+    /// picker shows).
     fn speech_description(&self, model_id: &str, cx: &App) -> SharedString {
-        let st = self.state.read(cx);
-        let Some(m) = st.models.model(model_id) else {
-            return SharedString::default();
-        };
-        let langs = unique_capability_languages(&m.supported_languages);
-        let languages = match langs.as_slice() {
-            [one] => guidy_i18n::t_args(
-                "modelSelector.capabilities.languageOnly",
-                &[("language", language_label(one).unwrap_or(one))],
-            ),
-            _ => guidy_i18n::t_args(
-                "modelSelector.capabilities.languageCount",
-                &[("total", &langs.len().to_string())],
-            ),
-        };
-        let language = st
-            .app_settings()
-            .map(|s| recognition_language(&plan_language(s, &guidy_i18n::language())))
-            .unwrap_or_else(|| "en".into());
-        let label = language_label(&language).unwrap_or("English");
-        let speaks =
-            crate::logic::languages::supports_language_code(&m.supported_languages, &language);
-        if speaks {
-            format!(
-                "{languages} · {}",
-                guidy_i18n::t_args("onboarding.setup.speaks", &[("language", label)])
-            )
-            .into()
-        } else {
-            languages.into()
-        }
+        self.state
+            .read(cx)
+            .models
+            .model(model_id)
+            .map(|m| super::model_picker::capability_line(m).into())
+            .unwrap_or_default()
     }
 
     fn speech_row(&self, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
@@ -303,11 +300,13 @@ impl SetupStep {
             .and_then(|id| st.models.model(id))
             .map(crate::ui::kit::model_name)
             .unwrap_or_else(|| guidy_i18n::t("onboarding.setup.noSpeechModel"));
-        let description = plan
-            .speech_model
-            .as_deref()
-            .map(|id| self.speech_description(id, cx))
-            .unwrap_or_default();
+        // Compact: the chosen model is a one-line summary.
+        let description = (!self.compact).then(|| {
+            plan.speech_model
+                .as_deref()
+                .map(|id| self.speech_description(id, cx))
+                .unwrap_or_default()
+        });
         let trailing = h_flex()
             .gap(dp(8.))
             .child(self.size_cell(
@@ -318,7 +317,6 @@ impl SetupStep {
             .child(
                 Button::new("setup-choose-speech")
                     .outline()
-                    .small()
                     .label(t("onboarding.setup.chooseAnother"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_picker(window, cx))),
             );
@@ -326,7 +324,7 @@ impl SetupStep {
             "setup-speech",
             Some(row_icon("mic", cx)),
             name,
-            Some(description),
+            description,
             Some(trailing.into_any_element()),
             cx,
         )
@@ -412,20 +410,42 @@ impl SetupStep {
                         .test_support(),
                 )
             });
-        let mut out = vec![row(
-            "setup-summaries",
-            Some(row_icon("sparkles", cx)),
-            t("onboarding.setup.summaries.title"),
-            Some(description),
-            Some(control.into_any_element()),
-            cx,
-        )
-        .test_support()
-        .into_any_element()];
-        if let Summaries::Cloud(pid) = &plan.summaries {
-            out.push(self.cloud_form(pid, cx));
-        }
-        out
+        // One block at every size: the title with the choice beside it,
+        // what the pick means across the full width, and for the cloud the
+        // provider and key right below, so they are in the first viewport.
+        vec![v_flex()
+            .w_full()
+            .child(
+                row(
+                    "setup-summaries",
+                    Some(row_icon("sparkles", cx)),
+                    t("onboarding.setup.summaries.title"),
+                    None,
+                    Some(control.into_any_element()),
+                    cx,
+                )
+                .pb(dp(4.))
+                .test_support(),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .pl(FORM_INSET)
+                    .pr(design::SECTION_X)
+                    .pb(if self.compact { dp(4.) } else { dp(8.) })
+                    .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
+                    .text_color(design::tone(cx).text_muted)
+                    .child(description),
+            )
+            .when_some(
+                match &plan.summaries {
+                    Summaries::Cloud(pid) => Some(pid.clone()),
+                    _ => None,
+                },
+                |d, pid| d.child(self.cloud_form(&pid, cx).into_any_element()),
+            )
+            .into_any_element()]
     }
 
     /// Provider, API key and Test for cloud summaries.
@@ -454,7 +474,9 @@ impl SetupStep {
                 Dropdown::new("setup-cloud-provider")
                     .options(options)
                     .selected(Some(pid.to_string()))
-                    .min_width(dp(130.))
+                    // Fixed, like the AI settings' provider pop-up: a long
+                    // name truncates here and reads in full in the menu.
+                    .min_width(dp(160.))
                     .menu_width(dp(220.))
                     .on_select(move |v, window, cx| {
                         let v = v.to_string();
@@ -469,32 +491,33 @@ impl SetupStep {
                     .id("setup-api-key")
                     .flex_1()
                     .min_w_0()
-                    .child(Input::new(&self.api_key).small().mask_toggle())
+                    .child(Input::new(&self.api_key).mask_toggle())
                     .test_support(),
             )
             .child(
                 Button::new("setup-test-key")
                     .outline()
-                    .small()
                     .label(t("meetingsAi.llm.testConnection"))
                     .loading(self.testing)
                     .disabled(self.testing || self.saving_key || !saved)
                     .on_click(cx.listener(|this, _, _, cx| this.test_key(cx))),
             );
         let status: AnyElement = match &self.test_result {
-            Some(Ok(_)) => h_flex()
-                .gap(dp(4.))
-                .text_color(tone.accent_text)
-                .child(icon("check").size(dp(12.)))
-                .child(t("onboarding.setup.cloud.works"))
-                .into_any_element(),
+            Some(Ok(_)) => crate::ui::pages::meetings::settings::status_label(
+                "setup-key-works",
+                design::Status::Ok,
+                t("onboarding.setup.cloud.works"),
+                cx,
+            )
+            .into_any_element(),
             Some(Err(e)) => div()
-                .text_color(cx.theme().danger)
+                .text_color(design::status_color(design::Status::Error, cx))
                 .truncate()
                 .child(e.clone())
                 .into_any_element(),
+            // Where the key goes wraps; it is an instruction.
             None => div()
-                .truncate()
+                .line_height(design::LINE_SECONDARY)
                 .child(if saved {
                     t_args("onboarding.setup.cloud.savedHint", &[("provider", &label)])
                 } else {
@@ -505,6 +528,7 @@ impl SetupStep {
         let url = key_url(pid);
         let help = h_flex()
             .w_full()
+            .items_start()
             .gap(dp(8.))
             .text_size(design::TEXT_SECONDARY)
             .text_color(tone.text_muted)
@@ -512,6 +536,7 @@ impl SetupStep {
             .when_some(url, |d, url| {
                 d.child(
                     Button::new("setup-get-key")
+                        .flex_none()
                         .link()
                         .xsmall()
                         .icon(icon("external-link"))
@@ -522,10 +547,10 @@ impl SetupStep {
         v_flex()
             .id("setup-cloud-form")
             .w_full()
-            .gap(dp(6.))
-            .pl(dp(34.))
+            .gap(dp(4.))
+            .pl(FORM_INSET)
             .pr(design::SECTION_X)
-            .py(dp(8.))
+            .pb(dp(8.))
             .child(line)
             .child(help)
             .test_support()
@@ -560,7 +585,7 @@ impl SetupStep {
                         "onboarding.setup.transcription.same",
                         &[("model", &transcription_name)],
                     ),
-                    design::chip(t("onboarding.setup.included"), false, cx).into_any_element(),
+                    trailing_text(t("onboarding.setup.included"), cx),
                 )
             } else {
                 (
@@ -573,7 +598,7 @@ impl SetupStep {
                     "setup-transcription",
                     Some(row_icon("audio-lines", cx)),
                     t("onboarding.setup.transcription.title"),
-                    Some(description),
+                    (!self.compact).then_some(description),
                     Some(trailing),
                     cx,
                 )
@@ -589,7 +614,7 @@ impl SetupStep {
                 "setup-speakers",
                 Some(row_icon("users", cx)),
                 t("onboarding.setup.speakers.title"),
-                Some(t("onboarding.setup.speakers.description")),
+                (!self.compact).then(|| t("onboarding.setup.speakers.description")),
                 Some(self.size_cell(plan.speaker.as_ref(), dictation, cx)),
                 cx,
             )
@@ -608,14 +633,17 @@ impl SetupStep {
                     s.update_onboarding_choices(|c| c.better_turns = !c.better_turns, cx)
                 });
             };
-            let checkbox = Checkbox::new("setup-turns-check")
-                .checked(checked)
-                .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                    cx.stop_propagation();
-                    toggle(this, cx);
-                }));
+            let checkbox = super::assistant::AccentMark::new(
+                "setup-turns-check",
+                super::assistant::MarkKind::Check,
+            )
+            .checked(checked)
+            .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                cx.stop_propagation();
+                toggle(this, cx);
+            }));
             let trailing = if ready {
-                design::chip(t("onboarding.setup.downloaded"), false, cx).into_any_element()
+                ready_label("setup-turns-ready", cx)
             } else {
                 trailing_text(format!("+{}", format_bytes(plan.turns_bytes())), cx)
             };
@@ -624,7 +652,7 @@ impl SetupStep {
                     "setup-turns",
                     Some(checkbox.into_any_element()),
                     t("onboarding.setup.turns.title"),
-                    Some(t("onboarding.setup.turns.description")),
+                    (!self.compact).then(|| t("onboarding.setup.turns.description")),
                     Some(trailing),
                     cx,
                 )
@@ -661,10 +689,11 @@ impl SetupStep {
 }
 
 impl Render for SetupStep {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(picker) = &self.picker {
             return picker.clone().into_any_element();
         }
+        self.compact = window.viewport_size().height < COMPACT_BELOW_H;
         let tone = design::tone(cx);
         let st = self.state.read(cx);
         let choices = st.startup.choices.clone();
@@ -722,7 +751,9 @@ impl Render for SetupStep {
                     div()
                         .id("setup-total")
                         .truncate()
-                        .when(!fits, |d| d.text_color(cx.theme().danger))
+                        .when(!fits, |d| {
+                            d.text_color(design::status_color(design::Status::Error, cx))
+                        })
                         .child(if fits {
                             total
                         } else {
@@ -739,7 +770,7 @@ impl Render for SetupStep {
                             .gap(dp(6.))
                             .items_start()
                             .text_size(design::TEXT_SECONDARY)
-                            .line_height(dp(15.))
+                            .line_height(design::LINE_SECONDARY)
                             .text_color(tone.text_muted)
                             .child(
                                 icon("download")
@@ -761,7 +792,7 @@ impl Render for SetupStep {
         let assistant = assistant
             .action(
                 Button::new("setup-later")
-                    .ghost()
+                    .outline()
                     .label(t("onboarding.setup.later"))
                     .disabled(preview)
                     .on_click(cx.listener(|this, _, window, cx| this.finish(true, window, cx))),

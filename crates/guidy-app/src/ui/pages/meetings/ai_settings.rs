@@ -10,7 +10,6 @@
 
 use crate::logic::flows::CUSTOM_PROVIDER_ID;
 use crate::logic::meetings::{meetings_patch, MeetingsEvent, PROVIDER_KEY_URLS};
-use crate::logic::models::format_model_size;
 use crate::logic::settings_store::ToastSpec;
 use crate::meetings_backend::{
     error_message, LocalLlmModel, MeetingsBackend, ModelCatalog, SharedMeetingsBackend,
@@ -19,8 +18,8 @@ use crate::state::{AppEvent, AppState};
 use crate::ui::design::{self, dp};
 use crate::ui::download_control::DownloadControl;
 use crate::ui::kit::{
-    group, icon, page, scroll_page, t, t_args, toggle, Dropdown, DropdownOption,
-    LocalizedPlaceholder, ScrollTrap, SettingRow,
+    group, icon, scroll_page, t, t_args, toggle, Dropdown, DropdownOption, LocalizedPlaceholder,
+    ScrollTrap, SettingRow,
 };
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -35,6 +34,10 @@ use guidy_core::settings::AppSettings;
 use std::collections::{HashMap, HashSet};
 
 pub const LINEAR_API_KEY_URL: &str = "https://linear.app/settings/api";
+/// The least height the cloud model catalogue gets ("Add models from", the
+/// provider form, search, column note, a few rows, footer); a shorter pane
+/// scrolls to it instead.
+const CATALOGUE_MIN_H: Pixels = dp(360.);
 const APPLE_PROVIDER_ID: &str = crate::logic::flows::APPLE_PROVIDER_ID;
 
 /// The meetings provider + model.
@@ -329,18 +332,19 @@ pub fn provider_key_url(provider_id: &str) -> Option<&'static str> {
         .map(|(_, url)| *url)
 }
 
-/// A radio mark: accent ring when selected.
+/// A radio mark: a ring in the accent ink when selected (the pale fill
+/// accent is too faint for a mark on white).
 fn radio(selected: bool, cx: &App) -> Div {
     let tone = design::tone(cx);
     div()
         .flex_none()
         .size(dp(14.))
         .rounded_full()
-        .when(selected, |d| d.border_4().border_color(tone.accent))
+        .when(selected, |d| d.border_4().border_color(tone.accent_text))
         .when(!selected, |d| d.border_1().border_color(tone.text_faint))
 }
 
-/// A check mark in a box: accent when checked.
+/// A check mark in a box: filled with the accent ink when checked.
 fn checkbox(checked: bool, cx: &App) -> Div {
     let tone = design::tone(cx);
     div()
@@ -351,8 +355,8 @@ fn checkbox(checked: bool, cx: &App) -> Div {
         .items_center()
         .justify_center()
         .when(checked, |d| {
-            d.bg(tone.accent)
-                .child(icon("check").size(dp(10.)).text_color(tone.ink))
+            d.bg(tone.accent_text)
+                .child(icon("check").size(dp(10.)).text_color(tone.surface))
         })
         .when(!checked, |d| d.border_1().border_color(tone.text_faint))
 }
@@ -534,6 +538,17 @@ pub struct AiSettingsView {
     /// changes (search, provider, filter).
     model_list_scroll: ScrollHandle,
     section: AiSection,
+    /// The provider's key form is open although a key is saved ("Change…").
+    editing_key: bool,
+    /// The pane's heading (the category's name), when the meeting settings
+    /// show their category list beside it.
+    heading: Option<SharedString>,
+    /// Beside the category list the form starts at the list's edge instead
+    /// of centering.
+    anchored: bool,
+    /// The meeting settings show the place switch on their category
+    /// pop-up's row (a narrow window), so the pane doesn't repeat it.
+    switch_in_menu: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -660,6 +675,10 @@ impl AiSettingsView {
             browsing: None,
             model_list_scroll: ScrollHandle::new(),
             section: AiSection::default(),
+            editing_key: false,
+            heading: None,
+            anchored: false,
+            switch_in_menu: false,
             _subs: subs,
         };
         this.sync_inputs(true, window, cx);
@@ -697,6 +716,29 @@ impl AiSettingsView {
         let q = q.to_string();
         self.search.update(cx, |s, cx| s.set_value(q, window, cx));
         self.search_changed(cx);
+    }
+
+    /// How the meeting settings frame the pane: its heading, and whether it
+    /// is left-anchored beside the category list.
+    pub fn set_frame(
+        &mut self,
+        heading: Option<SharedString>,
+        anchored: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Under the category pop-up (not anchored) the switch sits on the
+        // pop-up's row; see [`Self::place_switch`].
+        if self.heading != heading || self.anchored != anchored || self.switch_in_menu == anchored {
+            self.heading = heading;
+            self.anchored = anchored;
+            self.switch_in_menu = !anchored;
+            cx.notify();
+        }
+    }
+
+    /// The pane's form column, centered or left-anchored.
+    fn column(&self) -> Div {
+        super::settings::pane_column(self.anchored)
     }
 
     /// Fill the Summaries or the Linear pane.
@@ -749,6 +791,7 @@ impl AiSettingsView {
             let key = self.api_keys.get(&pid).cloned();
             set_if(&self.api_key, key.unwrap_or_default(), true, window, cx);
             self.synced_provider = pid.clone();
+            self.editing_key = false;
             self.model_list_scroll.set_offset(point(px(0.), px(0.)));
             self.test_result = None;
             self.catalog_error = None;
@@ -822,6 +865,11 @@ impl AiSettingsView {
                             let _ = view.update(cx, |this, cx| {
                                 this.saving_key = None;
                                 if ok {
+                                    // A key saved: the form folds back to
+                                    // its one-line summary.
+                                    if !value.trim().is_empty() {
+                                        this.editing_key = false;
+                                    }
                                     this.api_keys.insert(pid.clone(), value);
                                     this.test_result = None;
                                     this.fetch_catalog(pid, cx);
@@ -1055,6 +1103,45 @@ impl AiSettingsView {
         );
     }
 
+    /// Whether `pid`'s key has been read and is empty (a custom endpoint
+    /// may need none).
+    fn key_missing(&self, pid: &str) -> bool {
+        pid != CUSTOM_PROVIDER_ID && self.api_keys.get(pid).is_some_and(|k| k.trim().is_empty())
+    }
+
+    /// Whether a key is saved for `pid`.
+    fn has_key(&self, pid: &str) -> bool {
+        self.api_keys.get(pid).is_some_and(|k| !k.trim().is_empty())
+    }
+
+    /// When the default's cloud provider has no key and the provider form
+    /// below is that provider's: what the status line says instead of
+    /// repeating "Add your … API key": the condition ("Anthropic key
+    /// needed"), then the model waiting for it, if any.
+    fn key_missing_below(&self, cx: &App) -> Option<(String, Option<String>)> {
+        let s = self.settings(cx)?;
+        let c = MeetingsLlmChoice::from_settings(&s);
+        if SummaryPlace::of(&c.provider_id) != SummaryPlace::Cloud
+            || c.provider_id != self.synced_provider
+            || !self.key_missing(&c.provider_id)
+        {
+            return None;
+        }
+        let label = provider_label(&s, &c.provider_id);
+        let needs = t_args("meetingsAi.llm.needsKeyFrom", &[("provider", &label)]).to_string();
+        let model = c.effective_model.trim();
+        if model.is_empty() {
+            return Some((needs, None));
+        }
+        let name = self
+            .catalogs
+            .get(&c.provider_id)
+            .and_then(|cat| cat.models.iter().find(|m| m.id == model))
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| model.to_string());
+        Some((needs, Some(name)))
+    }
+
     /// What summaries use right now, for the status line.
     pub fn active_summary(&self, cx: &App) -> ActiveSummary {
         use guidy_i18n::{t, t_args};
@@ -1199,13 +1286,16 @@ impl AiSettingsView {
 
     // -- render ---------------------------------------------------------
 
-    /// What summaries use now, and where they run (Cloud | On This Mac).
-    fn header(&self, place: SummaryPlace, cx: &mut Context<Self>) -> AnyElement {
-        let tone = design::tone(cx);
-        let (ready, title, chip) = match self.active_summary(cx) {
-            ActiveSummary::Ready { model, via } => (true, model, Some(via)),
-            ActiveSummary::NotReady(why) => (false, why, None),
-        };
+    /// Where summaries run: On this Mac | Cloud provider (local first, as
+    /// in onboarding). `None` before the settings load or on the Linear
+    /// pane. The meeting settings put it on their category pop-up's row in
+    /// a narrow window; otherwise it ends the pane's heading row.
+    pub fn place_switch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.section == AiSection::Linear {
+            return None;
+        }
+        let s = self.settings(cx)?;
+        let place = SummaryPlace::of(&MeetingsLlmChoice::from_settings(&s).provider_id);
         let weak = cx.entity().downgrade();
         let seg =
             |id: &'static str, label: SharedString, p: SummaryPlace, cx: &mut Context<Self>| {
@@ -1216,73 +1306,161 @@ impl AiSettingsView {
                     })
                     .test_support()
             };
-        let cloud = seg(
-            "meetings-llm-tab-cloud",
-            t("meetingsAi.llm.tabCloud"),
-            SummaryPlace::Cloud,
-            cx,
-        );
         let local = seg(
             "meetings-llm-tab-local",
             t("meetingsAi.llm.tabLocal"),
             SummaryPlace::Local,
             cx,
         );
-        design::panel(cx)
+        let cloud = seg(
+            "meetings-llm-tab-cloud",
+            t("meetingsAi.llm.tabCloud"),
+            SummaryPlace::Cloud,
+            cx,
+        );
+        Some(
+            div()
+                .id("meetings-llm-place")
+                .flex_none()
+                .child(design::segmented(cx).child(local).child(cloud))
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    /// What summaries use now, on one full-width line: the condition first
+    /// ("Anthropic key needed", "Summaries are made by …"), the model it
+    /// concerns after it in secondary text.
+    fn status_line(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tone = design::tone(cx);
+        let summary = self.active_summary(cx);
+        // The default's provider has no key and its form is right below:
+        // the form says where the key goes; the status names the condition.
+        let waiting_for_key = self.key_missing_below(cx);
+        let ready = waiting_for_key.is_none() && matches!(summary, ActiveSummary::Ready { .. });
+        let (status, glyph) = if ready {
+            (design::Status::Ok, "circle-check")
+        } else {
+            (design::Status::Attention, "circle-alert")
+        };
+        let text: AnyElement = match (waiting_for_key, summary) {
+            // One line: the condition, then the model, which truncates
+            // first in a narrow pane (never wraps to a line that starts
+            // with its separator).
+            (Some((needs, model)), _) => h_flex()
+                .min_w_0()
+                .gap_x(dp(4.))
+                .child(
+                    div()
+                        .id("meetings-llm-active-model")
+                        .flex_none()
+                        .child(needs)
+                        .test_support(),
+                )
+                .children(model.map(|m| {
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(tone.text_muted)
+                        .child(format!("· {m}"))
+                }))
+                .into_any_element(),
+            // Model · where, on one line: the model stays whole and the
+            // trailing "where" truncates first in a narrow pane.
+            (None, ActiveSummary::Ready { model, via }) => h_flex()
+                .min_w_0()
+                .overflow_hidden()
+                .gap_x(dp(4.))
+                // The toolbar already says "AI summaries": the line leads with
+                // the model itself, which never truncates.
+                .child(
+                    div()
+                        .id("meetings-llm-active-model")
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(model)
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(tone.text_muted)
+                        .child(format!("· {via}")),
+                )
+                .into_any_element(),
+            (None, ActiveSummary::NotReady(why)) => div()
+                .id("meetings-llm-active-model")
+                .min_w_0()
+                .child(why)
+                .test_support()
+                .into_any_element(),
+        };
+        h_flex()
             .id("meetings-llm-active")
+            .w_full()
+            .flex_none()
+            .items_start()
+            .gap(dp(8.))
+            .px(dp(2.))
+            .text_size(design::TEXT_BODY)
+            .line_height(design::LINE_BODY)
             .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .px(design::SECTION_X)
-                    .py(design::SECTION_Y)
-                    .child(if ready {
-                        design::signal_dot(cx).into_any_element()
-                    } else {
-                        div()
-                            .flex_none()
-                            .size(dp(14.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().size(dp(7.)).rounded_full().bg(cx.theme().warning))
-                            .into_any_element()
-                    })
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(dp(6.))
-                            .when(ready, |d| {
-                                d.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(design::TEXT_BODY)
-                                        .text_color(tone.text_muted)
-                                        .child(t("meetingsAi.llm.activeHeading")),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id("meetings-llm-active-model")
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(design::TEXT_BODY)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(title)
-                                    .test_support(),
-                            )
-                            .children(chip.map(|c| design::chip(c, false, cx))),
-                    )
-                    .child(
-                        div()
-                            .id("meetings-llm-place")
-                            .flex_none()
-                            .child(design::segmented(cx).child(cloud).child(local))
-                            .test_support(),
-                    ),
+                div().flex_none().pt(dp(2.)).child(
+                    icon(glyph)
+                        .size(dp(14.))
+                        .text_color(design::status_color(status, cx)),
+                ),
             )
+            .child(div().flex_1().min_w_0().child(text))
             .test_support()
+            .into_any_element()
+    }
+
+    /// The top of the Summaries pane: the heading with the place switch at
+    /// its end (or the switch alone when nothing hosts it), then the status
+    /// on its own line.
+    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let switch = if self.switch_in_menu {
+            None
+        } else {
+            self.place_switch(cx)
+        };
+        let heading = self
+            .heading
+            .clone()
+            .map(|h| super::settings::pane_heading(h, cx));
+        // No pane heading (the toolbar names the category): the status
+        // takes the heading's place, with the switch at its end.
+        if heading.is_none() {
+            if let Some(switch) = switch {
+                return h_flex()
+                    .w_full()
+                    .flex_none()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().flex_1().min_w_0().child(self.status_line(cx)))
+                    .child(switch)
+                    .into_any_element();
+            }
+        }
+        let top = (heading.is_some() || switch.is_some()).then(|| {
+            h_flex()
+                .w_full()
+                .flex_none()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(div().flex_1().min_w_0().children(heading))
+                .children(switch)
+        });
+        v_flex()
+            .w_full()
+            .flex_none()
+            .gap(BLOCK_GAP)
+            .children(top)
+            .child(self.status_line(cx))
             .into_any_element()
     }
 
@@ -1301,14 +1479,7 @@ impl AiSettingsView {
         let in_registry = self.catalogs.get(&pid).is_some_and(|c| c.in_registry);
         let weak = cx.entity().downgrade();
         let key_url = provider_key_url(&pid);
-        let line = |id: &'static str| {
-            h_flex()
-                .id(id)
-                .w_full()
-                .gap_2()
-                .px(design::SECTION_X)
-                .py(dp(6.))
-        };
+        let line = |id: &'static str| h_flex().id(id).w_full().gap_2().px(PICKER_X).py(dp(4.));
         let caption = |text: SharedString| {
             div()
                 .flex_none()
@@ -1316,78 +1487,156 @@ impl AiSettingsView {
                 .text_color(tone.text_muted)
                 .child(text)
         };
-        let mut rows = vec![line("meetings-llm-provider")
-            .child(
-                Dropdown::new("meetings-llm-provider-dropdown")
-                    .options(cloud_provider_options(s))
-                    .selected(Some(pid.clone()))
-                    .min_width(dp(140.))
-                    .menu_width(dp(240.))
-                    .disabled(updating)
-                    .on_select(move |v, window, cx| {
-                        let v = v.to_string();
-                        weak.update(cx, |this, cx| this.browse(v, window, cx)).ok();
-                    }),
-            )
-            .child(
-                div()
-                    .id("meetings-llm-api-key")
-                    .flex_1()
-                    .min_w_0()
-                    .aria_label(t("meetingsAi.llm.apiKey"))
-                    .child(Input::new(&self.api_key).small().mask_toggle())
-                    .test_support(),
-            )
-            .child(
-                Button::new("meetings-llm-test-button")
-                    .outline()
-                    .small()
-                    .label(t("meetingsAi.llm.testConnection"))
-                    .loading(self.testing)
-                    .disabled(self.testing || self.saving_key.is_some())
-                    .on_click(cx.listener(|this, _, _, cx| this.test_connection(cx))),
-            )
-            .test_support()
-            .into_any_element()];
-        rows.push(
-            line("meetings-llm-key-help")
-                .pt(dp(0.))
-                .justify_between()
-                .child(
-                    div().min_w_0().child(match &self.test_result {
-                        Some(r) => result_line("meetings-llm-test-result", r, cx),
-                        None => div()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text_muted)
-                            .truncate()
-                            .child(t("meetingsAi.llm.apiKeyDescription"))
-                            .into_any_element(),
-                    }),
-                )
-                .when_some(key_url, |d, url| {
-                    d.child(
-                        Button::new("meetings-llm-get-key")
-                            .link()
-                            .xsmall()
-                            .icon(icon("external-link"))
-                            .label(t_args("meetingsAi.llm.getKey", &[("provider", &label)]))
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_url(url, cx))),
-                    )
-                })
-                .into_any_element(),
+        // A saved key folds the form to one line (provider, "API key
+        // saved", Test, Change…); Change… opens the same form again.
+        let summary = self.has_key(&pid) && !self.editing_key;
+        // The status line above already says the default waits for this
+        // provider's key; the form then only says where the key is kept.
+        let key_missing = self.key_missing(&pid) && self.key_missing_below(cx).is_none();
+        let test_button = Button::new("meetings-llm-test-button")
+            .outline()
+            .label(t("meetingsAi.llm.testConnection"))
+            .loading(self.testing)
+            .disabled(self.testing || self.saving_key.is_some())
+            .on_click(cx.listener(|this, _, _, cx| this.test_connection(cx)));
+        let first = line("meetings-llm-provider").child(
+            Dropdown::new("meetings-llm-provider-dropdown")
+                .options(cloud_provider_options(s))
+                .selected(Some(pid.clone()))
+                // A fixed width: long names ("Cloudflare Workers AI")
+                // truncate here and read in full in the menu.
+                .min_width(PROVIDER_POPUP_W)
+                .menu_width(dp(240.))
+                .disabled(updating)
+                .on_select(move |v, window, cx| {
+                    let v = v.to_string();
+                    weak.update(cx, |this, cx| this.browse(v, window, cx)).ok();
+                }),
         );
-        if provider.is_some_and(|p| p.allow_base_url_edit) || pid == CUSTOM_PROVIDER_ID {
+        let first = if summary {
+            first
+                .child(
+                    h_flex()
+                        .id("meetings-llm-key-saved")
+                        .flex_1()
+                        .min_w_0()
+                        .gap(dp(8.))
+                        .text_size(design::TEXT_BODY)
+                        .text_color(tone.text_muted)
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(t(
+                                "meetingsAi.llm.apiKeyDescription",
+                            ))
+                            .build(window, cx)
+                        })
+                        .child(
+                            icon("circle-check")
+                                .size(dp(14.))
+                                .text_color(design::status_color(design::Status::Ok, cx)),
+                        )
+                        .child(div().min_w_0().truncate().child(t("models.ai.keySaved")))
+                        .test_support(),
+                )
+                .child(test_button)
+                .child(
+                    Button::new("meetings-llm-change-key")
+                        .outline()
+                        .label(t("meetings.settings.setup.change"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.editing_key = true;
+                            let focus = this.api_key.focus_handle(cx);
+                            window.focus(&focus, cx);
+                            cx.notify();
+                        })),
+                )
+        } else {
+            first
+                .child(
+                    div()
+                        .id("meetings-llm-api-key")
+                        .flex_1()
+                        .min_w_0()
+                        .aria_label(t("meetingsAi.llm.apiKey"))
+                        .child(Input::new(&self.api_key).mask_toggle())
+                        .test_support(),
+                )
+                .child(test_button)
+        };
+        let mut rows = vec![first.test_support().into_any_element()];
+        // Under the open form: the test result, or what the key is for and
+        // where it is kept (a missing key says so here, once), wrapping
+        // rather than cut off; the link keeps its width beside it.
+        let help: Option<AnyElement> = match &self.test_result {
+            Some(r) => Some(result_line("meetings-llm-test-result", r, cx)),
+            None if summary => None,
+            None if key_missing => Some(
+                h_flex()
+                    .id("meetings-llm-needs-key")
+                    .items_start()
+                    .gap(dp(4.))
+                    .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
+                    .child(
+                        div().flex_none().pt(dp(1.)).child(
+                            icon("circle-alert")
+                                .size(dp(12.))
+                                .text_color(design::status_color(design::Status::Attention, cx)),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(tone.text)
+                            .child(t_args("meetingsAi.llm.needsKey", &[("provider", &label)])),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            ),
+            None => Some(
+                div()
+                    .text_size(design::TEXT_SECONDARY)
+                    .line_height(design::LINE_SECONDARY)
+                    .text_color(tone.text_muted)
+                    .child(t("meetingsAi.llm.apiKeyDescription"))
+                    .into_any_element(),
+            ),
+        };
+        let link = key_url.filter(|_| !summary);
+        if help.is_some() || link.is_some() {
+            rows.push(
+                line("meetings-llm-key-help")
+                    .pt(dp(0.))
+                    .items_start()
+                    .gap_3()
+                    .justify_between()
+                    .child(div().flex_1().min_w_0().children(help))
+                    .when_some(link, |d, url| {
+                        d.child(
+                            Button::new("meetings-llm-get-key")
+                                .flex_none()
+                                .link()
+                                .xsmall()
+                                .icon(icon("external-link"))
+                                .label(t_args("meetingsAi.llm.getKey", &[("provider", &label)]))
+                                .tooltip(url)
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.open_url(url, cx)),
+                                ),
+                        )
+                    })
+                    .into_any_element(),
+            );
+        }
+        if !summary
+            && (provider.is_some_and(|p| p.allow_base_url_edit) || pid == CUSTOM_PROVIDER_ID)
+        {
             rows.push(
                 line("meetings-llm-base-url")
                     .border_t_1()
                     .border_color(tone.hairline)
                     .child(caption(t("settings.postProcessing.api.baseUrl.title")))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.base_url).small()),
-                    )
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.base_url)))
                     .test_support()
                     .into_any_element(),
             );
@@ -1402,21 +1651,22 @@ impl AiSettingsView {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Input::new(&self.model_input).small()),
+                            .child(Input::new(&self.model_input)),
                     )
                     .test_support()
                     .into_any_element(),
             );
         }
+        // The top band of the catalogue's panel (see `model_list`).
         v_flex()
+            .id("meetings-llm-provider-form")
+            .flex_none()
             .w_full()
-            .gap(design::HEADER_GAP)
-            .child(
-                div()
-                    .px(dp(2.))
-                    .child(design::section_header(t("meetingsAi.llm.addFrom"), cx)),
-            )
-            .child(design::panel(cx).py(dp(2.)).children(rows))
+            .py(dp(4.))
+            .border_b_1()
+            .border_color(tone.hairline)
+            .children(rows)
+            .test_support()
             .into_any_element()
     }
 
@@ -1437,13 +1687,17 @@ impl AiSettingsView {
                     .and_then(|cat| cat.models.iter().find(|m| m.id == c.model))
                     .map(|m| m.name.clone())
                     .unwrap_or_else(|| c.model.clone());
+                // The exact id only when it says more than the name
+                // ("claude-sonnet-4-5" is "Claude Sonnet 4.5").
+                let name_differs = id_differs_from_name(&c.model, &name);
                 h_flex()
                     .id(SharedString::from(format!("meetings-llm-saved-{i}")))
                     .w_full()
-                    .min_h(design::ROW_MIN_H)
+                    // A compact list: one line per model.
+                    .min_h(SAVED_ROW_H)
                     .gap_3()
                     .px(design::SECTION_X)
-                    .py(dp(4.))
+                    .py(dp(2.))
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -1464,26 +1718,36 @@ impl AiSettingsView {
                             .child(
                                 div()
                                     .flex_none()
-                                    .max_w(relative(0.6))
+                                    .max_w(relative(0.7))
                                     .truncate()
                                     .text_size(design::TEXT_BODY)
+                                    .when(c.default, |d| d.font_weight(FontWeight::MEDIUM))
                                     .child(name),
                             )
+                            // One readable name; the provider and, when the
+                            // name isn't the id itself, the exact id after it.
                             .child(
-                                div()
+                                h_flex()
                                     .min_w_0()
-                                    .truncate()
+                                    .gap(dp(4.))
                                     .text_size(design::TEXT_SECONDARY)
+                                    .line_height(design::LINE_SECONDARY)
                                     .text_color(tone.text_muted)
-                                    .child(format!(
-                                        "{} · {}",
-                                        provider_label(s, &c.provider_id),
-                                        c.model
-                                    )),
+                                    .child(
+                                        div().flex_none().child(provider_label(s, &c.provider_id)),
+                                    )
+                                    .when(name_differs, |d| {
+                                        d.child(div().flex_none().child("·")).child(
+                                            design::code(c.model.clone())
+                                                .min_w_0()
+                                                .text_size(design::TEXT_CAPTION)
+                                                .truncate(),
+                                        )
+                                    }),
                             ),
                     )
                     .when(c.default, |d| {
-                        d.child(design::chip(t("meetingsAi.llm.default"), true, cx))
+                        d.child(design::chip(t("meetingsAi.local.default"), false, cx))
                     })
                     .when(!c.default, |d| {
                         d.child(
@@ -1492,6 +1756,8 @@ impl AiSettingsView {
                             )))
                             .ghost()
                             .xsmall()
+                            .w(design::ICON_BUTTON)
+                            .h(design::ICON_BUTTON)
                             .icon(icon("trash"))
                             .tooltip(t("meetingsAi.llm.removeModel"))
                             .on_click(cx.listener(
@@ -1526,7 +1792,9 @@ impl AiSettingsView {
 
     /// The provider's models with search and filter: fills the height it is
     /// given, and its list is the only part that scrolls.
-    fn model_list(&self, s: &AppSettings, cx: &mut Context<Self>) -> AnyElement {
+    /// `form`: the provider form, the panel's top band ("Add models from"
+    /// one provider: its key, then its models).
+    fn model_list(&self, s: &AppSettings, form: AnyElement, cx: &mut Context<Self>) -> AnyElement {
         let pid = self.synced_provider.clone();
         let tone = design::tone(cx);
         let theme = cx.theme().clone();
@@ -1562,6 +1830,7 @@ impl AiSettingsView {
             })
             .collect();
 
+        let good_only = in_registry && self.good_only;
         let rows = shown.iter().map(|m| {
             let id = m.id.clone();
             let is_sel = is_saved(&m.id);
@@ -1576,63 +1845,82 @@ impl AiSettingsView {
             .into_iter()
             .flatten()
             .collect();
+            // Capabilities are words on the metadata line, after the id, so
+            // the name never gives way to them. "Summaries" says nothing
+            // while the list shows only such models.
+            let caps: Vec<SharedString> = [
+                (m.good_for_summaries() && !good_only)
+                    .then(|| t("meetingsAi.llm.goodForSummaries")),
+                info.is_some_and(|i| i.reasoning)
+                    .then(|| t("meetingsAi.llm.reasoning")),
+                (in_registry && info.is_none()).then(|| t("meetingsAi.llm.unknownModel")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let selection = tone.selection;
             h_flex()
                 .id(SharedString::from(format!("meetings-llm-model-{}", m.id)))
+                // Rows keep their height in the scrolling list (they
+                // would shrink to fit it otherwise): 6 × 12 around two
+                // lines, 48 pt with the hairline.
+                .flex_none()
                 .w_full()
+                .min_h(design::ROW_MIN_H)
                 .gap_3()
-                .px(design::SECTION_X)
+                .px(PICKER_X)
                 .py(dp(6.))
                 .border_b_1()
                 .border_color(tone.hairline)
-                .when(is_sel, |d| d.bg(tone.accent_soft))
-                .when(!is_sel, |d| {
-                    d.hover(move |s| s.bg(tone.raised.opacity(0.5)))
-                })
+                .when(is_sel, |d| d.bg(selection))
+                .when(!is_sel, |d| d.hover(move |s| s.bg(selection.opacity(0.5))))
                 .child(checkbox(is_sel, cx))
                 .child(
                     v_flex()
                         .flex_1()
-                        .min_w_0()
+                        .min_w(dp(180.))
                         .gap(dp(1.))
                         .child(
                             div()
                                 .text_size(design::TEXT_BODY)
+                                .line_height(design::LINE_BODY)
+                                .when(is_sel, |d| d.font_weight(FontWeight::MEDIUM))
                                 .truncate()
                                 .child(m.name.clone()),
                         )
                         .child(
-                            design::mono(m.id.clone())
+                            h_flex()
+                                .min_w_0()
+                                .gap(dp(4.))
                                 .text_size(design::TEXT_SECONDARY)
-                                .text_color(tone.text_faint)
-                                .truncate(),
+                                .line_height(design::LINE_SECONDARY)
+                                .text_color(tone.text_muted)
+                                // "default" is marked once, in Your models.
+                                .child(
+                                    design::code(m.id.clone())
+                                        .min_w_0()
+                                        .text_size(design::TEXT_CAPTION)
+                                        .truncate(),
+                                )
+                                .when(!caps.is_empty(), |d| {
+                                    d.child(
+                                        div().flex_none().child(format!("· {}", caps.join(" · "))),
+                                    )
+                                }),
                         ),
                 )
                 .child(
-                    h_flex()
-                        .flex_none()
-                        .gap(dp(4.))
-                        .when(default, |d| {
-                            d.child(design::chip(t("meetingsAi.llm.default"), true, cx))
-                        })
-                        .when(m.good_for_summaries(), |d| {
-                            d.child(design::chip(t("meetingsAi.llm.goodForSummaries"), true, cx))
-                        })
-                        .when(info.is_some_and(|i| i.reasoning), |d| {
-                            d.child(design::chip(t("meetingsAi.llm.reasoning"), false, cx))
-                        })
-                        .when(in_registry && info.is_none(), |d| {
-                            d.child(design::chip(t("meetingsAi.llm.unknownModel"), false, cx))
-                        }),
-                )
-                .child(
                     v_flex()
-                        .w(dp(96.))
                         .flex_none()
                         .items_end()
-                        .font_family(crate::theme::MONO_FONT)
+                        .gap(dp(1.))
                         .text_size(design::TEXT_SECONDARY)
+                        .line_height(design::LINE_SECONDARY)
                         .text_color(tone.text_muted)
-                        .children(meta.into_iter().map(|l| div().child(l))),
+                        .children(
+                            meta.into_iter()
+                                .map(|l| design::mono(l).text_size(design::TEXT_SECONDARY)),
+                        ),
                 )
                 .when(!default, |d| {
                     let pid = pid.clone();
@@ -1676,21 +1964,21 @@ impl AiSettingsView {
             .border_color(tone.hairline)
             .bg(tone.surface)
             .overflow_hidden()
+            .child(form)
             .child(
                 h_flex()
                     .flex_none()
                     .w_full()
                     .gap_3()
-                    .pl(dp(6.))
+                    .pl(dp(8.))
                     // Rows end at the panel's row inset; so does this label.
-                    .pr(design::SECTION_X)
-                    .py(dp(6.))
+                    .pr(PICKER_X)
+                    .py(dp(4.))
                     .border_b_1()
                     .border_color(tone.hairline)
                     .child(
                         div().flex_1().min_w_0().child(
                             Input::new(&self.search)
-                                .small()
                                 .prefix(icon("search").xsmall().text_color(tone.text_muted)),
                         ),
                     )
@@ -1719,6 +2007,34 @@ impl AiSettingsView {
                         )
                     }),
             )
+            // What the numbers on the right mean, said once for the list:
+            // an 18 pt column-header band.
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w_full()
+                    .justify_between()
+                    .gap_2()
+                    .px(PICKER_X)
+                    .py(dp(2.))
+                    .border_b_1()
+                    .border_color(tone.hairline)
+                    .text_size(design::TEXT_CAPTION)
+                    .line_height(design::LINE_CAPTION)
+                    .text_color(tone.text_muted)
+                    .child(
+                        design::mono(count)
+                            .id("meetings-llm-model-count")
+                            .text_size(design::TEXT_CAPTION)
+                            .flex_none(),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(t("meetingsAi.llm.priceBasis")),
+                    ),
+            )
             .child(
                 v_flex()
                     .id("meetings-llm-model-list")
@@ -1740,16 +2056,17 @@ impl AiSettingsView {
                     .w_full()
                     .justify_between()
                     .gap_2()
-                    .px(design::SECTION_X)
+                    .px(PICKER_X)
                     .py(dp(4.))
                     .border_t_1()
                     .border_color(tone.hairline)
                     .text_size(design::TEXT_SECONDARY)
                     .text_color(tone.text_muted)
-                    .child(div().min_w_0().truncate().child(format!("{age} · {count}")))
+                    .child(div().min_w_0().truncate().child(age))
                     .child(
+                        // A link in the caption line, like "Get an API key".
                         Button::new("meetings-llm-refresh-registry")
-                            .ghost()
+                            .link()
                             .xsmall()
                             .icon(icon("refresh-ccw"))
                             .label(t("meetingsAi.llm.refreshModels"))
@@ -1781,6 +2098,12 @@ impl AiSettingsView {
             .size_full()
             .min_h_0()
             .gap(design::HEADER_GAP)
+            .child(
+                div()
+                    .flex_none()
+                    .px(dp(2.))
+                    .child(design::group_header(t("meetingsAi.llm.addFrom"), cx)),
+            )
             .child(picker)
             .children(error)
             .test_support()
@@ -1832,12 +2155,11 @@ impl AiSettingsView {
                     ),
             )
             .when(!available, |d| {
-                d.child(design::chip(t("meetingsAi.llm.unavailable"), false, cx))
+                d.child(design::chip(t("models.ai.unavailable"), false, cx))
             })
             .test_support()
             .into_any_element();
         vec![
-            crate::ui::kit::lede(t("meetingsAi.llm.localDescription"), cx).into_any_element(),
             group(
                 Some(t("meetingsAi.local.heading")),
                 vec![self.local.clone().into_any_element()],
@@ -1865,13 +2187,12 @@ impl AiSettingsView {
                                 .child(
                                     div()
                                         .flex_1()
-                                        .child(Input::new(&self.linear_key).small().mask_toggle()),
+                                        .child(Input::new(&self.linear_key).mask_toggle()),
                                 )
                                 .when(self.has_linear_key, |d| {
                                     d.child(
                                         Button::new("meetings-linear-remove-key")
-                                            .ghost()
-                                            .small()
+                                            .outline()
                                             .label(t("meetingsAi.linear.removeKey"))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.remove_linear_key(window, cx)
@@ -1901,7 +2222,7 @@ impl AiSettingsView {
                         ),
                 )
                 .into_any_element(),
-            SettingRow::new("meetings-linear-test", t("meetingsAi.linear.test"))
+            SettingRow::new("meetings-linear-test", t("meetingsAi.linear.connection"))
                 .description(t("meetingsAi.linear.testDescription"))
                 .control(
                     h_flex()
@@ -1920,8 +2241,7 @@ impl AiSettingsView {
                         }))
                         .child(
                             Button::new("meetings-linear-test-button")
-                                .secondary()
-                                .small()
+                                .outline()
                                 .label(t("meetingsAi.linear.test"))
                                 .loading(self.linear_testing)
                                 .disabled(self.linear_testing || !self.has_linear_key)
@@ -2105,9 +2425,14 @@ impl LocalModelsView {
             let id = m.id.clone();
             let mut tags = h_flex().gap(dp(6.)).flex_wrap();
             if m.is_default {
-                tags = tags.child(design::chip(t("meetingsAi.local.default"), true, cx));
+                tags = tags.child(design::chip(t("meetingsAi.local.default"), false, cx));
             }
-            if let Some(gb) = m.recommended_ram_gb {
+            // The memory advice once: as a badge, unless the description
+            // already gives it ("Recommended with 16 GB of memory…").
+            let ram_in_description = m
+                .recommended_ram_gb
+                .is_some_and(|gb| m.description.contains(&format!("{gb} GB")));
+            if let Some(gb) = m.recommended_ram_gb.filter(|_| !ram_in_description) {
                 tags = tags.child(design::chip(
                     t_args(
                         "meetingsAi.local.recommendedRam",
@@ -2118,11 +2443,12 @@ impl LocalModelsView {
                 ));
             }
             if m.downloaded {
-                tags = tags.child(
-                    design::chip("", false, cx)
-                        .child(icon("check").size(dp(11.)))
-                        .child(t("meetingsAi.local.downloaded")),
-                );
+                tags = tags.child(crate::ui::pages::meetings::settings::status_label(
+                    SharedString::from(format!("local-downloaded-{}", m.id)),
+                    design::Status::Ok,
+                    t("meetingsAi.local.downloaded"),
+                    cx,
+                ));
             }
             // Download, progress, retry and resume through the shared queue;
             // a downloaded model can be deleted here.
@@ -2134,8 +2460,7 @@ impl LocalModelsView {
                 .is_some_and(|d| d.state.is_active());
             let action: AnyElement = if m.downloaded && !busy {
                 Button::new(SharedString::from(format!("local-delete-{}", m.id)))
-                    .ghost()
-                    .small()
+                    .outline()
                     .icon(icon("trash"))
                     .label(t("meetingsAi.common.delete"))
                     .on_click(cx.listener(move |this, _, _, cx| this.delete_local(id.clone(), cx)))
@@ -2144,6 +2469,8 @@ impl LocalModelsView {
                 let control = DownloadControl::for_model(dl_id, cx).installed(m.downloaded);
                 // The app state's list may not have loaded yet.
                 let control = if m.size_mb > 0 {
+                    // `size_mb` is MiB (the catalogue's bytes / 2^20): back to
+                    // bytes, shown in decimal units like Models and onboarding.
                     control.size(m.size_mb * 1024 * 1024)
                 } else {
                     control
@@ -2156,7 +2483,7 @@ impl LocalModelsView {
                     .w_full()
                     .px(design::SECTION_X)
                     .py(dp(12.))
-                    .gap_4()
+                    .gap_3()
                     .justify_between()
                     .when(self.selectable, |d| {
                         let pickable = m.downloaded && m.download_progress.is_none();
@@ -2201,37 +2528,52 @@ impl LocalModelsView {
                             .when(!m.description.is_empty(), |d| {
                                 d.child(
                                     div()
-                                        .text_size(dp(12.))
-                                        .line_height(relative(1.5))
+                                        .text_size(design::TEXT_SECONDARY)
+                                        .line_height(design::LINE_SECONDARY)
                                         .text_color(muted)
-                                        .child(m.description.clone()),
+                                        // Joined like the Models page's details.
+                                        .child(crate::ui::model_card::join_detail([m
+                                            .description
+                                            .as_str()])),
                                 )
                             })
                             .when(!m.fits_this_mac, |d| {
                                 d.child(
-                                    div()
-                                        .text_size(dp(12.))
-                                        .text_color(theme.warning)
+                                    h_flex()
+                                        .gap(dp(4.))
+                                        .text_size(design::TEXT_SECONDARY)
+                                        .text_color(design::status_color(
+                                            design::Status::Attention,
+                                            cx,
+                                        ))
+                                        .child(icon("circle-alert").size(dp(13.)))
                                         .child(t("meetingsAi.local.notEnoughRam")),
                                 )
                             })
-                            .child(
-                                h_flex()
-                                    .mt(dp(2.))
-                                    .gap(dp(6.))
-                                    .font_family(crate::theme::MONO_FONT)
-                                    .text_size(design::TEXT_MONO)
-                                    .text_color(muted)
-                                    .child(
-                                        icon(if m.downloaded {
-                                            "hard-drive"
-                                        } else {
-                                            "download"
-                                        })
-                                        .xsmall(),
-                                    )
-                                    .child(format_model_size(Some(m.size_mb as f64))),
-                            ),
+                            // The size on its own line only once it's on disk:
+                            // before that the Download button carries it.
+                            .when(m.downloaded, |d| {
+                                d.child(
+                                    h_flex()
+                                        .mt(dp(2.))
+                                        .gap(dp(6.))
+                                        .font_features(design::tabular_figures())
+                                        .text_size(design::TEXT_SECONDARY)
+                                        .text_color(muted)
+                                        .child(
+                                            icon(if m.downloaded {
+                                                "hard-drive"
+                                            } else {
+                                                "download"
+                                            })
+                                            .xsmall(),
+                                        )
+                                        // The same figure the Models page shows for it.
+                                        .child(guidy_core::downloads::format_bytes(
+                                            m.size_mb * 1024 * 1024,
+                                        )),
+                                )
+                            }),
                     )
                     .child(action)
                     .test_support()
@@ -2247,13 +2589,17 @@ impl Render for LocalModelsView {
         let rows = self.local_rows(cx);
         if self.selectable {
             let hairline = design::tone(cx).hairline;
+            let count = rows.len();
+            // Hairlines between rows only: the panel draws the outer edge.
             return div()
                 .id("local-models")
                 .w_full()
-                .children(
-                    rows.into_iter()
-                        .map(move |r| div().w_full().border_b_1().border_color(hairline).child(r)),
-                )
+                .children(rows.into_iter().enumerate().map(move |(i, r)| {
+                    div()
+                        .w_full()
+                        .when(i + 1 < count, |d| d.border_b_1().border_color(hairline))
+                        .child(r)
+                }))
                 .test_support();
         }
         div()
@@ -2266,10 +2612,17 @@ impl Render for LocalModelsView {
 
 /// A one-line ✓ / ✗ result next to a "Test" button.
 pub fn result_line(id: &'static str, r: &Result<String, String>, cx: &App) -> AnyElement {
-    let theme = cx.theme();
     let (icon_name, color, text) = match r {
-        Ok(m) => ("check", theme.success, m.clone()),
-        Err(e) => ("circle-alert", theme.danger, e.clone()),
+        Ok(m) => (
+            "circle-check",
+            design::status_color(design::Status::Ok, cx),
+            m.clone(),
+        ),
+        Err(e) => (
+            "triangle-alert",
+            design::status_color(design::Status::Error, cx),
+            e.clone(),
+        ),
     };
     h_flex()
         .id(id)
@@ -2277,7 +2630,7 @@ pub fn result_line(id: &'static str, r: &Result<String, String>, cx: &App) -> An
         .gap_1()
         .text_size(crate::ui::design::TEXT_SECONDARY)
         .text_color(color)
-        .child(icon(icon_name).xsmall())
+        .child(icon(icon_name).size(dp(13.)).flex_none())
         .child(div().min_w_0().truncate().child(text))
         .test_support()
         .into_any_element()
@@ -2298,13 +2651,50 @@ pub fn error_box(id: &'static str, message: String, cx: &App) -> Stateful<Div> {
         .child(message)
 }
 
+/// The gap between the related blocks of the Summaries pane (status,
+/// your models, the provider form, the catalogue): closer than separate
+/// groups, so the catalogue reaches the first view of a short window.
+const BLOCK_GAP: Pixels = dp(12.);
+
+/// The side inset of every band in the provider + catalogue panel, so the
+/// checkboxes, the provider pop-up and the legend share one edge.
+const PICKER_X: Pixels = dp(12.);
+
+/// A saved model's row in "Your models": one line, compact, so the
+/// catalogue below reaches the first view of a short window.
+const SAVED_ROW_H: Pixels = dp(28.);
+
+/// The provider pop-up in the "Add models from" form.
+const PROVIDER_POPUP_W: Pixels = dp(160.);
+
+/// Whether a model id says more than its readable name: "claude-sonnet-4-5"
+/// is just "Claude Sonnet 4.5" spelled as an id (also after a vendor
+/// prefix, "anthropic/claude-sonnet-4.5"); "claude-sonnet-4-5-20250929"
+/// adds a date, and an id for a model without a name is shown as the name.
+fn id_differs_from_name(id: &str, name: &str) -> bool {
+    let squash = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let bare = id.rsplit('/').next().unwrap_or(id);
+    squash(bare) != squash(name)
+}
+
 impl Render for AiSettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.section == AiSection::Linear {
+            let heading = self
+                .heading
+                .clone()
+                .map(|h| super::settings::pane_heading(h, cx));
             let rows = self.linear_rows(cx);
             return scroll_page(
                 "meetings-linear-settings",
-                page().child(group(Some(t("meetingsAi.linear.heading")), rows, cx)),
+                // The pane heading (or the category menu) names Linear; the
+                // group under it needs no second title.
+                self.column().children(heading).child(group(None, rows, cx)),
             )
             .test_support()
             .into_any_element();
@@ -2313,53 +2703,67 @@ impl Render for AiSettingsView {
             return v_flex().id("meetings-ai-settings").into_any_element();
         };
         let place = SummaryPlace::of(&MeetingsLlmChoice::from_settings(&s).provider_id);
-        let header = self.header(place, cx);
+        // The heading (with the place switch) and the status line.
+        let header = self.header(cx);
         if place == SummaryPlace::Local {
             let rows = self.local_rows(cx);
-            return scroll_page("meetings-ai-settings", page().child(header).children(rows))
-                .test_support()
-                .into_any_element();
+            // What "On this Mac" means sits with the status, 12 pt apart as
+            // the cloud pane's first block; the groups follow at the
+            // column's gap. The text lines up with the heading's.
+            let header = v_flex()
+                .w_full()
+                .flex_none()
+                .gap(BLOCK_GAP)
+                .child(header)
+                .child(div().px(dp(2.)).child(crate::ui::kit::lede(
+                    t("meetingsAi.llm.localDescription"),
+                    cx,
+                )));
+            return scroll_page(
+                "meetings-ai-settings",
+                self.column().child(header).children(rows),
+            )
+            .test_support()
+            .into_any_element();
         }
-        // Cloud: the form is pinned (it scrolls by itself only when the
-        // window is too short for it), the model list takes the rest.
+        // Cloud: one scroll region. The status, "Your models" and the
+        // provider form take their own height; the catalogue fills the rest
+        // of the pane but never gets less than CATALOGUE_MIN_H, so in a
+        // short window the pane scrolls to it and its list (search pinned
+        // on top) still shows several rows.
         let your_models = self.your_models(&s, cx);
         let form = self.provider_form(&s, cx);
-        let list = self.model_list(&s, cx);
+        let list = self.model_list(&s, form, cx);
+        let anchored = self.anchored;
         v_flex()
             .id("meetings-ai-settings")
             .size_full()
             .min_h_0()
             .min_w_0()
+            .overflow_y_scroll()
+            .px(design::PAGE_X)
+            // Under the popup button (a short window too) the status line
+            // starts closer: it is a control row, not a page title.
+            .pt(if anchored { design::PAGE_TOP } else { dp(8.) })
+            .pb(design::PAGE_BOTTOM)
             .child(
-                div()
+                self.column()
                     .id("meetings-llm-form")
-                    .w_full()
-                    // Its own height, up to 60% of a short pane (then it
-                    // scrolls): flex must not squeeze the key field away.
                     .flex_none()
-                    .max_h(relative(0.6))
-                    .overflow_y_scroll()
-                    .px(design::PAGE_X)
-                    .pt(design::PAGE_TOP)
-                    .pb(dp(14.))
-                    .child(
-                        page()
-                            .gap(dp(14.))
-                            .child(header)
-                            .child(your_models)
-                            .child(form),
-                    )
+                    .gap(BLOCK_GAP)
+                    .child(header)
+                    .child(your_models)
                     .test_support(),
             )
             .child(
                 div()
                     .w_full()
+                    .max_w(design::FORM_MAX_W)
+                    .when(!anchored, |d| d.mx_auto())
                     .flex_1()
-                    .min_h(dp(120.))
-                    .px(design::PAGE_X)
-                    .pt(dp(8.))
-                    .pb(design::PAGE_BOTTOM)
-                    .child(div().size_full().max_w(design::FORM_MAX_W).child(list)),
+                    .min_h(CATALOGUE_MIN_H)
+                    .pt(BLOCK_GAP)
+                    .child(list),
             )
             .test_support()
             .into_any_element()

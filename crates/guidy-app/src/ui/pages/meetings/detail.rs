@@ -80,15 +80,29 @@ pub enum NotesTab {
     Tickets,
 }
 
+/// Icon-only actions in the meeting header: a 28 pt hit area (16 pt glyph).
+pub(crate) const HEADER_ICON_BUTTON: Pixels = dp(28.);
+/// The notes/transcript tab strip's height (at the bottom of its 36 pt bar).
+const TAB_STRIP_H: Pixels = dp(28.);
+/// A tab's label sits this far inside its focus box (ring included).
+const TAB_INSET: Pixels = dp(6.);
+
 /// How the page lays the detail out (it knows the width).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct DetailLayout {
     /// Notes and transcript side by side.
     pub side_by_side: bool,
-    /// The list is hidden (stack): show a back button.
-    pub show_back: bool,
+    /// The detail fills the page (stack): the page puts a back button in
+    /// the toolbar, and the detail keeps the page's 24 pt edge.
+    pub stacked: bool,
+    /// The header is narrow (under ~560 pt): the player gets its own row
+    /// under the meta line, so the scrubber keeps a usable width.
+    pub player_row: bool,
     /// Narrow: the actions get their own row under the title.
     pub compact: bool,
+    /// The transcript column is narrow (under ~560 pt): speaker and time
+    /// go on a line above what they said instead of a column beside it.
+    pub narrow_transcript: bool,
 }
 
 /// What Export writes.
@@ -1166,14 +1180,13 @@ impl MeetingDetail {
         let busy = self.processing_busy;
         let icon_only = !primary && self.layout.compact;
         let main = Button::new(id)
-            .small()
             .icon(icon("rotate-ccw"))
             .when(!icon_only, |b| b.label(t("meetings.redo.menu")))
             .when(icon_only && current.is_none(), |b| {
                 b.tooltip(t("meetings.redo.menu"))
             })
-            // In the header it sits with the other ghost toolbar buttons.
-            .map(|b| if primary { b.primary() } else { b.ghost() })
+            // In the header: a bordered command like Copy and Export.
+            .map(|b| if primary { b.primary() } else { b.outline() })
             .when_some(current.clone(), |b, c| {
                 b.tooltip(t_args("meetings.redo.tooltip", &[("model", &c.label)]))
             })
@@ -1198,6 +1211,7 @@ impl MeetingDetail {
             .is_some_and(|m| m.status == MeetingStatus::Processed && can_process(m));
         DropdownButton::new(SharedString::from(format!("{id}-split")))
             .button(main)
+            .when(!primary, |b| b.outline())
             .disabled(busy)
             .menu_accessibility_label(t("meetings.redo.more"))
             .dropdown_menu(move |menu, window, cx| {
@@ -1267,68 +1281,7 @@ impl MeetingDetail {
                         t("meetingsAi.summary.regenerate"),
                         window,
                         cx,
-                        move |menu, _window, _cx| {
-                            let mut local: Vec<_> =
-                                choices.iter().filter(|c| c.local).cloned().collect();
-                            let mut cloud: Vec<_> =
-                                choices.iter().filter(|c| !c.local).cloned().collect();
-                            let current_first = |rows: &mut Vec<SummaryChoice>| {
-                                rows.sort_by(|a, b| {
-                                    b.current.cmp(&a.current).then(a.label.cmp(&b.label))
-                                });
-                            };
-                            current_first(&mut local);
-                            current_first(&mut cloud);
-                            let mut menu = menu;
-                            let mut first = true;
-                            for (title, rows) in [
-                                (t("meetings.redo.localTitle"), local),
-                                (t("meetings.redo.cloudTitle"), cloud),
-                            ] {
-                                if rows.is_empty() {
-                                    continue;
-                                }
-                                if !first {
-                                    menu = menu.separator();
-                                }
-                                first = false;
-                                menu = menu.label(title);
-                                for c in rows {
-                                    let run = (c.provider_id.clone(), c.model.clone());
-                                    let weak = weak.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(c.label.clone())
-                                            .checked(c.current)
-                                            .on_click(move |_, _, cx| {
-                                                let run = run.clone();
-                                                weak.update(cx, |this, cx| {
-                                                    this.summary.update(cx, |v, cx| {
-                                                        v.generate(Some(run), cx)
-                                                    });
-                                                })
-                                                .ok();
-                                            }),
-                                    );
-                                }
-                            }
-                            if !first {
-                                menu = menu.separator();
-                            }
-                            let weak = weak.clone();
-                            menu.item(
-                                PopupMenuItem::new(t("meetingsAi.summary.otherModel")).on_click(
-                                    move |_, window, cx| {
-                                        weak.update(cx, |this, cx| {
-                                            this.notes_tab = NotesTab::Summary;
-                                            this.detail_tab = DetailTab::Notes;
-                                            this.summary
-                                                .update(cx, |v, cx| v.open_picker(window, cx));
-                                        })
-                                        .ok();
-                                    },
-                                ),
-                            )
-                        },
+                        move |menu, _window, _cx| summary_menu(menu, &choices, weak.clone()),
                     );
                 }
                 menu
@@ -1346,6 +1299,16 @@ impl MeetingDetail {
                 self.show_playhead(cx);
             }
             cx.notify();
+        }
+    }
+
+    /// The detail's leading and trailing inset: the page's 24 pt edge
+    /// when it fills the page (stack), 16 pt as a pane beside the list.
+    fn edge(&self) -> Pixels {
+        if self.layout.stacked {
+            design::PAGE_X
+        } else {
+            dp(16.)
         }
     }
 
@@ -1796,7 +1759,7 @@ impl MeetingDetail {
     }
 
     /// Speakers along the meeting's timeline, longest talker first; the
-    /// user is drawn in the accent.
+    /// user's bar is the darker one.
     fn render_talk_time(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         const MAX_ROWS: usize = 6;
         let talk = &self.talk;
@@ -1821,7 +1784,7 @@ impl MeetingDetail {
                     .map(|s| self.speaker_label(s, cx))
                     .unwrap_or_else(|| "?".into());
                 let bar = if is_user {
-                    tone.accent
+                    tone.text_muted
                 } else {
                     tone.line_art.opacity(0.75)
                 };
@@ -1836,8 +1799,9 @@ impl MeetingDetail {
                             .w(label_w)
                             .flex_none()
                             .truncate()
-                            .text_size(dp(12.5))
-                            .text_color(if is_user { tone.accent_text } else { tone.text })
+                            .text_size(design::TEXT_SECONDARY)
+                            .when(is_user, |d| d.font_weight(FontWeight::MEDIUM))
+                            .text_color(tone.text)
                             .child(name),
                     )
                     .child(
@@ -1894,11 +1858,7 @@ impl MeetingDetail {
                             .w(share_w)
                             .flex_none()
                             .text_right()
-                            .text_color(if is_user {
-                                tone.accent_text
-                            } else {
-                                tone.text_muted
-                            }),
+                            .text_color(tone.text_muted),
                     )
                     .into_any_element()
             })
@@ -2026,6 +1986,7 @@ impl MeetingDetail {
                 Button::new("meeting-detail-info")
                     .ghost()
                     .small()
+                    .size(HEADER_ICON_BUTTON)
                     .icon(icon("info"))
                     .tooltip(t("meetings.detail.info")),
             )
@@ -2034,7 +1995,7 @@ impl MeetingDetail {
                 let columns = stats.len();
                 let stats: Vec<Stat> = stats
                     .iter()
-                    .map(|(l, v, accent)| Stat::new(l.clone(), v.clone()).accent(*accent))
+                    .map(|(l, v, _)| Stat::new(l.clone(), v.clone()))
                     .collect();
                 v_flex()
                     .id("meeting-info-content")
@@ -2082,50 +2043,38 @@ impl MeetingDetail {
         let notes = self.has_notes(cx);
         let transcript = !self.segments.is_empty();
         Button::new("meeting-detail-export")
-            .ghost()
-            .small()
+            .outline()
             .icon(icon("share"))
-            .tooltip(t("meetings.export.title"))
+            .label(t("meetings.export.title"))
             .disabled(!self.can_export(cx))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                let item = |label: SharedString, kind: ExportKind, enabled: bool| {
-                    let weak = weak.clone();
-                    PopupMenuItem::new(label)
-                        .disabled(!enabled)
-                        .on_click(move |_, _, cx| {
-                            weak.update(cx, |this, cx| this.export(kind, cx)).ok();
-                        })
-                };
-                menu.item(item(
-                    t("meetings.export.all"),
-                    ExportKind::All,
-                    notes || transcript,
-                ))
-                .separator()
-                .item(item(t("meetings.export.notes"), ExportKind::Notes, notes))
-                .item(item(
-                    t("meetings.export.transcript"),
-                    ExportKind::Transcript,
-                    transcript,
-                ))
+                export_menu(menu, notes, transcript, weak.clone())
             })
     }
 
+    /// The header's commands: Process / Cancel when they apply, the
+    /// labeled Copy (with its menu), Export when there is room, Details, and
+    /// More (…) with the rest. Every command keeps its id: the ones in More
+    /// are menu items with the same ids.
     fn render_actions(&self, m: &Meeting, cx: &mut Context<Self>) -> impl IntoElement {
         let processing = m.status == MeetingStatus::Processing;
         let failed = m.status == MeetingStatus::Failed;
         let show_process = can_process(m) && m.status != MeetingStatus::Processed;
+        let wide = !self.layout.compact;
         h_flex()
             .id("meeting-detail-actions")
             .flex_none()
-            .gap(dp(4.))
+            .items_center()
+            .gap(dp(8.))
             .when(show_process, |d| {
                 d.child(
                     Button::new("meeting-detail-process")
                         .primary()
-                        .when(self.processing_busy, |b| b.secondary())
-                        .small()
-                        .icon(icon(if failed { "rotate-ccw" } else { "play" }))
+                        .icon(icon(if failed {
+                            "rotate-ccw"
+                        } else {
+                            crate::ui::brand::PLAY_ICON
+                        }))
                         .label(if failed {
                             t("meetings.list.retry")
                         } else {
@@ -2139,8 +2088,7 @@ impl MeetingDetail {
             .when(processing, |d| {
                 d.child(
                     Button::new("meeting-detail-cancel")
-                        .secondary()
-                        .small()
+                        .outline()
                         .icon(icon("circle-x"))
                         .label(t("meetings.detail.cancelShort"))
                         .tooltip(t("meetings.list.cancelProcessing"))
@@ -2149,68 +2097,224 @@ impl MeetingDetail {
                         .on_click(cx.listener(|this, _, _, cx| this.cancel_processing(cx))),
                 )
             })
-            .when(self.can_redo(), |d| {
-                d.child(self.redo_button("meeting-detail-redo", false, cx))
-            })
-            .when(self.can_trim(), |d| {
-                d.child(
-                    Button::new("meeting-detail-trim")
-                        .ghost()
-                        .small()
-                        .icon(icon("scissors"))
-                        .tooltip(t("meetings.trim.tooltip"))
-                        .disabled(self.processing_busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.request_trim(window, cx))),
+            .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
+            .when(wide, |d| d.child(self.export_button(cx)))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap(dp(4.))
+                    .child(self.info_button(m, cx))
+                    .child(self.more_button(m, wide, cx)),
+            )
+    }
+
+    /// More (…): redo, trim, titles, export (when it has no button of its
+    /// own), and Delete last, apart.
+    fn more_button(
+        &self,
+        m: &Meeting,
+        export_shown: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        let busy = self.processing_busy;
+        let can_redo = self.can_redo();
+        let choices = self.redo_choices(cx);
+        let current = choices.iter().find(|c| c.current && !c.cloud).cloned();
+        let speakers = self.speaker_redo_choices();
+        let (summary_choices, has_summary_view) = {
+            let v = self.summary.read(cx);
+            (v.provider_choices(), v.has_summary())
+        };
+        let offer_speakers = m.status == MeetingStatus::Processed && can_process(m);
+        let can_trim = self.can_trim();
+        let can_export = self.can_export(cx);
+        let notes = self.has_notes(cx);
+        let transcript = !self.segments.is_empty();
+        let has_summary = m.has_summary;
+        let titling = self.titling;
+        let recording = m.status == MeetingStatus::Recording;
+        Button::new("meeting-detail-more")
+            .ghost()
+            .small()
+            .size(HEADER_ICON_BUTTON)
+            .icon(icon("ellipsis"))
+            .tooltip(t("meetings.list.more"))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
+                let mut menu = menu;
+                let mut grouped = false;
+                if can_redo {
+                    let weak_redo = weak.clone();
+                    let run = current.clone();
+                    menu = menu.item(
+                        menu_item("meeting-detail-redo", t("meetings.more.redo"))
+                            .icon(icon("rotate-ccw"))
+                            .disabled(busy || run.is_none())
+                            .on_click(move |_, window, cx| {
+                                if let Some(c) = run.clone() {
+                                    weak_redo
+                                        .update(cx, |this, cx| this.choose_redo(c, window, cx))
+                                        .ok();
+                                }
+                            }),
+                    );
+                    if !busy {
+                        let redo_choices = choices.clone();
+                        let redo_weak = weak.clone();
+                        menu = menu.submenu(
+                            t("meetings.more.redoWith"),
+                            window,
+                            cx,
+                            move |menu, _, _| {
+                                let mut menu = menu;
+                                let mut section = None;
+                                for c in &redo_choices {
+                                    if section != Some(c.cloud) {
+                                        if section.is_some() {
+                                            menu = menu.separator();
+                                        }
+                                        menu = menu.label(if c.cloud {
+                                            t("meetings.redo.cloudTitle")
+                                        } else {
+                                            t("meetings.redo.localTitle")
+                                        });
+                                        section = Some(c.cloud);
+                                    }
+                                    let choice = c.clone();
+                                    let weak = redo_weak.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(c.label.clone())
+                                            .checked(c.current)
+                                            .disabled(c.engine.is_none())
+                                            .on_click(move |_, window, cx| {
+                                                let choice = choice.clone();
+                                                weak.update(cx, |this, cx| {
+                                                    this.choose_redo(choice, window, cx)
+                                                })
+                                                .ok();
+                                            }),
+                                    );
+                                }
+                                menu
+                            },
+                        );
+                        if offer_speakers {
+                            let speakers = speakers.clone();
+                            let weak = weak.clone();
+                            menu = menu.submenu(
+                                t("meetings.speakersRedo.action"),
+                                window,
+                                cx,
+                                move |menu, _, _| {
+                                    let mut menu = menu;
+                                    for c in &speakers {
+                                        if c.cloud {
+                                            menu = menu
+                                                .separator()
+                                                .label(t("meetings.redo.cloudTitle"));
+                                        }
+                                        let choice = c.clone();
+                                        let weak = weak.clone();
+                                        menu = menu.item(
+                                            PopupMenuItem::new(c.label.clone())
+                                                .checked(c.current)
+                                                .disabled(!c.enabled)
+                                                .on_click(move |_, window, cx| {
+                                                    let choice = choice.clone();
+                                                    weak.update(cx, |this, cx| {
+                                                        this.choose_speaker_redo(choice, window, cx)
+                                                    })
+                                                    .ok();
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                },
+                            );
+                        }
+                        if has_summary_view {
+                            let choices = summary_choices.clone();
+                            let weak = weak.clone();
+                            menu = menu.submenu(
+                                t("meetings.more.regenerateSummary"),
+                                window,
+                                cx,
+                                move |menu, _, _| summary_menu(menu, &choices, weak.clone()),
+                            );
+                        }
+                    }
+                    grouped = true;
+                }
+                if grouped {
+                    menu = menu.separator();
+                }
+                if can_trim {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        menu_item("meeting-detail-trim", t("meetings.more.trim"))
+                            .icon(icon("scissors"))
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| {
+                                weak.update(cx, |this, cx| this.request_trim(window, cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        menu_item(
+                            "meeting-detail-generate-title",
+                            t("meetings.titles.generate"),
+                        )
+                        .icon(icon("sparkles"))
+                        .disabled(titling || !has_summary)
+                        .on_click(move |_, _, cx| {
+                            weak.update(cx, |this, cx| this.generate_title(cx)).ok();
+                        }),
+                    );
+                }
+                if !export_shown {
+                    if can_export {
+                        let weak = weak.clone();
+                        menu = menu.submenu_with_icon(
+                            Some(icon("share")),
+                            t("meetings.more.export"),
+                            window,
+                            cx,
+                            move |menu, _, _| export_menu(menu, notes, transcript, weak.clone()),
+                        );
+                    } else {
+                        menu = menu.item(
+                            PopupMenuItem::new(t("meetings.more.export"))
+                                .icon(icon("share"))
+                                .disabled(true),
+                        );
+                    }
+                }
+                let weak = weak.clone();
+                menu.separator().item(
+                    menu_item("meeting-detail-delete", t("meetings.list.deleteMenu"))
+                        .icon(icon("trash"))
+                        .disabled(recording)
+                        .on_click(move |_, _, cx| {
+                            weak.update(cx, |this, cx| this.request_delete(cx)).ok();
+                        }),
                 )
             })
-            .when(self.can_copy(), |d| d.child(self.copy_button(cx)))
-            .child(self.export_button(cx))
-            .child(
-                Button::new("meeting-detail-generate-title")
-                    .ghost()
-                    .small()
-                    .icon(icon("sparkles"))
-                    .tooltip(if m.has_summary {
-                        t("meetings.titles.generate")
-                    } else {
-                        t("meetings.titles.needsSummary")
-                    })
-                    .loading(self.titling)
-                    .disabled(self.titling || !m.has_summary)
-                    .on_click(cx.listener(|this, _, _, cx| this.generate_title(cx))),
-            )
-            .child(
-                Button::new("meeting-detail-delete")
-                    .ghost()
-                    .small()
-                    .icon(icon("trash"))
-                    .tooltip(t("meetings.list.deleteMenu"))
-                    .disabled(m.status == MeetingStatus::Recording)
-                    .on_click(cx.listener(|this, _, _, cx| this.request_delete(cx))),
-            )
-            .child(self.info_button(m, cx))
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
         let tone = design::tone(cx);
-        let back = self.layout.show_back.then(|| {
-            Button::new("meeting-back")
-                .ghost()
-                .small()
-                .icon(icon("chevron-left"))
-                .tooltip(t("meetings.detail.back"))
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailEvent::Back)))
-        });
+        let edge = self.edge();
         let Some(m) = self.meeting.clone() else {
             return h_flex()
                 .id("meeting-detail-header")
                 .flex_none()
                 .h(dp(52.))
-                .px(dp(12.))
+                .px(edge)
                 .border_b_1()
                 .border_color(tone.hairline)
-                .children(back)
                 .into_any_element();
         };
         let processing = m.status == MeetingStatus::Processing;
@@ -2222,7 +2326,7 @@ impl MeetingDetail {
                     .flex_1()
                     .min_w_0()
                     .max_w(dp(420.))
-                    .child(Input::new(&self.title_input).small())
+                    .child(Input::new(&self.title_input))
                     .on_action(cx.listener(
                         |this, _: &gpui_kit::component::input::Escape, _, cx| {
                             this.cancel_rename(cx)
@@ -2240,7 +2344,8 @@ impl MeetingDetail {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_size(dp(15.))
+                            .text_size(design::TEXT_HEADLINE)
+                            .line_height(dp(24.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(tone.text)
                             .child(m.title.clone()),
@@ -2253,7 +2358,8 @@ impl MeetingDetail {
                             .child(
                                 Button::new("meeting-detail-rename")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
+                                    .size(HEADER_ICON_BUTTON)
                                     .icon(icon("pencil"))
                                     .tooltip(t("meetings.list.rename"))
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -2269,43 +2375,86 @@ impl MeetingDetail {
                     .test_support()
                     .into_any_element()
             };
-        let chip = (m.status != MeetingStatus::Processed).then(|| {
-            design::chip(t(status_key(m.status)), processing, cx).when(failed, |d| {
-                d.bg(theme.danger.opacity(0.12)).text_color(theme.danger)
-            })
-        });
         let title_row = h_flex()
             .w_full()
-            .gap(dp(6.))
-            .children(back)
+            .min_h(dp(28.))
+            .gap(dp(8.))
             .child(title)
-            .children(chip)
             .child(div().flex_1())
             .child(self.render_actions(&m, cx));
+        // Status as a dot or icon and a word, in the meta line (processing
+        // shows its stage and progress below instead).
+        let status: Option<AnyElement> = match m.status {
+            MeetingStatus::Recording => {
+                let live = design::status_color(design::Status::Live, cx);
+                Some(
+                    h_flex()
+                        .id("meeting-detail-status")
+                        .flex_none()
+                        .gap(dp(4.))
+                        .child(div().flex_none().size(dp(7.)).rounded_full().bg(live))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tone.text)
+                                .child(t(status_key(m.status))),
+                        )
+                        .test_support()
+                        .into_any_element(),
+                )
+            }
+            MeetingStatus::Failed => {
+                let error = design::status_color(design::Status::Error, cx);
+                Some(
+                    h_flex()
+                        .id("meeting-detail-status")
+                        .flex_none()
+                        .gap(dp(4.))
+                        .text_color(error)
+                        .child(icon("triangle-alert").xsmall())
+                        .child(t(status_key(m.status)))
+                        .test_support()
+                        .into_any_element(),
+                )
+            }
+            MeetingStatus::Recorded => Some(
+                div()
+                    .id("meeting-detail-status")
+                    .flex_none()
+                    .text_color(tone.text_muted)
+                    .child(t(status_key(m.status)))
+                    .test_support()
+                    .into_any_element(),
+            ),
+            MeetingStatus::Processing | MeetingStatus::Processed => None,
+        };
+        let sep = || div().flex_none().text_color(tone.text_muted).child("·");
         let meta = h_flex()
-            .w_full()
+            .flex_none()
+            .max_w_full()
             .min_w_0()
-            .gap(dp(6.))
-            .when(self.layout.show_back, |d| d.pl(dp(30.)))
+            .gap(dp(4.))
+            .text_size(design::TEXT_SECONDARY)
+            .line_height(design::LINE_SECONDARY)
             .child(
                 div()
                     .id("meeting-detail-meta")
                     .flex_none()
-                    .text_size(design::TEXT_SECONDARY)
+                    .font_features(design::tabular_figures())
                     .text_color(tone.text_muted)
                     .child(self.meta_line(&m))
                     .test_support(),
             )
+            .when_some(status, |d, status| d.child(sep()).child(status))
             // A recording that ended early says why, whatever came after.
             .when_some(m.error.clone(), |d, e| {
-                d.child(
+                d.child(sep()).child(
                     div()
                         .id("meeting-detail-error")
                         .min_w_0()
                         .truncate()
-                        .text_size(design::TEXT_SECONDARY)
                         .text_color(if failed {
-                            theme.danger
+                            design::status_color(design::Status::Error, cx)
                         } else {
                             tone.text_muted
                         })
@@ -2320,8 +2469,7 @@ impl MeetingDetail {
                             .id("meeting-detail-description")
                             .min_w_0()
                             .truncate()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text_faint)
+                            .text_color(tone.text_muted)
                             .child(format!("— {text}"))
                             .test_support(),
                     )
@@ -2341,11 +2489,19 @@ impl MeetingDetail {
                 .unwrap_or_else(|| t("meetings.status.processing"));
             h_flex()
                 .w_full()
-                .gap(dp(10.))
-                .pt(dp(2.))
+                .gap(dp(8.))
+                .pt(dp(4.))
+                // Static: the stage name and the bar already show the work.
+                .child(
+                    icon("hourglass")
+                        .xsmall()
+                        .flex_none()
+                        .text_color(tone.text_muted),
+                )
                 .child(
                     div()
                         .flex_none()
+                        .font_features(design::tabular_figures())
                         .text_size(design::TEXT_SECONDARY)
                         .text_color(tone.text_muted)
                         .child(design::shimmer_text(
@@ -2360,23 +2516,44 @@ impl MeetingDetail {
                     cx,
                 )))
         });
-        // The player is the header's last row (not a bar of its own), so
-        // the header stays short at the minimum window size.
-        let player = self.has_audio().then(|| self.player.clone());
+        // A wide header shares the meta line with the player (meta left,
+        // the player taking the rest; it wraps below if the meta is long).
+        // A narrow one gives the player its own full-width row, so the
+        // scrubber never squeezes against the times.
+        let own_row = self.layout.player_row;
+        let mut player = self.has_audio().then(|| {
+            div()
+                .id("meeting-detail-player")
+                .flex_1()
+                .when(own_row, |d| d.w_full())
+                .when(!own_row, |d| d.min_w(dp(340.)))
+                .child(self.player.clone())
+        });
+        let meta_row = h_flex()
+            .w_full()
+            .min_w_0()
+            .flex_wrap()
+            .gap_x(dp(12.))
+            .gap_y(dp(2.))
+            .child(meta)
+            .when(!own_row, |d| d.children(player.take()));
         v_flex()
             .id("meeting-detail-header")
             .flex_none()
             .w_full()
-            .px(dp(14.))
-            .pt(dp(8.))
-            .pb(if player.is_some() { dp(2.) } else { dp(8.) })
+            .px(edge)
+            .pt(dp(10.))
+            .pb(dp(8.))
             .gap(dp(2.))
             .border_b_1()
             .border_color(tone.hairline)
             .child(title_row)
-            .child(meta)
+            .child(meta_row)
+            // The first button's glyph, not its 28 pt slot, on the edge.
+            .when_some(player, |d, player| {
+                d.child(div().w_full().pt(dp(4.)).ml(dp(-6.)).child(player))
+            })
             .children(progress)
-            .children(player)
             .test_support()
             .into_any_element()
     }
@@ -2418,8 +2595,7 @@ impl MeetingDetail {
                     }
                     let pick = s.clone();
                     Button::new(SharedString::from(format!("speaker-suggestion-{i}")))
-                        .secondary()
-                        .xsmall()
+                        .outline()
                         .when(s.source == SuggestionSource::Attendee, |b| {
                             b.icon(icon("calendar"))
                         })
@@ -2449,13 +2625,11 @@ impl MeetingDetail {
                 h_flex()
                     .w_full()
                     .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.name_input).small()))
-                    .child(div().flex_1().child(Input::new(&self.email_input).small()))
+                    .child(div().flex_1().child(Input::new(&self.name_input)))
+                    .child(div().flex_1().child(Input::new(&self.email_input)))
                     .child(
                         Button::new("speaker-new-save")
                             .primary()
-                            .when(!can_save || self.assigning, |b| b.secondary())
-                            .small()
                             .icon(icon("user-plus"))
                             .label(t("meetings.speaker.save"))
                             .loading(self.assigning)
@@ -2464,8 +2638,7 @@ impl MeetingDetail {
                     )
                     .child(
                         Button::new("speaker-picker-cancel")
-                            .ghost()
-                            .small()
+                            .outline()
                             .label(t("meetings.speaker.cancel"))
                             .on_click(cx.listener(|this, _, _, cx| this.close_picker(cx))),
                     ),
@@ -2504,7 +2677,6 @@ impl MeetingDetail {
                                     .text_size(design::TEXT_BODY)
                                     .font_weight(FontWeight::MEDIUM)
                                     .truncate()
-                                    .when(s.is_user, |d| d.text_color(design::tone(cx).accent_text))
                                     .child(name),
                             )
                             .when(named && !s.is_user, |d| {
@@ -2517,11 +2689,12 @@ impl MeetingDetail {
                                 d.child(
                                     div()
                                         .id(SharedString::from(format!("speaker-uncertain-{sid}")))
-                                        .px(dp(7.))
-                                        .py(dp(2.))
+                                        .px(dp(4.))
+                                        .py(dp(1.))
                                         .rounded(design::RADIUS_CHIP)
-                                        .font_family(crate::theme::MONO_FONT)
-                                        .text_size(dp(11.))
+                                        .font_features(design::tabular_figures())
+                                        .text_size(design::TEXT_CAPTION)
+                                        .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.warning)
                                         .bg(theme.warning.opacity(0.12))
                                         .child(match s.match_confidence {
@@ -2544,8 +2717,7 @@ impl MeetingDetail {
                                     Button::new(SharedString::from(format!(
                                         "speaker-confirm-{sid}"
                                     )))
-                                    .secondary()
-                                    .xsmall()
+                                    .outline()
                                     .icon(icon("check"))
                                     .label(t("meetings.speaker.confirmAction"))
                                     .on_click(
@@ -2556,8 +2728,7 @@ impl MeetingDetail {
                                     Button::new(SharedString::from(format!(
                                         "speaker-change-{sid}"
                                     )))
-                                    .ghost()
-                                    .xsmall()
+                                    .outline()
                                     .label(t("meetings.speaker.change"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_picker(sid, window, cx)
@@ -2567,7 +2738,8 @@ impl MeetingDetail {
                         } else {
                             Button::new(SharedString::from(format!("speaker-name-{sid}")))
                                 .ghost()
-                                .xsmall()
+                                .small()
+                                .size(design::ICON_BUTTON)
                                 .icon(icon("pencil"))
                                 .tooltip(t("meetings.speaker.rename"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -2616,18 +2788,12 @@ impl MeetingDetail {
                     .id(SharedString::from(format!("speaker-chip-{sid}")))
                     .flex_none()
                     .h(dp(20.))
-                    .px(dp(6.))
+                    .px(dp(8.))
                     .gap(dp(4.))
                     .rounded(design::RADIUS_CHIP)
                     .text_size(design::TEXT_SECONDARY)
                     .when(needs, |d| d.bg(warning.opacity(0.12)).text_color(warning))
-                    .when(!needs, |d| {
-                        d.bg(tone.raised).text_color(if s.is_user {
-                            tone.accent_text
-                        } else {
-                            tone.text
-                        })
-                    })
+                    .when(!needs, |d| d.bg(tone.raised).text_color(tone.text))
                     .child(
                         div()
                             .max_w(dp(120.))
@@ -2636,7 +2802,7 @@ impl MeetingDetail {
                     )
                     .child(
                         div()
-                            .font_family(crate::theme::MONO_FONT)
+                            .font_features(design::tabular_figures())
                             .text_color(if needs { warning } else { tone.text_muted })
                             .child(pct),
                     )
@@ -2657,14 +2823,15 @@ impl MeetingDetail {
             .w_full()
             .flex_none()
             .px(dp(12.))
-            .py(dp(6.))
-            .gap(dp(6.))
+            .py(dp(8.))
+            .gap(dp(8.))
             .border_b_1()
             .border_color(tone.hairline)
             .child(
                 Button::new("meeting-speakers-fold")
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .size(design::ICON_BUTTON)
                     .icon(icon(if open {
                         "chevron-down"
                     } else {
@@ -2721,7 +2888,6 @@ impl MeetingDetail {
     }
 
     fn render_block(&self, i: usize, block: &SpeakerBlock, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
         let tone = design::tone(cx);
         let speaker = block
             .speaker_id
@@ -2730,7 +2896,6 @@ impl MeetingDetail {
         let name = speaker
             .map(|s| self.speaker_label(s, cx))
             .unwrap_or_else(|| t("meetings.speaker.unknown").to_string());
-        let is_user = speaker.is_some_and(|s| s.is_user);
         let pickable = speaker.filter(|s| !s.is_user).map(|s| s.id);
         let uncertain = speaker.is_some_and(needs_confirmation);
         let player_playing = self.player.read(cx).is_playing();
@@ -2750,80 +2915,114 @@ impl MeetingDetail {
             .last()
             .copied()
             .filter(|_| picker_line.is_none() && self.drag_start.is_none());
-        // Who and when on the left, what they said on the right.
-        let row = h_flex()
+        let narrow = self.layout.narrow_transcript;
+        let edge = self.edge();
+        let attention = design::status_color(design::Status::Attention, cx);
+        // Speaker names are primary text with weight (the user too); the
+        // time is muted with tabular figures. Semibold: the system UI font
+        // draws 500 the same as 400, so MEDIUM would read as regular.
+        let speaker_name = div()
+            .id(SharedString::from(format!("block-{i}-speaker")))
+            .min_w_0()
+            .truncate()
+            .text_size(design::TEXT_BODY)
+            .line_height(design::LINE_BODY)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(if unknown { attention } else { tone.text })
+            .when(pickable.is_some(), |d| {
+                d.cursor_pointer().hover(|s| s.underline())
+            })
+            .child(name)
+            .when_some(pickable, |d, sid| {
+                d.on_click(
+                    cx.listener(move |this, _, window, cx| this.open_picker(sid, window, cx)),
+                )
+            })
+            .test_support();
+        let time = design::mono(format_offset(block.t0_ms()))
+            .flex_none()
+            .text_size(design::TEXT_SECONDARY)
+            .line_height(design::LINE_BODY)
+            .text_color(tone.text_muted);
+        let confirm = uncertain.then(|| {
+            div()
+                .flex_none()
+                .text_size(design::TEXT_SECONDARY)
+                .line_height(design::LINE_BODY)
+                .text_color(attention)
+                .child(t("meetings.speaker.confirm"))
+        });
+        let who = unknown.then(|| {
+            let ids = block_ids.clone();
+            div()
+                .id(SharedString::from(format!("block-{i}-tag")))
+                .flex_none()
+                .text_size(design::TEXT_SECONDARY)
+                .line_height(design::LINE_BODY)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(attention)
+                .cursor_pointer()
+                .hover(|s| s.underline())
+                .child(t("meetings.speaker.whoIsThis"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_line_picker(ids.clone(), window, cx)
+                }))
+                .test_support()
+        });
+        // Narrow: who and when on a line above what they said, lined up
+        // with the text. Wide: a column beside it.
+        let who_when: AnyElement = if narrow {
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .pl(dp(22.))
+                .gap(dp(8.))
+                .child(speaker_name)
+                .child(time)
+                .children(confirm)
+                .children(who.map(|w| w.ml(dp(4.))))
+                .into_any_element()
+        } else {
+            v_flex()
+                .w(dp(96.))
+                .flex_none()
+                .pt(dp(2.))
+                .gap(dp(1.))
+                .child(speaker_name)
+                .child(time)
+                .children(confirm)
+                .children(who.map(|w| w.mt(dp(4.))))
+                .into_any_element()
+        };
+        let row = div()
             .id(SharedString::from(format!("block-{i}")))
             .w_full()
-            .items_start()
-            .gap(dp(12.))
-            .pl(design::SECTION_X)
-            .pr(dp(10.))
-            .py(dp(10.))
+            .flex()
+            .map(|d| {
+                // ~12 pt between turns; the line's play glyph sits on the
+                // detail's edge.
+                if narrow {
+                    d.flex_col()
+                        .gap(dp(2.))
+                        .pl(edge - dp(6.))
+                        .pr(dp(8.))
+                        .py(dp(6.))
+                } else {
+                    d.flex_row()
+                        .items_start()
+                        .gap(dp(12.))
+                        .pl(edge - dp(2.))
+                        .pr(dp(8.))
+                        .py(dp(6.))
+                }
+            })
             // An unknown voice is highlighted until someone names it.
             .when(unknown, |d| {
-                d.bg(theme.warning.opacity(0.07))
+                d.bg(attention.opacity(0.07))
                     .border_l_2()
-                    .border_color(theme.warning.opacity(0.6))
+                    .border_color(attention.opacity(0.6))
             })
-            .child(
-                v_flex()
-                    .w(dp(84.))
-                    .flex_none()
-                    .pt(dp(2.))
-                    .gap(dp(2.))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("block-{i}-speaker")))
-                            .text_size(design::TEXT_BODY)
-                            .truncate()
-                            .text_color(if unknown {
-                                theme.warning
-                            } else if is_user {
-                                tone.accent_text
-                            } else {
-                                tone.text
-                            })
-                            .when(pickable.is_some(), |d| {
-                                d.cursor_pointer().hover(|s| s.underline())
-                            })
-                            .child(name)
-                            .when_some(pickable, |d, sid| {
-                                d.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_picker(sid, window, cx)
-                                }))
-                            })
-                            .test_support(),
-                    )
-                    .child(
-                        design::mono(format_offset(block.t0_ms()))
-                            .text_size(dp(11.))
-                            .text_color(tone.text_faint),
-                    )
-                    .when(uncertain, |d| {
-                        d.child(
-                            div()
-                                .text_size(dp(11.))
-                                .text_color(theme.warning)
-                                .child(t("meetings.speaker.confirm")),
-                        )
-                    })
-                    .when(unknown, |d| {
-                        let ids = block_ids.clone();
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("block-{i}-tag")))
-                                .mt(dp(4.))
-                                .text_size(dp(11.))
-                                .text_color(theme.warning)
-                                .hover(|s| s.underline())
-                                .child(t("meetings.speaker.whoIsThis"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_line_picker(ids.clone(), window, cx)
-                                }))
-                                .test_support(),
-                        )
-                    }),
-            )
+            .child(who_when)
             .child(
                 v_flex()
                     .flex_1()
@@ -2841,6 +3040,11 @@ impl MeetingDetail {
                         let s = seg.clone();
                         let seg_id = seg.id;
                         let selected = self.selection.contains(&seg_id);
+                        // The line's play and speaker-edit glyphs show on
+                        // hover and for the playing or selected line only:
+                        // every line keeps them (same ids, same clicks).
+                        let group = SharedString::from(format!("segment-{}", seg.id));
+                        let shown = active || selected;
                         let line = h_flex()
                             .id(SharedString::from(format!("segment-{}", seg.id)))
                             .group(SharedString::from(format!("segment-{}", seg.id)))
@@ -2852,7 +3056,7 @@ impl MeetingDetail {
                             .py(px(1.))
                             .rounded(design::RADIUS_CHIP)
                             .relative()
-                            .when(active, |d| d.bg(tone.accent_soft))
+                            .when(active, |d| d.bg(tone.selection))
                             .when(
                                 !active
                                     && self
@@ -2862,12 +3066,12 @@ impl MeetingDetail {
                                 |d| d.bg(tone.accent_soft),
                             )
                             .when(self.flash == Some(seg_id) && !selected, |d| {
-                                d.bg(tone.accent.opacity(0.18))
+                                d.bg(tone.accent_soft)
                             })
                             .when(selected, |d| {
-                                d.bg(tone.accent.opacity(0.18))
+                                d.bg(tone.selection_focused)
                                     .border_l_2()
-                                    .border_color(tone.accent)
+                                    .border_color(tone.text_muted)
                             })
                             .when(!selected, |d| {
                                 d.hover(move |d| d.bg(tone.raised.opacity(0.5)))
@@ -2903,21 +3107,20 @@ impl MeetingDetail {
                             )
                             .child(
                                 div()
-                                    .pt(dp(4.))
+                                    .pt(dp(4.5))
                                     .flex_none()
-                                    .text_color(if active {
-                                        tone.accent_text
-                                    } else {
-                                        tone.text_faint
+                                    .text_color(if active { tone.text } else { tone.text_muted })
+                                    .when(!shown, |d| {
+                                        d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
                                     })
-                                    .child(icon(if playing { "pause" } else { "play" }).xsmall()),
+                                    .child(crate::ui::brand::pause_icon(!playing).xsmall()),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_size(design::TEXT_BODY)
-                                    .line_height(relative(1.6))
+                                    .text_size(design::TEXT_READING)
+                                    .line_height(design::LINE_READING)
                                     .map(|d| match &found {
                                         Some(ranges) => d.child(super::list::highlighted_with(
                                             &seg.text, ranges, current, cx,
@@ -2930,15 +3133,20 @@ impl MeetingDetail {
                                 div()
                                     .id(SharedString::from(format!("segment-{seg_id}-tag")))
                                     .flex_none()
-                                    .mt(dp(3.))
-                                    .p(dp(3.))
-                                    .rounded(crate::ui::design::RADIUS_PANEL)
-                                    .text_color(tone.text_faint)
-                                    // Faint until the line is hovered.
-                                    .opacity(0.35)
-                                    .group_hover(format!("segment-{seg_id}"), |s| s.opacity(1.))
+                                    .mt(dp(-1.5))
+                                    .size(design::ICON_BUTTON)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(design::RADIUS_CONTROL)
+                                    // A neutral glyph in a 24 pt target,
+                                    // shown with the line's play glyph.
+                                    .text_color(tone.text_muted)
+                                    .when(!shown, |d| {
+                                        d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                                    })
                                     .hover(move |s| s.bg(tone.raised).text_color(tone.text))
-                                    .child(icon("user-round-pen").xsmall())
+                                    .child(icon("user-round-pen").small())
                                     .tooltip(|window, cx| {
                                         gpui_kit::component::tooltip::Tooltip::new(t(
                                             "meetings.speaker.whoSaidThis",
@@ -2979,7 +3187,7 @@ impl MeetingDetail {
                             .min_w_0()
                             .child(line)
                             .when(picker_line == Some(seg_id), |d| {
-                                d.child(div().pt(dp(6.)).pb(dp(10.)).child(
+                                d.child(div().pt(dp(8.)).pb(dp(10.)).child(
                                     self.render_picker(format!("line-picker-{seg_id}").into(), cx),
                                 ))
                             })
@@ -3001,9 +3209,9 @@ impl MeetingDetail {
             .id("selection-bar")
             .w_full()
             .mt(dp(4.))
-            .mb(dp(6.))
+            .mb(dp(8.))
             .px(dp(10.))
-            .py(dp(6.))
+            .py(dp(4.))
             .gap_2()
             .items_center()
             .rounded(crate::ui::design::RADIUS_PANEL)
@@ -3028,15 +3236,13 @@ impl MeetingDetail {
             )
             .child(
                 Button::new("selection-clear")
-                    .ghost()
-                    .small()
+                    .outline()
                     .label(t("meetings.selection.clear"))
                     .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
             )
             .child(
                 Button::new("selection-tag")
                     .primary()
-                    .small()
                     .icon(icon("user-round-pen"))
                     .label(t("meetings.selection.setSpeaker"))
                     .on_click(cx.listener(|this, _, window, cx| this.tag_selection(window, cx))),
@@ -3088,12 +3294,17 @@ impl MeetingDetail {
                         },
                         cx,
                     )
-                    .when(you, |d| d.text_color(tone.accent_text)),
+                    // Like the processed transcript's speaker names: 13 pt
+                    // with weight (500 draws as 400 in the system font).
+                    .text_size(design::TEXT_BODY)
+                    .line_height(design::LINE_BODY)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(tone.text),
                 )
                 .child(
                     div()
-                        .text_size(design::TEXT_BODY)
-                        .line_height(relative(1.55))
+                        .text_size(design::TEXT_READING)
+                        .line_height(design::LINE_READING)
                         // A turn with only tentative words has no settled
                         // text: no empty line above them.
                         .when(!r.text.is_empty(), |d| d.child(div().child(r.text.clone())))
@@ -3183,10 +3394,11 @@ impl MeetingDetail {
             .text_size(design::TEXT_BODY)
             .text_color(tone.text_muted)
             .child(
-                div()
+                design::mono(format_offset(line.t0_ms))
                     .w(dp(52.))
-                    .text_color(tone.text_faint)
-                    .child(format_offset(line.t0_ms)),
+                    .flex_none()
+                    .text_size(design::TEXT_SECONDARY)
+                    .text_color(tone.text_muted),
             )
             .child(div().child(t("meetings.detail.speakerPending")))
             .child(div().flex_1().min_w_0().child(line.text.clone()))
@@ -3197,11 +3409,12 @@ impl MeetingDetail {
     /// The transcript column's tools: find and copy.
     fn transcript_tools(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_lines = !self.loading && !self.segments.is_empty();
-        h_flex().flex_none().gap(dp(2.)).when(has_lines, |d| {
+        h_flex().flex_none().gap(dp(4.)).when(has_lines, |d| {
             d.child(
                 Button::new("transcript-find")
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .size(HEADER_ICON_BUTTON)
                     .icon(icon("search"))
                     .tooltip(t("meetings.find.tooltip"))
                     .selected(self.find_open)
@@ -3216,7 +3429,8 @@ impl MeetingDetail {
             .child(
                 Button::new("transcript-copy")
                     .ghost()
-                    .xsmall()
+                    .small()
+                    .size(HEADER_ICON_BUTTON)
                     .icon(icon(if self.transcript_copied {
                         "check"
                     } else {
@@ -3259,16 +3473,15 @@ impl MeetingDetail {
                 .flex_none()
                 .w_full()
                 .px(dp(10.))
-                .py(dp(6.))
-                .gap(dp(6.))
+                .py(dp(4.))
+                .gap(dp(8.))
                 .border_b_1()
                 .border_color(tone.hairline)
                 .bg(tone.surface)
                 .child(
                     div().flex_1().min_w_0().child(
                         Input::new(&self.find_input)
-                            .xsmall()
-                            .prefix(icon("search").xsmall().text_color(tone.text_muted)),
+                            .prefix(icon("search").small().text_color(tone.text_muted)),
                     ),
                 )
                 .on_action(cx.listener(
@@ -3288,7 +3501,8 @@ impl MeetingDetail {
                 .child(
                     Button::new("transcript-find-prev")
                         .ghost()
-                        .xsmall()
+                        .small()
+                        .size(design::ICON_BUTTON)
                         .icon(icon("chevron-up"))
                         .tooltip(t("meetings.find.previous"))
                         .disabled(total == 0)
@@ -3297,7 +3511,8 @@ impl MeetingDetail {
                 .child(
                     Button::new("transcript-find-next")
                         .ghost()
-                        .xsmall()
+                        .small()
+                        .size(design::ICON_BUTTON)
                         .icon(icon("chevron-down"))
                         .tooltip(t("meetings.find.next"))
                         .disabled(total == 0)
@@ -3305,8 +3520,7 @@ impl MeetingDetail {
                 )
                 .child(
                     Button::new("transcript-find-done")
-                        .ghost()
-                        .xsmall()
+                        .outline()
                         .label(t("meetings.find.done"))
                         .on_click(cx.listener(|this, _, window, cx| this.close_find(window, cx))),
                 )
@@ -3401,8 +3615,7 @@ impl MeetingDetail {
                         view.update(cx, |this, cx| match this.blocks.get(ix).cloned() {
                             Some(block) => div()
                                 .w_full()
-                                .border_b_1()
-                                .border_color(design::tone(cx).hairline)
+                                .when(ix == 0, |d| d.pt(dp(6.)))
                                 .child(this.render_block(ix, &block, cx))
                                 .into_any_element(),
                             None => div().into_any_element(),
@@ -3480,22 +3693,16 @@ impl MeetingDetail {
         } else {
             t("meetings.copy.transcript")
         };
-        let icon_only = self.layout.compact;
+        // The header's one labeled command, at every width.
         let main = Button::new("summary-copy")
-            .ghost()
-            .small()
+            .outline()
             .icon(icon(if copied { "check" } else { "copy" }))
-            .map(|b| {
-                if icon_only {
-                    b.tooltip(label)
-                } else {
-                    b.label(label)
-                }
-            })
+            .label(label)
             .on_click(cx.listener(|this, _, _, cx| this.copy_notes(cx)));
         let weak = cx.entity().downgrade();
         DropdownButton::new("meeting-copy-split")
             .button(main)
+            .outline()
             .menu_accessibility_label(t("meetings.copy.more"))
             .dropdown_menu(move |menu, _, _| {
                 let weak_transcript = weak.clone();
@@ -3522,6 +3729,7 @@ impl MeetingDetail {
     fn render_what_changed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let diff = self.what_changed.as_ref()?;
         let tone = design::tone(cx);
+        let reduce_motion = cx.reduce_motion();
         let count = diff.lines_changed.to_string();
         let line_count = t_args("meetings.changed.lines", &[("count", &count)]);
         let shift_key = |shift: &SpeakerShift| match shift {
@@ -3650,23 +3858,30 @@ impl MeetingDetail {
                             .rounded_full()
                             .bg(tone.raised)
                             .overflow_hidden()
-                            .child(
-                                div()
+                            .child({
+                                let bar = div()
                                     .absolute()
                                     .top_0()
                                     .left_0()
                                     .h_full()
                                     .rounded_full()
-                                    .bg(tone.accent)
-                                    .with_animation(
+                                    .bg(tone.accent);
+                                // One short grow from before to after;
+                                // with Reduce Motion, straight to after.
+                                if reduce_motion {
+                                    bar.w(relative(after.clamp(0.0, 1.0))).into_any_element()
+                                } else {
+                                    bar.with_animation(
                                         id,
                                         Animation::new(Duration::from_millis(700)),
                                         move |el, delta| {
                                             let w = before + (after - before) * delta;
                                             el.w(relative(w.clamp(0.0, 1.0)))
                                         },
-                                    ),
-                            )
+                                    )
+                                    .into_any_element()
+                                }
+                            })
                             .when(before > 0.01, |track| {
                                 track.child(
                                     div()
@@ -3683,7 +3898,8 @@ impl MeetingDetail {
                         div()
                             .w(dp(88.))
                             .flex_none()
-                            .text_size(dp(11.))
+                            .font_features(design::tabular_figures())
+                            .text_size(design::TEXT_CAPTION)
                             .text_color(tone.text_muted)
                             .child(pct),
                     )
@@ -3691,7 +3907,8 @@ impl MeetingDetail {
             })
             .collect();
         let open = self.what_changed_open;
-        let accent = tone.accent_text;
+        // An informational notice: neutral, not the accent.
+        let accent = tone.text_muted;
         Some(
             div()
                 .id("what-changed")
@@ -3702,7 +3919,7 @@ impl MeetingDetail {
                     design::notice(accent).child(
                         v_flex()
                             .w_full()
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .child(
                                 h_flex()
                                     .w_full()
@@ -3723,8 +3940,7 @@ impl MeetingDetail {
                                     )
                                     .child(
                                         Button::new("what-changed-details")
-                                            .ghost()
-                                            .xsmall()
+                                            .outline()
                                             .label(if open {
                                                 t("meetings.changed.hide")
                                             } else {
@@ -3738,7 +3954,8 @@ impl MeetingDetail {
                                     .child(
                                         Button::new("what-changed-dismiss")
                                             .ghost()
-                                            .xsmall()
+                                            .small()
+                                            .size(design::ICON_BUTTON)
                                             .icon(icon("x"))
                                             .tooltip(t("meetings.changed.dismiss"))
                                             .on_click(cx.listener(|this, _, _, cx| {
@@ -3755,35 +3972,33 @@ impl MeetingDetail {
         )
     }
 
-    /// The segmented control over the notes column; with `transcript`
-    /// (one column) Transcript is its last option.
+    /// The tab strip over the notes column (plain tabs: medium labels, the
+    /// shown one underlined); with `transcript` (one column) Transcript is
+    /// its last tab.
     fn render_tabs(&self, transcript: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.summary.read(cx).item_count();
         let tickets = self.tickets.read(cx).count();
         let notes = self.detail_tab == DetailTab::Notes || self.layout.side_by_side;
-        let with_count = |key: &str, n: usize| {
-            if n == 0 {
-                t(key)
-            } else {
-                SharedString::from(format!("{} {n}", t(key)))
-            }
-        };
-        let mut tabs: Vec<(&'static str, SharedString, bool, Option<NotesTab>)> = vec![
+        type Tab = (&'static str, SharedString, usize, bool, Option<NotesTab>);
+        let mut tabs: Vec<Tab> = vec![
             (
                 "notes",
                 t("meetings.detail.notesTab"),
+                0,
                 notes && self.notes_tab == NotesTab::Summary,
                 Some(NotesTab::Summary),
             ),
             (
                 "items",
-                with_count("meetings.detail.itemsTab", items),
+                t("meetings.detail.itemsTab"),
+                items,
                 notes && self.notes_tab == NotesTab::ActionItems,
                 Some(NotesTab::ActionItems),
             ),
             (
                 "tickets",
-                with_count("meetings.detail.ticketsTab", tickets),
+                t("meetings.detail.ticketsTab"),
+                tickets,
                 notes && self.notes_tab == NotesTab::Tickets,
                 Some(NotesTab::Tickets),
             ),
@@ -3792,35 +4007,96 @@ impl MeetingDetail {
             tabs.push((
                 "transcript",
                 t("meetings.detail.transcript"),
+                0,
                 self.detail_tab == DetailTab::Transcript,
                 None,
             ));
         }
-        design::segmented(cx).children(tabs.into_iter().map(|(id, label, selected, tab)| {
-            design::segment(
-                SharedString::from(format!("meeting-detail-tab-{id}")),
-                label,
-                selected,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                match tab {
-                    Some(tab) => {
-                        if this.notes_tab != tab {
-                            this.notes_scroll.set_offset(point(px(0.), px(0.)));
+        let tone = design::tone(cx);
+        let ring = cx.theme().ring;
+        // Each tab: a focusable box with a 2 pt ring border (transparent at
+        // rest, so focus doesn't move the layout) above a separate 2 pt
+        // underline for the shown tab. Focus and selection never share a
+        // mark. The strip pulls back by the box's inset so the first label
+        // stays on the detail's edge.
+        let strip = h_flex()
+            .id("meeting-detail-tabs")
+            .flex_none()
+            .h(TAB_STRIP_H)
+            .ml(-TAB_INSET)
+            .gap(dp(16.) - TAB_INSET * 2.)
+            .items_stretch();
+        let strip = strip.children(tabs.into_iter().map(|(id, label, count, selected, tab)| {
+            let tab_box = h_flex()
+                .id(SharedString::from(format!("meeting-detail-tab-{id}")))
+                .tab_index(0)
+                .flex_none()
+                .h(TAB_STRIP_H - dp(4.))
+                .px(TAB_INSET - dp(2.))
+                .gap(dp(4.))
+                .rounded(design::RADIUS_CONTROL)
+                .border_2()
+                .border_color(transparent_black())
+                .text_size(design::TEXT_BODY)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if selected { tone.text } else { tone.text_muted })
+                .when(!selected, |d| d.hover(move |s| s.text_color(tone.text)))
+                .focus_visible(move |s| s.border_color(ring).text_color(tone.text))
+                .child(label)
+                // The count is a small neutral badge beside the name.
+                .when(count > 0, |d| {
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("meeting-detail-tab-{id}-count")))
+                            .flex_none()
+                            .min_w(dp(16.))
+                            .h(dp(16.))
+                            .px(dp(4.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(design::RADIUS_CHIP)
+                            .bg(tone.raised)
+                            .font_features(design::tabular_figures())
+                            .text_size(design::TEXT_CAPTION)
+                            .line_height(dp(16.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tone.text_muted)
+                            .child(count.to_string())
+                            .test_support(),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    match tab {
+                        Some(tab) => {
+                            if this.notes_tab != tab {
+                                this.notes_scroll.set_offset(point(px(0.), px(0.)));
+                            }
+                            this.notes_tab = tab;
+                            this.detail_tab = DetailTab::Notes;
                         }
-                        this.notes_tab = tab;
-                        this.detail_tab = DetailTab::Notes;
+                        None => this.select_tab(DetailTab::Transcript, cx),
                     }
-                    None => this.select_tab(DetailTab::Transcript, cx),
-                }
-                cx.notify();
-            }))
-            .test_support()
-        }))
+                    cx.notify();
+                }))
+                .test_support();
+            v_flex().flex_none().justify_end().child(tab_box).child(
+                // The underline sits on the header's bottom hairline,
+                // as wide as the label.
+                div()
+                    .flex_none()
+                    .mt(dp(2.))
+                    .mx(TAB_INSET)
+                    .h(dp(2.))
+                    .rounded(dp(1.))
+                    .when(selected, |d| d.bg(tone.text)),
+            )
+        }));
+        div().flex_none().h_full().flex().items_end().child(strip)
     }
 
-    /// A column's header bar.
+    /// A column's header bar: on the detail's edge, its tab strip resting
+    /// on the bottom hairline.
     fn column_header(&self, id: &'static str, cx: &App) -> Stateful<Div> {
         let tone = design::tone(cx);
         h_flex()
@@ -3828,8 +4104,9 @@ impl MeetingDetail {
             .flex_none()
             .w_full()
             .h(dp(36.))
-            .px(dp(10.))
-            .gap(dp(6.))
+            .pl(self.edge())
+            .pr(dp(10.))
+            .gap(dp(8.))
             .border_b_1()
             .border_color(tone.hairline)
     }
@@ -3848,13 +4125,14 @@ impl MeetingDetail {
             .w_full()
             .overflow_y_scroll()
             .track_scroll(&self.notes_scroll)
+            // A reading column: notes don't run the full width of a wide pane.
             .child(
                 div()
                     .w_full()
-                    .px(dp(14.))
-                    .pt(dp(12.))
-                    .pb(dp(20.))
-                    .child(body),
+                    .px(self.edge())
+                    .pt(dp(16.))
+                    .pb(dp(24.))
+                    .child(div().w_full().max_w(dp(680.)).child(body)),
             )
             .into_any_element()
     }
@@ -3947,7 +4225,7 @@ impl Render for MeetingDetail {
                     )
                     .child(
                         Button::new("meeting-recovered-process")
-                            .small()
+                            .outline()
                             .label(t("meetings.list.process"))
                             .loading(self.processing_busy)
                             .disabled(self.processing_busy)
@@ -4030,6 +4308,100 @@ impl Render for MeetingDetail {
             .child(body)
             .test_support()
     }
+}
+
+/// A menu item with a test-visible id (the commands that moved from header
+/// buttons into More keep their ids).
+fn menu_item(id: &'static str, label: SharedString) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, _| div().id(id).child(label.clone()).test_support())
+}
+
+/// Export's choices: everything, the notes, the transcript.
+fn export_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    notes: bool,
+    transcript: bool,
+    weak: WeakEntity<MeetingDetail>,
+) -> gpui_kit::component::menu::PopupMenu {
+    let item = |label: SharedString, kind: ExportKind, enabled: bool| {
+        let weak = weak.clone();
+        PopupMenuItem::new(label)
+            .disabled(!enabled)
+            .on_click(move |_, _, cx| {
+                weak.update(cx, |this, cx| this.export(kind, cx)).ok();
+            })
+    };
+    menu.item(item(
+        t("meetings.export.all"),
+        ExportKind::All,
+        notes || transcript,
+    ))
+    .separator()
+    .item(item(t("meetings.export.notes"), ExportKind::Notes, notes))
+    .item(item(
+        t("meetings.export.transcript"),
+        ExportKind::Transcript,
+        transcript,
+    ))
+}
+
+/// Regenerate the summary: the ready models (on this Mac first, the
+/// current one on top), then the full picker.
+fn summary_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    choices: &[SummaryChoice],
+    weak: WeakEntity<MeetingDetail>,
+) -> gpui_kit::component::menu::PopupMenu {
+    let mut local: Vec<_> = choices.iter().filter(|c| c.local).cloned().collect();
+    let mut cloud: Vec<_> = choices.iter().filter(|c| !c.local).cloned().collect();
+    let current_first = |rows: &mut Vec<SummaryChoice>| {
+        rows.sort_by(|a, b| b.current.cmp(&a.current).then(a.label.cmp(&b.label)));
+    };
+    current_first(&mut local);
+    current_first(&mut cloud);
+    let mut menu = menu;
+    let mut first = true;
+    for (title, rows) in [
+        (t("meetings.redo.localTitle"), local),
+        (t("meetings.redo.cloudTitle"), cloud),
+    ] {
+        if rows.is_empty() {
+            continue;
+        }
+        if !first {
+            menu = menu.separator();
+        }
+        first = false;
+        menu = menu.label(title);
+        for c in rows {
+            let run = (c.provider_id.clone(), c.model.clone());
+            let weak = weak.clone();
+            menu = menu.item(
+                PopupMenuItem::new(c.label.clone())
+                    .checked(c.current)
+                    .on_click(move |_, _, cx| {
+                        let run = run.clone();
+                        weak.update(cx, |this, cx| {
+                            this.summary.update(cx, |v, cx| v.generate(Some(run), cx));
+                        })
+                        .ok();
+                    }),
+            );
+        }
+    }
+    if !first {
+        menu = menu.separator();
+    }
+    menu.item(
+        PopupMenuItem::new(t("meetingsAi.summary.otherModel")).on_click(move |_, window, cx| {
+            weak.update(cx, |this, cx| {
+                this.notes_tab = NotesTab::Summary;
+                this.detail_tab = DetailTab::Notes;
+                this.summary.update(cx, |v, cx| v.open_picker(window, cx));
+            })
+            .ok();
+        }),
+    )
 }
 
 /// The user's home directory (the save panel starts in its Documents).

@@ -462,28 +462,42 @@ impl Render for ShortcutInput {
         };
         let tone = design::tone(cx);
         let input_border = theme.input;
+        let field_bg = theme.input_background();
         let ring = theme.ring;
-        // One key cap per key; while recording, a single highlighted cap
-        // shows what's held so far.
+        // One field, like a pop-up: key glyphs as small raised caps inside
+        // it. While recording, the caps show what's held so far (or a muted
+        // prompt) and the field takes the focus ring.
         let cap = move |text: SharedString| {
             div()
-                .px(dp(6.))
-                .py(dp(2.))
+                .flex_none()
+                .h(dp(18.))
+                .px(dp(5.))
                 .rounded(design::RADIUS_CHIP)
-                .border_1()
-                .border_color(input_border)
                 .bg(tone.raised)
-                .font_family(crate::theme::MONO_FONT)
-                .text_size(dp(11.5))
-                .line_height(dp(14.))
+                .text_size(design::TEXT_CAPTION)
+                .line_height(dp(18.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(tone.text)
                 .child(text)
         };
-        let caps: Vec<SharedString> = if recording {
-            vec![display.clone()]
+        let held = recording
+            && match self.mode {
+                Mode::System => self.system.display().is_some(),
+                Mode::NativeKeys => !self.native_keys.current.is_empty(),
+                Mode::Idle => false,
+            };
+        let caps: Vec<AnyElement> = if recording && !held {
+            vec![div()
+                .flex_none()
+                .px(dp(3.))
+                .text_size(design::TEXT_SECONDARY)
+                .text_color(tone.text_muted)
+                .child(display.clone())
+                .into_any_element()]
         } else {
             display
                 .split(" + ")
-                .map(|k| SharedString::from(with_key_glyph(k)))
+                .map(|k| cap(SharedString::from(with_key_glyph(k))).into_any_element())
                 .collect()
         };
 
@@ -492,22 +506,18 @@ impl Render for ShortcutInput {
             .aria_label(title.clone())
             .aria_description(t("settings.general.shortcut.recordHint"))
             .track_focus(&self.focus)
+            .w(SHORTCUT_FIELD_W)
+            .h(design::CONTROL_H)
+            .flex_none()
+            .overflow_hidden()
             .gap(dp(4.))
-            .p(dp(2.))
+            .px(dp(2.))
             .rounded(design::RADIUS_CONTROL)
             .border_1()
-            .children(caps.into_iter().map(move |k| {
-                cap(k).when(recording, |d| {
-                    d.border_color(tone.accent_text)
-                        .bg(tone.accent_soft)
-                        .text_color(tone.accent_text)
-                })
-            }))
-            .when(recording, |d| d.border_color(tone.accent_soft))
-            .when(!recording, |d| {
-                d.border_color(gpui_kit::transparent_black())
-                    .hover(move |s| s.border_color(tone.accent_soft))
-            })
+            .border_color(if recording { ring } else { input_border })
+            .bg(field_bg)
+            .cursor_pointer()
+            .children(caps)
             .focus_visible(move |s| s.border_color(ring))
             .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
             .on_mouse_down_out(cx.listener(|this, _, window, cx| this.cancel(window, cx)))
@@ -520,21 +530,57 @@ impl Render for ShortcutInput {
         SettingRow::new(row_id, title)
             .description(desc)
             .error(self.error.clone())
-            .control(
-                h_flex()
-                    .gap_1()
-                    .child(reset_button(
+            .control(crate::ui::kit::trailing(
+                Some(
+                    reset_button(
                         SharedString::from(format!("shortcut-reset-{id}")),
                         updating,
                         move |_, cx| {
                             let id = reset_id.clone();
                             AppState::global(cx).update(cx, |s, cx| s.reset_binding(&id, cx));
                         },
-                    ))
-                    .child(chip),
-            )
+                    )
+                    .into_any_element(),
+                ),
+                chip,
+            ))
             .into_any_element()
     }
+}
+
+/// Width of a shortcut field: the same as a settings pop-up, so controls
+/// (and the reset buttons before them) line up from row to row.
+pub const SHORTCUT_FIELD_W: Pixels = dp(200.);
+
+/// A settings row's trailing group when the row has an accessory (a
+/// refresh or preview icon button): `[reset slot] [control column]
+/// [accessory]`. The leading slot only ever holds a reset; the accessory
+/// sits after the column in its own 24 pt slot, and the whole group stays
+/// right-aligned, so the column (and a pop-up in it) keeps its full width
+/// and moves left by the accessory instead of shrinking.
+pub fn trailing_with_accessory(
+    reset: Option<AnyElement>,
+    column_w: Pixels,
+    control: impl IntoElement,
+    accessory: impl IntoElement,
+) -> Div {
+    h_flex()
+        .flex_none()
+        .gap(dp(4.))
+        .when_some(reset, |d, r| d.child(reset_slot(r)))
+        .child(h_flex().w(column_w).justify_end().child(control))
+        .child(reset_slot(accessory))
+}
+
+/// The fixed slot a reset button sits in, immediately before its control:
+/// with controls of one width, reset icons line up in one column.
+pub fn reset_slot(button: impl IntoElement) -> Div {
+    div()
+        .flex_none()
+        .w(design::ICON_BUTTON)
+        .flex()
+        .justify_center()
+        .child(button)
 }
 
 /// "Left Option" → "⌥ Left Option": the Mac modifier symbol in front of

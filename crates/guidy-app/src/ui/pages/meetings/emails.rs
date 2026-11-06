@@ -182,12 +182,7 @@ impl Render for UserEmailsView {
                     .on_action(cx.listener(move |this, _: &Escape, window, cx| {
                         this.revert_label(i, window, cx)
                     }))
-                    .child(
-                        div()
-                            .w(LABEL_WIDTH)
-                            .flex_none()
-                            .child(Input::new(label).small()),
-                    )
+                    .child(div().w(LABEL_WIDTH).flex_none().child(Input::new(label)))
                     .child(
                         h_flex()
                             .flex_1()
@@ -207,6 +202,7 @@ impl Render for UserEmailsView {
                         )))
                         .ghost()
                         .small()
+                        .size(crate::ui::design::ICON_BUTTON)
                         .icon(icon("x"))
                         .tooltip(t("meetings.settings.userEmails.remove"))
                         .on_click(cx.listener(move |this, _, _, cx| this.remove(i, cx))),
@@ -228,7 +224,7 @@ impl Render for UserEmailsView {
         v_flex()
             .id("meetings-user-emails")
             .w_full()
-            .gap(dp(6.))
+            .gap(dp(8.))
             .children(rows)
             .child(
                 h_flex()
@@ -238,18 +234,12 @@ impl Render for UserEmailsView {
                         div()
                             .w(LABEL_WIDTH)
                             .flex_none()
-                            .child(Input::new(&self.new_label).small()),
+                            .child(Input::new(&self.new_label)),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.new_email).small()),
-                    )
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.new_email)))
                     .child(
                         Button::new("meetings-user-email-add")
                             .outline()
-                            .small()
                             .label(t("meetings.settings.userEmails.add"))
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     ),

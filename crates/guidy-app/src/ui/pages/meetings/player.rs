@@ -28,6 +28,16 @@ const TICK: Duration = Duration::from_millis(200);
 const PREFETCH_MS: i64 = 20_000;
 /// The skip buttons' step.
 const SKIP_MS: i64 = 15_000;
+/// The scrubber's narrowest track: below it the header gives the player
+/// its own row instead of squeezing it.
+const SCRUBBER_MIN_W: Pixels = dp(160.);
+/// The scrubber's hit region and its visible track and knob.
+const SCRUBBER_H: Pixels = dp(24.);
+const TRACK_H: Pixels = dp(4.);
+const KNOB: Pixels = dp(10.);
+/// The player's icon buttons: the meeting header's 28 pt hit area.
+const BUTTON: Pixels = dp(28.);
+
 /// After asking the player thread to play, how long its state may still
 /// show the previous clip.
 const START_GRACE: Duration = Duration::from_millis(1_500);
@@ -364,12 +374,14 @@ impl MeetingPlayer {
         };
         let track = self.track.clone();
         let disabled = self.duration_ms <= 0;
+        // A 24 pt hit region around a 4 pt visible track.
         div()
             .id("player-scrubber")
             .relative()
             .flex_1()
-            .min_w(dp(40.))
-            .h(dp(16.))
+            .min_w(SCRUBBER_MIN_W)
+            .h(SCRUBBER_H)
+            .when(!disabled, |d| d.cursor_pointer())
             .child(
                 canvas(move |b, _, _| track.set(Some(b)), |_, _, _, _| {})
                     .absolute()
@@ -380,15 +392,18 @@ impl MeetingPlayer {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(dp(6.))
-                    .h(dp(4.))
+                    .top((SCRUBBER_H - TRACK_H) / 2.)
+                    .h(TRACK_H)
                     .rounded(design::RADIUS_TRACK)
-                    .bg(tone.raised)
+                    // The unplayed extent: the opaque ≥ 3:1 track tone.
+                    .bg(tone.track)
                     .child(
                         div()
                             .h_full()
                             .rounded(design::RADIUS_TRACK)
-                            .bg(tone.accent)
+                            // The played part: the text tone, distinct from
+                            // the grey track by lightness, not hue.
+                            .bg(tone.text)
                             .w(relative(fraction)),
                     ),
             )
@@ -396,14 +411,14 @@ impl MeetingPlayer {
                 // The knob: centred on the playhead.
                 div()
                     .absolute()
-                    .top(dp(3.))
+                    .top((SCRUBBER_H - KNOB) / 2.)
                     .left(relative(fraction))
-                    .ml(dp(-5.))
-                    .size(dp(10.))
+                    .ml(-KNOB / 2.)
+                    .size(KNOB)
                     .rounded_full()
                     .bg(tone.surface)
                     .border_1()
-                    .border_color(tone.line_art)
+                    .border_color(tone.track)
                     .shadow_xs(),
             )
             .when(!disabled, |d| {
@@ -459,35 +474,48 @@ impl Render for MeetingPlayer {
         let tone = design::tone(cx);
         let danger = cx.theme().danger;
         let disabled = self.duration_ms <= 0;
+        // All three transport buttons always, so nothing moves when playback
+        // starts; a skip that can't act (back at the start, forward at the
+        // end) is disabled.
+        let at_start = self.position_ms <= 0;
+        let at_end = self.position_ms >= self.duration_ms;
         let time = |ms: i64| {
             design::mono(format_offset(ms))
                 .flex_none()
-                .text_size(dp(11.))
+                .text_size(design::TEXT_CAPTION)
+                .line_height(design::LINE_CAPTION)
                 .text_color(tone.text_muted)
         };
+        let skip =
+            |id: &'static str, glyph: &'static str, tip: &'static str, delta: i64, stuck: bool| {
+                Button::new(id)
+                    .ghost()
+                    .small()
+                    .size(BUTTON)
+                    .icon(icon(glyph))
+                    .tooltip(t(tip))
+                    .disabled(disabled || stuck)
+                    .on_click(cx.listener(move |this, _, _, cx| this.skip(delta, cx)))
+            };
         h_flex()
             .id("meeting-player")
             .w_full()
             .flex_none()
-            .h(dp(28.))
-            // Inside the detail header, which gives the side padding; the
-            // first button's icon lines up with the title.
-            .ml(dp(-4.))
-            .gap(dp(6.))
-            .child(
-                Button::new("player-back")
-                    .ghost()
-                    .xsmall()
-                    .icon(icon("rotate-ccw"))
-                    .tooltip(t("meetings.player.back"))
-                    .disabled(disabled)
-                    .on_click(cx.listener(|this, _, _, cx| this.skip(-SKIP_MS, cx))),
-            )
+            .h(BUTTON)
+            .gap(dp(4.))
+            .child(skip(
+                "player-back",
+                "rotate-ccw",
+                "meetings.player.back",
+                -SKIP_MS,
+                at_start,
+            ))
             .child(
                 Button::new("player-toggle")
                     .ghost()
                     .small()
-                    .icon(icon(if self.playing { "pause" } else { "play" }))
+                    .size(BUTTON)
+                    .icon(crate::ui::brand::pause_icon(!self.playing))
                     .tooltip(if self.playing {
                         t("meetings.player.pause")
                     } else {
@@ -497,30 +525,29 @@ impl Render for MeetingPlayer {
                     .disabled(disabled)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle(cx))),
             )
-            .child(
-                Button::new("player-forward")
-                    .ghost()
-                    .xsmall()
-                    .icon(icon("rotate-cw"))
-                    .tooltip(t("meetings.player.forward"))
-                    .disabled(disabled)
-                    .on_click(cx.listener(|this, _, _, cx| this.skip(SKIP_MS, cx))),
-            )
+            .child(skip(
+                "player-forward",
+                "rotate-cw",
+                "meetings.player.forward",
+                SKIP_MS,
+                at_end,
+            ))
             .child(
                 time(self.position_ms)
                     .id("player-position")
-                    .w(dp(48.))
+                    .min_w(dp(28.))
                     .text_right(),
             )
-            // Room for the knob, which overhangs the track's ends.
+            // Room for the knob, which overhangs the track's ends, and at
+            // least 8 pt between it and the end time.
             .child(
                 h_flex()
                     .flex_1()
-                    .min_w(dp(40.))
-                    .px(dp(6.))
+                    .min_w(SCRUBBER_MIN_W + dp(16.))
+                    .px(dp(8.))
                     .child(self.render_scrubber(cx)),
             )
-            .child(time(self.duration_ms))
+            .child(time(self.duration_ms).ml(dp(4.)))
             .when_some(self.error.clone(), |d, e| {
                 d.child(
                     div()

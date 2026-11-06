@@ -8,11 +8,11 @@ use crate::logic::languages::{capability_languages, language_label, unique_capab
 use crate::logic::onboarding::picker_models;
 use crate::state::AppState;
 use crate::ui::design::{self, dp};
-use crate::ui::kit::{model_description, model_name, t, t_args, Dropdown, DropdownOption};
+use crate::ui::kit::{icon, model_description, model_name, t, t_args, Dropdown, DropdownOption};
+use crate::ui::model_card::describes_languages;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::radio::Radio;
 use gpui_kit::component::{h_flex, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -20,6 +20,34 @@ use guidy_core::managers::model::ModelInfo;
 use std::rc::Rc;
 
 const ALL_LANGUAGES: &str = "all";
+
+/// One capability statement per model: its description, with the
+/// languages it covers ("English only", "25 languages") added only when
+/// the description doesn't already say them.
+pub fn capability_line(m: &ModelInfo) -> String {
+    let description = model_description(m);
+    let langs = unique_capability_languages(&m.supported_languages);
+    if langs.is_empty() || describes_languages(&description, &m.supported_languages) {
+        return description;
+    }
+    let languages = match langs.as_slice() {
+        [one] => t_args(
+            "modelSelector.capabilities.languageOnly",
+            &[("language", language_label(one).unwrap_or(one))],
+        ),
+        _ => t_args(
+            "modelSelector.capabilities.languageCount",
+            &[("total", &langs.len().to_string())],
+        ),
+    };
+    if description.is_empty() {
+        languages.to_string()
+    } else {
+        // "Fast and fairly accurate · 20 languages": one statement, joined
+        // the same way as the Models page.
+        crate::ui::model_card::join_detail([description, languages.to_string()])
+    }
+}
 
 type OnDone = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 
@@ -90,40 +118,33 @@ impl ModelPicker {
 
     fn model_row(&self, m: &ModelInfo, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(m.id.as_str());
-        let langs = unique_capability_languages(&m.supported_languages);
-        let languages = match langs.as_slice() {
-            [one] => t_args(
-                "modelSelector.capabilities.languageOnly",
-                &[("language", language_label(one).unwrap_or(one))],
-            ),
-            _ => t_args(
-                "modelSelector.capabilities.languageCount",
-                &[("total", &langs.len().to_string())],
-            ),
-        };
-        let mut description = model_description(m);
-        if !description.is_empty() {
-            description.push_str(" · ");
-        }
-        description.push_str(&languages);
+        let description = capability_line(m);
         let id = m.id.clone();
-        let radio = Radio::new(SharedString::from(format!("picker-radio-{}", m.id)))
-            .checked(selected)
-            .on_click(cx.listener({
-                let id = id.clone();
-                move |this, _: &bool, _, cx| {
-                    cx.stop_propagation();
-                    this.select(&id, cx);
-                }
-            }));
+        let radio = super::assistant::AccentMark::new(
+            SharedString::from(format!("picker-radio-{}", m.id)),
+            super::assistant::MarkKind::Radio,
+        )
+        .checked(selected)
+        .on_click(cx.listener({
+            let id = id.clone();
+            move |this, _: &bool, _, cx| {
+                cx.stop_propagation();
+                this.select(&id, cx);
+            }
+        }));
         let title = h_flex()
             .gap(dp(6.))
             .child(model_name(m))
             .when(m.is_recommended, |d| {
-                d.child(design::chip(t("onboarding.recommended"), true, cx))
+                d.child(design::chip(t("onboarding.recommended"), false, cx))
             })
             .when(m.is_downloaded, |d| {
-                d.child(design::chip(t("onboarding.picker.downloaded"), false, cx))
+                d.child(crate::ui::pages::meetings::settings::status_label(
+                    SharedString::from(format!("picker-downloaded-{}", m.id)),
+                    design::Status::Ok,
+                    t("onboarding.picker.downloaded"),
+                    cx,
+                ))
             });
         let size = if m.is_downloaded {
             String::new()
@@ -172,7 +193,11 @@ impl Render for ModelPicker {
                     .id("picker-search")
                     .flex_1()
                     .min_w_0()
-                    .child(Input::new(&self.search).small().cleanable(true))
+                    .child(
+                        Input::new(&self.search)
+                            .cleanable(true)
+                            .prefix(icon("search").xsmall().text_color(tone.text_muted)),
+                    )
                     .test_support(),
             )
             .child(

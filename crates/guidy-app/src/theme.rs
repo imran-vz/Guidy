@@ -1,10 +1,14 @@
-//! Guidy Dark / Guidy Light themes, the Geist fonts, and theme switching.
+//! Guidy Dark / Guidy Light themes, fonts, and theme switching.
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Window, WindowAppearance};
 use guidy_core::settings::Theme as ThemeSetting;
 
-pub const UI_FONT: &str = "Geist";
+/// The system UI font (SF Pro on macOS), like every Mac reference app.
+pub const UI_FONT: &str = ".SystemUIFont";
+/// The brand face: the onboarding display title only.
+pub const BRAND_FONT: &str = "Geist";
+/// IDs, paths, code and raw error text only.
 pub const MONO_FONT: &str = "Geist Mono";
 pub const DARK_THEME: &str = "Guidy Dark";
 pub const LIGHT_THEME: &str = "Guidy Light";
@@ -29,6 +33,9 @@ pub fn init(cx: &mut App) {
         if let Some(l) = light {
             t.light_theme = l;
         }
+        // Focus is one opaque ring-coloured edge on the control, without
+        // the stock translucent halo (2.1:1 in light mode).
+        t.focus_ring = false;
     });
     apply_mode(mode_for(ThemeSetting::System, cx.window_appearance()), cx);
 }

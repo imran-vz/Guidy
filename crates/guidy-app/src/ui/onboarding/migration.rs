@@ -14,7 +14,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::NotificationType;
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::skeleton::Skeleton;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::downloads::format_bytes;
@@ -245,7 +245,6 @@ impl Render for ModelMigration {
         if let Some(picker) = &self.picker {
             return picker.clone().into_any_element();
         }
-        let theme = cx.theme().clone();
         let tone = design::tone(cx);
         let frame = |body: AnyElement| {
             Assistant::new("model-migration", t("onboarding.migration.title"))
@@ -307,15 +306,15 @@ impl Render for ModelMigration {
                         let entity = entity.clone();
                         h_flex()
                             .gap_2()
-                            .child(
-                                div()
-                                    .text_color(theme.danger)
-                                    .child(t("onboarding.migration.failed")),
-                            )
+                            .child(crate::ui::pages::meetings::settings::status_label(
+                                SharedString::from(format!("failed-{}", p.retired.id)),
+                                design::Status::Error,
+                                t("onboarding.migration.failed"),
+                                cx,
+                            ))
                             .child(
                                 Button::new(SharedString::from(format!("retry-{}", p.retired.id)))
                                     .outline()
-                                    .xsmall()
                                     .label(t("onboarding.migration.retry"))
                                     .on_click(move |_, window, cx| {
                                         cx.stop_propagation();
@@ -328,10 +327,13 @@ impl Render for ModelMigration {
                             .into_any_element()
                     }
                     _ if state == RowState::Ready || (is_chosen && p.replacement.is_downloaded) => {
-                        design::chip("", true, cx)
-                            .child(icon("check").size(dp(11.)))
-                            .child(t("onboarding.setup.downloaded"))
-                            .into_any_element()
+                        crate::ui::pages::meetings::settings::status_label(
+                            SharedString::from(format!("ready-{}", p.retired.id)),
+                            design::Status::Ok,
+                            t("onboarding.setup.downloaded"),
+                            cx,
+                        )
+                        .into_any_element()
                     }
                     RowState::Progress(pct) => h_flex()
                         .gap_2()
@@ -362,8 +364,9 @@ impl Render for ModelMigration {
                         p.retired.id
                     )))
                     .px(design::SECTION_X)
-                    .py(dp(8.))
-                    .gap(dp(10.))
+                    .py(design::ROW_Y)
+                    // The onboarding rows' leading slot and inset.
+                    .gap(super::assistant::LEAD_GAP)
                     .when(toggleable, |d| {
                         d.on_click(move |_, _, cx| {
                             let rid = rid.clone();
@@ -379,18 +382,26 @@ impl Render for ModelMigration {
                     })
                     .when(show_checks, |d| {
                         d.child(
-                            gpui_kit::component::checkbox::Checkbox::new(SharedString::from(
-                                format!("migration-check-{}", p.retired.id),
-                            ))
-                            .checked(is_chosen)
-                            .disabled(!toggleable),
+                            super::assistant::lead_slot(
+                                super::assistant::AccentMark::new(
+                                    SharedString::from(format!("migration-check-{}", p.retired.id)),
+                                    super::assistant::MarkKind::Check,
+                                )
+                                .checked(is_chosen)
+                                .disabled(!toggleable),
+                            )
+                            // On the title line; the status centers on the row.
+                            .self_start(),
                         )
                     })
                     .when(!show_checks, |d| {
                         d.child(
-                            icon("audio-lines")
-                                .size(dp(16.))
-                                .text_color(tone.text_muted),
+                            super::assistant::lead_slot(
+                                icon("audio-lines")
+                                    .size(dp(16.))
+                                    .text_color(tone.text_muted),
+                            )
+                            .self_start(),
                         )
                     })
                     .child(
@@ -401,22 +412,29 @@ impl Render for ModelMigration {
                             .child(
                                 div()
                                     .text_size(design::TEXT_BODY)
+                                    .line_height(design::LINE_BODY)
                                     .truncate()
                                     .child(p.replacement.name.clone()),
                             )
+                            // "old format" qualifies the replaced model, so it
+                            // goes in the sentence's name slot ("Replaces
+                            // Parakeet V2 (old format)") in every language,
+                            // not as a chip that reads as the new model's.
                             .child(
-                                h_flex()
-                                    .gap(dp(6.))
+                                div()
                                     .text_size(design::TEXT_SECONDARY)
+                                    .line_height(design::LINE_SECONDARY)
                                     .text_color(tone.text_muted)
                                     .child(t_args(
                                         "onboarding.migration.replaces",
-                                        &[("name", &p.retired.name)],
-                                    ))
-                                    .child(design::chip(
-                                        t("onboarding.migration.oldFormat"),
-                                        false,
-                                        cx,
+                                        &[(
+                                            "name",
+                                            &format!(
+                                                "{} ({})",
+                                                p.retired.name,
+                                                t("onboarding.migration.oldFormat")
+                                            ),
+                                        )],
                                     )),
                             ),
                     )
@@ -442,12 +460,16 @@ impl Render for ModelMigration {
                 ));
             } else {
                 let label = if !to_download.is_empty() {
+                    // "Download Model" for one, "Download Models" for more.
                     t_args(
                         "onboarding.migration.download",
-                        &[(
-                            "size",
-                            &format_bytes((m.download_mb(&models) * 1024.0 * 1024.0) as u64),
-                        )],
+                        &[
+                            ("count", &to_download.len().to_string()),
+                            (
+                                "size",
+                                &format_bytes((m.download_mb(&models) * 1024.0 * 1024.0) as u64),
+                            ),
+                        ],
                     )
                 } else {
                     t("onboarding.migration.continue")

@@ -1,8 +1,8 @@
-//! Debug page (only when debug mode is on): a compact settings group,
-//! then the live logs filling the rest of the page as their own
-//! virtualized region. Click a line to select it, Shift-click or Shift-↑/↓
-//! to extend, ⌘A selects all, ⌘C copies; Pause / Copy / Clear are in the
-//! title bar.
+//! Debug page (only when debug mode is on), in two views switched from the
+//! title bar: Settings (a scrolling form) and Logs (the live logs filling
+//! the page as their own virtualized region). Click a line to select it,
+//! Shift-click or Shift-↑/↓ to extend, ⌘A selects all, ⌘C copies; Pause /
+//! Copy / Clear are in the title bar while Logs shows.
 
 use crate::logic::flows::{
     format_logs_for_copy, keyboard_verdict_key, log_level_tag, LogLine, OnboardingStep,
@@ -11,12 +11,12 @@ use crate::logic::keyboard::OsType;
 use crate::state::AppState;
 use crate::ui::design::{self, dp};
 use crate::ui::kit::{
-    group, reset_button, t, t_args, toggle, Dropdown, DropdownOption, SettingRow, SliderRow,
+    group, reset_button, t, t_args, toggle, trailing, Dropdown, DropdownOption, SettingRow,
+    SliderRow,
 };
 use crate::ui::pages::advanced::save_error;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -24,8 +24,16 @@ use guidy_core::secure_input::KeyboardDiagnosticReport;
 use serde_json::json;
 use std::time::Duration;
 
+/// The page's two views.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DebugTab {
+    Settings,
+    Logs,
+}
+
 pub struct DebugPage {
     state: Entity<AppState>,
+    tab: DebugTab,
     sliders: Vec<Entity<SliderRow>>,
     is_laptop: bool,
     diag_running: bool,
@@ -49,7 +57,7 @@ fn set(key: &'static str, value: serde_json::Value, cx: &mut App) {
 const LOG_ROW_H: Pixels = dp(18.);
 
 fn ms(v: f32) -> String {
-    format!("{}ms", v.round() as i64)
+    format!("{} ms", v.round() as i64)
 }
 
 impl DebugPage {
@@ -136,6 +144,7 @@ impl DebugPage {
             log_focus: cx.focus_handle().tab_stop(true),
             log_selection: None,
             pinned: true,
+            tab: DebugTab::Settings,
             _subs: subs,
         };
         let backend = this.state.read(cx).backend.clone();
@@ -178,10 +187,11 @@ impl DebugPage {
 
     fn render_diagnostic(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let mut body = v_flex().w_full().gap_2().child(
+        // The Run button hugs its label (a full-width push button reads
+        // as a banner, not a command).
+        let mut body = v_flex().w_full().items_start().gap_2().child(
             Button::new("diag-run")
-                .secondary()
-                .small()
+                .outline()
                 .label(if self.diag_running {
                     t("settings.debug.keyboardDiagnostic.running")
                 } else {
@@ -223,10 +233,13 @@ impl DebugPage {
             };
             body = body.child(
                 v_flex()
+                    .w_full()
                     .p_3()
                     .rounded(crate::ui::design::RADIUS_CONTROL)
                     .bg(theme.muted)
-                    .font_family(crate::theme::MONO_FONT)
+                    // Counts in the UI font with tabular figures: mono is
+                    // only for IDs, paths and raw output.
+                    .font_features(design::tabular_figures())
                     .text_size(crate::ui::design::TEXT_SECONDARY)
                     .gap_1()
                     .child(format!(
@@ -245,12 +258,7 @@ impl DebugPage {
                         guidy_i18n::t("settings.debug.keyboardDiagnostic.mouse"),
                         r.mouse
                     ))
-                    .child(
-                        div()
-                            .font_family(crate::theme::UI_FONT)
-                            .text_sm()
-                            .child(t(keyboard_verdict_key(r))),
-                    ),
+                    .child(div().text_sm().child(t(keyboard_verdict_key(r)))),
             );
         }
         SettingRow::new(
@@ -427,25 +435,25 @@ impl DebugPage {
             .flex_none()
             .h(dp(26.))
             .px(dp(10.))
-            .gap(dp(6.))
+            .gap(dp(8.))
             .border_b_1()
             .border_color(tone.hairline)
             .text_size(crate::ui::design::TEXT_SECONDARY)
             .text_color(theme.muted_foreground)
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(t("settings.debug.liveLogs.title")),
-            )
+            // "● Live logs · 12 lines": the dot alone says it is live;
+            // paused is also said in words (the dot only turns grey).
             .child(div().size(dp(6.)).rounded_full().bg(if paused {
                 theme.muted_foreground
             } else {
                 theme.success
             }))
-            .child(if paused {
-                t("settings.debug.liveLogs.paused")
-            } else {
-                t("settings.debug.liveLogs.live")
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t("settings.debug.liveLogs.title")),
+            )
+            .when(paused, |d| {
+                d.child("·").child(t("settings.debug.liveLogs.paused"))
             })
             .child("·")
             .child(t_args(
@@ -514,45 +522,71 @@ impl DebugPage {
 
 impl Render for DebugPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = self.render_settings(window, cx);
-        let logs = self.render_logs(window, cx);
-        // Settings start with half of the page (they scroll; the divider moves).
-        let settings_h =
-            ((window.viewport_size().height - design::TOOLBAR_H - design::STATUS_BAR_H) / 2.)
-                .max(dp(120.));
-        // A split view like a console under its settings: the divider shows
-        // where the settings pane ends (it scrolls), and can be dragged.
+        // One view at a time, each with the whole page: the settings
+        // scroll as a form, the logs fill the page (no split that cuts
+        // rows).
+        let body: AnyElement = match self.tab {
+            DebugTab::Settings => {
+                crate::ui::kit::scroll_page("debug-settings", self.render_settings(window, cx))
+                    .into_any_element()
+            }
+            DebugTab::Logs => v_flex()
+                .size_full()
+                .min_h_0()
+                .px(design::PAGE_X)
+                .pt(design::PAGE_TOP)
+                .pb(design::PAGE_X)
+                .child(
+                    v_flex()
+                        .size_full()
+                        .min_h_0()
+                        .max_w(design::LIST_MAX_W)
+                        .child(self.render_logs(window, cx)),
+                )
+                .into_any_element(),
+        };
         crate::ui::kit::fill_page("page-debug")
-            .child(
-                v_resizable("debug-split")
-                    .child(
-                        resizable_panel()
-                            .size(settings_h)
-                            .size_range(dp(96.)..dp(2000.))
-                            .child(
-                                div()
-                                    .id("debug-settings")
-                                    .size_full()
-                                    .overflow_y_scroll()
-                                    .px(design::PAGE_X)
-                                    .pt(design::PAGE_TOP)
-                                    .pb(dp(12.))
-                                    .child(settings),
-                            ),
-                    )
-                    .child(
-                        resizable_panel().size_range(dp(120.)..dp(4000.)).child(
-                            v_flex()
-                                .size_full()
-                                .min_h_0()
-                                .px(design::PAGE_X)
-                                .pt(dp(12.))
-                                .pb(design::PAGE_X)
-                                .child(logs),
-                        ),
-                    ),
-            )
+            .child(body)
             .test_support()
+    }
+}
+
+impl DebugPage {
+    fn set_tab(&mut self, tab: DebugTab, cx: &mut Context<Self>) {
+        if self.tab != tab {
+            self.tab = tab;
+            cx.notify();
+        }
+    }
+
+    /// Settings | Logs.
+    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tab = self.tab;
+        let segment = |id: &'static str, key: &str, this: DebugTab, cx: &mut Context<Self>| {
+            design::segment(id, t(key), tab == this, cx)
+                .on_click(cx.listener(move |page, _, _, cx| page.set_tab(this, cx)))
+                .on_key_down(cx.listener(move |page, ev: &KeyDownEvent, _, cx| {
+                    if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
+                        page.set_tab(this, cx);
+                    }
+                }))
+                .test_support()
+        };
+        design::segmented(cx)
+            .id("debug-tabs")
+            .child(segment(
+                "debug-tab-settings",
+                "settings.debug.tabs.settings",
+                DebugTab::Settings,
+                cx,
+            ))
+            .child(segment(
+                "debug-tab-logs",
+                "settings.debug.tabs.logs",
+                DebugTab::Logs,
+                cx,
+            ))
+            .into_any_element()
     }
 }
 
@@ -561,15 +595,18 @@ impl crate::ui::pages::Page for DebugPage {
         let paused = self.logs_paused.is_some();
         let empty = self.lines(cx).is_empty();
         let selection = self.log_selection.is_some();
+        let tabs = self.render_tabs(cx);
+        if self.tab != DebugTab::Logs {
+            return Some(tabs);
+        }
         Some(
             h_flex()
                 .gap(dp(4.))
                 .when(crate::ui::kit::rtl(), |d| d.flex_row_reverse())
                 .child(
                     Button::new("logs-pause")
-                        .ghost()
-                        .small()
-                        .icon(crate::ui::kit::icon(if paused { "play" } else { "pause" }))
+                        .outline()
+                        .icon(crate::ui::brand::pause_icon(paused))
                         .label(if paused {
                             t("settings.debug.liveLogs.resume")
                         } else {
@@ -579,8 +616,7 @@ impl crate::ui::pages::Page for DebugPage {
                 )
                 .child(
                     Button::new("logs-copy")
-                        .ghost()
-                        .small()
+                        .outline()
                         .icon(crate::ui::kit::icon(if self.logs_copied {
                             "check"
                         } else {
@@ -598,13 +634,14 @@ impl crate::ui::pages::Page for DebugPage {
                 )
                 .child(
                     Button::new("logs-clear")
-                        .ghost()
-                        .small()
+                        .outline()
                         .icon(crate::ui::kit::icon("trash"))
                         .label(t("common.clear"))
                         .disabled(empty)
                         .on_click(cx.listener(|this, _, _, cx| this.clear_logs(cx))),
                 )
+                .child(div().w(dp(8.)))
+                .child(tabs)
                 .into_any_element(),
         )
     }
@@ -626,7 +663,8 @@ impl DebugPage {
             SettingRow::new("log-level", t("settings.debug.logLevel.title"))
                 .description(t("settings.debug.logLevel.description"))
                 .error(save_error(st, "log_level"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("log-level-dropdown")
                         .options(
                             ["error", "warn", "info", "debug", "trace"]
@@ -645,7 +683,7 @@ impl DebugPage {
                                 .and_then(|v| v.as_str().map(str::to_string)),
                         )
                         .on_select(|v, _, cx| set("log_level", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             SettingRow::new(
                 "whats-new-preview",
@@ -654,8 +692,7 @@ impl DebugPage {
             .description(t("settings.debug.whatsNewPreview.description"))
             .control(
                 Button::new("whats-new-preview-button")
-                    .secondary()
-                    .small()
+                    .outline()
                     .label(t("settings.debug.whatsNewPreview.button"))
                     .on_click(|_, window, cx| {
                         if !crate::ui::whats_new::preview_latest(window, cx) {
@@ -680,8 +717,7 @@ impl DebugPage {
                         .gap_2()
                         .child(
                             Button::new("preview-permissions")
-                                .secondary()
-                                .small()
+                                .outline()
                                 .label(t("settings.debug.onboardingPreview.permissionsButton"))
                                 .on_click(move |_, _, cx| {
                                     m1.update(cx, |m, cx| {
@@ -691,8 +727,7 @@ impl DebugPage {
                         )
                         .child(
                             Button::new("preview-models")
-                                .secondary()
-                                .small()
+                                .outline()
                                 .label(t("settings.debug.onboardingPreview.modelsButton"))
                                 .on_click(move |_, _, cx| {
                                     m2.update(cx, |m, cx| {
@@ -739,43 +774,40 @@ impl DebugPage {
             SettingRow::new("sound-theme", t("settings.debug.soundTheme.label"))
                 .description(t("settings.debug.soundTheme.description"))
                 .error(save_error(st, "sound_theme"))
-                .control(
-                    h_flex()
-                        .gap_1()
-                        // Before the select, like reset buttons, so selects
-                        // line up at the row's right edge.
-                        .child(
-                            Button::new("sound-theme-play")
-                                .ghost()
-                                .small()
-                                .icon(crate::ui::kit::icon("play"))
-                                .tooltip(t("settings.debug.soundTheme.preview"))
-                                .on_click(|_, _, cx| {
-                                    let backend = AppState::global(cx).read(cx).backend.clone();
-                                    cx.background_spawn(async move {
-                                        backend.play_test_sound("start");
-                                        backend.play_test_sound("stop");
-                                        backend.play_test_sound("error");
-                                    })
-                                    .detach();
-                                }),
+                .control(crate::ui::shortcut_input::trailing_with_accessory(
+                    None,
+                    design::CONTROL_COLUMN_W,
+                    Dropdown::new("sound-theme-dropdown")
+                        .options(sound_options)
+                        .selected(
+                            serde_json::to_value(s.sound_theme)
+                                .ok()
+                                .and_then(|v| v.as_str().map(str::to_string)),
                         )
-                        .child(
-                            Dropdown::new("sound-theme-dropdown")
-                                .options(sound_options)
-                                .selected(
-                                    serde_json::to_value(s.sound_theme)
-                                        .ok()
-                                        .and_then(|v| v.as_str().map(str::to_string)),
-                                )
-                                // SoundPicker re-checks for custom sounds on open.
-                                .on_open(|_, cx| {
-                                    AppState::global(cx)
-                                        .update(cx, |s, cx| s.check_custom_sounds(cx))
-                                })
-                                .on_select(|v, _, cx| set("sound_theme", json!(v), cx)),
-                        ),
-                )
+                        // SoundPicker re-checks for custom sounds on open.
+                        .on_open(|_, cx| {
+                            AppState::global(cx).update(cx, |s, cx| s.check_custom_sounds(cx))
+                        })
+                        .on_select(|v, _, cx| set("sound_theme", json!(v), cx)),
+                    // The preview is an accessory after the full-width
+                    // pop-up (the leading slot only ever holds a reset).
+                    Button::new("sound-theme-play")
+                        .ghost()
+                        .xsmall()
+                        .w(design::ICON_BUTTON)
+                        .h(design::ICON_BUTTON)
+                        .icon(crate::ui::kit::icon(crate::ui::brand::PLAY_ICON).size(dp(14.)))
+                        .tooltip(t("settings.debug.soundTheme.preview"))
+                        .on_click(|_, _, cx| {
+                            let backend = AppState::global(cx).read(cx).backend.clone();
+                            cx.background_spawn(async move {
+                                backend.play_test_sound("start");
+                                backend.play_test_sound("stop");
+                                backend.play_test_sound("error");
+                            })
+                            .detach();
+                        }),
+                ))
                 .into_any_element(),
         );
         rows.push(self.sliders[0].clone().into_any_element());
@@ -831,31 +863,29 @@ impl DebugPage {
                 )
                 .description(t("settings.debug.clamshellMicrophone.description"))
                 .error(save_error(st, "clamshell_microphone"))
-                .control(
-                    h_flex()
-                        .gap_1()
-                        .child(reset_button("clamshell-reset", loading, |_, cx| {
+                .control(trailing(
+                    Some(
+                        reset_button("clamshell-reset", loading, |_, cx| {
                             AppState::global(cx)
                                 .update(cx, |s, cx| s.reset_setting("clamshell_microphone", cx))
-                        }))
-                        .child(
-                            Dropdown::new("clamshell-dropdown")
-                                .options(options)
-                                .selected(Some(selected))
-                                .placeholder(if loading {
-                                    t("settings.sound.microphone.loading")
-                                } else {
-                                    t("settings.sound.microphone.placeholder")
-                                })
-                                .loading(loading)
-                                .disabled(loading)
-                                .on_open(|_, cx| {
-                                    AppState::global(cx)
-                                        .update(cx, |s, cx| s.refresh_audio_devices(cx))
-                                })
-                                .on_select(|v, _, cx| set("clamshell_microphone", json!(v), cx)),
-                        ),
-                )
+                        })
+                        .into_any_element(),
+                    ),
+                    Dropdown::new("clamshell-dropdown")
+                        .options(options)
+                        .selected(Some(selected))
+                        .placeholder(if loading {
+                            t("settings.sound.microphone.loading")
+                        } else {
+                            t("settings.sound.microphone.placeholder")
+                        })
+                        .loading(loading)
+                        .disabled(loading)
+                        .on_open(|_, cx| {
+                            AppState::global(cx).update(cx, |s, cx| s.refresh_audio_devices(cx))
+                        })
+                        .on_select(|v, _, cx| set("clamshell_microphone", json!(v), cx)),
+                ))
                 .into_any_element(),
             );
         }
@@ -864,6 +894,7 @@ impl DebugPage {
         }
         // The title bar already says "Debug": no group heading.
         div()
+            .w_full()
             .max_w(design::FORM_MAX_W)
             .child(group(None, rows, cx))
             .into_any_element()

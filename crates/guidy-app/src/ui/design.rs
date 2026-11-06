@@ -11,7 +11,6 @@
 //! the extra surface and line tones are here, keyed off the theme mode.
 //! The redesign spec is `docs/design/REDESIGN.md`.
 
-use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -36,19 +35,33 @@ pub const fn hud(design: f32) -> Pixels {
     px(design * HUD_SCALE)
 }
 
-// Type scale. Body text is the theme's 13 pt (rem).
+// Type scale (macOS points). The UI face is the system font (SF Pro);
+// numbers use its tabular figures ([`mono`]); real monospace only for IDs,
+// paths and code ([`code`]). Body text is the theme's 13 pt (rem).
 /// Body, row titles, controls.
 pub const TEXT_BODY: Pixels = dp(13.);
-/// Descriptions, metadata, captions, section headers.
-pub const TEXT_SECONDARY: Pixels = dp(11.);
-/// Toolbar titles and group headings that need weight (use semibold).
-pub const TEXT_TITLE: Pixels = dp(13.);
-/// Empty states, onboarding headings, About.
+/// Reading text: summaries, transcripts, history entries.
+pub const TEXT_READING: Pixels = dp(14.);
+/// Helper text: setting descriptions, list metadata, explanations.
+pub const TEXT_SECONDARY: Pixels = dp(12.);
+/// Captions: badges, counts, column heads, compact timestamps.
+pub const TEXT_CAPTION: Pixels = dp(11.);
+/// Toolbar page titles (semibold): a step above the group headers.
+pub const TEXT_TITLE: Pixels = dp(17.);
+/// Group headers above panels and note section titles (semibold).
+pub const TEXT_GROUP: Pixels = dp(15.);
+/// Object titles (an open meeting or entry), empty states, alerts, About.
 pub const TEXT_HEADLINE: Pixels = dp(17.);
 /// Onboarding hero only.
 pub const TEXT_DISPLAY: Pixels = dp(26.);
-/// Numbers, sizes, times, ids.
+/// Numbers, sizes, times (tabular figures in the UI font).
 pub const TEXT_MONO: Pixels = dp(12.);
+
+// Line heights for the roles above.
+pub const LINE_BODY: Pixels = dp(18.);
+pub const LINE_READING: Pixels = dp(21.);
+pub const LINE_SECONDARY: Pixels = dp(16.);
+pub const LINE_CAPTION: Pixels = dp(14.);
 
 // HUD type: the same steps at the HUD scale.
 pub const HUD_TEXT_BODY: Pixels = hud(13.);
@@ -59,56 +72,66 @@ pub const HUD_TEXT_LABEL: Pixels = hud(10.5);
 /// set by their views each frame.
 pub const HUD_REM: Pixels = hud(14.);
 
-// Spacing (4 pt grid).
+// Spacing (4 pt grid: 2, 4, 8, 12, 16, 20, 24, 32).
 /// Horizontal page padding.
-pub const PAGE_X: Pixels = dp(20.);
+pub const PAGE_X: Pixels = dp(24.);
 /// Padding above the first group on a page.
-pub const PAGE_TOP: Pixels = dp(16.);
+pub const PAGE_TOP: Pixels = dp(20.);
 /// Padding below the last group on a scrolling page.
-pub const PAGE_BOTTOM: Pixels = dp(24.);
+pub const PAGE_BOTTOM: Pixels = dp(32.);
 /// Between groups on a page.
-pub const GROUP_GAP: Pixels = dp(20.);
+pub const GROUP_GAP: Pixels = dp(24.);
 /// Between a group header and its panel.
-pub const HEADER_GAP: Pixels = dp(6.);
+pub const HEADER_GAP: Pixels = dp(8.);
 /// Horizontal padding of rows and sections inside a panel.
-pub const SECTION_X: Pixels = dp(12.);
+pub const SECTION_X: Pixels = dp(16.);
 /// Vertical padding of sections inside a panel.
-pub const SECTION_Y: Pixels = dp(10.);
+pub const SECTION_Y: Pixels = dp(12.);
 /// Vertical padding of a setting row.
-pub const ROW_Y: Pixels = dp(6.);
-/// A one-line setting row (with a description it grows to ~44).
-pub const ROW_MIN_H: Pixels = dp(32.);
+pub const ROW_Y: Pixels = dp(8.);
+/// A one-line setting row (with a description it grows to ~52).
+pub const ROW_MIN_H: Pixels = dp(36.);
 
 // Widths.
-/// Forms (settings groups) are left-aligned and no wider than this.
-pub const FORM_MAX_W: Pixels = dp(640.);
+/// Forms (settings groups) are centered and no wider than this.
+pub const FORM_MAX_W: Pixels = dp(680.);
+/// Lists and catalogues that would otherwise stretch across a wide window.
+pub const LIST_MAX_W: Pixels = dp(960.);
 /// Long paragraphs.
-pub const PROSE_MAX_W: Pixels = dp(560.);
+pub const PROSE_MAX_W: Pixels = dp(600.);
 pub const SIDEBAR_W: Pixels = dp(200.);
-pub const SIDEBAR_ITEM_H: Pixels = dp(28.);
+pub const SIDEBAR_ITEM_H: Pixels = dp(26.);
 
 // Chrome heights.
 /// The unified title bar / toolbar.
-pub const TOOLBAR_H: Pixels = dp(38.);
-pub const STATUS_BAR_H: Pixels = dp(22.);
+pub const TOOLBAR_H: Pixels = dp(40.);
+pub const STATUS_BAR_H: Pixels = dp(24.);
 
-// Control heights. Stock `Button` sizes: `.small()` ≈ 20, default ≈ 24–26.
+// Control heights. Stock sizes: `.small()` = 19.5, default = 26. Row and
+// toolbar controls (buttons, fields, pop-ups) use the default 26.
 pub const CONTROL_H_SMALL: Pixels = dp(20.);
-pub const CONTROL_H: Pixels = dp(24.);
+pub const CONTROL_H: Pixels = dp(26.);
+/// The fixed trailing column settings-row controls sit in (pop-ups,
+/// shortcut fields), so reset buttons beside them line up.
+pub const CONTROL_COLUMN_W: Pixels = dp(200.);
 /// Onboarding call to action only.
 pub const CONTROL_H_LARGE: Pixels = dp(28.);
+/// A square slot for an icon-only button (hit target).
+pub const ICON_BUTTON: Pixels = dp(24.);
 
 // Shape. `rounded_full` only for dots, radio marks, switch and slider
 // knobs, avatars, HUD capsules.
 /// Progress, scrubber and timeline bars: thin capsules, like
 /// `NSProgressIndicator`.
 pub const RADIUS_TRACK: Pixels = dp(2.);
-/// Chips, key caps, list and sidebar selection.
-pub const RADIUS_CHIP: Pixels = dp(3.);
+/// Chips, badges, key caps, list and sidebar selection.
+pub const RADIUS_CHIP: Pixels = dp(4.);
 /// Buttons, inputs, selects, segmented controls (theme `radius`).
-pub const RADIUS_CONTROL: Pixels = dp(4.);
-/// Groups, panels, banners, popovers, dialogs (theme `radius.lg`).
-pub const RADIUS_PANEL: Pixels = dp(5.);
+pub const RADIUS_CONTROL: Pixels = dp(5.);
+/// Groups, panels, banners, popovers (theme `radius.lg`).
+pub const RADIUS_PANEL: Pixels = dp(8.);
+/// Alerts and sheets.
+pub const RADIUS_DIALOG: Pixels = dp(10.);
 /// The recording floater's expanded panel.
 pub const HUD_RADIUS_PANEL: Pixels = hud(14.);
 /// Blueprint grid pitch (onboarding and About illustrations).
@@ -131,6 +154,9 @@ pub struct Tone {
     /// Selection while its list has keyboard focus.
     pub selection_focused: Hsla,
     pub hairline: Hsla,
+    /// The unfilled part of seek bars, progress tracks and meters: a
+    /// necessary indicator, so ≥ 3:1 on the surfaces it sits on.
+    pub track: Hsla,
     pub grid: Hsla,
     /// Crosshair marks and construction lines.
     pub mark: Hsla,
@@ -159,43 +185,47 @@ fn c(hex: u32) -> Hsla {
 pub fn tone(cx: &App) -> Tone {
     let theme = cx.theme();
     if theme.mode.is_dark() {
+        // Lifted greys (no near-black): sidebar and panels sit a step above
+        // the content so they read by tone, with hairlines as a second cue.
         Tone {
             dark: true,
-            ink: c(0x0d0d0dff),
-            frame: c(0x1b1b1bff),
-            surface: c(0x141414ff),
-            raised: c(0x242424ff),
-            selection: c(0xffffff1a),
-            selection_focused: c(0xffc72c33),
-            hairline: c(0x262626ff),
+            ink: c(0x181818ff),
+            frame: c(0x202020ff),
+            surface: c(0x222222ff),
+            raised: c(0x2e2e2eff),
+            selection: c(0xffffff1c),
+            selection_focused: c(0xffffff2b),
+            hairline: c(0x333333ff),
+            track: c(0x707070ff),
             grid: c(0xffffff0d),
             mark: c(0xffffff2e),
             line_art: c(0x8a8a8aff),
             text: theme.foreground,
             text_muted: theme.muted_foreground,
-            text_faint: c(0x858585ff),
+            text_faint: c(0x9a9a9aff),
             accent: c(0xffc72cff),
             accent_text: c(0xffc72cff),
-            accent_soft: c(0xffc72c1f),
+            accent_soft: c(0xffc72c24),
             rim: c(0xffffff1f),
             sheen: c(0xffffff1a),
         }
     } else {
         Tone {
             dark: false,
-            ink: c(0xfbfbfaff),
-            frame: c(0xf0f0edff),
+            ink: c(0xfafaf9ff),
+            frame: c(0xf1f1efff),
             surface: c(0xffffffff),
-            raised: c(0xebebe7ff),
-            selection: c(0x00000017),
-            selection_focused: c(0xffc72c4d),
+            raised: c(0xececeaff),
+            selection: c(0x00000021),
+            selection_focused: c(0x0000002b),
             hairline: c(0xe3e3dfff),
+            track: c(0x8f8f8aff),
             grid: c(0x0000000c),
             mark: c(0x00000029),
             line_art: c(0x8c8c86ff),
             text: theme.foreground,
             text_muted: theme.muted_foreground,
-            text_faint: c(0x6f6f6aff),
+            text_faint: c(0x63635eff),
             accent: c(0xffc72cff),
             accent_text: c(0x8a6000ff),
             accent_soft: c(0xffc72c33),
@@ -217,6 +247,7 @@ pub fn tone_on_black() -> Tone {
         selection: c(0xffffff1f),
         selection_focused: c(0xffc72c33),
         hairline: c(0xffffff1a),
+        track: c(0xffffff66),
         grid: c(0xffffff0d),
         mark: c(0xffffff2e),
         line_art: c(0x8a8a8aff),
@@ -231,18 +262,33 @@ pub fn tone_on_black() -> Tone {
     }
 }
 
-/// A section header: sentence case, small, semibold and muted, in the UI
-/// font (group titles, column heads, labels over values). Text is shown as
-/// given; write it in sentence case.
+/// A small label over content: sentence case, 12 pt medium, muted (column
+/// heads, labels over values, list date groups). Text is shown as given;
+/// write it in sentence case. Group titles above panels use
+/// [`group_header`].
 pub fn section_header(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .flex_none()
         .min_w_0()
         .truncate()
         .text_size(TEXT_SECONDARY)
-        .line_height(dp(14.))
-        .font_weight(FontWeight::SEMIBOLD)
+        .line_height(LINE_SECONDARY)
+        .font_weight(FontWeight::MEDIUM)
         .text_color(tone(cx).text_muted)
+        .child(text.into())
+}
+
+/// The title above a settings group: 15 pt semibold in the primary text
+/// color, two steps above the 13 pt rows (rubric #5).
+pub fn group_header(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .min_w_0()
+        .truncate()
+        .text_size(TEXT_GROUP)
+        .line_height(dp(20.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(tone(cx).text)
         .child(text.into())
 }
 
@@ -250,20 +296,35 @@ pub fn section_header(text: impl Into<SharedString>, cx: &App) -> Div {
 /// floater (speaker names, recording state).
 pub fn hud_label(text: impl Into<SharedString>, cx: &App) -> Div {
     section_header(text, cx)
+        .font_weight(FontWeight::SEMIBOLD)
         .text_size(HUD_TEXT_LABEL)
         .line_height(hud(14.))
 }
 
-/// Mono value text (numbers, sizes, timings).
+/// Tabular figures, so numbers line up and don't jitter as they change.
+pub fn tabular_figures() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
+
+/// A value (number, size, time) in the UI font with tabular figures.
 pub fn mono(text: impl Into<SharedString>) -> Div {
+    div()
+        .font_features(tabular_figures())
+        .text_size(TEXT_MONO)
+        .child(text.into())
+}
+
+/// Monospaced text for IDs, paths, code and raw error details only.
+pub fn code(text: impl Into<SharedString>) -> Div {
     div()
         .font_family(crate::theme::MONO_FONT)
         .text_size(TEXT_MONO)
         .child(text.into())
 }
 
-/// Small mono tag. `accent` tints it with the signal color. Pass `""` to
-/// fill it with your own children (an icon, shimmering text).
+/// Small neutral badge in the UI font. `accent` gives it the soft accent
+/// tint (use sparingly: a recommendation, a live state). Pass `""` to fill
+/// it with your own children (an icon, shimmering text).
 pub fn chip(text: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
     let t = tone(cx);
     let text: SharedString = text.into();
@@ -271,14 +332,52 @@ pub fn chip(text: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
         .flex_none()
         .items_center()
         .gap(dp(4.))
-        .px(dp(5.))
+        .px(dp(6.))
         .rounded(RADIUS_CHIP)
-        .font_family(crate::theme::MONO_FONT)
-        .text_size(TEXT_SECONDARY)
-        .line_height(dp(16.))
+        .font_features(tabular_figures())
+        .text_size(TEXT_CAPTION)
+        .line_height(dp(18.))
+        .font_weight(FontWeight::MEDIUM)
         .bg(if accent { t.accent_soft } else { t.raised })
-        .text_color(if accent { t.accent_text } else { t.text_muted })
+        .text_color(if accent {
+            if t.dark {
+                t.accent_text
+            } else {
+                c(0x6e4c00ff)
+            }
+        } else {
+            t.text_muted
+        })
         .when(!text.is_empty(), |d| d.child(text))
+}
+
+/// Status semantics shared by every page: one treatment per meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Done, granted, ready.
+    Ok,
+    /// Needs attention (a missing permission, a setting to finish).
+    Attention,
+    /// Live: recording.
+    Live,
+    /// Failed.
+    Error,
+    /// Neutral information.
+    Neutral,
+}
+
+/// The foreground color of a [`Status`] (text and icons, ≥ 4.5:1).
+pub fn status_color(status: Status, cx: &App) -> Hsla {
+    let dark = tone(cx).dark;
+    match (status, dark) {
+        (Status::Ok, false) => c(0x23804aff),
+        (Status::Ok, true) => c(0x6fd08cff),
+        (Status::Attention, false) => c(0xa35400ff),
+        (Status::Attention, true) => c(0xff9e45ff),
+        (Status::Live, false) | (Status::Error, false) => c(0xc4312bff),
+        (Status::Live, true) | (Status::Error, true) => c(0xff6b61ff),
+        (Status::Neutral, _) => tone(cx).text_muted,
+    }
 }
 
 /// A flat bordered surface; sections inside are separated by hairlines
@@ -381,23 +480,19 @@ pub fn sheen(id: impl Into<ElementId>, radius: Pixels, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Shimmering text for in-progress states ("Transcribing…").
+/// The label of an in-progress state ("Transcribing…"): static secondary
+/// text; the spinner or progress beside it carries the activity. (Was a
+/// shimmer; decorative loops are gone, see `docs/ui-review/PLAN.md`.)
 pub fn shimmer_text(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
     cx: &App,
-) -> ShimmerText {
-    let t = tone(cx);
-    ShimmerText::new(text)
+) -> Stateful<Div> {
+    div()
         .id(id)
-        .duration(Duration::from_millis(2200))
-        .spread(0.35)
-        .highlight_color(if t.dark {
-            t.text
-        } else {
-            t.text_faint.opacity(0.2)
-        })
+        .text_color(tone(cx).text_muted)
         .whitespace_nowrap()
+        .child(text.into())
 }
 
 /// A blueprint stage for the top of a [`panel`]: a fine square grid,
@@ -506,8 +601,8 @@ pub fn callout(label: impl Into<SharedString>, accent: bool, cx: &App) -> Div {
         .child(
             div()
                 .flex_none()
-                .font_family(crate::theme::MONO_FONT)
-                .text_size(TEXT_MONO)
+                .font_features(tabular_figures())
+                .text_size(TEXT_SECONDARY)
                 .text_color(if accent { t.accent_text } else { t.text_muted })
                 .child(label.into()),
         )
@@ -588,14 +683,29 @@ pub fn stat_grid(stats: Vec<Stat>, columns: usize, cx: &App) -> Div {
                     .py(SECTION_Y)
                     .when(i + 1 < columns, |d| d.border_r_1().border_color(t.hairline));
                 match stats.next() {
+                    // Label over a large tabular value: the summary numbers
+                    // answer the page's question at a glance. "Accent" stats
+                    // (the headline total) get weight, not color.
                     Some(s) => cell.child(
                         v_flex()
-                            .gap(dp(4.))
-                            .child(section_header(s.label, cx))
+                            .gap(dp(2.))
                             .child(
-                                mono(s.value)
-                                    .line_height(relative(1.4))
-                                    .text_color(if s.accent { t.accent_text } else { t.text }),
+                                section_header(s.label, cx)
+                                    .whitespace_normal()
+                                    .overflow_hidden(),
+                            )
+                            .child(
+                                div()
+                                    .font_features(tabular_figures())
+                                    .text_size(TEXT_HEADLINE)
+                                    .line_height(dp(22.))
+                                    .font_weight(if s.accent {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .text_color(t.text)
+                                    .child(s.value),
                             ),
                     ),
                     None => cell,
@@ -668,11 +778,11 @@ pub fn segment(
         .id(id)
         .tab_index(0)
         .h_full()
-        .px(dp(10.))
+        .px(dp(12.))
         .rounded(RADIUS_CHIP)
-        .border_1()
+        .border_2()
         .border_color(transparent_black())
-        .text_size(dp(12.))
+        .text_size(TEXT_BODY)
         .focus_visible(move |s| s.border_color(ring))
         .when(selected, |d| {
             d.bg(t.surface)
@@ -687,25 +797,27 @@ pub fn segment(
         .child(label.into())
 }
 
-/// A 4 px progress track: accent fill (or none while indeterminate) under a
-/// passing sheen.
+/// A 4 px progress track: accent fill, or an empty track while
+/// indeterminate (the label next to it names the work). Static: no
+/// decorative motion.
 pub fn track(id: impl Into<ElementId>, fraction: Option<f32>, cx: &App) -> Div {
+    let _ = id.into();
     let t = tone(cx);
+    let fill = cx.theme().progress_bar;
     div()
         .relative()
         .w_full()
         .h(dp(4.))
         .rounded(RADIUS_TRACK)
-        .bg(t.raised)
+        .bg(t.track)
         .overflow_hidden()
         .when_some(fraction, |d, f| {
             d.child(
                 div()
                     .h_full()
                     .rounded(RADIUS_TRACK)
-                    .bg(t.accent)
+                    .bg(fill)
                     .w(relative(f.clamp(0.0, 1.0))),
             )
         })
-        .child(sheen(id, dp(2.), cx))
 }

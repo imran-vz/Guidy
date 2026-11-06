@@ -8,13 +8,13 @@ use crate::logic::keyboard::{
 use crate::state::AppState;
 use crate::ui::design::dp;
 use crate::ui::kit::{
-    group, page, reset_button, t, t_args, toggle, Dropdown, DropdownOption, SettingRow, SliderRow,
+    group, page, reset_button, t, t_args, toggle, trailing, Dropdown, DropdownOption, SettingRow,
+    SliderRow,
 };
 use crate::ui::language_selector::LanguageSelector;
 use crate::ui::pages::advanced::save_error;
 use crate::ui::shortcut_input::ShortcutInput;
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::h_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::settings::KeyboardImplementation;
@@ -184,7 +184,8 @@ impl GeneralPage {
         let mut shortcut_rows = vec![
             SettingRow::new("dictation-key", t("settings.general.dictationKey.title"))
                 .description(dictation_description)
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("dictation-key-dropdown")
                         .options(dictation_options)
                         .selected(Some(dictation_key_selection(
@@ -196,7 +197,7 @@ impl GeneralPage {
                             transcribe_shortcut
                                 .update(cx, |input, cx| input.select_dictation_key(v, window, cx))
                         }),
-                )
+                ))
                 .into_any_element(),
             self.transcribe_shortcut.clone().into_any_element(),
         ];
@@ -209,13 +210,14 @@ impl GeneralPage {
                 )
                 .description(t("settings.general.shortcutActivation.description"))
                 .error(save_error(st, "shortcut_activation"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("shortcut-activation-dropdown")
                         .options(activation_options)
                         .selected(activation)
                         .menu_width(dp(320.))
                         .on_select(|v, _, cx| Self::set("shortcut_activation", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             );
         }
@@ -272,33 +274,29 @@ impl GeneralPage {
             vec![
                 SettingRow::new("microphone", t("settings.sound.microphone.title"))
                     .error(save_error(st, "selected_microphone"))
-                    .control(
-                        h_flex()
-                            .gap_1()
-                            .child(reset_button("microphone-reset", loading, |_, cx| {
+                    .control(trailing(
+                        Some(
+                            reset_button("microphone-reset", loading, |_, cx| {
                                 AppState::global(cx)
                                     .update(cx, |s, cx| s.reset_setting("selected_microphone", cx))
-                            }))
-                            .child(
-                                Dropdown::new("microphone-dropdown")
-                                    .options(mic_options)
-                                    .selected(Some(selected_mic))
-                                    .placeholder(if loading || no_mics {
-                                        t("settings.sound.microphone.loading")
-                                    } else {
-                                        t("settings.sound.microphone.placeholder")
-                                    })
-                                    .loading(loading)
-                                    .disabled(loading || no_mics)
-                                    .on_open(|_, cx| {
-                                        AppState::global(cx)
-                                            .update(cx, |s, cx| s.refresh_audio_devices(cx))
-                                    })
-                                    .on_select(|v, _, cx| {
-                                        Self::set("selected_microphone", json!(v), cx)
-                                    }),
-                            ),
-                    )
+                            })
+                            .into_any_element(),
+                        ),
+                        Dropdown::new("microphone-dropdown")
+                            .options(mic_options)
+                            .selected(Some(selected_mic))
+                            .placeholder(if loading || no_mics {
+                                t("settings.sound.microphone.loading")
+                            } else {
+                                t("settings.sound.microphone.placeholder")
+                            })
+                            .loading(loading)
+                            .disabled(loading || no_mics)
+                            .on_open(|_, cx| {
+                                AppState::global(cx).update(cx, |s, cx| s.refresh_audio_devices(cx))
+                            })
+                            .on_select(|v, _, cx| Self::set("selected_microphone", json!(v), cx)),
+                    ))
                     .into_any_element(),
             ];
 
@@ -325,7 +323,8 @@ impl GeneralPage {
                 SettingRow::new("channel", t("settings.sound.channel.title"))
                     .description(t("settings.sound.channel.description"))
                     .error(save_error(st, "selected_channel"))
-                    .control(
+                    .control(trailing(
+                        None,
                         Dropdown::new("channel-dropdown")
                             .options(options)
                             .selected(Some(current))
@@ -338,7 +337,7 @@ impl GeneralPage {
                                 };
                                 Self::set("selected_channel", channel, cx)
                             }),
-                    )
+                    ))
                     .into_any_element(),
             );
         }
@@ -386,38 +385,29 @@ impl GeneralPage {
             SettingRow::new("output-device", t("settings.sound.outputDevice.title"))
                 .disabled(feedback_off)
                 .error(save_error(st, "selected_output_device"))
-                .control(
-                    h_flex()
-                        .gap_1()
-                        .child(reset_button(
-                            "output-device-reset",
-                            feedback_off || loading,
-                            |_, cx| {
-                                AppState::global(cx).update(cx, |s, cx| {
-                                    s.reset_setting("selected_output_device", cx)
-                                })
-                            },
-                        ))
-                        .child(
-                            Dropdown::new("output-device-dropdown")
-                                .options(out_options)
-                                .selected(Some(selected_out))
-                                .placeholder(if loading || no_outs {
-                                    t("settings.sound.outputDevice.loading")
-                                } else {
-                                    t("settings.sound.outputDevice.placeholder")
-                                })
-                                .loading(loading)
-                                .disabled(feedback_off || loading || no_outs)
-                                .on_open(|_, cx| {
-                                    AppState::global(cx)
-                                        .update(cx, |s, cx| s.refresh_output_devices(cx))
-                                })
-                                .on_select(|v, _, cx| {
-                                    Self::set("selected_output_device", json!(v), cx)
-                                }),
-                        ),
-                )
+                .control(trailing(
+                    Some(
+                        reset_button("output-device-reset", feedback_off || loading, |_, cx| {
+                            AppState::global(cx)
+                                .update(cx, |s, cx| s.reset_setting("selected_output_device", cx))
+                        })
+                        .into_any_element(),
+                    ),
+                    Dropdown::new("output-device-dropdown")
+                        .options(out_options)
+                        .selected(Some(selected_out))
+                        .placeholder(if loading || no_outs {
+                            t("settings.sound.outputDevice.loading")
+                        } else {
+                            t("settings.sound.outputDevice.placeholder")
+                        })
+                        .loading(loading)
+                        .disabled(feedback_off || loading || no_outs)
+                        .on_open(|_, cx| {
+                            AppState::global(cx).update(cx, |s, cx| s.refresh_output_devices(cx))
+                        })
+                        .on_select(|v, _, cx| Self::set("selected_output_device", json!(v), cx)),
+                ))
                 .into_any_element(),
         );
         sound_rows.push(self.volume.clone().into_any_element());
@@ -425,7 +415,16 @@ impl GeneralPage {
         // -- Appearance (moved here from About) -------------------------------
         let language_options = guidy_i18n::supported_languages()
             .into_iter()
-            .map(|l| DropdownOption::new(l.code, format!("{} ({})", l.native_name, l.name)))
+            .map(|l| {
+                // The native name once when it is the English name too
+                // ("English", not "English (English)").
+                let label = if l.native_name == l.name {
+                    l.native_name.to_string()
+                } else {
+                    format!("{} ({})", l.native_name, l.name)
+                };
+                DropdownOption::new(l.code, label)
+            })
             .collect();
         let theme_value = serde_json::to_value(s.theme)
             .ok()
@@ -433,7 +432,8 @@ impl GeneralPage {
         let appearance_rows = vec![
             SettingRow::new("theme", t("theme.title"))
                 .error(save_error(st, "theme"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("theme-dropdown")
                         .options(
                             ["system", "light", "dark"]
@@ -443,17 +443,18 @@ impl GeneralPage {
                         )
                         .selected(theme_value)
                         .on_select(|v, _, cx| Self::set("theme", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             SettingRow::new("app-language", t("appLanguage.title"))
                 .error(save_error(st, "app_language"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("app-language-dropdown")
                         .options(language_options)
                         .selected(Some(guidy_i18n::language()))
                         .menu_width(dp(260.))
                         .on_select(|v, _, cx| Self::set("app_language", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
         ];
 

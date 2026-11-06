@@ -49,14 +49,14 @@
     "whatGuidyKeeps": "What Guidy keeps on disk",
     "shared": "Shared",
     "manageModels": "Manage",
-    "openFolder": "Open Folder",
-    "openFolderFor": "Open Folder: {{category}}",
-    "loadFailed": "Couldn't measure storage: {{error}}",
-    "openFailed": "Couldn't open the folder: {{error}}",
-    "partial": "Couldn't read {{count}} item(s), starting with {{path}}. Totals are lower bounds.",
+    "openFolder": "Open folder",
+    "openFolderFor": "Open folder: {{category}}",
+    "loadFailed": "Couldn’t measure storage: {{error}}",
+    "openFailed": "Couldn’t open the folder: {{error}}",
+    "partial": "Couldn’t read {{count}} item(s), starting with {{path}}. Totals are lower bounds.",
     "sizeCaption": "Sizes are what the system reports for each file. Linked copies count once where the system can identify them.",
     "freeCaption": "Free excludes purgeable space, so it can read lower than your file manager shows.",
-    "excludedCaption": "Not counted: secrets in your system's credential store, exports you saved elsewhere, the launch-at-login item and update downloads in progress.",
+    "excludedCaption": "Not counted: secrets in your system’s credential store, exports you saved elsewhere, the launch-at-login item and update downloads in progress.",
     "category": {
       "models": "Models",
       "sharedModels": "Shared models",
@@ -70,7 +70,8 @@
       "backups": "Backups",
       "appFiles": "App files",
       "other": "Other"
-    }
+    },
+    "unavailable": "Storage can’t be measured"
   },
   "usage": {
     "local": "On this Mac",
@@ -92,31 +93,32 @@
       "transcription": "Transcription",
       "llm": "Built-in LLM"
     },
-    "estimateNote": "~ marks amounts estimated from published per-token prices; providers that report their own cost (such as OpenRouter) are exact. Check your provider's dashboard for billing.",
-    "reportedNote": "Amounts are as reported by the providers. Check your provider's dashboard for billing.",
+    "estimateNote": "~ marks amounts estimated from published per-token prices; providers that report their own cost (such as OpenRouter) are exact. Check your provider’s dashboard for billing.",
+    "reportedNote": "Amounts are as reported by the providers. Check your provider’s dashboard for billing.",
     "clearTitle": "Clear usage history?",
     "clearConfirm": "The recorded calls, costs and local model runs will be deleted. Usage shown on meeting summaries stays.",
     "col": {
       "model": "Model",
       "provider": "Provider",
       "calls": "Calls",
-      "avg": "Avg",
-      "max": "Max",
+      "avg": "Avg / call",
+      "max": "Max / call",
       "tokens": "Tokens in / out",
       "cost": "Cost",
       "kind": "Kind",
       "runs": "Runs",
-      "work": "Work",
+      "work": "Audio / tokens",
       "speed": "Speed",
-      "load": "Load"
+      "load": "Model load"
     },
     "clearButton": "Clear Usage",
     "clearEllipsis": "Clear Usage…",
-    "clearFailed": "Couldn't clear usage: {{error}}",
-    "loadFailed": "Couldn't load usage: {{error}}",
+    "clearFailed": "Couldn’t clear usage: {{error}}",
+    "loadFailed": "Couldn’t load usage: {{error}}",
     "cloudByModel": "Cloud by model",
     "byFeatureLine": "By feature: {{list}}",
-    "localSummary": "{{words}} words transcribed and {{tokens}} LLM tokens on this Mac, about {{cost}} at ${{price}}/min in the cloud."
+    "localSummary": "{{words}} words transcribed and {{tokens}} LLM tokens on this Mac, about {{cost}} at ${{price}}/min in the cloud.",
+    "unavailable": "Usage isn’t available"
   },
   "onboarding": {
     "recommended": "Recommended",
@@ -125,10 +127,12 @@
       "title": "Your models need an update",
       "description": "Guidy now uses a newer kind of model. Download the new version to keep transcribing. Old versions will be removed.",
       "replaces": "Replaces {{name}}",
-      "oldFormat": "Old format",
+      "oldFormat": "old format",
       "failed": "Download failed",
-      "retry": "Try again",
-      "download": "Download models ({{size}})",
+      "retry": "Try Again",
+      "download": "Download Models ({{size}})",
+      "download_one": "Download Model ({{size}})",
+      "download_other": "Download Models ({{size}})",
       "continue": "Continue",
       "timeRemaining": "{{time}} remaining",
       "later": "Later"
@@ -141,7 +145,7 @@
     "models": {
       "small": {
         "name": "Whisper Small",
-        "description": "Fast and fairly accurate."
+        "description": "Fast and fairly accurate"
       },
       "medium": {
         "name": "Whisper Medium",
@@ -149,29 +153,29 @@
       },
       "turbo": {
         "name": "Whisper Turbo",
-        "description": "Balanced accuracy and speed."
+        "description": "Balanced accuracy and speed"
       },
       "large": {
         "name": "Whisper Large",
-        "description": "Good accuracy, but slow."
+        "description": "Good accuracy, but slow"
       },
       "breeze-asr": {
         "name": "Breeze ASR",
-        "description": "Optimized for Taiwanese Mandarin. Code-switching support."
+        "description": "Optimized for Taiwanese Mandarin · Code-switching support"
       }
     },
     "errors": {
       "selectModel": "Failed to select model"
     },
     "permissions": {
-      "title": "Allow Access",
+      "title": "Allow access",
       "description": "Guidy only listens while you dictate or record.",
       "microphone": {
-        "title": "Microphone Access",
+        "title": "Microphone access",
         "description": "Required to hear your voice."
       },
       "accessibility": {
-        "title": "Accessibility Access",
+        "title": "Accessibility access",
         "description": "Lets Guidy paste the text where your cursor is.",
         "optional": "Optional. Without it, Guidy copies the text and you paste it with ⌘V."
       },
@@ -183,7 +187,7 @@
         "requestFailed": "Failed to request permission. Please try again."
       },
       "checking": "Checking…",
-      "continueWithout": "Continue Without",
+      "continueWithout": "Continue Without Accessibility",
       "meetingsLater": "Meeting notes ask for screen and system audio recording and calendar access when you record your first meeting."
     },
     "continue": "Continue",
@@ -197,14 +201,14 @@
         "needs": "1 speech model"
       },
       "meetings": {
-        "title": "Meeting Notes",
+        "title": "Meeting notes",
         "description": "Record calls and get a transcript with speakers and a summary. Needs a transcription model, a speaker model, and a summaries model (or Apple Intelligence or a cloud key).",
         "needs": "3 models"
       },
       "postProcessing": "AI cleanup of dictated text (post-processing) can be turned on later in Settings. You can change everything here later."
     },
     "picker": {
-      "title": "Choose a Speech Model",
+      "title": "Choose a speech model",
       "description": "Every model runs on your Mac. Larger models are more accurate but slower.",
       "search": "Search models",
       "allLanguages": "All languages",
@@ -214,7 +218,7 @@
       "count": "{{count}} models"
     },
     "setup": {
-      "title": "Choose Your Setup",
+      "title": "Choose your setup",
       "description": "Models run on your Mac; summaries can also use a cloud provider.",
       "dictation": "Dictation",
       "meetings": "Meeting notes",
@@ -239,15 +243,15 @@
         "title": "Summaries",
         "apple": "Apple Intelligence",
         "appleDescription": "Built into macOS, runs on this Mac. Nothing to download.",
-        "local": "On This Mac",
+        "local": "On this Mac",
         "localDescription": "{{model}}, runs offline. {{size}} download.",
         "tooBig": "Needs about {{need}} GB of memory; this Mac has {{have}} GB. Summaries may be slow.",
-        "cloud": "Cloud",
-        "cloudDescription": "Your API key. Meeting transcripts are sent to the provider to summarize.",
+        "cloud": "Cloud provider",
+        "cloudDescription": "Uses your API key. Meeting transcripts are sent to the provider to summarize.",
         "localReady": "{{model}}, runs offline. Already downloaded."
       },
       "cloud": {
-        "saveFailed": "Couldn't save the key.",
+        "saveFailed": "Couldn’t save the key.",
         "works": "The key works.",
         "hint": "Paste your {{provider}} API key. It is kept in your Keychain.",
         "savedHint": "A {{provider}} key is saved. Paste a new one to replace it."
@@ -260,11 +264,18 @@
       "later": "Set Up Later",
       "finish": "Finish"
     },
+    "starting": "Starting Guidy…",
     "startupError": {
-      "title": "Guidy Couldn't Start",
+      "title": "Guidy couldn’t start",
       "description": "Something went wrong while starting. The logs have the details.",
       "showLogs": "Show Logs",
-      "quit": "Quit"
+      "quit": "Quit",
+      "details": "Details",
+      "history": {
+        "title": "Guidy can’t open its history",
+        "description": "Its history database couldn’t be opened, so Guidy can’t start. The details below name the file.",
+        "permission": "Guidy doesn’t have permission to open its history database, so it can’t start. Check the access rights of the file below."
+      }
     },
     "noModel": {
       "title": "Dictation needs a speech model",
@@ -279,12 +290,12 @@
     "active": "Active",
     "switching": "Switching...",
     "noModelsAvailable": "No models available",
-    "modelReady": "Model Ready",
+    "modelReady": "Model ready",
     "loading": "Preparing {{modelName}}…",
     "loadingGeneric": "Loading...",
-    "modelError": "Model Error",
-    "modelUnloaded": "Model Unloaded",
-    "noModelDownloadRequired": "No Model - Download Required",
+    "modelError": "Model error",
+    "modelUnloaded": "Model unloaded",
+    "noModelDownloadRequired": "No model - download required",
     "deleteModel": "Delete {{modelName}}",
     "downloadSpeed": "{{speed}} MB/s",
     "cancelDownload": "Cancel download",
@@ -294,30 +305,31 @@
       "translate": "Translate"
     },
     "download": "Download",
-    "use": "Use"
+    "use": "Use",
+    "quantization": "{{label}} quantization"
   },
   "settings": {
     "general": {
       "shortcutsGroup": "Shortcuts",
       "shortcut": {
-        "title": "Guidy Shortcuts",
-        "description": "Configure keyboard shortcuts to trigger speech-to-text recording",
-        "loading": "Loading shortcuts...",
+        "title": "Guidy shortcuts",
+        "description": "Configure keyboard shortcuts to trigger speech-to-text recording.",
+        "loading": "Loading shortcuts…",
         "none": "No shortcuts configured",
         "notFound": "Shortcut not found",
-        "pressKeys": "Press keys...",
+        "pressKeys": "Press keys…",
         "bindings": {
           "transcribe": {
-            "name": "Transcribe Shortcut",
+            "name": "Transcribe shortcut",
             "description": "The keyboard shortcut to record and transcribe your voice."
           },
           "cancel": {
-            "name": "Cancel Shortcut",
+            "name": "Cancel shortcut",
             "description": "The keyboard shortcut to cancel the current recording."
           },
           "transcribe_with_post_process": {
-            "name": "Post-Processing Hotkey",
-            "description": "Optional: A dedicated hotkey that always applies AI post-processing to your transcription."
+            "name": "Post-processing shortcut",
+            "description": "Optional: a dedicated shortcut that always applies AI post-processing to your transcription."
           }
         },
         "errors": {
@@ -329,15 +341,15 @@
       },
       "language": {
         "title": "Language",
-        "searchPlaceholder": "Search languages...",
+        "searchPlaceholder": "Search languages…",
         "noResults": "No languages found",
         "auto": "Auto",
         "descriptionShort": "The language you speak. Auto detects it; picking one can improve accuracy."
       },
       "dictationKey": {
-        "title": "Dictation Key",
+        "title": "Dictation key",
         "description": "Hold to speak, release to stop. Double-press to keep recording, then double-press again to stop.",
-        "fnHint": "Hold to speak, release to stop. Double-press to keep recording, then double-press again to stop. In System Settings, set \"Press 🌐 key to\" to Do Nothing and avoid the double-Fn Dictation shortcut.",
+        "fnHint": "Hold to speak, release to stop. Double-press to keep recording, then double-press again to stop. In System Settings, set “Press 🌐 key to” to Do Nothing and avoid the double-Fn Dictation shortcut.",
         "chordDescription": "Choose one key to hold or double-press, or keep a custom shortcut.",
         "systemHint": "One-key dictation needs the Native Key Listener. Turn on Experimental Features in Advanced settings, then choose it under Keyboard Implementation.",
         "options": {
@@ -350,7 +362,7 @@
         }
       },
       "shortcutActivation": {
-        "title": "Shortcut Behavior",
+        "title": "Shortcut behavior",
         "description": "Choose how the transcribe shortcut starts and stops recording.",
         "options": {
           "holdOrToggle": "Auto",
@@ -363,23 +375,23 @@
           "toggle": "Tap the shortcut to start recording, tap again to stop"
         }
       },
-      "soundGroup": "Microphone & Sound",
+      "soundGroup": "Microphone & sound",
       "appearanceGroup": "Appearance",
       "recognitionGroup": "Recognition"
     },
     "models": {
       "searchPlaceholder": "Search models by name…",
       "deleteConfirm": "Are you sure you want to delete {{modelName}}? You will need to download it again to use it.",
-      "deleteTitle": "Delete Model",
+      "deleteTitle": "Delete model",
       "retiredNotice": {
         "title": "Old models no longer work with Guidy",
-        "description": "They're taking up {{size}} on your computer.",
-        "delete": "Delete models",
+        "description": "They’re taking up {{size}} on your computer.",
+        "delete": "Delete Models",
         "deleted": "Deleted old models",
-        "deleteFailed": "Some old models couldn't be deleted. Check the log for details."
+        "deleteFailed": "Some old models couldn’t be deleted. Check the log for details."
       },
       "filters": {
-        "allLanguages": "All Languages",
+        "allLanguages": "All languages",
         "streaming": "Filter models that support live streaming transcription",
         "translation": "Filter models that support translation to English"
       },
@@ -391,23 +403,23 @@
     "sound": {
       "microphone": {
         "title": "Microphone",
-        "placeholder": "Select microphone...",
-        "loading": "Loading..."
+        "placeholder": "Select microphone…",
+        "loading": "Loading…"
       },
       "channel": {
-        "title": "Input Channel",
+        "title": "Input channel",
         "description": "Select which input channel to record from. Use this if your audio interface has multiple inputs.",
         "average": "Average all channels",
         "channel": "Channel {{n}}"
       },
       "audioFeedback": {
-        "label": "Audio Feedback",
-        "description": "Play sound when recording starts and stops"
+        "label": "Audio feedback",
+        "description": "Play a sound when recording starts and stops."
       },
       "outputDevice": {
-        "title": "Output Device",
-        "placeholder": "Select output device...",
-        "loading": "Loading..."
+        "title": "Output device",
+        "placeholder": "Select output device…",
+        "loading": "Loading…"
       },
       "volume": {
         "title": "Volume"
@@ -423,16 +435,16 @@
         "overlay": "Overlay"
       },
       "experimentalToggle": {
-        "label": "Experimental Features",
+        "label": "Experimental features",
         "description": "Enable experimental features that are still in development."
       },
       "lazyStreamClose": {
-        "label": "Keep Mic Open Between Transcriptions",
+        "label": "Keep mic open between transcriptions",
         "description": "Keeps the microphone stream open for 30 seconds after recording stops, reducing latency for back-to-back transcriptions. May degrade Bluetooth audio quality while active."
       },
       "acceleration": {
         "transcribe": {
-          "title": "Hardware Acceleration",
+          "title": "Hardware acceleration",
           "description": "Choose the hardware used for transcription. Auto uses the GPU when available and falls back to the CPU."
         },
         "gpuDevice": {
@@ -440,32 +452,37 @@
         }
       },
       "startHidden": {
-        "label": "Start Hidden",
+        "label": "Start hidden",
         "description": "Launch to system tray without opening the window.",
         "descriptionMac": "Launch to the menu bar without opening the window."
       },
       "autostart": {
-        "label": "Launch on Startup",
+        "label": "Launch on startup",
         "description": "Automatically start Guidy when you log in to your computer."
       },
       "showTrayIcon": {
-        "label": "Show Tray Icon",
+        "label": "Show menu bar icon",
         "description": "Display the Guidy icon in the system tray.",
         "descriptionMac": "Display the Guidy icon in the menu bar."
       },
       "overlay": {
         "style": {
-          "description": "Choose the recording overlay: None hides it, Minimal shows a compact pill, Live shows transcription in real time as you speak (streaming-capable models only — look for the Streaming badge in the model picker). On Linux 'None' is recommended.",
-          "descriptionMac": "Choose the recording overlay: None hides it, Minimal shows a compact pill, Live shows transcription in real time as you speak (streaming-capable models only — look for the Streaming badge in the model picker).",
+          "description": "The overlay shown while you record. On Linux, None is recommended.",
+          "descriptionMac": "The overlay shown while you record.",
           "options": {
             "none": "None",
             "minimal": "Minimal",
             "live": "Live"
           },
+          "descriptions": {
+            "none": "No overlay.",
+            "minimal": "A compact pill.",
+            "live": "The transcription as you speak. Needs a model with the Streaming badge."
+          },
           "label": "Style"
         },
         "position": {
-          "title": "Overlay Position",
+          "title": "Overlay position",
           "description": "Where the overlay appears on screen during recording and transcription.",
           "options": {
             "bottom": "Bottom",
@@ -474,35 +491,45 @@
         }
       },
       "pasteMethod": {
-        "title": "Paste Method",
-        "description": "Choose how text is inserted. Direct: simulates typing via system input. None: skips paste, only updates history/clipboard.",
+        "title": "Paste method",
+        "description": "How dictated text gets into the app you’re typing in.",
         "options": {
           "clipboard": "Clipboard ({{modifier}}+V)",
+          "clipboardMac": "Clipboard (⌘V)",
           "clipboardCtrlShiftV": "Clipboard (Ctrl+Shift+V)",
           "clipboardShiftInsert": "Clipboard (Shift+Insert)",
           "direct": "Direct",
           "none": "None",
-          "externalScript": "External Script"
+          "externalScript": "External script"
+        },
+        "optionDescriptions": {
+          "clipboard": "Pastes through the clipboard.",
+          "direct": "Simulates typing via system input.",
+          "none": "Skips pasting; only updates history and the clipboard."
         },
         "externalScriptPlaceholder": "/path/to/your/script.sh"
       },
       "typingTool": {
-        "title": "Typing Tool",
+        "title": "Typing tool",
         "description": "Choose which Linux typing tool to use for Direct paste method. Auto will automatically detect and use the best available tool for your system.",
         "options": {
-          "auto": "Auto (Recommended)"
+          "auto": "Auto (recommended)"
         }
       },
       "clipboardHandling": {
-        "title": "Clipboard Handling",
-        "description": "Don't Modify Clipboard preserves your current clipboard contents after transcription. Copy to Clipboard leaves the transcription result in your clipboard after pasting.",
+        "title": "Clipboard handling",
+        "description": "What your clipboard holds after a transcription is pasted.",
         "options": {
-          "dontModify": "Don't Modify Clipboard",
-          "copyToClipboard": "Copy to Clipboard"
+          "dontModify": "Don’t modify clipboard",
+          "copyToClipboard": "Copy to clipboard"
+        },
+        "optionDescriptions": {
+          "dontModify": "Keeps your current clipboard contents.",
+          "copyToClipboard": "Leaves the transcription in your clipboard."
         }
       },
       "autoSubmit": {
-        "title": "Auto Submit",
+        "title": "Auto submit",
         "description": "Automatically send the selected key combination after text insertion. Cmd+Enter applies on macOS, while Windows/Linux use Super+Enter.",
         "descriptionMac": "Automatically send the selected key combination after text insertion.",
         "options": {
@@ -518,8 +545,8 @@
         "description": "Automatically translate speech from other languages to English during transcription."
       },
       "modelUnload": {
-        "title": "Unload Model",
-        "description": "Automatically free GPU/CPU memory when the model hasn't been used for the specified time",
+        "title": "Unload model",
+        "description": "Automatically free GPU/CPU memory when the model hasn’t been used for the specified time.",
         "options": {
           "never": "Never",
           "immediately": "Immediately",
@@ -532,24 +559,24 @@
         }
       },
       "customWords": {
-        "title": "Custom Words",
+        "title": "Custom words",
         "description": "Help supported models recognize names and specialized terms. Fuzzy correction is currently limited to words using A–Z and numbers.",
         "placeholder": "Add a word",
         "add": "Add",
         "remove": "Remove {{word}}",
-        "duplicate": "\"{{word}}\" already exists",
+        "duplicate": "“{{word}}” already exists",
         "tooLong": "Words can be at most {{max}} characters long."
       },
       "voiceActivityDetection": {
-        "title": "Voice Activity Detection",
-        "description": "Filter silence from recordings. Streaming-capable models use a longer VAD tail; disabling VAD records raw audio."
+        "title": "Voice activity detection",
+        "description": "Filters silence from recordings. Turn it off to keep the raw audio."
       },
       "longFormChunking": {
-        "title": "Long Audio Chunking",
+        "title": "Long audio chunking",
         "description": "Splits long recordings at pauses before transcribing, which typically improves transcription performance."
       },
       "vadBackend": {
-        "title": "Voice Activity Backend",
+        "title": "Voice activity backend",
         "description": "Choose the detector used to filter silence. Earshot is experimental; switch back to Silero if speech is clipped or noise is retained.",
         "options": {
           "silero": "Silero",
@@ -557,14 +584,14 @@
         }
       },
       "fillerWordRemoval": {
-        "title": "Remove Filler Words",
+        "title": "Remove filler words",
         "description": "Removes common hesitation words from transcriptions. Turn off to keep them."
       },
       "chineseScript": {
-        "title": "Chinese Script",
+        "title": "Chinese script",
         "description": "Writes Mandarin and Cantonese transcriptions in Simplified or Traditional characters. Other languages are left unchanged.",
         "options": {
-          "asTranscribed": "As Transcribed",
+          "asTranscribed": "As transcribed",
           "simplified": "Simplified",
           "traditional": "Traditional"
         }
@@ -578,7 +605,7 @@
     },
     "postProcessing": {
       "hotkey": {
-        "title": "Hotkey"
+        "title": "Shortcut"
       },
       "api": {
         "title": "API",
@@ -588,12 +615,12 @@
         "builtin": {
           "label": "Built-in model (on this Mac)",
           "description": "Runs a local model on this Mac. Nothing leaves your computer.",
-          "manage": "Manage built-in models"
+          "manage": "Manage Built-in Models"
         },
         "apiFormat": {
-          "title": "API Format",
+          "title": "API format",
           "options": {
-            "openai": "OpenAI Compatible (Chat Completions)",
+            "openai": "OpenAI compatible (Chat Completions)",
             "anthropic": "Anthropic Messages"
           }
         },
@@ -606,10 +633,10 @@
           "placeholderAnthropic": "https://api.anthropic.com/v1"
         },
         "apiKey": {
-          "title": "API Key",
+          "title": "API key",
           "placeholder": "sk-...",
-          "saveFailed": "Couldn't save the API key",
-          "saveFailedInline": "Couldn't save the key: {{error}}"
+          "saveFailed": "Couldn’t save the API key",
+          "saveFailedInline": "Couldn’t save the key: {{error}}"
         },
         "model": {
           "title": "Model",
@@ -623,23 +650,23 @@
         "testConnection": "Test Connection"
       },
       "prompts": {
-        "createNew": "Create New Prompt",
-        "promptLabel": "Prompt Label",
+        "createNew": "Create new prompt",
+        "promptLabel": "Prompt label",
         "promptLabelPlaceholder": "Enter prompt name",
-        "promptInstructions": "Prompt Instructions",
+        "promptInstructions": "Prompt instructions",
         "promptInstructionsPlaceholder": "Write the instructions to run after transcription. Example: Improve grammar and clarity for the following text: ${output}",
         "promptTip": "Tip: Use <code>${output}</code> to insert the transcribed text in your prompt.",
-        "deletePrompt": "Delete Prompt",
+        "deletePrompt": "Delete prompt",
         "discardTitle": "Discard changes to “{{name}}”?",
         "discardTitleUntitled": "Discard the new prompt?",
         "discardDescription": "Your unsaved edits will be lost.",
         "discard": "Discard",
         "incomplete": "Give the prompt a name and instructions.",
-        "saveFailed": "Couldn't save the prompt: {{error}}",
+        "saveFailed": "Couldn’t save the prompt: {{error}}",
         "deleteTitle": "Delete “{{name}}”?",
         "deleteDescription": "The prompt is removed. Text that was already processed with it stays as it is.",
-        "deleteFailed": "Couldn't delete the prompt: {{error}}",
-        "newPrompt": "New Prompt",
+        "deleteFailed": "Couldn’t delete the prompt: {{error}}",
+        "newPrompt": "New prompt",
         "createFirstShort": "No prompts yet. Click + to create one.",
         "selectToEditShort": "Select a prompt to edit it.",
         "revert": "Revert",
@@ -651,26 +678,27 @@
     "history": {
       "copyToClipboard": "Copy transcription to clipboard",
       "copyError": "Failed to copy transcription to clipboard.",
-      "save": "Save transcription",
-      "unsave": "Remove from saved",
-      "delete": "Delete entry",
+      "save": "Save",
+      "unsave": "Remove from Saved",
+      "delete": "Delete",
       "retranscribe": "Re-transcribe",
-      "transcribing": "Transcribing...",
-      "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
+      "transcribing": "Transcribing…",
+      "transcriptionFailed": "Transcription failed. Choose Re-transcribe from the More menu to try again.",
       "searchPlaceholder": "Search",
       "search": "Search transcriptions",
-      "savedOnly": "Show Saved Only",
-      "showInFinder": "Show Recordings in Finder",
+      "savedOnly": "Show saved only",
+      "savedFilter": "Saved",
+      "showInFinder": "Show recordings in Finder",
       "noMatches": "No transcriptions match.",
-      "loadError": "Couldn't load history: {{error}}",
+      "loadError": "Couldn’t load history: {{error}}",
       "deleted": "Transcription deleted.",
       "undo": "Undo",
       "noText": "No text",
       "noSelection": "Select a transcription.",
       "transcript": "Transcription",
-      "saveError": "Couldn't change Saved: {{error}}",
-      "deleteFailed": "Couldn't delete: {{error}}",
-      "retranscribeFailed": "Couldn't re-transcribe: {{error}}",
+      "saveError": "Couldn’t change Saved: {{error}}",
+      "deleteFailed": "Couldn’t delete: {{error}}",
+      "retranscribeFailed": "Couldn’t re-transcribe: {{error}}",
       "emptyHint": "No transcriptions yet. Press {{shortcut}} to start dictating.",
       "shortcutSettings": "Shortcut Settings",
       "audioMissing": "Recording not found",
@@ -680,11 +708,11 @@
     },
     "debug": {
       "logDirectory": {
-        "title": "Log Directory"
+        "title": "Log directory"
       },
       "logLevel": {
-        "title": "Log Level",
-        "description": "Set the verbosity of logging",
+        "title": "Log level",
+        "description": "Set the verbosity of logging.",
         "options": {
           "error": "Error",
           "warn": "Warning",
@@ -694,7 +722,7 @@
         }
       },
       "liveLogs": {
-        "title": "Live Logs",
+        "title": "Live logs",
         "live": "Live",
         "paused": "Paused",
         "pause": "Pause",
@@ -706,46 +734,46 @@
         "copyAll": "Copy All"
       },
       "updateChecks": {
-        "label": "Check for Updates",
-        "description": "Automatically check for new versions of Guidy",
-        "lockedDescription": "Disabled by system configuration (GUIDY_DISABLE_UPDATER)"
+        "label": "Check for updates",
+        "description": "Automatically check for new versions of Guidy.",
+        "lockedDescription": "Disabled by system configuration (GUIDY_DISABLE_UPDATER)."
       },
       "whatsNewPreview": {
-        "title": "Preview What's New",
-        "description": "Open the latest bundled release note without marking it as seen",
+        "title": "Preview what’s new",
+        "description": "Open the latest bundled release note without marking it as seen.",
         "button": "Preview",
         "noNotes": "No bundled release notes found"
       },
       "onboardingPreview": {
-        "title": "Preview Onboarding",
-        "description": "Preview onboarding screens without changing permissions, models, or completion state",
+        "title": "Preview onboarding",
+        "description": "Preview onboarding screens without changing permissions, models, or completion state.",
         "permissionsButton": "Permissions",
         "modelsButton": "Model Selection",
         "exitButton": "Exit Preview"
       },
       "soundTheme": {
-        "label": "Sound Theme",
-        "description": "Choose a sound theme for recording start and stop feedback",
+        "label": "Sound theme",
+        "description": "Choose a sound theme for recording start and stop feedback.",
         "options": {
           "mechanical": "Mechanical",
           "marimba": "Marimba",
           "pop": "Pop",
           "custom": "Custom"
         },
-        "preview": "Play Sample"
+        "preview": "Play sample"
       },
       "wordCorrectionThreshold": {
-        "title": "Word Correction Threshold",
-        "description": "Sensitivity for custom word corrections"
+        "title": "Word correction threshold",
+        "description": "Sensitivity for custom word corrections."
       },
       "historyLimit": {
-        "title": "History Limit",
-        "description": "Maximum number of history entries to keep",
+        "title": "History limit",
+        "description": "Maximum number of history entries to keep.",
         "entries": "entries"
       },
       "recordingRetention": {
-        "title": "Auto-Delete Recordings",
-        "description": "Automatically delete old recordings to save space",
+        "title": "Auto-delete recordings",
+        "description": "Automatically delete old recordings to save space.",
         "never": "Never",
         "preserveLimit": "Keep latest {{count}}",
         "days3": "After 3 days",
@@ -754,58 +782,58 @@
         "placeholder": "Select retention period..."
       },
       "alwaysOnMicrophone": {
-        "label": "Always-On Microphone",
-        "description": "Keep microphone active for faster response"
+        "label": "Always-on microphone",
+        "description": "Keep microphone active for faster response."
       },
       "clamshellMicrophone": {
-        "title": "Clamshell Microphone",
-        "description": "Microphone to use when laptop lid is closed"
+        "title": "Clamshell microphone",
+        "description": "The microphone to use while the laptop lid is closed."
       },
       "postProcessingToggle": {
-        "label": "Post Processing",
-        "description": "Enable AI-powered text refinement after transcription"
+        "label": "Post processing",
+        "description": "Enable AI-powered text refinement after transcription."
       },
       "muteWhileRecording": {
-        "label": "Mute While Recording",
-        "description": "Mute system audio during recording"
+        "label": "Mute while recording",
+        "description": "Mute system audio while you record."
       },
       "appendTrailingSpace": {
-        "label": "Append Trailing Space",
-        "description": "Add a space after pasted transcription"
+        "label": "Append trailing space",
+        "description": "Add a space after pasted transcription."
       },
       "keyboardImplementation": {
-        "title": "Keyboard Implementation",
+        "title": "Keyboard implementation",
         "description": "Choose the keyboard shortcut backend.",
         "bindingsReset": "Keyboard shortcuts were incompatible and reset to defaults",
         "options": {
-          "system": "System Global Shortcut",
-          "nativeKeys": "Native Key Listener"
+          "system": "System global shortcut",
+          "nativeKeys": "Native key listener"
         }
       },
       "pasteDelay": {
-        "title": "Paste Delay (Before)",
-        "description": "Delay (in milliseconds) after copying text, before sending the paste keystroke. Increase if nothing gets pasted."
+        "title": "Paste delay (before)",
+        "description": "Wait between copying the text and pasting it. Raise it if nothing gets pasted."
       },
       "pasteDelayAfter": {
-        "title": "Paste Delay (After)",
-        "description": "Delay (in milliseconds) after the paste keystroke, before restoring your previous clipboard. Increase if your old clipboard content is being pasted instead of the transcription."
+        "title": "Paste delay (after)",
+        "description": "Wait between pasting and restoring your clipboard. Raise it if your old clipboard gets pasted instead."
       },
       "holdThreshold": {
-        "title": "Hold Threshold",
-        "description": "Auto mode only: how long (in milliseconds) the shortcut must be held before it counts as a hold instead of a tap. Lower if short holds keep leaving recording on; raise if deliberate taps get treated as holds."
+        "title": "Hold threshold",
+        "description": "Auto mode: how long a press must last to count as a hold, not a tap. Lower it if short holds leave recording on; raise it if taps count as holds."
       },
       "reliablePaste": {
-        "title": "Reliable Paste (Beta)",
-        "description": "Restore the clipboard only after the target app actually reads the transcription, instead of after a fixed delay. Intended to fix old clipboard content being pasted under system load. Requires a clipboard paste method; macOS and Windows only."
+        "title": "Reliable paste (beta)",
+        "description": "Restore the clipboard once the app has read the transcription, not after a fixed delay, so old clipboard text isn’t pasted under load. Needs a clipboard paste method."
       },
       "recordingBuffer": {
-        "title": "Extra Recording Buffer",
-        "description": "Extra time (in milliseconds) to keep recording after you release the key, to capture trailing audio. 0 = no extra buffer."
+        "title": "Extra recording buffer",
+        "description": "Keep recording this long after you release the key, to catch trailing audio. 0 turns it off."
       },
       "keyboardDiagnostic": {
-        "title": "Keyboard Diagnostic",
+        "title": "Keyboard diagnostic",
         "description": "Checks whether keyboard events reach Guidy. Only event counts are recorded — never which keys you press.",
-        "run": "Run 10s diagnostic",
+        "run": "Run 10 s Diagnostic",
         "running": "Listening… press your shortcut a few times (e.g. Option+Space)",
         "secureInputLabel": "Secure Input",
         "enabled": "enabled",
@@ -821,6 +849,10 @@
         "verdictOk": "Key events are reaching Guidy normally.",
         "verdictNoEvents": "No events captured — did you press any keys during the test?",
         "failed": "Diagnostic failed: {{error}}"
+      },
+      "tabs": {
+        "settings": "Settings",
+        "logs": "Logs"
       }
     },
     "about": {
@@ -829,18 +861,18 @@
         "description": "Imran"
       },
       "whatsNewUpdates": {
-        "label": "Show What's New",
-        "description": "Show release notes after Guidy updates"
+        "label": "Show what’s new",
+        "description": "Show release notes after Guidy updates."
       },
       "appDataDirectory": {
-        "title": "App Data Directory"
+        "title": "App data directory"
       },
       "acknowledgments": {
         "title": "Acknowledgments",
         "ggml": {
           "title": "ggml",
-          "description": "High-performance tensor library for on-device machine learning inference",
-          "details": "Guidy's local speech-to-text is built on transcribe.cpp and ggml. Thanks to the amazing work by Georgi Gerganov and contributors."
+          "description": "High-performance tensor library for on-device machine learning inference.",
+          "details": "Guidy’s local speech-to-text is built on transcribe.cpp and ggml. Thanks to the amazing work by Georgi Gerganov and contributors."
         }
       },
       "versionLabel": "Version {{version}}",
@@ -853,18 +885,18 @@
     "checkingUpdates": "Checking for updates...",
     "updateAvailableShort": "Update available",
     "upToDate": "Up to date",
-    "updateCheckingDisabled": "Update Checking Disabled",
+    "updateCheckingDisabled": "Update checking disabled",
     "downloading": "Downloading... {{progress}}%",
     "installing": "Installing...",
     "preparing": "Preparing...",
     "checkForUpdates": "Check for updates",
     "portableUpdateTitle": "Manual update required",
     "portableUpdateMessage": "Portable installs cannot be updated automatically. Download the installer for your system below, run it, and install to the same folder — your Data/ folder (settings, models, recordings) is kept in place.",
-    "portableUpdateButton": "Download installer",
+    "portableUpdateButton": "Download Installer",
     "portableUpdateBrowseMessage": "Portable installs cannot be updated automatically. Download the latest version for your system from GitHub Releases and install it to the same folder — your Data/ folder (settings, models, recordings) is kept in place.",
     "portableUpdateBrowseButton": "Open GitHub Releases",
     "updateCheckFailed": "Update check failed",
-    "updateInstallFailed": "Update failed — Try Again"
+    "updateInstallFailed": "Update failed — try again"
   },
   "whatsNew": {
     "title": "New in Guidy v{{version}}"
@@ -887,27 +919,27 @@
   },
   "errors": {
     "loadDirectory": "Error loading directory: {{error}}",
-    "micPermissionDeniedTitle": "Microphone Access Denied",
+    "micPermissionDeniedTitle": "Microphone access denied",
     "micPermissionDenied": {
       "generic": "Microphone access was denied by the operating system. Please grant microphone permission in your system settings.",
       "windows": "Enable microphone access in Settings → Privacy & security → Microphone (including desktop app access).",
       "macos": "Grant microphone access in System Settings → Privacy & Security → Microphone.",
       "linux": "Grant microphone access in your system's sound or privacy settings."
     },
-    "noInputDeviceTitle": "No Microphone Found",
+    "noInputDeviceTitle": "No microphone found",
     "noInputDevice": "No audio input device was detected. Please connect a microphone or headset and try again.",
     "recordingFailed": "Failed to start recording: {{error}}",
     "modelLoadFailed": "Failed to load model: {{model}}",
     "modelLoadFailedUnknown": "unknown model",
-    "pasteFailedTitle": "Failed to Paste Text",
+    "pasteFailedTitle": "Failed to paste text",
     "pasteFailed": "Text could not be pasted into the active application.",
-    "transcriptionFailedTitle": "Transcription Failed"
+    "transcriptionFailedTitle": "Transcription failed"
   },
   "appLanguage": {
-    "title": "Application Language"
+    "title": "Application language"
   },
   "theme": {
-    "title": "Application Theme",
+    "title": "Application theme",
     "options": {
       "system": "System",
       "light": "Light",
@@ -926,7 +958,7 @@
     "blockedNoCulprit_other": "macOS is temporarily blocking {{count}} shortcuts",
     "recorderBlockedWithCulprit": "{{name}} may be blocking shortcut changes",
     "recorderBlockedNoCulprit": "macOS is temporarily blocking shortcut changes",
-    "learnMore": "How to fix",
+    "learnMore": "How to Fix",
     "recorderBlocked": "Can't record shortcuts right now — macOS Secure Input is blocking key events. Resolve the Secure Input warning first.",
     "dismiss": "Dismiss"
   },
@@ -936,11 +968,11 @@
       "count_one": "{{count}} line selected",
       "count_other": "{{count}} lines selected",
       "keys": "Shift-click: range · ⌘-click: add or remove · Esc: clear",
-      "setSpeaker": "Set speaker",
+      "setSpeaker": "Set Speaker",
       "clear": "Clear"
     },
     "speakersRedo": {
-      "action": "Redo speakers",
+      "action": "Redo Speakers",
       "standard": "Standard speaker model",
       "download": "{{size}} download, once",
       "error": "Couldn't redo the speakers",
@@ -954,10 +986,10 @@
       "yesterday": "Yesterday"
     },
     "copy": {
-      "transcript": "Copy transcript",
+      "transcript": "Copy Transcript",
       "copied": "Copied",
-      "notes": "Copy notes",
-      "summaryOnly": "Copy summary only",
+      "notes": "Copy Notes",
+      "summaryOnly": "Copy Summary Only",
       "more": "More ways to copy"
     },
     "redo": {
@@ -975,6 +1007,13 @@
       "confirmCloud": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}, for about {{cost}}. The transcript and speakers are replaced.",
       "confirmCloudUnpriced": "This meeting's audio is uploaded to {{provider}} and transcribed with {{model}}. The transcript and speakers are replaced.",
       "menu": "Redo"
+    },
+    "more": {
+      "redo": "Redo Transcript",
+      "redoWith": "Redo Transcript With",
+      "regenerateSummary": "Regenerate Summary",
+      "trim": "Trim Recording…",
+      "export": "Export"
     },
     "trim": {
       "tooltip": "Trim the recording at the playhead, if it kept going after the call ended",
@@ -999,7 +1038,7 @@
       "pause": "Pause",
       "resume": "Resume",
       "stop": "Stop",
-      "openNotes": "Open notes",
+      "openNotes": "Open Notes",
       "expand": "Show the live transcript",
       "collapse": "Collapse",
       "liveHint": "As heard so far. The full transcript with speaker names is made when the meeting ends.",
@@ -1027,7 +1066,7 @@
       "more": "More choices",
       "always": "Always",
       "never": "Never",
-      "start": "Take notes",
+      "start": "Take Notes",
       "starting": "Starting…",
       "startFailed": "Couldn't start. Try again?",
       "dismiss": "Not now"
@@ -1041,7 +1080,7 @@
         "description": "The meeting notes encryption key is missing from the Keychain or doesn't match your existing meeting notes, so they can't be opened. If you can restore the key (for example from a Keychain backup), do that and choose Retry. Otherwise, reset to start fresh: your old meeting notes are moved aside, not deleted."
       },
       "reset": {
-        "action": "Reset meeting notes data",
+        "action": "Reset Meeting Notes Data",
         "title": "Reset meeting notes data?",
         "confirm": "Your current meeting notes and recordings will be moved to a \"meetings-unreadable\" folder in Guidy's data folder (nothing is deleted) and a new encryption key will be created. Guidy won't be able to show the old notes."
       }
@@ -1061,7 +1100,8 @@
     "tabs": {
       "meetings": "Meetings",
       "people": "People",
-      "settings": "Settings"
+      "settings": "Settings",
+      "meetingSettings": "Meeting settings"
     },
     "recorder": {
       "start": "Start meeting notes",
@@ -1071,8 +1111,8 @@
       "disabled": "Turn on meeting notes in Settings to record.",
       "record": "Record",
       "stopShort": "Stop",
-      "pause": "Pause Recording",
-      "resume": "Resume Recording",
+      "pause": "Pause recording",
+      "resume": "Resume recording",
       "paused": "Paused",
       "show": "Show “{{title}}”",
       "turnOn": "Turn On Meeting Notes",
@@ -1090,7 +1130,7 @@
       "delete": "Delete",
       "process": "Process",
       "retry": "Retry",
-      "cancelProcessing": "Cancel processing",
+      "cancelProcessing": "Cancel Processing",
       "cancel": "Cancel",
       "titlePlaceholder": "Meeting title",
       "deleteTitle": "Delete meeting?",
@@ -1192,8 +1232,9 @@
     },
     "people": {
       "title": "People",
+      "known": "Known people",
       "empty": "No people yet. Name a speaker in a meeting to add one.",
-      "loadError": "Couldn't load people",
+      "loadError": "Couldn’t load people",
       "voiceprints_one": "{{count}} voiceprint",
       "voiceprints_other": "{{count}} voiceprints",
       "merge": "Merge",
@@ -1206,18 +1247,18 @@
         "play": "Play",
         "pause": "Pause",
         "noText": "(no words)",
-        "noLine": "The line it came from isn't there any more",
+        "noLine": "The line it came from isn’t there any more",
         "audioDeleted": "audio deleted",
-        "loadError": "Couldn't load the voiceprints"
+        "loadError": "Couldn’t load the voiceprints"
       },
       "mergeTitle": "Merge people?",
       "mergeConfirm": "{{from}} will be merged into {{into}}, then removed.",
-      "mergeError": "Couldn't merge people",
+      "mergeError": "Couldn’t merge people",
       "delete": "Delete",
       "deleteTitle": "Delete person?",
-      "deleteConfirm": "{{name}} and their {{count}} stored voiceprints will be deleted. Guidy won't recognize their voice in future meetings.",
-      "deleteError": "Couldn't delete the person",
-      "renameError": "Couldn't update the person",
+      "deleteConfirm": "{{name}} and their {{count}} stored voiceprints will be deleted. Guidy won’t recognize their voice in future meetings.",
+      "deleteError": "Couldn’t delete the person",
+      "renameError": "Couldn’t update the person",
       "namePlaceholder": "Name",
       "emailPlaceholder": "Email (optional)",
       "cancel": "Cancel",
@@ -1235,12 +1276,12 @@
         "passage": "When I join a meeting, I usually start by checking the agenda and the notes from last time. Then we go through what changed since we last spoke, what is blocked, and who is picking up the next steps. If something needs a decision, we try to make it before the end of the call, so nobody has to wait for another meeting. Afterwards I share a short summary with everyone who was there.",
         "done": "Done",
         "saving": "Saving your voice...",
-        "loadError": "Couldn't load your voice",
-        "recordError": "Couldn't start recording",
-        "saveError": "Couldn't save your voice",
+        "loadError": "Couldn’t load your voice",
+        "recordError": "Couldn’t start recording",
+        "saveError": "Couldn’t save your voice",
         "deleteTitle": "Delete your voice?",
         "deleteConfirm": "Your recorded voice will be deleted. Guidy will label all microphone speech as you again.",
-        "deleteError": "Couldn't delete your voice"
+        "deleteError": "Couldn’t delete your voice"
       },
       "you": "You",
       "searchPlaceholder": "Search",
@@ -1255,8 +1296,8 @@
     },
     "settings": {
       "enabled": {
-        "title": "Meeting notes",
-        "description": "Record meetings with your microphone and your computer's audio. Turning this on asks for calendar, system audio and notification access."
+        "title": "Record meetings",
+        "description": "Uses your microphone and your Mac’s audio. Turning it on asks for calendar, system audio and notification access."
       },
       "permissions": {
         "title": "Permissions",
@@ -1266,7 +1307,7 @@
         "notifications": "Notifications",
         "granted": "Granted",
         "denied": "Not granted",
-        "error": "Couldn't request permissions",
+        "error": "Couldn’t request permissions",
         "requestAgain": "Request Again",
         "openSettings": "Open System Settings",
         "required": "Required",
@@ -1285,10 +1326,10 @@
         "noLabel": "No label",
         "add": "Add",
         "remove": "Remove this address",
-        "invalid": "That isn't a valid email address.",
+        "invalid": "That isn’t a valid email address.",
         "duplicate": "That address is already in the list."
       },
-      "recording": "Recording",
+      "recording": "While recording",
       "meetingModel": {
         "title": "Transcription model",
         "usesDictation": "Meetings use your dictation model: {{name}}.",
@@ -1297,20 +1338,20 @@
         "choice": "Model for meetings",
         "choiceDescription": "Parakeet gives word-level timings, which help when people talk over each other.",
         "notDownloaded": "{{name}} (not downloaded)",
-        "chosenMissing": "{{name}} isn't downloaded yet. Meetings use your dictation model until it is.",
-        "chosenUnknown": "{{name}} isn't installed. Choose another model, or turn off \"Use a different model\"."
+        "chosenMissing": "{{name}} isn’t downloaded yet. Meetings use your dictation model until it is.",
+        "chosenUnknown": "{{name}} isn’t installed. Choose another model, or turn off “Use a different model”."
       },
       "separation": {
         "title": "Telling voices apart",
-        "description": "The speaker model that decides who spoke each line. Larger models tell similar voices apart better, but take more space and make processing slower. TitaNet is used once it's downloaded, unless you choose another. People you've named are always recognized with the standard model, so switching keeps their voiceprints.",
+        "description": "Decides who spoke each line. Larger models tell similar voices apart better but are bigger and slower. TitaNet is used once downloaded unless you choose another; people you’ve named keep their voiceprints.",
         "downloaded": "Downloaded.",
         "notDownloaded": "Downloads when chosen.",
         "downloading": "Downloading...",
         "delete": "Delete this model ({{size}})",
-        "downloadError": "Couldn't download the speaker model",
-        "deleteError": "Couldn't delete the speaker model",
+        "downloadError": "Couldn’t download the speaker model",
+        "deleteError": "Couldn’t delete the speaker model",
         "about": {
-          "resnet34": "Standard. Small and fast, and it also recognizes people you've named.",
+          "resnet34": "Standard. Small and fast, and it also recognizes people you’ve named.",
           "cam_plus_plus": "About as small, and the fastest.",
           "resnet152": "Better with similar voices; processing takes about 3 times as long.",
           "titanet_large": "From NVIDIA, also trained on phone calls, which can suit call audio. About as fast as the standard one.",
@@ -1319,7 +1360,7 @@
       },
       "speakerModel": {
         "title": "Speaker recognition",
-        "description": "Tells voices apart and recognizes people you've named before. Uses {{name}} ({{trainedOn}}), {{size}}. Downloaded only when you click Download.",
+        "description": "Tells voices apart and recognizes people you’ve named before. Uses {{name}} ({{trainedOn}}), {{size}}. Downloaded only when you click Download.",
         "ready": "Downloaded",
         "download": "Download ({{size}})",
         "failed": "Download failed: {{error}}"
@@ -1343,7 +1384,7 @@
         "description": "Let AI apps on this Mac, like Claude or Cursor, read your meeting list, summaries and transcripts. Local only and read-only.",
         "url": "Server URL (Streamable HTTP)",
         "stdio": "Command (for apps that only run stdio servers)",
-        "failed": "Couldn't start the MCP server on port {{port}}. Another app may be using it."
+        "failed": "Couldn’t start the MCP server on port {{port}}. Another app may be using it."
       },
       "calendarNotifications": {
         "title": "Calendar notifications",
@@ -1363,11 +1404,11 @@
       },
       "speakerNamesFromApps": {
         "title": "Speaker names from meeting apps",
-        "description": "Experimental. While recording, read who's speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac. Applies from the next recording."
+        "description": "Experimental. While recording, read who’s speaking in Zoom, Teams and Meet in Chrome to suggest names. Needs Accessibility. Stays on this Mac. Applies from the next recording."
       },
       "nameBrowserCalls": {
         "title": "Name browser calls",
-        "description": "Read the address of your browser's front tab to name a call. macOS asks once per browser. Addresses stay in memory on this Mac. Without it, browser calls are still offered, unnamed, after 20 seconds.",
+        "description": "Read the address of your browser’s front tab to name a call. macOS asks once per browser. Addresses stay in memory on this Mac. Without it, browser calls are still offered, unnamed, after 20 seconds.",
         "turnOn": "Name browser calls",
         "turnOff": "Stop naming"
       },
@@ -1379,46 +1420,46 @@
       },
       "deepgram": {
         "title": "Deepgram API key",
-        "description": "Lets you redo a meeting's speakers in the cloud with Deepgram, which tells voices apart well on calls. Stored in the Keychain.",
-        "placeholder": "Paste a key and press Enter",
+        "description": "Lets you redo a meeting’s speakers in the cloud with Deepgram, which tells voices apart well on calls. Stored in the Keychain.",
+        "placeholder": "Paste your Deepgram key and press Enter",
         "saved": "Saved",
         "remove": "Remove",
-        "error": "Couldn't save the Deepgram key"
+        "error": "Couldn’t save the Deepgram key"
       },
       "liveTranscription": {
         "title": "Live transcription",
         "description": "Transcribe the meeting on this Mac as it happens. The full transcript is still made after the meeting.",
         "model": "Model for live transcription",
-        "modelDescription": "A small, fast model keeps up best while you're in a call. The transcript made after the meeting uses the meetings model.",
+        "modelDescription": "A small, fast model keeps up best during a call; the full transcript still uses the meetings model.",
         "sameModel": "Same as meetings"
       },
       "reminderInterval": {
         "title": "Reminder interval",
-        "description": "Minutes between \"still recording\" reminders after a meeting should have ended.",
+        "description": "Minutes between “still recording” reminders after a meeting’s scheduled end.",
         "minutes": "{{count}} min"
       },
       "advanced": {
         "matchThreshold": {
           "title": "Automatic match threshold",
-          "description": "Voice similarity at or above which a speaker is named automatically. Below it, the match asks \"Confirm?\"."
+          "description": "A speaker is named automatically at or above this; below, it asks you to confirm."
         },
         "suggestThreshold": {
           "title": "Suggestion threshold",
-          "description": "Voice similarity below which a known person is not suggested at all."
+          "description": "Below this voice similarity, no known person is suggested."
         }
       },
       "calendarTitles": {
         "title": "Keep calendar names as titles",
-        "description": "When titles are generated, meetings from a calendar event keep the event's name and only get a description."
+        "description": "When titles are generated, meetings from a calendar event keep the event’s name and only get a description."
       },
       "categories": {
         "setup": "Setup",
-        "general": "General",
+        "general": "Meeting notes",
         "you": "You",
         "recording": "Recording",
         "transcription": "Transcription",
         "speakers": "Speakers",
-        "ai": "AI Summaries",
+        "ai": "AI summaries",
         "linear": "Linear",
         "integrations": "Integrations"
       },
@@ -1466,9 +1507,9 @@
       "short": "Search"
     },
     "titles": {
-      "generate": "Generate title and description",
+      "generate": "Generate Title and Description",
       "needsSummary": "Generate the summary first, then the title",
-      "generateAll": "Generate titles ({{count}})",
+      "generateAll": "Generate Titles ({{count}})",
       "generateAllHint": "Title and describe every summarized meeting that still needs it, with the summary model. Calendar names and titles you typed are kept.",
       "starting": "Getting ready...",
       "progress": "Titling {{done}} of {{total}}",
@@ -1491,29 +1532,29 @@
       "title": "Speaker turn detection",
       "body": "Download the models that split lines where the voice changes ({{size}}). Until then, lines split at pauses.",
       "download": "Download",
-      "notNow": "Not now"
+      "notNow": "Not Now"
     },
     "groups": {
       "today": "Today",
       "yesterday": "Yesterday",
-      "previous7": "Previous 7 Days",
-      "previous30": "Previous 30 Days",
+      "previous7": "Previous 7 days",
+      "previous30": "Previous 30 days",
       "earlier": "Earlier"
     },
     "player": {
       "play": "Play (Space)",
       "pause": "Pause (Space)",
-      "back": "Back 15 Seconds",
-      "forward": "Forward 15 Seconds",
+      "back": "Back 15 seconds",
+      "forward": "Forward 15 seconds",
       "unavailable": "Audio unavailable"
     },
     "find": {
       "placeholder": "Find in transcript",
-      "tooltip": "Find in Transcript (⌘F)",
+      "tooltip": "Find in transcript (⌘F)",
       "none": "No matches",
       "count": "{{current}} of {{total}}",
-      "previous": "Previous Match",
-      "next": "Next Match",
+      "previous": "Previous match",
+      "next": "Next match",
       "done": "Done"
     },
     "export": {
@@ -1524,11 +1565,11 @@
       "error": "Couldn't export the meeting"
     },
     "empty": {
-      "title": "No Meetings Yet",
-      "body": "Record a meeting to get a transcript, notes and action items.",
-      "offTitle": "Meeting Notes Are Off",
+      "title": "No meetings yet",
+      "body": "Click Record to get a transcript, notes and action items.",
+      "offTitle": "Meeting notes are off",
       "offBody": "Turn them on to record meetings and get notes.",
-      "select": "No Meeting Selected"
+      "select": "No meeting selected"
     }
   },
   "meetingsAi": {
@@ -1541,11 +1582,11 @@
     "summary": {
       "heading": "Summary",
       "actionItems": "Action items",
-      "generate": "Generate summary",
+      "generate": "Generate Summary",
       "regenerate": "Regenerate",
       "generateWith": "Generate with {{model}}",
       "otherModels": "Other models",
-      "otherModel": "Other model…",
+      "otherModel": "Other Model…",
       "generating": "Summarizing the meeting...",
       "generatingLocal": "Summarizing the meeting. This can take a few minutes with a local model.",
       "progress": "Summarizing ({{done}} of {{total}} steps)",
@@ -1586,11 +1627,11 @@
     },
     "tickets": {
       "heading": "Linear tickets",
-      "draft": "Draft tickets",
-      "approveSelected": "Approve selected ({{count}})",
-      "createApproved": "Create approved ({{count}})",
+      "draft": "Draft Tickets",
+      "approveSelected": "Approve Selected ({{count}})",
+      "createApproved": "Create Approved ({{count}})",
       "noKey": "Connect Linear to turn action items into tickets.",
-      "openSettings": "Open settings",
+      "openSettings": "Open Settings",
       "noItems": "No action items to turn into tickets.",
       "notDrafted": "Draft tickets from the action items to review them here.",
       "approve": "Approve",
@@ -1633,14 +1674,14 @@
       "testConnection": "Test",
       "apple": "Apple Intelligence",
       "appleDescription": "On-device model on Apple silicon Macs with Apple Intelligence turned on.",
-      "appleUnavailable": "Apple Intelligence isn't available on this Mac",
+      "appleUnavailable": "Apple Intelligence isn’t available on this Mac",
       "activeHeading": "Summaries are made by",
       "tabCloud": "Cloud provider",
       "tabLocal": "On this Mac",
       "onThisMac": "This Mac · offline",
       "apiKey": "API key",
       "apiKeyDescription": "Saved in your Keychain and shared with Post Process.",
-      "getKey": "Get an API key from {{provider}}",
+      "getKey": "Get API Key",
       "searchModels": "Search models",
       "goodOnly": "Good for summaries",
       "goodForSummaries": "summaries",
@@ -1649,6 +1690,7 @@
       "noModels": "No models match.",
       "context": "{{n}} ctx",
       "free": "free",
+      "priceBasis": "USD per 1M tokens · input / output",
       "modelCount": "{{shown}}/{{total}} models",
       "registryBundled": "Model details from models.dev (bundled with the app)",
       "registryUpdated": "Model details from models.dev, updated {{when}}",
@@ -1657,10 +1699,11 @@
       "hoursAgo": "{{n}} h ago",
       "daysAgo": "{{n}} d ago",
       "needsKey": "Add your {{provider}} API key",
+      "needsKeyFrom": "{{provider}} key needed",
       "needsModel": "Choose a {{provider}} model",
       "needsLocalModel": "Download a model to summarize on this Mac",
-      "localDescription": "Runs offline on this Mac. Choose a downloaded model.",
-      "appleUnavailableHint": "Not available on this Mac. Turn it on in System Settings > Apple Intelligence & Siri.",
+      "localDescription": "Choose a downloaded model.",
+      "appleUnavailableHint": "Turn it on in System Settings > Apple Intelligence & Siri.",
       "unavailable": "unavailable",
       "yourModels": "Your models",
       "yourModelsEmpty": "No cloud models yet. Pick a provider below, add its API key and check the models you want.",
@@ -1688,6 +1731,7 @@
       "getKey": "Create a key at linear.app/settings/api",
       "removeKey": "Remove Key",
       "test": "Test Connection",
+      "connection": "Connection",
       "testDescription": "Check the key with Linear.",
       "connectedAs": "Connected as {{name}}"
     },
@@ -1738,8 +1782,8 @@
     "requiredBy": "Required by {{features}}",
     "diskUsage": "Using {{used}} · {{free}} free",
     "diskUsageNoFree": "Using {{used}}",
-    "downloadNotStarted": "Couldn't start the download",
-    "deleteRequiredWarning": "{{features}} uses {{modelName}} and won't work until you download it again. Delete it anyway?",
+    "downloadNotStarted": "Couldn’t start the download",
+    "deleteRequiredWarning": "{{features}} uses {{modelName}} and won’t work until you download it again. Delete it anyway?",
     "sections": {
       "speech": "Speech recognition",
       "ai": "Summaries & AI",
@@ -1777,8 +1821,8 @@
       "needsMemory": "Best with {{gb}} GB of memory"
     },
     "speakers": {
-      "standard": "Tells who spoke and recognizes people you've named. Meetings need it.",
-      "separation": "Optional. Tells similar voices apart. TitaNet is used once it's downloaded; choose another in Meetings settings.",
+      "standard": "Tells who spoke and recognizes people you’ve named. Meetings need it.",
+      "separation": "Optional. Tells similar voices apart. TitaNet is used once it’s downloaded; choose another in Meetings settings.",
       "segmentation": "Optional. Finds where the speaker changes mid-sentence."
     },
     "state": {
@@ -1792,13 +1836,14 @@
     "actions": {
       "download": "Download",
       "downloadSize": "Download {{size}}",
-      "cancel": "Cancel Download",
+      "cancel": "Cancel download",
       "retry": "Retry",
       "resume": "Resume",
       "useForDictation": "Use for Dictation",
       "useForMeetings": "Use for Meetings",
       "addKey": "Add API Key…",
       "edit": "Edit…",
+      "delete": "Delete…",
       "more": "More"
     },
     "ready": {

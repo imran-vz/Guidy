@@ -1,4 +1,4 @@
-//! The status bar (22 pt): model status + switcher on the
+//! The status bar (24 pt, 12 pt text): model status + switcher on the
 //! left, download activity and update status on the right (the version is
 //! on the About page).
 
@@ -219,9 +219,7 @@ impl StatusBar {
                 }))
                 .footer(
                     DialogFooter::new()
-                        .child(
-                            DialogClose::new().trigger(|b| b.secondary().label(t("common.close"))),
-                        )
+                        .child(DialogClose::new().trigger(|b| b.outline().label(t("common.close"))))
                         .when(!url.is_empty(), |f| {
                             f.child(DialogAction::new().child(
                                 Button::new("portable-open").primary().label(if direct {
@@ -255,38 +253,44 @@ impl StatusBar {
 
     fn render_model_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let st = self.state.read(cx);
-        let theme = cx.theme();
         let m = &st.models;
         let display_id = displayed_model_id(st);
         let status = st.selector_status;
         let text = selector_text(st);
         let tone = design::tone(cx);
-        // Ready is green, busy states pulse in the accent, missing or
-        // failed is red, unloaded is neutral.
-        let (dot, pulse) = match status {
-            SelectorStatus::Ready => (theme.success, false),
+        // Status semantics: ready is Ok (green), working is neutral (no
+        // pulse), missing or failed needs attention / is an error.
+        let dot = match status {
+            SelectorStatus::Ready => design::status_color(design::Status::Ok, cx),
             SelectorStatus::Loading | SelectorStatus::Downloading | SelectorStatus::Verifying => {
-                (tone.accent, true)
+                tone.text_faint
             }
-            SelectorStatus::Error | SelectorStatus::None => (theme.danger, false),
-            SelectorStatus::Unloaded | SelectorStatus::Unknown => (tone.text_faint, false),
+            SelectorStatus::None => design::status_color(design::Status::Attention, cx),
+            SelectorStatus::Error => design::status_color(design::Status::Error, cx),
+            SelectorStatus::Unloaded | SelectorStatus::Unknown => tone.text_faint,
         };
-        let dot_el = div()
-            .id("model-status-dot")
-            .flex_none()
-            .size(dp(7.))
-            .rounded_full()
-            .bg(dot);
-        let dot_el: AnyElement = if pulse {
-            dot_el
-                .with_animation(
-                    "status-pulse",
-                    Animation::new(Duration::from_millis(1200)).repeat(),
-                    |el, delta| el.opacity(0.4 + 0.6 * (delta * std::f32::consts::PI).sin()),
-                )
+        let busy = matches!(
+            status,
+            SelectorStatus::Loading | SelectorStatus::Downloading | SelectorStatus::Verifying
+        );
+        let dot_el: AnyElement = if busy {
+            // Working: a small spinner in the dot's place.
+            div()
+                .id("model-status-dot")
+                .flex_none()
+                .child(crate::ui::kit::spinner(
+                    "status-spinner",
+                    icon("loader-circle").xsmall().text_color(tone.text_muted),
+                ))
                 .into_any_element()
         } else {
-            dot_el.into_any_element()
+            div()
+                .id("model-status-dot")
+                .flex_none()
+                .size(dp(7.))
+                .rounded_full()
+                .bg(dot)
+                .into_any_element()
         };
 
         let downloaded: Vec<_> = m.downloaded_models().into_iter().cloned().collect();
@@ -298,10 +302,10 @@ impl StatusBar {
                 .ghost()
                 .xsmall()
                 .child(
-                    h_flex().gap(dp(6.)).child(dot_el).child(
+                    h_flex().gap(dp(8.)).child(dot_el).child(
                         div()
                             .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text)
+                            .text_color(tone.text_muted)
                             .child(text),
                     ),
                 )
@@ -366,16 +370,20 @@ impl StatusBar {
             .trigger(
                 Button::new("download-activity").ghost().xsmall().child(
                     h_flex()
-                        .gap(dp(6.))
+                        .gap(dp(8.))
                         .when(summary.active > 0, |d| {
-                            d.child(div().w(dp(40.)).child(design::track(
+                            d.child(div().w(dp(48.)).child(design::track(
                                 "download-activity-track",
                                 summary.percent().map(|p| p as f32 / 100.0),
                                 cx,
                             )))
                         })
                         .when(summary.active == 0, |d| {
-                            d.child(icon("circle-alert").xsmall().text_color(cx.theme().danger))
+                            d.child(
+                                icon("circle-alert")
+                                    .xsmall()
+                                    .text_color(design::status_color(design::Status::Error, cx)),
+                            )
                         })
                         .child(
                             div()
@@ -390,7 +398,9 @@ impl StatusBar {
 
     fn render_update_checker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let accent = design::tone(cx).accent_text;
+        // Quiet chrome: an available update reads in the primary text
+        // color, not the accent.
+        let available = design::tone(cx).text;
         let (key, arg) = self.update.text_key();
         let text = match arg {
             Some(p) => t_args(key, &[("progress", &p)]),
@@ -399,7 +409,7 @@ impl StatusBar {
         let color = if self.update.is_error() {
             theme.danger
         } else if self.update.available {
-            accent
+            available
         } else {
             theme.muted_foreground
         };
@@ -525,7 +535,7 @@ fn downloads_list(cx: &mut App) -> impl IntoElement {
             DownloadState::Failed => {
                 let id = item.id.clone();
                 h_flex()
-                    .gap(dp(6.))
+                    .gap(dp(8.))
                     .child(
                         div()
                             .text_size(design::TEXT_SECONDARY)
@@ -552,7 +562,7 @@ fn downloads_list(cx: &mut App) -> impl IntoElement {
         h_flex()
             .id(SharedString::from(format!("download-item-{}", item.id)))
             .w_full()
-            .gap(dp(10.))
+            .gap(dp(12.))
             .py(dp(4.))
             .child(
                 v_flex()
@@ -628,7 +638,7 @@ impl Render for StatusBar {
             .w_full()
             .h(design::STATUS_BAR_H)
             .flex_none()
-            .px(dp(6.))
+            .px(dp(12.))
             .justify_between()
             .border_t_1()
             .border_color(tone.hairline)
@@ -637,7 +647,7 @@ impl Render for StatusBar {
             .child(self.render_model_selector(cx))
             .child(
                 h_flex()
-                    .gap(dp(6.))
+                    .gap(dp(8.))
                     .pr(dp(4.))
                     .text_color(tone.text_muted)
                     .when(downloads, |d| d.child(self.render_downloads(cx)))

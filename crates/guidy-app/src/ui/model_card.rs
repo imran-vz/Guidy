@@ -3,19 +3,27 @@
 //! its download, select and delete behavior.
 //!
 //! ```text
-//! ✓ Parakeet V3  [Required by Dictation · Meetings]        478 MB  [Use] […]
-//!   Fast and accurate · 25 languages · Streaming
+//! ✓ Parakeet V3                         478 MB   ▬▬▬── 40% · 2 min  [Use] […]
+//!   Fast and accurate · 25 languages
+//!   Required by Dictation · Meetings
 //! ```
+//!
+//! The title line carries fixed slots, so every column keeps its x from
+//! row to row: the name (never narrower than [`NAME_MIN_W`]), the size
+//! (right-aligned, [`SIZE_W`]), the status or progress ([`STATUS_W`]), the
+//! primary action ([`ACTION_W`] or wider) and the "More" menu, always
+//! last, which holds Delete. The description and caption span the row
+//! below. Narrow rows let the slots hug (More stays last).
 
 use crate::logic::languages::{language_label, unique_capability_languages};
 use crate::logic::models::{is_legacy_model, quantization_label, ModelCardStatus};
 use crate::ui::design::{self, dp};
-use crate::ui::download_control::{progress_line, DownloadView};
+use crate::ui::download_control::{cancel_button, progress_status, DownloadView};
 use crate::ui::kit::{icon, model_description, model_name, t, t_args};
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{h_flex, v_flex, Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use guidy_core::downloads::DownloadItem;
@@ -29,6 +37,9 @@ type ClickHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct RowMenuItem {
     pub label: SharedString,
     pub on_click: ClickHandler,
+    /// The item's element id (tests click it), e.g. `delete-<model>`.
+    pub id: Option<SharedString>,
+    pub icon: Option<&'static str>,
 }
 
 impl RowMenuItem {
@@ -39,8 +50,28 @@ impl RowMenuItem {
         Self {
             label: label.into(),
             on_click: Rc::new(on_click),
+            id: None,
+            icon: None,
         }
     }
+
+    pub fn id(mut self, id: impl Into<SharedString>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
+/// A row's Delete… menu item (`delete-<id>`); the handler confirms. It is
+/// the last item of the row's More menu, so the trash never moves.
+pub fn delete_item(id: &str, on_click: impl Fn(&mut Window, &mut App) + 'static) -> RowMenuItem {
+    RowMenuItem::new(t("models.actions.delete"), on_click)
+        .id(format!("delete-{id}"))
+        .icon("trash")
 }
 
 /// The generic two-line model row: title with badges over a muted detail
@@ -52,10 +83,14 @@ pub struct ModelRow {
     leading: Option<AnyElement>,
     badges: Vec<AnyElement>,
     detail: SharedString,
+    caption: Option<SharedString>,
+    error: Option<SharedString>,
     size: Option<SharedString>,
+    status: Option<AnyElement>,
     trailing: Vec<AnyElement>,
     menu: Vec<RowMenuItem>,
     dimmed: bool,
+    narrow: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -70,12 +105,23 @@ impl ModelRow {
             leading: None,
             badges: Vec::new(),
             detail: SharedString::default(),
+            caption: None,
+            error: None,
             size: None,
+            status: None,
             trailing: Vec::new(),
             menu: Vec::new(),
             dimmed: false,
+            narrow: false,
             on_click: None,
         }
+    }
+
+    /// A narrow row (minimum window width): the size and the actions move
+    /// to a band under the text, so they never take the description's room.
+    pub fn narrow(mut self, narrow: bool) -> Self {
+        self.narrow = narrow;
+        self
     }
 
     pub fn element_id(mut self, id: impl Into<SharedString>) -> Self {
@@ -94,8 +140,29 @@ impl ModelRow {
         self
     }
 
+    /// The muted metadata line. Every row's detail goes through
+    /// [`join_detail`], so sentences in a description become " · "
+    /// fragments without periods, the same as every other model line.
     pub fn detail(mut self, text: impl Into<SharedString>) -> Self {
-        self.detail = text.into();
+        let text: SharedString = text.into();
+        self.detail = join_detail([text.as_ref()]).into();
+        self
+    }
+
+    /// A caption line under the detail ("Required by Dictation · Meetings").
+    pub fn caption(mut self, text: Option<impl Into<SharedString>>) -> Self {
+        self.caption = text.map(Into::into);
+        self
+    }
+
+    /// Why the last download failed, as one line in the error color under
+    /// the detail ("Failed" in the status column says that it did; this
+    /// says why, so the reader can tell whether Retry will help). Long
+    /// reasons truncate; the status keeps the full text in its tooltip.
+    pub fn error(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.error = reason
+            .map(Into::into)
+            .filter(|r: &SharedString| !r.trim().is_empty());
         self
     }
 
@@ -104,6 +171,14 @@ impl ModelRow {
         self
     }
 
+    /// The state or progress: "✓ Ready", "Paused at 30%", a progress bar
+    /// with "40% · 2 min" ([`STATUS_W`] slot).
+    pub fn status(mut self, el: impl IntoElement) -> Self {
+        self.status = Some(el.into_any_element());
+        self
+    }
+
+    /// The primary action (Use, Resume, Retry, Download, cancel).
     pub fn trailing(mut self, el: impl IntoElement) -> Self {
         self.trailing.push(el.into_any_element());
         self
@@ -125,20 +200,16 @@ impl ModelRow {
     }
 }
 
-/// "Required by Dictation · Meetings" (accent chip), or nothing.
-pub fn required_by_chip(features: &[SharedString], cx: &App) -> Option<Div> {
+/// "Required by Dictation · Meetings", or nothing: a row's
+/// [`ModelRow::caption`].
+pub fn required_by_caption(features: &[SharedString]) -> Option<SharedString> {
     (!features.is_empty()).then(|| {
         let list = features
             .iter()
             .map(|f| f.to_string())
             .collect::<Vec<_>>()
             .join(" · ");
-        design::chip(
-            t_args("models.requiredBy", &[("features", &list)]),
-            true,
-            cx,
-        )
-        .font_family(crate::theme::UI_FONT)
+        t_args("models.requiredBy", &[("features", &list)])
     })
 }
 
@@ -150,106 +221,197 @@ impl RenderOnce for ModelRow {
             let items = Rc::new(self.menu);
             Button::new(SharedString::from(format!("{}-menu", self.id)))
                 .ghost()
-                .xsmall()
+                .small()
+                .w(design::ICON_BUTTON)
+                .h(design::ICON_BUTTON)
                 .icon(icon("ellipsis"))
                 .tooltip(t("models.actions.more"))
                 .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
                     for item in items.iter() {
                         let f = item.on_click.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(item.label.clone())
-                                .on_click(move |_, window, cx| f(window, cx)),
-                        );
+                        let label = item.label.clone();
+                        let entry = match item.id.clone() {
+                            Some(id) => PopupMenuItem::element(move |_, _| {
+                                div().id(id.clone()).child(label.clone()).test_support()
+                            }),
+                            None => PopupMenuItem::new(label),
+                        };
+                        let entry = match item.icon {
+                            Some(ic) => entry.icon(icon(ic)),
+                            None => entry,
+                        };
+                        menu = menu.item(entry.on_click(move |_, window, cx| f(window, cx)));
                     }
                     menu
                 })
         });
         let on_click = self.on_click.clone();
+        let narrow = self.narrow;
+        let has_badges = !self.badges.is_empty();
+        // The name with its badges after it (wrapping under it when the
+        // row is tight), the description in up to two lines, then the
+        // caption on a line of its own.
+        let title = h_flex()
+            .flex_wrap()
+            .gap_x(dp(8.))
+            .gap_y(dp(2.))
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(design::TEXT_BODY)
+                    .line_height(design::LINE_BODY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tone.text)
+                    .child(self.title.clone()),
+            )
+            .when(has_badges, |d| {
+                d.child(h_flex().flex_none().gap(dp(4.)).children(self.badges))
+            });
+        let detail = (!self.detail.is_empty()).then(|| {
+            div()
+                .w_full()
+                .line_clamp(2)
+                .text_ellipsis()
+                .text_size(design::TEXT_SECONDARY)
+                .line_height(design::LINE_SECONDARY)
+                .text_color(tone.text_muted)
+                .child(self.detail.clone())
+        });
+        let caption = self.caption.clone().map(|c| {
+            div()
+                .w_full()
+                .text_size(design::TEXT_CAPTION)
+                .line_height(design::LINE_CAPTION)
+                .text_color(tone.text_muted)
+                .child(c)
+        });
+        let error = self.error.clone().map(|e| {
+            div()
+                .id(SharedString::from(format!("{}-error", self.id)))
+                .w_full()
+                .min_w_0()
+                .truncate()
+                .text_size(design::TEXT_SECONDARY)
+                .line_height(design::LINE_SECONDARY)
+                .text_color(design::status_color(design::Status::Error, cx))
+                .child(e)
+                .test_support()
+        });
+        let size = self.size.map(|size| {
+            design::mono(size)
+                .text_size(design::TEXT_SECONDARY)
+                .line_height(design::LINE_SECONDARY)
+                .text_color(tone.text_muted)
+        });
+        let has_controls = !self.trailing.is_empty() || menu.is_some();
+        let actions = h_flex()
+            .flex_none()
+            .justify_end()
+            .gap(dp(4.))
+            .children(self.trailing);
+        // The More slot is reserved even when empty, so actions keep one
+        // right edge and the menu one x.
+        let menu_slot = div()
+            .flex_none()
+            .w(design::ICON_BUTTON)
+            .flex()
+            .justify_center()
+            .children(menu);
+        // The slots sit on the title line, right-aligned; the description
+        // and caption span the whole row below them. Wide rows give each
+        // slot a fixed width (columns line up row to row); narrow rows let
+        // them hug, and the cluster wraps under the title if it must.
+        let cluster = if narrow {
+            h_flex()
+                .flex_none()
+                .ml_auto()
+                .gap(dp(8.))
+                .children(size)
+                .children(self.status)
+                .child(actions)
+                .child(menu_slot)
+        } else {
+            h_flex()
+                .flex_none()
+                .ml_auto()
+                .gap(dp(8.))
+                .child(h_flex().w(SIZE_W).justify_end().children(size))
+                .child(h_flex().w(STATUS_W).justify_end().children(self.status))
+                .child(actions.min_w(ACTION_W))
+                .child(menu_slot)
+        };
+        let line_h = if has_controls {
+            SLOT_H
+        } else {
+            design::LINE_BODY
+        };
+        let title_line = h_flex()
+            .w_full()
+            .min_h(line_h)
+            .flex_wrap()
+            .items_center()
+            .gap_x(dp(8.))
+            .gap_y(dp(2.))
+            .child(
+                title
+                    .flex_1()
+                    .min_w(if narrow { dp(120.) } else { NAME_MIN_W }),
+            )
+            .child(cluster);
+        let text = v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap(dp(2.))
+            .child(title_line)
+            .children(detail)
+            .children(caption)
+            .children(error);
         h_flex()
             .id(self.id.clone())
             .w_full()
             .min_h(dp(44.))
             .px(design::SECTION_X)
-            .py(dp(6.))
-            .gap(dp(12.))
+            .py(dp(8.))
+            .gap(dp(8.))
+            .items_start()
             .when(self.dimmed, |d| d.opacity(0.55))
             .when_some(on_click, |d, f| {
                 d.hover(move |s| s.bg(hover_bg))
                     .on_click(move |_, window, cx| f(window, cx))
             })
             .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(dp(8.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(dp(14.))
-                            .flex()
-                            .justify_center()
-                            .children(self.leading),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(dp(2.))
-                            .child(
-                                h_flex()
-                                    .min_w_0()
-                                    .gap(dp(6.))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(design::TEXT_BODY)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(tone.text)
-                                            .child(self.title.clone()),
-                                    )
-                                    .children(self.badges),
-                            )
-                            .when(!self.detail.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(design::TEXT_SECONDARY)
-                                        .line_height(dp(14.))
-                                        .text_color(tone.text_muted)
-                                        .child(self.detail.clone()),
-                                )
-                            }),
-                    ),
-            )
-            .when_some(self.size, |d, size| {
-                d.child(
-                    design::mono(size)
-                        .flex_none()
-                        .min_w(dp(52.))
-                        .text_right()
-                        .text_size(design::TEXT_SECONDARY)
-                        .text_color(tone.text_muted),
-                )
-            })
-            // A fixed column, right-aligned, so sizes line up from row to
-            // row whatever the actions (Use, Resume, Retry, a trash icon).
-            .child(
-                h_flex()
+                div()
                     .flex_none()
-                    .min_w(TRAILING_MIN_W)
-                    .justify_end()
-                    .gap(dp(4.))
-                    .children(self.trailing)
-                    .children(menu),
+                    .w(dp(16.))
+                    .h(line_h)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(self.leading),
             )
+            .child(text)
             .test_support()
     }
 }
 
-/// Width kept for a row's actions (fits Paused at 30% + Resume + trash).
-const TRAILING_MIN_W: Pixels = dp(150.);
+/// The name column never gets narrower than this (badges never take it).
+pub const NAME_MIN_W: Pixels = dp(180.);
+/// The size column (right-aligned, fits "1.6 GB").
+pub const SIZE_W: Pixels = dp(64.);
+/// The status/progress column (fits "Paused at 30%", or a 72 pt bar with
+/// "40% · 2 min").
+pub const STATUS_W: Pixels = dp(160.);
+/// The primary action's slot (fits Resume, Retry, Use; wider labels grow
+/// it).
+pub const ACTION_W: Pixels = dp(88.);
+/// The title line's height when it holds a control.
+const SLOT_H: Pixels = dp(26.);
+
+/// Whether model rows on a page `content_w` wide are narrow
+/// ([`ModelRow::narrow`]).
+pub fn narrow_rows(content_w: Pixels) -> bool {
+    content_w < dp(600.)
+}
 
 /// A speech-to-text model row (Models page, onboarding picker).
 #[derive(IntoElement)]
@@ -266,6 +428,7 @@ pub struct ModelCard {
     download: Option<DownloadItem>,
     required_by: Vec<SharedString>,
     meetings_model: bool,
+    narrow: bool,
     on_select: Option<ModelHandler>,
     on_download: Option<ModelHandler>,
     on_delete: Option<ModelHandler>,
@@ -287,12 +450,19 @@ impl ModelCard {
             download: None,
             required_by: Vec::new(),
             meetings_model: false,
+            narrow: false,
             on_select: None,
             on_download: None,
             on_delete: None,
             on_cancel: None,
             on_use_for_meetings: None,
         }
+    }
+
+    /// A narrow row ([`ModelRow::narrow`]).
+    pub fn narrow(mut self, n: bool) -> Self {
+        self.narrow = n;
+        self
     }
 
     /// Render as a row of a shared panel (no border of its own).
@@ -413,11 +583,64 @@ pub fn model_detail(m: &ModelInfo, debug: bool) -> String {
     }
     if debug {
         if let Some(q) = quantization_label(&m.filename) {
-            parts.push(q);
+            // Debug builds: "Q8_0 quantization", not a bare code.
+            parts.push(guidy_i18n::t_args(
+                "modelSelector.quantization",
+                &[("label", &q)],
+            ));
         }
     }
-    parts.retain(|p| !p.trim().is_empty());
-    parts.join(" · ")
+    join_detail(parts)
+}
+
+/// One metadata line from a model's parts: "Fast and accurate · 25
+/// languages · Streaming". The line is fragments joined by " · " only: a
+/// part written as sentences ("Optimized for Taiwanese Mandarin.
+/// Code-switching support.") is split into its sentences, each loses its
+/// period, and empty parts drop out, so a line never mixes ". " and " · ".
+/// The Models page ([`model_detail`]) and the onboarding picker use it, so
+/// a model reads the same in both.
+pub fn join_detail<S: AsRef<str>>(parts: impl IntoIterator<Item = S>) -> String {
+    parts
+        .into_iter()
+        .flat_map(|p| sentence_fragments(p.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// "A. B." → ["A", "B"]: splits at a sentence end (". " or "。" before
+/// the next sentence) and drops each fragment's final period. A period
+/// inside a token ("v2.5", "e.g. small") stays: only ". " followed by a
+/// capital letter or a digit ends a sentence.
+fn sentence_fragments(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (i, &(at, c)) in chars.iter().enumerate() {
+        let next = chars.get(i + 1).map(|&(_, n)| n);
+        let after = chars.get(i + 2).map(|&(_, n)| n);
+        let ends = match c {
+            '。' => true,
+            '.' => {
+                next == Some(' ') && after.is_some_and(|a| a.is_uppercase() || a.is_ascii_digit())
+            }
+            _ => false,
+        };
+        if ends {
+            out.push(text[start..at].to_string());
+            start = at + c.len_utf8();
+        }
+    }
+    out.push(text[start..].to_string());
+    out.into_iter()
+        .map(|f| {
+            f.trim()
+                .trim_end_matches(['.', '。'])
+                .trim_end()
+                .to_string()
+        })
+        .filter(|f| !f.is_empty())
+        .collect()
 }
 
 impl RenderOnce for ModelCard {
@@ -435,13 +658,13 @@ impl RenderOnce for ModelCard {
             .element_id(format!("model-card-{}", m.id))
             .detail(model_detail(m, self.debug_mode))
             .size(guidy_core::downloads::format_bytes(m.size_mb * 1024 * 1024))
+            .narrow(self.narrow)
             .dimmed(disabled && status.is_clickable());
         if active {
-            row = row.leading(icon("check").small().text_color(tone.accent_text));
+            // In use: a neutral check (the accent is for actions).
+            row = row.leading(icon("check").small().text_color(tone.text));
         }
-        if let Some(chip) = required_by_chip(&self.required_by, cx) {
-            row = row.badge(chip);
-        }
+        row = row.caption(required_by_caption(&self.required_by));
         if self.show_recommended && m.is_recommended && !m.is_downloaded {
             row = row.badge(design::chip(t("onboarding.recommended"), self.featured, cx));
         }
@@ -452,7 +675,7 @@ impl RenderOnce for ModelCard {
             row = row.badge(design::chip(t("modelSelector.legacy"), false, cx));
         }
         if status == ModelCardStatus::Switching {
-            row = row.badge(design::chip("", true, cx).child(design::shimmer_text(
+            row = row.badge(design::chip("", false, cx).child(design::shimmer_text(
                 SharedString::from(format!("switching-{}", m.id)),
                 t("modelSelector.switching"),
                 cx,
@@ -489,13 +712,15 @@ impl RenderOnce for ModelCard {
         };
 
         let download = self.on_download.clone().or_else(|| self.on_select.clone());
+        let narrow = self.narrow;
+        // Every action keeps its label (Resume, Retry too): a narrow row
+        // has the room in its action band.
         let action = |key: &str, ic: &str, label: SharedString, f: Option<ModelHandler>| {
             let id = id.clone();
             Button::new(SharedString::from(format!("model-{key}-{}", m.id)))
-                .secondary()
-                .small()
+                .outline()
+                .label(label.clone())
                 .icon(icon(ic))
-                .label(label)
                 .disabled(disabled)
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
@@ -506,37 +731,46 @@ impl RenderOnce for ModelCard {
         };
         match status {
             ModelCardStatus::Queued | ModelCardStatus::Downloading | ModelCardStatus::Verifying => {
-                let cancel = self.on_cancel.clone();
-                let el = match cancel {
+                row = row.status(progress_status(&tracker_id, &view, track_w(narrow), cx));
+                let cancel = match self.on_cancel.clone() {
+                    // The card's own cancel (`cancel-<model>`).
                     Some(cancel) => {
                         let id = id.clone();
-                        progress_line_with(
-                            &tracker_id,
-                            &view,
-                            move |window, cx| cancel(&id, window, cx),
-                            cx,
-                        )
+                        (!matches!(view, DownloadView::Verifying)).then(|| {
+                            cancel_icon_button(
+                                SharedString::from(format!("cancel-{}", m.id)),
+                                t("modelSelector.cancelDownload"),
+                                move |window, cx| cancel(&id, window, cx),
+                            )
+                            .into_any_element()
+                        })
                     }
-                    None => progress_line(&tracker_id, &view, dp(72.), cx),
+                    None => cancel_button(&tracker_id, &view),
                 };
-                row = row.trailing(el);
+                if let Some(cancel) = cancel {
+                    row = row.trailing(cancel);
+                }
             }
             ModelCardStatus::Failed => {
-                let error: SharedString = match &view {
-                    DownloadView::Failed { error: Some(e) } => e.clone().into(),
-                    _ => t("models.state.failed"),
+                let reason: Option<SharedString> = match &view {
+                    DownloadView::Failed { error: Some(e) } => Some(e.clone().into()),
+                    _ => None,
                 };
+                let error = reason.clone().unwrap_or_else(|| t("models.state.failed"));
                 row = row
-                    .trailing(
-                        div()
-                            .id(SharedString::from(format!("model-error-{}", m.id)))
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(cx.theme().danger)
-                            .child(t("models.state.failed"))
-                            .tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(error.clone())
-                                    .build(window, cx)
-                            }),
+                    .error(reason)
+                    .status(
+                        status_word(
+                            "circle-alert",
+                            t("models.state.failed"),
+                            design::Status::Error,
+                            cx,
+                        )
+                        .id(SharedString::from(format!("model-error-{}", m.id)))
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(error.clone())
+                                .build(window, cx)
+                        }),
                     )
                     .trailing(action(
                         "retry",
@@ -553,12 +787,12 @@ impl RenderOnce for ModelCard {
                     _ => t("models.state.paused"),
                 };
                 row = row
-                    .trailing(
-                        div()
-                            .text_size(design::TEXT_SECONDARY)
-                            .text_color(tone.text_muted)
-                            .child(label),
-                    )
+                    .status(status_word(
+                        "circle-pause",
+                        label,
+                        design::Status::Neutral,
+                        cx,
+                    ))
                     .trailing(action(
                         "resume",
                         "download",
@@ -597,9 +831,7 @@ impl RenderOnce for ModelCard {
         if status.can_delete() || status == ModelCardStatus::Paused {
             if let Some(f) = self.on_delete.clone() {
                 let id = id.clone();
-                row = row.trailing(delete_button(&m.id, &name, move |window, cx| {
-                    f(&id, window, cx)
-                }));
+                row = row.menu_item(delete_item(&m.id, move |window, cx| f(&id, window, cx)));
             }
         }
 
@@ -624,76 +856,94 @@ impl RenderOnce for ModelCard {
         if self.compact {
             row
         } else {
-            design::panel(cx)
-                .when(self.featured || active, |d| {
-                    d.border_color(tone.accent_text.opacity(0.35))
-                })
-                .child(row)
-                .into_any_element()
+            design::panel(cx).child(row).into_any_element()
         }
     }
 }
 
-/// The row's trash button (`delete-<id>`); the handler confirms.
-pub fn delete_button(
-    id: &str,
-    name: &str,
+/// A state as a status icon and a word ("⊘ Failed", "⏸ Paused at 30%"):
+/// the icon in the status color, the word muted (red for errors).
+pub fn status_word(
+    ic: &str,
+    word: impl Into<SharedString>,
+    status: design::Status,
+    cx: &App,
+) -> Div {
+    let color = design::status_color(status, cx);
+    let text = if status == design::Status::Error {
+        color
+    } else {
+        design::tone(cx).text_muted
+    };
+    h_flex()
+        .flex_none()
+        .gap(dp(4.))
+        .text_size(design::TEXT_SECONDARY)
+        .line_height(design::LINE_SECONDARY)
+        .text_color(text)
+        .child(icon(ic).xsmall().text_color(color))
+        .child(word.into())
+}
+
+/// Width of a row's progress track.
+pub fn track_w(narrow: bool) -> Pixels {
+    if narrow {
+        dp(48.)
+    } else {
+        dp(72.)
+    }
+}
+
+/// A standalone icon action: 24 × 24 pt hit area around a 16 pt glyph.
+pub fn cancel_icon_button(
+    id: SharedString,
+    tooltip: SharedString,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
-    Button::new(SharedString::from(format!("delete-{id}")))
+    Button::new(id)
         .ghost()
-        .xsmall()
-        .icon(icon("trash"))
-        .tooltip(t_args("modelSelector.deleteModel", &[("modelName", name)]))
+        .small()
+        .w(design::ICON_BUTTON)
+        .h(design::ICON_BUTTON)
+        .icon(icon("x"))
+        .tooltip(tooltip)
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx)
         })
 }
 
-/// [`progress_line`] with the caller's own cancel handler.
-fn progress_line_with(
-    id: &str,
-    view: &DownloadView,
-    on_cancel: impl Fn(&mut Window, &mut App) + 'static,
-    cx: &App,
-) -> AnyElement {
-    let tone = design::tone(cx);
-    let (fraction, text) = crate::ui::download_control::progress_text(view);
-    h_flex()
-        .flex_none()
-        .gap(dp(8.))
-        .child(div().w(dp(72.)).child(design::track(
-            SharedString::from(format!("dl-track-{id}")),
-            fraction,
-            cx,
-        )))
-        .child(
-            design::mono(text)
-                .min_w(dp(64.))
-                .text_size(design::TEXT_SECONDARY)
-                .text_color(tone.text_muted),
-        )
-        .child(
-            Button::new(SharedString::from(format!(
-                "cancel-{}",
-                id.trim_start_matches("stt:")
-            )))
-            .ghost()
-            .xsmall()
-            .icon(icon("x"))
-            .tooltip(t("modelSelector.cancelDownload"))
-            .on_click(move |_, window, cx| {
-                cx.stop_propagation();
-                on_cancel(window, cx)
-            }),
-        )
-        .into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::describes_languages;
+    use super::{describes_languages, join_detail};
+
+    #[test]
+    fn detail_parts_join_without_trailing_periods() {
+        assert_eq!(
+            join_detail([
+                "Fast and accurate. Supports 25 European languages.",
+                "Streaming",
+                ""
+            ]),
+            "Fast and accurate · Supports 25 European languages · Streaming"
+        );
+        assert_eq!(
+            join_detail([
+                "Optimized for Taiwanese Mandarin. Code-switching support.",
+                "2 languages"
+            ]),
+            "Optimized for Taiwanese Mandarin · Code-switching support · 2 languages"
+        );
+        // A period inside a token is not a sentence end.
+        assert_eq!(
+            join_detail(["Whisper v2.5 model", "e.g. small"]),
+            "Whisper v2.5 model · e.g. small"
+        );
+        assert_eq!(
+            join_detail(["Good accuracy, but slow.", "20 languages"]),
+            "Good accuracy, but slow · 20 languages"
+        );
+    }
 
     fn langs(codes: &[&str]) -> Vec<String> {
         codes.iter().map(|c| c.to_string()).collect()

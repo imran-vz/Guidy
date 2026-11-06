@@ -7,7 +7,6 @@ use crate::state::AppState;
 use crate::ui::design::{self, dp};
 use crate::ui::kit::{icon, t};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::h_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -76,13 +75,16 @@ impl Welcome {
             Feature::Dictation => "welcome-dictation",
             Feature::Meetings => "welcome-meetings",
         };
-        let checkbox = Checkbox::new(SharedString::from(format!("{id}-check")))
-            .checked(checked)
-            .accessibility_label(title.clone())
-            .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                cx.stop_propagation();
-                this.toggle(feature, cx);
-            }));
+        let checkbox = super::assistant::AccentMark::new(
+            SharedString::from(format!("{id}-check")),
+            super::assistant::MarkKind::Check,
+        )
+        .checked(checked)
+        .accessibility_label(title.clone())
+        .on_click(cx.listener(move |this, _: &bool, _, cx| {
+            cx.stop_propagation();
+            this.toggle(feature, cx);
+        }));
         row(
             id,
             Some(checkbox.into_any_element()),
@@ -129,7 +131,7 @@ impl Render for Welcome {
             .gap(dp(6.))
             .items_start()
             .text_size(design::TEXT_SECONDARY)
-            .line_height(dp(15.))
+            .line_height(design::LINE_SECONDARY)
             .text_color(tone.text_muted)
             .child(
                 icon("sparkles")

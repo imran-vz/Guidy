@@ -451,8 +451,7 @@ impl TicketsView {
             .justify_end()
             .child(
                 Button::new("tickets-draft")
-                    .secondary()
-                    .small()
+                    .outline()
                     .icon(icon("file-pen-line"))
                     .label(t("meetingsAi.tickets.draft"))
                     .loading(self.drafting)
@@ -461,8 +460,7 @@ impl TicketsView {
             )
             .child(
                 Button::new("tickets-approve-selected")
-                    .secondary()
-                    .small()
+                    .outline()
                     .icon(icon("check"))
                     .label(t_args(
                         "meetingsAi.tickets.approveSelected",
@@ -474,8 +472,6 @@ impl TicketsView {
             .child(
                 Button::new("tickets-create")
                     .primary()
-                    .when(approved == 0 || self.creating, |b| b.secondary())
-                    .small()
                     .icon(icon("send"))
                     .label(t_args(
                         "meetingsAi.tickets.createApproved",
@@ -508,7 +504,12 @@ impl TicketsView {
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_sm().truncate().child(item.ticket.title.clone()))
+                    .child(
+                        div()
+                            .text_size(design::TEXT_BODY)
+                            .truncate()
+                            .child(item.ticket.title.clone()),
+                    )
                     .child(
                         div()
                             .text_size(crate::ui::design::TEXT_SECONDARY)
@@ -550,15 +551,14 @@ impl TicketsView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .line_through()
                     .truncate()
                     .child(item.ticket.title.clone()),
             )
             .child(
                 Button::new(SharedString::from(format!("ticket-restore-{id}")))
-                    .ghost()
-                    .xsmall()
+                    .outline()
                     .label(t("meetingsAi.tickets.restore"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_state(id, TicketState::Draft, cx)
@@ -597,20 +597,25 @@ impl TicketsView {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_sm()
+                        .text_size(design::TEXT_BODY)
                         .font_weight(FontWeight::MEDIUM)
                         .truncate()
                         .child(item.ticket.title.clone()),
                 )
                 .child(if approved {
-                    design::chip(t("meetingsAi.tickets.approved"), true, cx)
+                    // Approved is a status: a check and the word in green.
+                    design::chip("", false, cx)
+                        .text_color(design::status_color(design::Status::Ok, cx))
+                        .child(icon("check").xsmall())
+                        .child(t("meetingsAi.tickets.approved"))
                 } else {
                     design::chip(t("meetingsAi.tickets.draftState"), false, cx)
                 })
                 .child(
                     Button::new(SharedString::from(format!("ticket-edit-{id}")))
                         .ghost()
-                        .xsmall()
+                        .small()
+                        .size(design::ICON_BUTTON)
                         .icon(icon("pencil"))
                         .tooltip(t("meetingsAi.tickets.edit"))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -624,8 +629,7 @@ impl TicketsView {
                 )
                 .child(if approved {
                     Button::new(SharedString::from(format!("ticket-unapprove-{id}")))
-                        .secondary()
-                        .xsmall()
+                        .outline()
                         .label(t("meetingsAi.tickets.unapprove"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_state(id, TicketState::Draft, cx)
@@ -633,8 +637,6 @@ impl TicketsView {
                 } else {
                     Button::new(SharedString::from(format!("ticket-approve-{id}")))
                         .primary()
-                        .when(!can_approve(item), |b| b.secondary())
-                        .xsmall()
                         .label(t("meetingsAi.tickets.approve"))
                         .tooltip(if can_approve(item) {
                             t("meetingsAi.tickets.approveTip")
@@ -649,7 +651,8 @@ impl TicketsView {
                 .child(
                     Button::new(SharedString::from(format!("ticket-discard-{id}")))
                         .ghost()
-                        .xsmall()
+                        .small()
+                        .size(design::ICON_BUTTON)
                         .icon(icon("x"))
                         .tooltip(t("meetingsAi.tickets.discard"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -680,7 +683,9 @@ impl TicketsView {
             )
             .selected(team_id.clone())
             .placeholder(t("meetingsAi.tickets.pickTeam"))
-            .min_width(dp(160.))
+            // Fixed widths that fit their usual values ("ENG · Engineering",
+            // "No priority"); a longer one truncates, the menu shows it.
+            .min_width(dp(200.))
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
                 w.update(cx, |this, cx| {
@@ -712,7 +717,7 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.project_id.clone().unwrap_or_default()))
-            .min_width(dp(150.))
+            .min_width(dp(180.))
             .disabled(team_id.is_none())
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
@@ -732,7 +737,7 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.priority.unwrap_or(0).to_string()))
-            .min_width(dp(110.))
+            .min_width(dp(130.))
             .on_select(move |v, _, cx| {
                 let p: u8 = v.parse().unwrap_or(0);
                 w.update(cx, |this, cx| {
@@ -754,7 +759,7 @@ impl TicketsView {
                     .collect(),
             )
             .selected(Some(item.ticket.assignee_id.clone().unwrap_or_default()))
-            .min_width(dp(160.))
+            .min_width(dp(180.))
             .menu_width(dp(260.))
             .on_select(move |v, _, cx| {
                 let v = v.to_string();
@@ -837,7 +842,7 @@ impl TicketsView {
         let body: AnyElement = if editing {
             v_flex()
                 .gap_2()
-                .child(Input::new(&self.edit_title).small())
+                .child(Input::new(&self.edit_title))
                 .child(Textarea::new(&self.edit_description))
                 .child(
                     h_flex()
@@ -845,14 +850,12 @@ impl TicketsView {
                         .child(
                             Button::new(SharedString::from(format!("ticket-save-{id}")))
                                 .primary()
-                                .small()
                                 .label(t("meetingsAi.common.save"))
                                 .on_click(cx.listener(|this, _, _, cx| this.save_edit(cx))),
                         )
                         .child(
                             Button::new(SharedString::from(format!("ticket-cancel-{id}")))
-                                .secondary()
-                                .small()
+                                .outline()
                                 .label(t("meetingsAi.common.cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.editing = None;
@@ -909,14 +912,13 @@ impl TicketsView {
             .justify_between()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .text_color(cx.theme().muted_foreground)
                     .child(t("meetingsAi.tickets.noKey")),
             )
             .child(
                 Button::new("tickets-open-settings")
-                    .secondary()
-                    .small()
+                    .outline()
                     .icon(icon("settings"))
                     .label(t("meetingsAi.tickets.openSettings"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
@@ -934,7 +936,7 @@ impl Render for TicketsView {
             rows.push(
                 div()
                     .p_3()
-                    .text_sm()
+                    .text_size(design::TEXT_BODY)
                     .text_color(muted)
                     .child(t("meetingsAi.common.loading"))
                     .into_any_element(),
@@ -955,7 +957,7 @@ impl Render for TicketsView {
                     div()
                         .id("tickets-empty")
                         .p_3()
-                        .text_sm()
+                        .text_size(design::TEXT_BODY)
                         .text_color(muted)
                         .child(if self.items.is_empty() {
                             t("meetingsAi.tickets.noItems")

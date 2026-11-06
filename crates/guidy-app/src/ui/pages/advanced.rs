@@ -16,8 +16,8 @@ use crate::logic::keyboard::OsType;
 use crate::state::AppState;
 use crate::ui::design::{self, dp};
 use crate::ui::kit::{
-    confirm, group, icon, page, t, t_args, toggle, Dropdown, DropdownOption, LocalizedPlaceholder,
-    SettingRow,
+    confirm, group, icon, page, t, t_args, toggle, trailing, Dropdown, DropdownOption,
+    LocalizedPlaceholder, SettingRow,
 };
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -432,8 +432,9 @@ impl AdvancedPage {
         description: &str,
         checked: bool,
     ) -> AnyElement {
+        let description = t(&platform_key(description));
         SettingRow::new(id, t(title))
-            .description(t(&platform_key(description)))
+            .description(description)
             .error(save_error(st, key))
             .control(toggle(
                 SharedString::from(format!("{id}-toggle")),
@@ -478,12 +479,13 @@ impl AdvancedPage {
             SettingRow::new("model-unload", t("settings.advanced.modelUnload.title"))
                 .description(t("settings.advanced.modelUnload.description"))
                 .error(save_error(st, "model_unload_timeout"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("model-unload-dropdown")
                         .options(unload_options)
                         .selected(json_str(s.model_unload_timeout))
                         .on_select(|v, _, cx| set("model_unload_timeout", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             Self::toggle_row(
                 st,
@@ -506,25 +508,36 @@ impl AdvancedPage {
                         "settings.advanced.overlay.style.description",
                     )))
                     .error(save_error(st, "overlay_style"))
-                    .control(
+                    .control(trailing(
+                        None,
                         Dropdown::new("overlay-style-dropdown")
+                            .menu_width(dp(280.))
                             .options(vec![
                                 DropdownOption::new(
                                     "none",
                                     t("settings.advanced.overlay.style.options.none"),
-                                ),
+                                )
+                                .description(t(
+                                    "settings.advanced.overlay.style.descriptions.none",
+                                )),
                                 DropdownOption::new(
                                     "minimal",
                                     t("settings.advanced.overlay.style.options.minimal"),
-                                ),
+                                )
+                                .description(t(
+                                    "settings.advanced.overlay.style.descriptions.minimal",
+                                )),
                                 DropdownOption::new(
                                     "live",
                                     t("settings.advanced.overlay.style.options.live"),
-                                ),
+                                )
+                                .description(t(
+                                    "settings.advanced.overlay.style.descriptions.live",
+                                )),
                             ])
                             .selected(json_str(s.overlay_style))
                             .on_select(|v, _, cx| set("overlay_style", json!(v), cx)),
-                    )
+                    ))
                     .into_any_element(),
             ];
         if s.overlay_style != OverlayStyle::None {
@@ -535,7 +548,8 @@ impl AdvancedPage {
                 )
                 .description(t("settings.advanced.overlay.position.description"))
                 .error(save_error(st, "overlay_position"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("overlay-position-dropdown")
                         .options(vec![
                             DropdownOption::new(
@@ -549,7 +563,7 @@ impl AdvancedPage {
                         ])
                         .selected(json_str(s.overlay_position))
                         .on_select(|v, _, cx| set("overlay_position", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             );
         }
@@ -561,9 +575,31 @@ impl AdvancedPage {
         let os = OsType::current();
         let paste_options = paste_method_options(os, s.paste_method)
             .into_iter()
-            .map(|o| DropdownOption::new(o.value.clone(), o.label()).disabled(o.disabled))
+            .map(|o| {
+                // macOS writes the shortcut with its glyph: "Clipboard (⌘V)".
+                let label = if os == OsType::MacOs && o.value == "ctrl_v" {
+                    guidy_i18n::t("settings.advanced.pasteMethod.options.clipboardMac")
+                } else {
+                    o.label()
+                };
+                // What each method does, in the menu (the row says what
+                // the setting is for).
+                let desc = match o.value.as_str() {
+                    "ctrl_v" => Some("clipboard"),
+                    "direct" => Some("direct"),
+                    "none" => Some("none"),
+                    _ => None,
+                };
+                let opt = DropdownOption::new(o.value.clone(), label).disabled(o.disabled);
+                match desc {
+                    Some(k) => opt.description(t(&format!(
+                        "settings.advanced.pasteMethod.optionDescriptions.{k}"
+                    ))),
+                    None => opt,
+                }
+            })
             .collect();
-        let mut paste_control = v_flex().gap(dp(6.)).items_end().child(
+        let mut paste_control = v_flex().gap(dp(8.)).items_end().child(
             Dropdown::new("paste-method-dropdown")
                 .options(paste_options)
                 .selected(json_str(s.paste_method))
@@ -573,8 +609,8 @@ impl AdvancedPage {
             paste_control = paste_control.child(
                 div()
                     .id("external-script-input")
-                    .w(dp(200.))
-                    .child(Input::new(&self.script_path).small())
+                    .w(design::CONTROL_COLUMN_W)
+                    .child(Input::new(&self.script_path))
                     .test_support(),
             );
         }
@@ -585,7 +621,7 @@ impl AdvancedPage {
                     .error(
                         save_error(st, "paste_method").or(save_error(st, "external_script_path")),
                     )
-                    .control(paste_control)
+                    .control(trailing(None, paste_control))
                     .into_any_element(),
             ];
 
@@ -608,12 +644,13 @@ impl AdvancedPage {
                 SettingRow::new("typing-tool", t("settings.advanced.typingTool.title"))
                     .description(t("settings.advanced.typingTool.description"))
                     .error(save_error(st, "typing_tool"))
-                    .control(
+                    .control(trailing(
+                        None,
                         Dropdown::new("typing-tool-dropdown")
                             .options(options)
                             .selected(json_str(s.typing_tool))
                             .on_select(|v, _, cx| set("typing_tool", json!(v), cx)),
-                    )
+                    ))
                     .into_any_element(),
             );
         }
@@ -625,21 +662,28 @@ impl AdvancedPage {
             )
             .description(t("settings.advanced.clipboardHandling.description"))
             .error(save_error(st, "clipboard_handling"))
-            .control(
+            .control(trailing(
+                None,
                 Dropdown::new("clipboard-handling-dropdown")
                     .options(vec![
                         DropdownOption::new(
                             "dont_modify",
                             t("settings.advanced.clipboardHandling.options.dontModify"),
-                        ),
+                        )
+                        .description(t(
+                            "settings.advanced.clipboardHandling.optionDescriptions.dontModify",
+                        )),
                         DropdownOption::new(
                             "copy_to_clipboard",
                             t("settings.advanced.clipboardHandling.options.copyToClipboard"),
-                        ),
+                        )
+                        .description(t(
+                            "settings.advanced.clipboardHandling.optionDescriptions.copyToClipboard",
+                        )),
                     ])
                     .selected(json_str(s.clipboard_handling))
                     .on_select(|v, _, cx| set("clipboard_handling", json!(v), cx)),
-            )
+            ))
             .into_any_element(),
         );
 
@@ -652,7 +696,8 @@ impl AdvancedPage {
             SettingRow::new("auto-submit", t("settings.advanced.autoSubmit.title"))
                 .description(t(&platform_key("settings.advanced.autoSubmit.description")))
                 .error(save_error(st, "auto_submit").or(save_error(st, "auto_submit_key")))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("auto-submit-dropdown")
                         .options(auto_options)
                         .selected(Some(auto_submit_value(s.auto_submit, s.auto_submit_key)))
@@ -661,7 +706,7 @@ impl AdvancedPage {
                             AppState::global(cx)
                                 .update(cx, |s, cx| s.update_settings_in_order(writes, cx));
                         }),
-                )
+                ))
                 .into_any_element(),
         );
         rows.push(Self::toggle_row(
@@ -684,18 +729,17 @@ impl AdvancedPage {
             .clone()
             .or_else(|| save_error(self.state.read(cx), "custom_words"));
         let field = h_flex()
-            .gap(dp(6.))
+            .gap(dp(8.))
             .child(
                 div()
                     .id("custom-words-input")
                     .w(dp(180.))
-                    .child(Input::new(&self.custom_word).small())
+                    .child(Input::new(&self.custom_word))
                     .test_support(),
             )
             .child(
                 Button::new("custom-words-add")
                     .outline()
-                    .small()
                     .label(t("settings.advanced.customWords.add"))
                     .disabled(!can_add)
                     .on_click(cx.listener(|this, _, window, cx| this.add_word(window, cx))),
@@ -711,8 +755,8 @@ impl AdvancedPage {
                     h_flex()
                         .id(SharedString::from(format!("custom-word-{word}")))
                         .flex_none()
-                        .h(dp(20.))
-                        .pl(dp(6.))
+                        .h(design::CONTROL_H)
+                        .pl(dp(8.))
                         .gap(dp(2.))
                         .rounded(design::RADIUS_CHIP)
                         .border_1()
@@ -723,7 +767,7 @@ impl AdvancedPage {
                         .child(
                             Button::new(SharedString::from(format!("custom-word-remove-{word}")))
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .icon(icon("x"))
                                 .tooltip(t_args(
                                     "settings.advanced.customWords.remove",
@@ -739,7 +783,7 @@ impl AdvancedPage {
             .description(t("settings.advanced.customWords.description"))
             .error(error)
             .stacked()
-            .control(v_flex().w_full().gap(dp(6.)).child(field).children(tokens))
+            .control(v_flex().w_full().gap(dp(8.)).child(field).children(tokens))
             .into_any_element()
     }
 
@@ -774,7 +818,8 @@ impl AdvancedPage {
             SettingRow::new("chinese-script", t("settings.advanced.chineseScript.title"))
                 .description(t("settings.advanced.chineseScript.description"))
                 .error(save_error(st, "chinese_script"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("chinese-script-dropdown")
                         .options(vec![
                             DropdownOption::new(
@@ -792,7 +837,7 @@ impl AdvancedPage {
                         ])
                         .selected(json_str(s.chinese_script))
                         .on_select(|v, _, cx| set("chinese_script", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
             words,
         ];
@@ -812,12 +857,12 @@ impl AdvancedPage {
                 .error(limit_error)
                 .control(
                     h_flex()
-                        .gap(dp(6.))
+                        .gap(dp(8.))
                         .child(
                             div()
                                 .id("history-limit-input")
                                 .w(dp(72.))
-                                .child(Input::new(&self.history_limit).small())
+                                .child(Input::new(&self.history_limit))
                                 .test_support(),
                         )
                         .child(
@@ -834,7 +879,8 @@ impl AdvancedPage {
             )
             .description(t("settings.debug.recordingRetention.description"))
             .error(save_error(st, "recording_retention_period"))
-            .control(
+            .control(trailing(
+                None,
                 Dropdown::new("recording-retention-dropdown")
                     .options(vec![
                         DropdownOption::new("never", t("settings.debug.recordingRetention.never")),
@@ -858,7 +904,7 @@ impl AdvancedPage {
                     .placeholder(t("settings.debug.recordingRetention.placeholder"))
                     .selected(json_str(s.recording_retention_period))
                     .on_select(|v, _, cx| set("recording_retention_period", json!(v), cx)),
-            )
+            ))
             .into_any_element(),
         ];
         group(Some(t("settings.advanced.groups.history")), rows, cx)
@@ -900,7 +946,8 @@ impl AdvancedPage {
             )
             .description(t("settings.debug.keyboardImplementation.description"))
             .error(self.keyboard_impl_error.clone())
-            .control(
+            .control(trailing(
+                None,
                 Dropdown::new("keyboard-implementation-dropdown")
                     .options(vec![
                         DropdownOption::new(
@@ -922,7 +969,7 @@ impl AdvancedPage {
                                 .ok();
                         }
                     }),
-            )
+            ))
             .into_any_element(),
             SettingRow::new(
                 "acceleration",
@@ -933,7 +980,8 @@ impl AdvancedPage {
                 save_error(st, "transcribe_accelerator")
                     .or(save_error(st, "transcribe_gpu_device")),
             )
-            .control(
+            .control(trailing(
+                None,
                 Dropdown::new("acceleration-dropdown")
                     .options(
                         acc_options
@@ -953,7 +1001,7 @@ impl AdvancedPage {
                         AppState::global(cx)
                             .update(cx, |s, cx| s.update_settings_in_order(writes, cx));
                     }),
-            )
+            ))
             .into_any_element(),
             Self::toggle_row(
                 st,
@@ -966,7 +1014,8 @@ impl AdvancedPage {
             SettingRow::new("vad-backend", t("settings.advanced.vadBackend.title"))
                 .description(t("settings.advanced.vadBackend.description"))
                 .error(save_error(st, "vad_backend"))
-                .control(
+                .control(trailing(
+                    None,
                     Dropdown::new("vad-backend-dropdown")
                         .options(vec![
                             DropdownOption::new(
@@ -980,7 +1029,7 @@ impl AdvancedPage {
                         ])
                         .selected(json_str(s.vad_backend))
                         .on_select(|v, _, cx| set("vad_backend", json!(v), cx)),
-                )
+                ))
                 .into_any_element(),
         ];
         group(Some(t("settings.advanced.groups.experimental")), rows, cx)
@@ -1032,6 +1081,8 @@ impl AdvancedPage {
         };
         page()
             .id("page-advanced")
+            // Explanations wrap in full (rows put the control under the
+            // label when the label would get too narrow).
             .child(self.app_group(&s, cx))
             .child(self.overlay_group(&s, cx))
             .child(self.output_group(&s, cx))

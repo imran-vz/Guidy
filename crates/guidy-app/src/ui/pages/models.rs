@@ -21,12 +21,14 @@ use crate::logic::requirements::{self, Feature, Inputs, Setup, SetupPlan};
 use crate::logic::settings_store::ToastKind;
 use crate::state::AppState;
 use crate::ui::design::{self, dp};
-use crate::ui::download_control::{progress_line, DownloadControl, DownloadView};
+use crate::ui::download_control::{cancel_button, progress_status, DownloadControl, DownloadView};
 use crate::ui::kit::{icon, t, t_args, LocalizedPlaceholder, ScrollTrap};
 use crate::ui::main_window::Section;
-use crate::ui::model_card::{delete_button, required_by_chip, ModelCard, ModelRow};
+use crate::ui::model_card::{
+    delete_item, narrow_rows, required_by_caption, status_word, track_w, ModelCard, ModelRow,
+};
 use gpui_kit::base::TestSupportExt;
-use gpui_kit::component::button::{Button, ButtonVariants, Toggle};
+use gpui_kit::component::button::{Button, ButtonVariants, Toggle, ToggleVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::skeleton::Skeleton;
@@ -50,6 +52,8 @@ pub struct ModelsPage {
     show_all: bool,
     /// The language popover's list (a scroll region over the page's).
     language_scroll: ScrollHandle,
+    /// Rows are narrow (set each render from the window width).
+    narrow: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -105,6 +109,7 @@ impl ModelsPage {
             deleting_retired: false,
             show_all: false,
             language_scroll: ScrollHandle::new(),
+            narrow: false,
             _subs: subs,
         };
         this.load_retired(cx);
@@ -264,8 +269,7 @@ impl ModelsPage {
                 )
                 .child(
                     Button::new("retired-delete")
-                        .warning()
-                        .small()
+                        .outline()
                         .icon(icon("trash"))
                         .loading(self.deleting_retired)
                         .label(t("settings.models.retiredNotice.delete"))
@@ -311,8 +315,7 @@ impl ModelsPage {
             })
             .trigger(
                 Button::new("language-filter-trigger")
-                    .ghost()
-                    .small()
+                    .outline()
                     .icon(icon("globe"))
                     .label(label)
                     .dropdown_caret(true),
@@ -406,7 +409,7 @@ fn group(
                 .min_h(dp(22.))
                 .justify_between()
                 .gap(dp(8.))
-                .child(design::section_header(title, cx))
+                .child(design::group_header(title, cx))
                 .children(extras),
         )
         .child(
@@ -444,6 +447,11 @@ fn plan_language(settings: &AppSettings) -> String {
 
 impl Render for ModelsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content_w = (window.viewport_size().width
+            - crate::ui::main_window::sidebar_width(window)
+            - design::PAGE_X * 2.)
+            .min(design::LIST_MAX_W);
+        self.narrow = narrow_rows(content_w);
         crate::ui::kit::scroll_page("models-scroll", self.render_body(window, cx))
     }
 }
@@ -456,10 +464,10 @@ impl crate::ui::pages::Page for ModelsPage {
     fn toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         Some(
             h_flex()
-                .gap(dp(6.))
+                .gap(dp(8.))
                 .child(
                     div().id("models-search").w(dp(180.)).child(
-                        Input::new(&self.search).small().cleanable(true).prefix(
+                        Input::new(&self.search).cleanable(true).prefix(
                             icon("search")
                                 .xsmall()
                                 .text_color(design::tone(cx).text_muted),
@@ -502,6 +510,7 @@ impl ModelsPage {
             .id("page-models")
             .w_full()
             .min_w_0()
+            .max_w(design::LIST_MAX_W)
             .gap(design::GROUP_GAP)
             .when_some(error, |d, e| d.child(self.render_error(e, cx)))
             .children(self.render_retired_notice(cx))
@@ -525,7 +534,7 @@ impl ModelsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .gap(dp(6.))
+                            .gap(dp(8.))
                             .child(Skeleton::new().w(dp(160.)).h(dp(10.)))
                             .child(Skeleton::new().secondary().w(dp(280.)).h(dp(8.))),
                     )
@@ -536,6 +545,7 @@ impl ModelsPage {
         v_flex()
             .id("page-models")
             .w_full()
+            .max_w(design::LIST_MAX_W)
             .gap(design::GROUP_GAP)
             .child(group(
                 "models-loading",
@@ -566,7 +576,7 @@ impl ModelsPage {
             .child(
                 Button::new("models-error-dismiss")
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(icon("x"))
                     .tooltip(t("common.close"))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -606,7 +616,7 @@ impl ModelsPage {
         let extras = disk.map(|text| {
             h_flex()
                 .id("models-disk-usage")
-                .gap(dp(5.))
+                .gap(dp(4.))
                 .text_color(tone.text_muted)
                 .child(icon("hard-drive").xsmall())
                 .child(design::mono(text).text_size(design::TEXT_SECONDARY))
@@ -634,7 +644,7 @@ impl ModelsPage {
         let key = plan.setup.key();
         let (ic, title) = match plan.setup {
             Setup::Dictation => ("mic", t("models.setups.dictation.title")),
-            Setup::MeetingsOnThisMac => ("cpu", t("models.setups.meetingsLocal.title")),
+            Setup::MeetingsOnThisMac => ("laptop", t("models.setups.meetingsLocal.title")),
             Setup::MeetingsWithCloudAi => ("cloud", t("models.setups.meetingsCloud.title")),
         };
         let mut parts: Vec<String> = plan.models.iter().map(|c| c.name.clone()).collect();
@@ -655,6 +665,7 @@ impl ModelsPage {
         let summary = DownloadSummary::of(&items);
         let mut row = ModelRow::new(format!("setup-{key}"), title)
             .element_id(format!("setup-{key}"))
+            .narrow(self.narrow)
             .leading(icon(ic).small().text_color(tone.text_muted))
             .detail(detail);
         if plan.total_bytes() > 0 {
@@ -675,10 +686,10 @@ impl ModelsPage {
                 DownloadView::Downloading { fraction, .. } => fraction,
                 _ => None,
             };
-            row = row.trailing(
+            row = row.status(
                 h_flex()
                     .gap(dp(8.))
-                    .child(div().w(dp(72.)).child(design::track(
+                    .child(div().w(track_w(self.narrow)).child(design::track(
                         SharedString::from(format!("setup-track-{key}")),
                         fraction,
                         cx,
@@ -691,14 +702,14 @@ impl ModelsPage {
                     ),
             );
         } else if plan.ready() {
-            row = row.trailing(
-                h_flex()
-                    .id(SharedString::from(format!("setup-ready-{key}")))
-                    .gap(dp(4.))
-                    .text_size(design::TEXT_SECONDARY)
-                    .text_color(tone.text_muted)
-                    .child(icon("circle-check").small().text_color(cx.theme().success))
-                    .child(t("models.setups.ready")),
+            row = row.status(
+                status_word(
+                    "circle-check",
+                    t("models.setups.ready"),
+                    design::Status::Ok,
+                    cx,
+                )
+                .id(SharedString::from(format!("setup-ready-{key}"))),
             );
         } else {
             let ids = plan.download_ids();
@@ -710,8 +721,7 @@ impl ModelsPage {
                 );
                 row = row.trailing(
                     Button::new(SharedString::from(format!("setup-download-{key}")))
-                        .secondary()
-                        .small()
+                        .outline()
                         .icon(icon("download"))
                         .label(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -736,8 +746,7 @@ impl ModelsPage {
                     let model_id = model.id.trim_start_matches("stt:").to_string();
                     row = row.trailing(
                         Button::new("setup-use-dictation")
-                            .secondary()
-                            .small()
+                            .outline()
                             .label(t("models.actions.useForDictation"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let id = model_id.clone();
@@ -749,8 +758,7 @@ impl ModelsPage {
             if plan.needs_key() {
                 row = row.trailing(
                     Button::new(SharedString::from(format!("setup-key-{key}")))
-                        .ghost()
-                        .small()
+                        .outline()
                         .icon(icon("key-round"))
                         .label(t("models.actions.addKey"))
                         .on_click(|_, _, cx| {
@@ -842,6 +850,7 @@ impl ModelsPage {
                 requirements::required_by(inputs, &tracker_id).contains(&Feature::MeetingNotes);
             let mut card = ModelCard::new(model.clone(), status)
                 .compact(true)
+                .narrow(self.narrow)
                 .debug_mode(debug)
                 .progress(progress, None)
                 .download(item)
@@ -968,9 +977,12 @@ impl ModelsPage {
             .gap_1()
             .child(
                 Toggle::new("filter-streaming")
+                    // Bordered at rest, filled while on: reads as a filter
+                    // control, not a legend.
+                    .outline()
                     .small()
                     .gap(dp(4.))
-                    .px(dp(6.))
+                    .px(dp(8.))
                     .icon(icon("audio-lines").xsmall())
                     .label(t("modelSelector.streaming"))
                     .checked(self.filter.streaming)
@@ -982,9 +994,12 @@ impl ModelsPage {
             )
             .child(
                 Toggle::new("filter-translation")
+                    // Bordered at rest, filled while on: reads as a filter
+                    // control, not a legend.
+                    .outline()
                     .small()
                     .gap(dp(4.))
-                    .px(dp(6.))
+                    .px(dp(8.))
                     .icon(icon("languages").xsmall())
                     .label(t("modelSelector.capabilities.translate"))
                     .checked(self.filter.translation)
@@ -998,7 +1013,7 @@ impl ModelsPage {
             .child(
                 Button::new("models-rescan")
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(icon("refresh-cw"))
                     .tooltip(t("settings.models.rescan.tooltip"))
                     .loading(rescanning)
@@ -1032,14 +1047,13 @@ impl ModelsPage {
         let tone = design::tone(cx);
         let features = feature_labels(&requirements::required_by(inputs, &model.id));
         let mut row = ModelRow::new(model.id.clone(), model.name.clone())
+            .narrow(self.narrow)
             .detail(detail)
             .size(format_bytes(model.size_bytes));
         if model.installed && !features.is_empty() {
-            row = row.leading(icon("check").small().text_color(tone.accent_text));
+            row = row.leading(icon("check").small().text_color(tone.text));
         }
-        if let Some(chip) = required_by_chip(&features, cx) {
-            row = row.badge(chip);
-        }
+        row = row.caption(required_by_caption(&features));
         if model.is_default && !model.installed && model.kind == DownloadKind::Llm {
             row = row.badge(design::chip(t("onboarding.recommended"), false, cx));
         }
@@ -1051,25 +1065,34 @@ impl ModelsPage {
             model.partial_bytes,
         );
         if view.is_busy() {
-            row = row.trailing(progress_line(&model.id, &view, dp(72.), cx));
+            row = row.status(progress_status(&model.id, &view, track_w(self.narrow), cx));
+            if let Some(cancel) = cancel_button(&model.id, &view) {
+                row = row.trailing(cancel);
+            }
         } else if model.installed {
             let id = model.id.clone();
             let name = model.name.clone();
-            row = row.trailing(delete_button(&model.id, &model.name, move |window, cx| {
+            row = row.menu_item(delete_item(&model.id, move |window, cx| {
                 Self::confirm_delete(id.clone(), name.clone(), features.clone(), window, cx)
             }));
         } else {
-            row = row.trailing(
-                DownloadControl::new(model.id.clone())
-                    .installed(false)
-                    .size(model.size_bytes)
-                    .label_size(false)
-                    .partial(model.partial_bytes),
-            );
+            let control = DownloadControl::new(model.id.clone())
+                .installed(false)
+                .size(model.size_bytes)
+                .label_size(false)
+                .partial(model.partial_bytes);
+            row = row.error(control.failure_reason(cx));
+            let (status, action) = control.into_parts(cx);
+            if let Some(status) = status {
+                row = row.status(status);
+            }
+            if let Some(action) = action {
+                row = row.trailing(action);
+            }
             if model.partial_bytes > 0 {
                 let id = model.id.clone();
                 let name = model.name.clone();
-                row = row.trailing(delete_button(&model.id, &model.name, move |window, cx| {
+                row = row.menu_item(delete_item(&model.id, move |window, cx| {
                     Self::confirm_delete(id.clone(), name.clone(), Vec::new(), window, cx)
                 }));
             }
@@ -1112,6 +1135,7 @@ impl ModelsPage {
             guidy_core::settings::APPLE_INTELLIGENCE_PROVIDER_ID,
         ));
         let mut ai_row = ModelRow::new("apple-intelligence", "Apple Intelligence")
+            .narrow(self.narrow)
             .detail(if ai {
                 t("models.ai.appleAvailable")
             } else {
@@ -1119,7 +1143,7 @@ impl ModelsPage {
             })
             .size("—")
             .dimmed(!ai)
-            .trailing(
+            .status(
                 div()
                     .text_size(design::TEXT_SECONDARY)
                     .text_color(tone.text_muted)
@@ -1129,10 +1153,10 @@ impl ModelsPage {
                         t("models.ai.unavailable")
                     }),
             );
-        if let Some(chip) = required_by_chip(&ai_features, cx) {
+        if let Some(caption) = required_by_caption(&ai_features) {
             ai_row = ai_row
-                .badge(chip)
-                .leading(icon("check").small().text_color(tone.accent_text));
+                .caption(Some(caption))
+                .leading(icon("check").small().text_color(tone.text));
         }
         rows.push(ai_row.into_any_element());
 
@@ -1147,12 +1171,12 @@ impl ModelsPage {
             any_cloud = true;
             let features = feature_labels(&requirements::required_by(inputs, &p.id));
             let mut row = ModelRow::new(format!("cloud-{}", p.id), p.label.clone())
+                .narrow(self.narrow)
                 .detail(t("models.ai.keySaved"))
                 .size("—")
                 .trailing(
                     Button::new(SharedString::from(format!("cloud-edit-{}", p.id)))
-                        .ghost()
-                        .small()
+                        .outline()
                         .label(t("models.actions.edit"))
                         .on_click(|_, _, cx| {
                             cx.defer(|cx| {
@@ -1160,22 +1184,22 @@ impl ModelsPage {
                             });
                         }),
                 );
-            if let Some(chip) = required_by_chip(&features, cx) {
+            if let Some(caption) = required_by_caption(&features) {
                 row = row
-                    .badge(chip)
-                    .leading(icon("check").small().text_color(tone.accent_text));
+                    .caption(Some(caption))
+                    .leading(icon("check").small().text_color(tone.text));
             }
             rows.push(row.into_any_element());
         }
         if !any_cloud {
             rows.push(
                 ModelRow::new("cloud-providers", t("models.ai.cloudTitle"))
+                    .narrow(self.narrow)
                     .leading(icon("cloud").small().text_color(tone.text_muted))
                     .detail(t("models.ai.cloudDetail"))
                     .trailing(
                         Button::new("cloud-add-key")
-                            .ghost()
-                            .small()
+                            .outline()
                             .icon(icon("key-round"))
                             .label(t("models.actions.addKey"))
                             .on_click(|_, _, cx| {

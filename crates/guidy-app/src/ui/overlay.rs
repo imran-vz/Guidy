@@ -118,10 +118,13 @@ impl OverlayView {
 fn cancel_button(cx: &App) -> impl IntoElement {
     let muted = cx.theme().muted_foreground;
     let hover = cx.theme().accent;
+    // Pressed: a step past the hover fill, same footprint.
+    let pressed = hover.blend(cx.theme().foreground.opacity(0.12));
     div()
         .id("overlay-cancel")
         .aria_label(t("common.cancel"))
-        .size(px(22.))
+        // The shared 24 pt icon-button target.
+        .size(design::ICON_BUTTON)
         .rounded_full()
         .flex()
         .items_center()
@@ -129,6 +132,7 @@ fn cancel_button(cx: &App) -> impl IntoElement {
         .cursor_pointer()
         .text_color(muted)
         .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(pressed))
         .child(icon("x").xsmall())
         .on_click(|_, _, cx| {
             if let Some(g) = cx.try_global::<crate::state::GlobalAppState>() {
@@ -140,21 +144,30 @@ fn cancel_button(cx: &App) -> impl IntoElement {
         .test_support()
 }
 
+/// The live dot: the recording red with a soft halo once the microphone is
+/// capturing (steady: the level meter already moves), a dim grey dot while
+/// it arms.
 fn status_dot(ready: bool, cx: &App) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
     if ready {
-        design::hud_signal_dot(cx)
-            .with_animation(
-                "dot-pulse",
-                Animation::new(Duration::from_millis(1900)).repeat(),
-                |el, delta| el.opacity(1.0 - 0.45 * (delta * std::f32::consts::PI).sin()),
-            )
+        let red = design::status_color(design::Status::Live, cx);
+        div()
+            .id("overlay-live-dot")
+            .flex_none()
+            .size(design::hud(12.))
+            .rounded_full()
+            .bg(red.opacity(0.2))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(design::hud(7.)).rounded_full().bg(red))
+            .test_support()
             .into_any_element()
     } else {
         div()
-            .size(px(7.))
+            .flex_none()
+            .size(design::hud(7.))
             .rounded_full()
-            .bg(muted)
+            .bg(cx.theme().muted_foreground)
             .opacity(0.45)
             .into_any_element()
     }
@@ -168,35 +181,30 @@ fn waveform(levels: [f32; 9], ready: bool, cx: &App) -> impl IntoElement {
         .gap(px(3.))
         .h(px(18.))
         .items_center()
-        .children(levels.into_iter().enumerate().map(move |(i, v)| {
+        .children(levels.into_iter().map(move |v| {
             let bar = div().w(px(4.)).rounded(px(2.));
             if ready {
+                // The live level meter.
                 bar.h(px(bar_height(v))).bg(fg).into_any_element()
             } else {
-                bar.h(px(6.))
-                    .bg(muted)
-                    .with_animation(
-                        ("arming", i),
-                        Animation::new(Duration::from_millis(900)).repeat(),
-                        move |el, delta| {
-                            let phase = (delta + i as f32 * 0.08) % 1.0;
-                            el.opacity(0.35 + 0.4 * (phase * std::f32::consts::PI).sin())
-                        },
-                    )
-                    .into_any_element()
+                // Arming: flat, dim bars, still (the grey dot already says
+                // the microphone isn't capturing yet; a ripple only
+                // decorated it).
+                bar.h(px(6.)).bg(muted).opacity(0.5).into_any_element()
             }
         }))
 }
 
-fn spinner(cx: &App) -> impl IntoElement {
-    icon("loader-circle")
-        .with_size(px(13.))
-        .text_color(cx.theme().muted_foreground)
-        .with_animation(
-            "overlay-spin",
-            Animation::new(Duration::from_millis(700)).repeat(),
-            |el, delta| el.transform(Transformation::rotate(percentage(delta))),
-        )
+/// The working row's loader: static under Reduce Motion (the label beside
+/// it names the work).
+fn spinner(cx: &App) -> AnyElement {
+    crate::ui::kit::spinner(
+        "overlay-spin",
+        icon("loader-circle")
+            .with_size(px(13.))
+            .text_color(cx.theme().muted_foreground),
+    )
+    .into_any_element()
 }
 
 impl Render for OverlayView {
@@ -232,31 +240,36 @@ impl Render for OverlayView {
             .overflow_hidden()
             .child(design::rim_light(cx));
 
+        let reduce_motion = cx.reduce_motion();
         let listening_row = |show_timer: bool, cx: &App| {
+            // Equal side columns keep the meter centered; the open card has
+            // room for the timer beside Cancel.
+            let side = px(if show_timer { 72. } else { 40. });
             h_flex()
                 .h(px(40.))
                 .px_3()
                 .gap_2()
                 .justify_between()
                 .child(
-                    div()
-                        .w(px(40.))
-                        .flex()
+                    h_flex()
+                        .w(side)
+                        .items_center()
                         .child(status_dot(m.capture_ready, cx)),
                 )
                 .child(waveform(m.levels(), m.capture_ready, cx))
                 .child(
                     h_flex()
-                        .w(px(40.))
+                        .w(side)
+                        .items_center()
                         .justify_end()
                         .gap_1()
                         .when(show_timer, |d| {
                             d.child(
                                 div()
                                     .id("overlay-timer")
-                                    .text_size(px(11.))
+                                    .text_size(design::HUD_TEXT_LABEL)
+                                    .font_features(design::tabular_figures())
                                     .text_color(muted)
-                                    .font_family(crate::theme::MONO_FONT)
                                     .child(format_timer(m.elapsed_secs(now)))
                                     .test_support(),
                             )
@@ -270,13 +283,14 @@ impl Render for OverlayView {
                 .px_3()
                 .gap_2()
                 .justify_between()
-                .child(div().w(px(22.)).child(spinner(cx)))
+                .child(div().w(design::ICON_BUTTON).child(spinner(cx)))
                 .child(
                     div()
                         .id("overlay-work-label")
                         .text_size(design::HUD_TEXT_BODY)
                         .text_color(muted)
-                        .child(design::shimmer_text("overlay-work-shimmer", label, cx))
+                        .whitespace_nowrap()
+                        .child(label)
                         .test_support(),
                 )
                 .child(cancel_button(cx))
@@ -306,7 +320,7 @@ impl Render for OverlayView {
                 .px_3()
                 .pt_2()
                 .text_size(px(15.))
-                .italic()
+                .line_height(px(21.))
                 .child(
                     div()
                         .when(l.loading_notice, |d| {
@@ -332,11 +346,21 @@ impl Render for OverlayView {
                                         .child(SharedString::from(w.to_string()))
                                 }))
                                 .when(l.show_caret, |d| {
-                                    d.child(div().w(px(1.5)).h(px(16.)).bg(fg).with_animation(
-                                        "caret",
-                                        Animation::new(Duration::from_millis(1050)).repeat(),
-                                        |el, delta| el.opacity(if delta < 0.5 { 1.0 } else { 0.0 }),
-                                    ))
+                                    let caret = div().w(px(1.5)).h(px(16.)).bg(fg);
+                                    d.child(if reduce_motion {
+                                        caret.into_any_element()
+                                    } else {
+                                        caret
+                                            .with_animation(
+                                                "caret",
+                                                Animation::new(Duration::from_millis(1050))
+                                                    .repeat(),
+                                                |el, delta| {
+                                                    el.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
+                                                },
+                                            )
+                                            .into_any_element()
+                                    })
                                 }),
                         ),
                 );
@@ -356,17 +380,17 @@ impl Render for OverlayView {
             } else {
                 inner.when(l.open, |d| d.child(text)).child(row)
             };
-            card.rounded(px(radius))
-                .child(inner)
-                .when(l.working, |d| {
-                    d.child(design::sheen("overlay-live-sheen", px(radius), cx))
-                })
-                .with_animation(
+            let card = card.rounded(px(radius)).child(inner);
+            if reduce_motion {
+                card.into_any_element()
+            } else {
+                card.with_animation(
                     ("pop-in", m.session as usize),
-                    Animation::new(Duration::from_millis(460)).with_easing(ease_out_quint()),
+                    Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
                 )
                 .into_any_element()
+            }
         } else {
             let working = m.compact_working();
             let width = if working { 216. } else { 172. };
@@ -375,23 +399,23 @@ impl Render for OverlayView {
             } else {
                 listening_row(false, cx).into_any_element()
             };
-            card.w(px(width))
-                .rounded_full()
-                .child(row)
-                .when(working, |d| {
-                    d.child(design::sheen("overlay-work-sheen", px(20.), cx))
-                })
-                .with_animation(
+            let card = card.w(px(width)).rounded_full().child(row);
+            if reduce_motion {
+                card.into_any_element()
+            } else {
+                card.with_animation(
                     "fade",
-                    Animation::new(Duration::from_millis(200)),
+                    Animation::new(Duration::from_millis(200)).with_easing(ease_out_quint()),
                     |el, delta| el.opacity(delta),
                 )
                 .into_any_element()
+            }
         };
 
         div()
             .id("overlay-stage")
             .size_full()
+            .font_family(crate::theme::UI_FONT)
             .flex()
             .flex_col()
             .items_center()
